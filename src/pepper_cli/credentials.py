@@ -198,7 +198,7 @@ def save(server_url: str, token: SecretStr) -> Path:
         path.unlink()
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        with os.fdopen(fd, "w") as fh:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
             fh.write(_serialize(server_url, token))
     except Exception:
         # If the write fails partway, leave nothing behind — a half-
