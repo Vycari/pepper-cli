@@ -4,8 +4,7 @@
 is decided and is not an open question.
 **Author:** drafted with Claude Code for the maintainer
 **Last updated:** 2026-10-14
-**Tracked by:** the "Implement planning/cli-information-architecture.md" issue linked from this
-doc's PR
+**Tracked by:** #20
 **Related:** pepper-cli#17 (scheduled-task renew), pepper-cli#18 (generic `pepper apps`); server
 pepper#4311 (room tasks, join links, GitHub), pepper#4556 (room skills), pepper#4557 (skill-backed
 room tasks), pepper#4673 (response models for groups routes), pepper#2740 (session-only routes);
@@ -21,7 +20,7 @@ on every command, and nouns that match what the product calls things. Concretely
 |---|---|---|---|
 | 1 | `groups` is one flat namespace over five object kinds (room, topic, message, member, app) plus sharing, search and activity | `groups *` | §3, §4 |
 | 2 | Create is `add` (todos, scheduled-tasks), `new` (skills, notes, groups, `new-topic`); delete is `delete` (skills), `rm` (notes), `remove` (members), `delete-message`; scheduled tasks cannot be deleted at all | all families | §3.2, §10 B, §10 E |
-| 3 | The product says "room", the CLI says `groups`; the room is a positional `GROUP` in `groups` and a `--room` flag everywhere else | `groups *` vs `todos`/`notes`/`skills`/`scheduled-tasks` | §2, §3.1 |
+| 3 | The product says "room", the CLI says `groups`; the room is a positional `GROUP` in `groups` and a `--room` flag everywhere else | `groups *` vs `todos`/`notes`/`skills`/`scheduled-tasks` | §2, §3 rule 2 |
 | 4 | `trajectory` is singular; every other noun is plural | `trajectory` | §2 |
 | 5 | `--json` exists on 17 of 69 leaves | §5.4 | §5 |
 | 6 | `scheduled-tasks` takes `--room` on list/add/pause/resume/destinations but not show/runs/thread/edit | `scheduled-tasks` | §6 |
@@ -77,8 +76,8 @@ pepper [--profile P] <noun> <verb> [--room ROOM [--topic TOPIC]] [OBJECT…] [fl
 2. **One room rule.** The object a verb acts on is positional. A room that is scope or container is
    always `--room ROOM`; a topic that is container is always `--topic TOPIC`. So `rooms show ROOM`
    (the room is the object) but `topics list --room ROOM` (the room is the container). No positional
-   `GROUP` survives. `--room` is required where the noun only exists inside a room (`topics`,
-   `messages`, `attachments`, `members`, `sharing`) and optional elsewhere (omitted = yours).
+   `GROUP` survives. `--room` is required when the verb acts inside a room and optional when
+   omitting it means "yours"; §6 is authoritative per command.
 3. **Canonical order puts `--room` right after the verb.** Harness allow rules are prefix matches
    (`Bash(pepper --profile claude-code messages post --room <room-id>:*)`), so the room must come
    before anything variable. Other orders still parse; they just don't match a pinned rule and get
@@ -186,10 +185,10 @@ none of the shapes already shipped.
 
 | # | Rule |
 |---|---|
-| J1 | Every leaf except `chat` with no message (the REPL) and `login` accepts `--json`. `logout` emits `{"ok": true}`. |
+| J1 | Every leaf except `chat` with no message (the REPL) and `login` accepts `--json`. `logout` emits `{"ok": true}`; `agents guide` without `--write` emits `{"markdown": "..."}`. |
 | J2 | Under `--json`, stdout carries exactly one JSON document (or JSON lines for a stream, J6) and nothing else: no colour, no prose, no progress. Prompts never happen (destructive verbs need `--yes`, else exit 2). |
 | J3 | **Shapes shipped in 0.1.0 are frozen.** `rooms list` emits the `groups list` object `{enabled, degraded, total, archived_total, groups}` — the key stays `groups`. `messages list` emits `{messages, next_before}`. `messages post` emits the message plus `topic_id`. `notes list/search` emit `{items, truncated}`. `todos list`, `topics list`, `members list`, `apps list --room`, `rooms activity`, `topics search` emit bare arrays. An alias and its new spelling emit byte-identical stdout. Normalizing these is a 1.0 question (§10 D), never a quiet change. |
-| J4 | **New list leaves** (no `--json` in 0.1.0): unpaged lists emit a bare array of objects (matching the 0.1 majority); paged lists emit `{"<noun>": [...], "next_before": str\|null}` (matching `messages list`). `trajectories list` → `{"trajectories": [...], "next_before": …}`; `scheduled-tasks runs/thread` likewise. |
+| J4 | **New list leaves** (no `--json` in 0.1.0): unpaged lists emit a bare array of objects (matching the 0.1 majority); paged lists emit `{"<noun>": [...], "next_before": str\|null}` (matching `messages list`). Keys: `trajectories list` → `trajectories`; `scheduled-tasks runs` → `runs`; `scheduled-tasks thread` → `messages`. |
 | J5 | `show` emits the object. Mutations emit the resulting object as the server returns it; for a 204 route, `{"ok": true, "id": "<id acted on>"}`. `takeout` emits `{"path", "bytes"}`. `agents guide --write` emits `{"path"}`. |
 | J6 | Streams emit JSON lines: `rooms watch` (unchanged, incl. `{"kind":"cursor","cursor":N}` frames) and one-shot `chat MESSAGE --json` (one line per streamed event, final line the reply). |
 | J7 | Field names are the server's, passed through. Unknown server fields are kept, not dropped (the CLI already tolerates them). |
@@ -309,7 +308,7 @@ Order per `CLAUDE.md`: server lands → weekly snapshot refresh of `contracts/ap
 | `--json` | present, unless in `JSON_EXEMPT` (`chat` REPL path, `login`) |
 | `--room` | present, unless in `ROOM_NA` (reason string) or `ROOM_PENDING` (server issue link) |
 | `--yes` | present on every destructive verb |
-| No `GROUP` | no positional dest/metavar `group`; no help string containing "group" or "channel" outside `ALIASES` |
+| No `GROUP` | no positional dest/metavar `group`; no help string containing "group" or "channel" outside `ALIASES`. `--to` help lists `room`; the wire value `groups_service` is an accepted hidden choice and allowlisted |
 | Aliases | every 0.1.0 path still parses, prints the notice on stderr, and dispatches to the same handler as its new spelling |
 | Byte identity | for each alias with `--json`, stdout under a faked client equals the new spelling's |
 
