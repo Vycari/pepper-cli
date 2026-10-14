@@ -16,7 +16,7 @@
   "paths": {
     "source": "src/pepper_cli/",
     "tests": "tests/",
-    "designDocs": [],
+    "designDocs": ["planning/"],
     "productDocs": [
       "README.md",
       "CLAUDE.md"
