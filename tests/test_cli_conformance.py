@@ -18,8 +18,10 @@ in a ``*_PENDING`` set. Each set is a ratchet in both directions:
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import io
+import itertools
 import json
 import os
 import re
@@ -420,14 +422,18 @@ def _positionals(text: str) -> set[str]:
 
 
 def _option_help(text: str, flag: str) -> str:
-    """The help text of one option: its line plus indented continuation lines."""
+    """The help text of one option: its line plus the continuation lines right after it.
+
+    Collection stops at the first line that is not a continuation (the next option, a
+    blank line, a section heading), so a later option's wrapped help is never included.
+    """
     lines = text.splitlines()
     for i, line in enumerate(lines):
         if re.match(r"^ {2}-", line) and flag in re.findall(
             r"--[\w-]+", re.split(r"\s{2,}", line.strip())[0]
         ):
             out = [line]
-            out.extend(nxt for nxt in lines[i + 1 :] if nxt.startswith(" " * 8))
+            out.extend(itertools.takewhile(lambda nxt: nxt.startswith(" " * 8), lines[i + 1 :]))
             return " ".join(out)
     return ""
 
@@ -520,12 +526,25 @@ def test_to_lists_room_as_a_choice() -> None:
     _ratchet("--to room", failing, TO_ROOM_PENDING)
 
 
-def test_renamed_nouns_are_stubs() -> None:
-    # Phase 1 only builds the stub helper (see test_cli_scaffolding.py); each noun gets
-    # wired in the phase that renames it. Until then it is a live command.
-    for noun in RENAMED:
-        assert noun in {_noun(leaf) for leaf in LEAVES}
-    assert RENAMED_PENDING == RENAMED
+def test_option_help_stops_at_the_next_option() -> None:
+    # A later option's wrapped help must not count as --to's: here only --mode says "room".
+    text = (
+        "options:\n"
+        "  --to {topic,email}    Where to deliver.\n"
+        "                        Choices: topic, email.\n"
+        "  --mode {a,b}          How to deliver.\n"
+        "                        Choices: a, b, room.\n"
+        "\n"
+        "examples:\n"
+        "        pepper x --to room\n"
+    )
+    to_help = _option_help(text, "--to")
+    assert (
+        " ".join(to_help.split()) == "--to {topic,email} Where to deliver. Choices: topic, email."
+    )
+    assert not re.search(r"Choices:[^.]*\broom\b", to_help)
+    assert _option_help(text, "--mode").endswith("Choices: a, b, room.")
+    assert _option_help(text, "--missing") == ""
 
 
 def test_pending_lists_name_real_leaves() -> None:
@@ -750,6 +769,56 @@ def _is_json(out: str) -> bool:
         return bool(lines) and all(isinstance(json.loads(ln), dict) for ln in lines)
     except ValueError:
         return False
+
+
+#: Command lines a retired noun must answer the same way (§8 "Renamed" row): bare, with a
+#: verb, and with option-looking tokens that a real parser would act on or reject.
+_RENAMED_ARGVS: tuple[tuple[str, ...], ...] = ((), ("list",), ("list", "--json"), ("--help",))
+
+
+def _is_stub(noun: str, server: _Server, capsys) -> bool:
+    """Every ``_RENAMED_ARGVS`` line exits 2 with one stderr line and touches no API."""
+    for rest in _RENAMED_ARGVS:
+        server.seen.clear()
+        try:
+            rc = cli.main([noun, *rest])
+        except SystemExit as exc:  # argparse errors and --help exit instead of returning
+            rc = exc.code
+        captured = capsys.readouterr()
+        err_lines = captured.err.splitlines()
+        if not (
+            rc == 2
+            and captured.out == ""
+            and len(err_lines) == 1
+            and f"'{noun}' was renamed" in err_lines[0]
+            and not server.seen
+        ):
+            return False
+    return True
+
+
+def test_renamed_nouns_are_stubs(_env, monkeypatch, capsys) -> None:
+    # A chat fall-through would reach the fake server (and so fail the check); an empty
+    # stdin keeps any interactive path from waiting on the terminal.
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    assert {_noun(leaf) for leaf in LEAVES} >= RENAMED
+    failing = {noun for noun in RENAMED if not _is_stub(noun, _env, capsys)}
+    _ratchet("renamed stub", failing, RENAMED_PENDING)
+
+
+def test_stub_check_accepts_a_wired_stub(_env, monkeypatch, capsys) -> None:
+    # Control for the check above: once a phase wires the stub, the noun passes. This
+    # one test reaches into the parser to wire it, the way phase 2 will.
+    real_build = cli._build_parser
+
+    def build():
+        parser, names = real_build()
+        sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+        cli._add_renamed_stub(sub, "groups", "see 'pepper rooms --help'")
+        return parser, names
+
+    monkeypatch.setattr(cli, "_build_parser", build)
+    assert _is_stub("groups", _env, capsys)
 
 
 def test_json_cases_cover_every_leaf_that_takes_json() -> None:
