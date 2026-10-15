@@ -469,7 +469,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     )
     p_login.set_defaults(handler=cmd_login)
 
-    p_whoami = sub.add_parser("whoami", help="Print the user behind the current credentials.")
+    p_whoami = sub.add_parser(
+        "whoami", help="Print the user behind the current credentials.", parents=[_json_parent]
+    )
     p_whoami.set_defaults(handler=cmd_whoami)
 
     p_chat = sub.add_parser(
@@ -506,6 +508,12 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         ),
     )
     p_chat.set_defaults(handler=cmd_chat)
+    p_chat.add_argument(
+        "--json",
+        action="store_true",
+        help="One-shot only: emit one JSON line per streamed event on stdout, the reply last "
+        "(also on when PEPPER_JSON=1). The REPL ignores it.",
+    )
 
     p_traj = sub.add_parser(
         "trajectories",
@@ -546,8 +554,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         description=(
             "Show your calendar as a per-day agenda with weather, daylight and commute. "
             "today (the default), week and schedule are shortcuts; --start/--days pick any "
-            "window (1-31 days)."
+            "window (1-31 days). --room reads a room's calendar instead."
         ),
+        parents=[_room_parent(omitted="Omit for your own calendar."), _json_parent],
     )
     p_cal.add_argument(
         "window",
@@ -563,7 +572,6 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         help="Add Planning: followed events, email suggestions, meal windows, suggestion cards "
         "(max 7 days).",
     )
-    p_cal.add_argument("--json", action="store_true", help="Emit the raw JSON response.")
     p_cal.set_defaults(handler=cmd_calendar)
 
     p_next = sub.add_parser(
@@ -614,7 +622,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_todos_list.add_argument("--json", action="store_true", help="Emit the raw JSON response.")
     p_todos_list.set_defaults(handler=cmd_todo_list)
 
-    p_todos_add = sub_todos.add_parser("create", help="Create a todo.")
+    p_todos_add = sub_todos.add_parser("create", help="Create a todo.", parents=[_json_parent])
     # ``nargs="+"`` so ``pepper todos create buy milk`` joins unquoted words
     # into one title, mirroring ``pepper chat``'s message handling.
     p_todos_add.add_argument("title", nargs="+", help="The todo title. Multi-word OK.")
@@ -634,7 +642,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         ("dismiss", cmd_todo_dismiss, "Dismiss a todo (close without completing)."),
         ("reopen", cmd_todo_reopen, "Put a done or dismissed todo back on the list."),
     ):
-        p_todo = sub_todos.add_parser(name, help=text)
+        p_todo = sub_todos.add_parser(name, help=text, parents=[_json_parent])
         p_todo.add_argument("todo_id", help="Todo UUID (from ``todos list`` or ``next --json``).")
         p_todo.set_defaults(handler=handler)
     for name in ("list", "create", "done", "dismiss", "reopen"):
@@ -653,7 +661,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     )
     sub_tasks = p_tasks.add_subparsers(dest="scheduled_tasks_action", required=True)
 
-    p_tasks_list = sub_tasks.add_parser("list", help="List your scheduled tasks (active only).")
+    p_tasks_list = sub_tasks.add_parser(
+        "list", help="List your scheduled tasks (active only).", parents=[_json_parent]
+    )
     p_tasks_list.add_argument(
         "--all",
         action="store_true",
@@ -661,11 +671,17 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     )
     p_tasks_list.set_defaults(handler=cmd_scheduled_task_list)
 
-    p_tasks_show = sub_tasks.add_parser("show", help="Show one task's config and its last run.")
+    p_tasks_show = sub_tasks.add_parser(
+        "show", help="Show one task's config and its last run.", parents=[_json_parent]
+    )
     p_tasks_show.add_argument("task", help=_TASK_ARG_HELP)
     p_tasks_show.set_defaults(handler=cmd_scheduled_task_show)
 
-    p_tasks_runs = sub_tasks.add_parser("runs", help="A task's fire history, newest first.")
+    p_tasks_runs = sub_tasks.add_parser(
+        "runs",
+        help="A task's fire history, newest first.",
+        parents=[_json_parent, _before_parent],
+    )
     p_tasks_runs.add_argument("task", help=_TASK_ARG_HELP)
     p_tasks_runs.add_argument(
         "--limit", type=int, default=20, help="Number of runs (default 20, max 100)."
@@ -673,7 +689,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_tasks_runs.set_defaults(handler=cmd_scheduled_task_runs)
 
     p_tasks_thread = sub_tasks.add_parser(
-        "thread", help="A task's own conversation (its results and your replies)."
+        "thread",
+        help="A task's own conversation (its results and your replies).",
+        parents=[_json_parent, _before_parent],
     )
     p_tasks_thread.add_argument("task", help=_TASK_ARG_HELP)
     p_tasks_thread.add_argument(
@@ -684,6 +702,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_tasks_add = sub_tasks.add_parser(
         "create",
         help="Schedule a new task. Pass exactly one of --cron or --at.",
+        parents=[_json_parent],
     )
     p_tasks_add.add_argument(
         "name", help="Slug for the task (lowercase letters, digits, hyphens; 1-64 chars)."
@@ -731,6 +750,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_tasks_edit = sub_tasks.add_parser(
         "edit",
         help="Change an existing task. Only the flags you pass are written.",
+        parents=[_json_parent],
     )
     p_tasks_edit.add_argument("task", help=_TASK_ARG_HELP)
     p_tasks_edit.add_argument("--prompt", help="Replace what the agent does when it fires.")
@@ -775,12 +795,15 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_tasks_pause = sub_tasks.add_parser(
         "pause",
         help="Take a task off the schedule. Its history is kept and it can be resumed.",
+        parents=[_json_parent],
     )
     p_tasks_pause.add_argument("task", help=_TASK_ARG_HELP)
     p_tasks_pause.set_defaults(handler=cmd_scheduled_task_pause)
 
     p_tasks_resume = sub_tasks.add_parser(
-        "resume", help="Put a paused task back on the schedule, next fire re-derived."
+        "resume",
+        help="Put a paused task back on the schedule, next fire re-derived.",
+        parents=[_json_parent],
     )
     p_tasks_resume.add_argument("task", help=_TASK_ARG_HELP)
     p_tasks_resume.set_defaults(handler=cmd_scheduled_task_resume)
@@ -825,15 +848,21 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     )
     sub_skills = p_skills.add_subparsers(dest="skills_action", required=True)
 
-    p_skills_list = sub_skills.add_parser("list", help="List your skills and Pepper's built-ins.")
+    p_skills_list = sub_skills.add_parser(
+        "list", help="List your skills and Pepper's built-ins.", parents=[_json_parent]
+    )
     p_skills_list.set_defaults(handler=cmd_skills_list)
 
-    p_skills_show = sub_skills.add_parser("show", help="Print one skill as SKILL.md.")
+    p_skills_show = sub_skills.add_parser(
+        "show", help="Print one skill as SKILL.md.", parents=[_json_parent]
+    )
     p_skills_show.add_argument("name", help="Skill name (from ``skills list``).")
     p_skills_show.set_defaults(handler=cmd_skills_show)
 
     p_skills_new = sub_skills.add_parser(
-        "create", help="Author a new skill in $EDITOR (or from --file) and save it."
+        "create",
+        help="Author a new skill in $EDITOR (or from --file) and save it.",
+        parents=[_json_parent],
     )
     p_skills_new.add_argument("name", help="Slug name for the new skill.")
     p_skills_new.add_argument(
@@ -849,6 +878,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
             "Edit a skill in $EDITOR. Editing a built-in creates a shadowing "
             "override on your account."
         ),
+        parents=[_json_parent],
     )
     p_skills_edit.add_argument("name", help="Skill name (from ``skills list``).")
     p_skills_edit.add_argument(
@@ -861,7 +891,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_skills_delete = sub_skills.add_parser(
         "delete",
         help="Delete one of YOUR skills (built-ins can't be deleted).",
-        parents=[_yes_parent],
+        parents=[_yes_parent, _json_parent],
     )
     p_skills_delete.add_argument("name", help="Skill name (from ``skills list``).")
     p_skills_delete.set_defaults(handler=cmd_skills_delete)
@@ -872,6 +902,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
             "Share one of YOUR skills with a room. The room gets a live reference, "
             "not a copy: your later edits show there too."
         ),
+        parents=[_json_parent],
     )
     p_skills_share.add_argument("name", help="Name of one of your own skills.")
     p_skills_share.add_argument("--room", required=True, help=_GROUP_ARG_HELP)
@@ -883,7 +914,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
             "Stop sharing a skill with a room. The skill itself is untouched. "
             "Its owner can always do this; a room owner can in a channel."
         ),
-        parents=[_yes_parent],
+        parents=[_yes_parent, _json_parent],
     )
     p_skills_revoke.add_argument("name", help=_ROOM_SKILL_ARG_HELP)
     p_skills_revoke.add_argument("--room", required=True, help=_GROUP_ARG_HELP)
@@ -1296,7 +1327,10 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
 
     p_apps = sub.add_parser(
         "apps",
-        help="A room's apps. ``list`` them and the installable ones, ``install``/``uninstall``.",
+        help=(
+            "A room's apps: ``list`` them and the installable ones, ``install``/``uninstall``. "
+            "``show`` an app's data, ``run`` one of its actions."
+        ),
     )
     sub_apps = p_apps.add_subparsers(dest="apps_action", required=True)
     p = sub_apps.add_parser(
@@ -1319,6 +1353,27 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     )
     p.add_argument("app", help="Installed app's key, title or install id.")
     p.set_defaults(handler=cmd_apps_uninstall)
+    p = sub_apps.add_parser(
+        "show",
+        parents=[_room_parent(omitted="Omit for your own data."), _json_parent],
+        help="An app's data document, yours or a room's.",
+    )
+    p.add_argument("slug", help="App slug (for example 'notes').")
+    p.set_defaults(handler=cmd_apps_show)
+    p = sub_apps.add_parser(
+        "run",
+        parents=[_room_parent(omitted="Omit to act on your own data."), _json_parent],
+        help="Run an app action. With no ACTION, list the owner-scoped actions the server names.",
+    )
+    p.add_argument("slug", help="App slug (for example 'notes').")
+    p.add_argument("action", nargs="?", help="Action name. Omit to list the ones the server names.")
+    p.add_argument(
+        "--param",
+        action="append",
+        metavar="KEY=VALUE",
+        help="An action parameter, sent as a string; repeatable.",
+    )
+    p.set_defaults(handler=cmd_apps_run)
 
     p_notes = sub.add_parser(
         "notes",
@@ -1330,36 +1385,38 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     )
     sub_notes = p_notes.add_subparsers(dest="notes_action", required=True)
 
-    p_notes_list = sub_notes.add_parser("list", help="List your notes (or a room's, with --room).")
+    p_notes_list = sub_notes.add_parser(
+        "list", help="List your notes (or a room's, with --room).", parents=[_json_parent]
+    )
     p_notes_list.add_argument("--room", help=_GROUP_ARG_HELP + " Omit for your own notes.")
     p_notes_list.add_argument("--label", help="Only notes carrying this label.")
-    p_notes_list.add_argument("--json", action="store_true", help="Emit the raw JSON response.")
     p_notes_list.set_defaults(handler=cmd_notes_list)
 
     p_notes_search = sub_notes.add_parser(
-        "search", help="Case-insensitive substring search over note names and bodies."
+        "search",
+        help="Case-insensitive substring search over note names and bodies.",
+        parents=[_json_parent],
     )
     p_notes_search.add_argument(
         "query", nargs="+", help="Search text. Multi-word OK without quotes."
     )
     p_notes_search.add_argument("--room", help=_GROUP_ARG_HELP + " Omit for your own notes.")
     p_notes_search.add_argument("--label", help="Only notes carrying this label.")
-    p_notes_search.add_argument("--json", action="store_true", help="Emit the raw JSON response.")
     p_notes_search.set_defaults(handler=cmd_notes_search)
 
-    p_notes_show = sub_notes.add_parser("show", help="Print one note's markdown body to stdout.")
+    p_notes_show = sub_notes.add_parser(
+        "show",
+        help="Print one note's markdown body to stdout (--json: the full detail).",
+        parents=[_json_parent],
+    )
     p_notes_show.add_argument("note", help=_NOTE_ARG_HELP)
     p_notes_show.add_argument("--room", help=_GROUP_ARG_HELP + " Omit for your own notes.")
-    p_notes_show.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit the full detail as JSON (name, labels, etag, ...) instead of the raw body.",
-    )
     p_notes_show.set_defaults(handler=cmd_notes_show)
 
     p_notes_new = sub_notes.add_parser(
         "create",
         help="Create a note. Body from $EDITOR, --file PATH, or --file - for stdin.",
+        parents=[_json_parent],
     )
     p_notes_new.add_argument("name", help="The new note's name.")
     p_notes_new.add_argument(
@@ -1373,6 +1430,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_notes_edit = sub_notes.add_parser(
         "edit",
         help="Edit a note. Body from $EDITOR, --file PATH, or --file - for stdin.",
+        parents=[_json_parent],
     )
     p_notes_edit.add_argument("note", help=_NOTE_ARG_HELP)
     p_notes_edit.add_argument("--room", help=_GROUP_ARG_HELP + " Omit for your own notes.")
@@ -1392,7 +1450,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     )
     p_notes_edit.set_defaults(handler=cmd_notes_edit)
 
-    p_notes_rm = sub_notes.add_parser("delete", help="Delete a note.", parents=[_yes_parent])
+    p_notes_rm = sub_notes.add_parser(
+        "delete", help="Delete a note.", parents=[_yes_parent, _json_parent]
+    )
     p_notes_rm.add_argument("note", help=_NOTE_ARG_HELP)
     p_notes_rm.add_argument("--room", help=_GROUP_ARG_HELP + " Omit for your own notes.")
     p_notes_rm.set_defaults(handler=cmd_notes_delete)
@@ -1400,6 +1460,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_takeout = sub.add_parser(
         "takeout",
         help="Download a zip archive of everything Pepper holds about your account.",
+        parents=[_json_parent],
     )
     p_takeout.add_argument(
         "--out",
@@ -1410,7 +1471,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     )
     p_takeout.set_defaults(handler=cmd_takeout)
 
-    p_logout = sub.add_parser("logout", help="Delete the credentials file.")
+    p_logout = sub.add_parser("logout", help="Delete the credentials file.", parents=[_json_parent])
     p_logout.set_defaults(handler=cmd_logout)
 
     p_agents = sub.add_parser(
@@ -1665,25 +1726,23 @@ def _login_device(server_url: str, *, open_browser: bool) -> int:
 
 
 def cmd_whoami(args: argparse.Namespace) -> int:
-    del args  # no flags
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            who = api.whoami()
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    # Plain print to stdout — scriptable. Each value is server text on one
-    # line, so it is cleaned of terminal controls and line breaks.
-    print(f"user_id: {sanitize_line(who.user_id)}")
-    print(f"display_name: {sanitize_line(who.display_name)}")
-    print(f"email: {sanitize_line(who.email or '')}")
-    print(f"timezone: {sanitize_line(who.timezone or '')}")
-    return 0
+    """``pepper whoami [--json]``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        who = api.whoami()
+
+        def human() -> None:
+            # Plain print to stdout — scriptable. Each value is server text on one
+            # line, so it is cleaned of terminal controls and line breaks.
+            print(f"user_id: {sanitize_line(who.user_id)}")
+            print(f"display_name: {sanitize_line(who.display_name)}")
+            print(f"email: {sanitize_line(who.email or '')}")
+            print(f"timezone: {sanitize_line(who.timezone or '')}")
+
+        _emit(who, args, human)
+        return 0
+
+    return _run_personal(args, run)
 
 
 def cmd_chat(args: argparse.Namespace) -> int:
@@ -1695,39 +1754,53 @@ def cmd_chat(args: argparse.Namespace) -> int:
     An empty list opens the REPL; anything else joins to a single
     message string for one-shot dispatch.
     """
-    creds = _load_or_error()
+    message_parts = args.message or []
+    if not message_parts:
+        # The REPL is exempt from JSON mode (J1): it never emits JSON, errors included.
+        args.json = False
+    creds = _load_or_error(args)
     if creds is None:
         return 1
     try:
         provider = _build_provider(getattr(args, "root", None))
     except provider_fs.PathRefused as exc:
-        render.error(f"--root: {exc}")
+        _emit_error(args, "usage", f"--root: {exc}")
         return 2
-    message_parts = args.message or []
     if not message_parts:
         return _run_repl(creds, provider=provider)
     message = " ".join(message_parts).strip()
     if not message:
-        render.error("Empty message — nothing to send.")
+        _emit_error(args, "usage", "Empty message — nothing to send.")
         return 2
     try:
         with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
             # Stream one-shot turns too: a long turn can exceed the unary
             # request timeout. trace=False keeps stdout to the final reply;
             # provider=None sends no filesystem manifest or local tools.
-            return 0 if _stream_one_turn(api, message, provider=provider, trace=False) else 1
+            ok = _stream_one_turn(
+                api,
+                message,
+                provider=provider,
+                trace=False,
+                json_args=args if _json_mode(args) else None,
+            )
+            return 0 if ok else 1
     except api_client.ApiError as exc:
-        return _report_api_error(exc)
+        return _report_api_error(exc, args)
     except httpx.ReadTimeout:
-        render.error(
+        _emit_error(
+            args,
+            "network",
             "Timed out waiting for Pepper's reply. The turn may still be running "
-            "or saved; check the web chat before sending the message again."
+            "or saved; check the web chat before sending the message again.",
         )
         return 1
     except httpx.RequestError as exc:
-        render.error(
+        _emit_error(
+            args,
+            "network",
             f"Chat connection to {creds.server_url} failed: {exc}. "
-            "The turn may have been saved; check the web chat before retrying."
+            "The turn may have been saved; check the web chat before retrying.",
         )
         return 1
 
@@ -1981,6 +2054,7 @@ def _stream_one_turn(
     *,
     provider: provider_fs.FilesystemProvider | None = None,
     trace: bool = True,
+    json_args: argparse.Namespace | None = None,
 ) -> bool:
     """Drive one streamed turn: dispatch each SSE event to a renderer.
 
@@ -2004,6 +2078,11 @@ def _stream_one_turn(
     Return whether the server sent a terminal reply. An error frame or a
     closed stream without a terminal frame must not count as a successful
     one-shot command, and neither path resubmits the message.
+
+    ``json_args`` (the one-shot ``chat MESSAGE --json`` call) switches the output to
+    JSON lines (J6): one ``{"kind", "payload"}`` object per streamed event as it
+    arrives, the ``reply`` event last; nothing is drawn, and a failure is the J8 line
+    on stderr.
     """
     # Thoughts arrive as fragments of any size followed by a terminal
     # ``model_thought_block``; the fragments stream onto one line and the block
@@ -2015,6 +2094,23 @@ def _stream_one_turn(
     streamed = ""
     manifest = provider.manifest() if provider is not None else None
     for event in api.chat_send_stream(message, client_tools=manifest):
+        if json_args is not None:
+            sys.stdout.write(
+                json.dumps({"kind": event.kind, "payload": event.payload}, default=str) + "\n"
+            )
+            sys.stdout.flush()
+            if event.kind == "client_tool_call":
+                _serve_client_tool_call(api, event.payload, provider=provider, trace=False)
+            elif event.kind == "reply":
+                return True
+            elif event.kind == "error":
+                _emit_error(
+                    json_args,
+                    "server",
+                    str(event.payload.get("message") or "model service unavailable"),
+                )
+                return False
+            continue
         if event.kind == "model_thought":
             text = event.payload.get("text") or ""
             if text:
@@ -2053,7 +2149,11 @@ def _stream_one_turn(
         # server-side event types we haven't taught the CLI yet. This is
         # also what makes the two frames above safe to add: an older CLI
         # against a newer server simply never runs a client tool.
-    render.error("Chat stream ended without a reply. Check the web chat before sending again.")
+    _emit_error(
+        json_args,
+        "server",
+        "Chat stream ended without a reply. Check the web chat before sending again.",
+    )
     return False
 
 
@@ -2228,43 +2328,64 @@ _MAX_COMMUTE_LEGS = 12
 
 
 def cmd_calendar(args: argparse.Namespace) -> int:
-    """``pepper calendar [today|week|schedule] [--start D] [--days N] [--planning] [--json]``."""
+    """``pepper calendar [today|week|schedule] [--start D] [--days N] [--planning] [--room R]
+    [--json]``.
+
+    ``--room`` reads the room's calendar view (``principal=<room id>`` on the range and
+    planning routes). The weather, drive-time and schedule-plan layers are the caller's
+    own, so a room view carries none of them.
+    """
     import datetime as dt
 
     days = args.days if args.days is not None else (7 if args.window == "week" else 1)
     if not 1 <= days <= 31:
-        render.error("--days must be between 1 and 31")
+        _emit_error(args, "usage", "--days must be between 1 and 31")
         return 2
     try:
         if args.start:
             dt.date.fromisoformat(args.start)
     except ValueError:
-        render.error("--start must be YYYY-MM-DD")
+        _emit_error(args, "usage", "--start must be YYYY-MM-DD")
         return 2
     if args.planning and (days > 7 or args.window == "schedule"):
-        render.error("--planning covers at most 7 days and replaces the schedule view")
+        _emit_error(
+            args, "usage", "--planning covers at most 7 days and replaces the schedule view"
+        )
         return 2
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            # "Today" is the account's date, not the host's: the server reads start in user's zone.
-            start = args.start or next_view.user_now(api).date().isoformat()
-            payload = api.calendar_range(start=start, days=days)
-            planning = api.calendar_planning(start=start, days=days) if args.planning else None
+    if args.room and args.window == "schedule":
+        _emit_error(args, "usage", "the schedule view is your own; --room does not apply to it")
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        principal = None
+        if args.room:
+            room = _resolve_room_strict(api, args, args.room)
+            if isinstance(room, int):
+                return room
+            principal = room
+        # "Today" is the account's date, not the host's: the server reads start in user's zone.
+        start = args.start or next_view.user_now(api).date().isoformat()
+        payload = api.calendar_range(start=start, days=days, principal=principal)
+        planning = (
+            api.calendar_planning(start=start, days=days, principal=principal)
+            if args.planning
+            else None
+        )
+        if principal is None:
             _add_calendar_extras(api, payload, schedule=args.window == "schedule")
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    if args.json:
-        _print_json({"range": payload, "planning": planning} if args.planning else payload)
+        mode = (
+            "planning" if args.planning else "schedule" if args.window == "schedule" else "calendar"
+        )
+        _emit(
+            {"range": payload, "planning": planning} if args.planning else payload,
+            args,
+            lambda: render.render_calendar(
+                payload, mode=mode, cards=planning["cards"] if planning else None
+            ),
+        )
         return 0
-    mode = "planning" if args.planning else "schedule" if args.window == "schedule" else "calendar"
-    render.render_calendar(payload, mode=mode, cards=planning["cards"] if planning else None)
-    return 0
+
+    return _run_personal(args, run)
 
 
 def _resolve_room_strict(
@@ -2334,17 +2455,14 @@ def cmd_next(args: argparse.Namespace) -> int:
 
 
 def cmd_todo_list(args: argparse.Namespace) -> int:
-    """``pepper todos list [--status open|done|dismissed|all] [--room ROOM]``."""
+    """``pepper todos list [--status open|done|dismissed|all] [--room ROOM] [--json]``."""
 
     def run(api: api_client.ApiClient) -> int:
-        rows = api.list_todos(status=args.status, group_id=_opt_group(api, args.room))
-        if args.json:
-            _print_json(rows)
-        else:
-            render.render_todo_list(rows)
+        rows = api.list_todos(status=args.status, group_id=_opt_group(api, args.room, args=args))
+        _emit_list(rows, args, lambda: render.render_todo_list(rows))
         return 0
 
-    return _with_api(run, _report_api_error)
+    return _with_api(run, _report_api_error, args)
 
 
 def cmd_todo_create(args: argparse.Namespace) -> int:
@@ -2356,22 +2474,22 @@ def cmd_todo_create(args: argparse.Namespace) -> int:
     """
     title = " ".join(args.title).strip()
     if not title:
-        render.error("todo title cannot be empty")
+        _emit_error(args, "usage", "todo title cannot be empty")
         return 2
     if args.room and (args.details or args.priority):
-        render.error("--details and --priority aren't available with --room")
+        _emit_error(args, "usage", "--details and --priority aren't available with --room")
         return 2
     due_iso: str | None = None
     due_day: str | None = None
     if args.due and args.room:
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", args.due):
-            render.error("with --room, --due must be 'YYYY-MM-DD'")
+            _emit_error(args, "usage", "with --room, --due must be 'YYYY-MM-DD'")
             return 2
         due_day = args.due
     elif args.due:
         due_iso, err = _parse_due(args.due)
         if err is not None:
-            render.error(err)
+            _emit_error(args, "usage", err)
             return 2
 
     def run(api: api_client.ApiClient) -> int:
@@ -2381,14 +2499,18 @@ def cmd_todo_create(args: argparse.Namespace) -> int:
             priority=args.priority,
             due_date=due_iso,
             due=due_day,
-            group_id=_opt_group(api, args.room),
+            group_id=_opt_group(api, args.room, args=args),
         )
-        render.info(f"Added todo {todo.id}")
-        if not args.room:
-            render.render_todo_list([todo])
+
+        def human() -> None:
+            render.info(f"Added todo {todo.id}")
+            if not args.room:
+                render.render_todo_list([todo])
+
+        _emit(todo, args, human)
         return 0
 
-    return _with_api(run, _report_api_error)
+    return _with_api(run, _report_api_error, args)
 
 
 def cmd_todo_done(args: argparse.Namespace) -> int:
@@ -2406,30 +2528,34 @@ def _tick_todo(args: argparse.Namespace, *, reopen: bool) -> int:
     ticking it on Schedule does. A wrong id or room is the server's one uniform answer;
     there is no fall-through to other rooms."""
     if not _valid_uuid(args.todo_id):
-        render.error(f"todo id must be a UUID (got: {args.todo_id})")
+        _emit_error(args, "usage", f"todo id must be a UUID (got: {args.todo_id})")
         return 2
 
     def run(api: api_client.ApiClient) -> int:
         change = api.reopen_todo if reopen else api.complete_todo
-        change(args.todo_id, group_id=_opt_group(api, args.room))
-        render.info(f"{'Reopened' if reopen else 'Marked done'}: {args.todo_id}")
+        todo = change(args.todo_id, group_id=_opt_group(api, args.room, args=args))
+        _emit(
+            todo,
+            args,
+            lambda: render.info(f"{'Reopened' if reopen else 'Marked done'}: {args.todo_id}"),
+        )
         return 0
 
-    return _with_api(run, _report_api_error)
+    return _with_api(run, _report_api_error, args)
 
 
 def cmd_todo_dismiss(args: argparse.Namespace) -> int:
     """``pepper todos dismiss <id> [--room ROOM]``."""
     if not _valid_uuid(args.todo_id):
-        render.error(f"todo id must be a UUID (got: {args.todo_id})")
+        _emit_error(args, "usage", f"todo id must be a UUID (got: {args.todo_id})")
         return 2
 
     def run(api: api_client.ApiClient) -> int:
-        title = api.dismiss_todo(args.todo_id, group_id=_opt_group(api, args.room)).title
-        render.info(f"Dismissed: {title}")
+        todo = api.dismiss_todo(args.todo_id, group_id=_opt_group(api, args.room, args=args))
+        _emit(todo, args, lambda: render.info(f"Dismissed: {todo.title}"))
         return 0
 
-    return _with_api(run, _report_api_error)
+    return _with_api(run, _report_api_error, args)
 
 
 def _resolve_task_id(
@@ -2484,15 +2610,17 @@ def _resolve_task_id(
     return None
 
 
-def _report_room_task_error(exc: api_client.ApiError) -> int:
+def _report_room_task_error(
+    exc: api_client.ApiError, args: argparse.Namespace | None = None
+) -> int:
     """A room-task command's errors: 403 is the owner gate, said in one fixed
     sentence; everything else carries the server's own ``detail`` (no such
     room, no such task, a taken name, a full budget), which is written to be
     read."""
     if exc.status == 403:
-        render.error(_ROOM_TASK_OWNER_ONLY)
+        _emit_error(args, "forbidden", _ROOM_TASK_OWNER_ONLY, status=403)
         return 1
-    return _report_api_error(exc)
+    return _report_api_error(exc, args)
 
 
 def _destination_dialect_error(
@@ -2523,94 +2651,114 @@ def _destination_dialect_error(
     return None
 
 
+def _task_report(args: argparse.Namespace) -> Callable[[api_client.ApiError, Any], int]:
+    """The error reporter for a scheduled-tasks leaf: the owner gate under ``--room``."""
+    return _report_room_task_error if getattr(args, "room", None) else _report_api_error
+
+
 def cmd_scheduled_task_list(args: argparse.Namespace) -> int:
-    """``pepper scheduled-tasks list [--all] [--room ROOM]``."""
-    if args.room:
+    """``pepper scheduled-tasks list [--all] [--room ROOM] [--json]``."""
 
-        def run(api: api_client.ApiClient) -> int:
-            group_id = _need_group(api, args.room)
+    def run(api: api_client.ApiClient) -> int:
+        if args.room:
+            group_id = _need_group(api, args.room, args=args)
             rows = api.list_scheduled_tasks(include_inactive=args.all, group_id=group_id)
-            render.render_scheduled_task_list(rows)
-            return 0
-
-        return _with_api(run, _report_room_task_error)
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
+        else:
             rows = api.list_scheduled_tasks(include_inactive=args.all)
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    render.render_scheduled_task_list(rows)
-    return 0
+        _emit_list(rows, args, lambda: render.render_scheduled_task_list(rows))
+        return 0
+
+    return _with_api(run, _task_report(args), args)
 
 
 def cmd_scheduled_task_show(args: argparse.Namespace) -> int:
-    """``pepper scheduled-tasks show <task>``."""
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            task_id = _resolve_task_id(api, args.task)
-            if task_id is None:
-                return 2
-            detail = api.get_scheduled_task(task_id)
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    render.render_scheduled_task(detail)
-    return 0
+    """``pepper scheduled-tasks show <task> [--json]``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        task_id = _resolve_task_id(api, args.task, args=args)
+        if task_id is None:
+            return 2
+        detail = api.get_scheduled_task(task_id)
+        _emit(detail, args, lambda: render.render_scheduled_task(detail))
+        return 0
+
+    return _with_api(run, _report_api_error, args)
+
+
+#: Separates the timestamp from the row id inside a ``runs``/``thread`` cursor.
+_KEYSET_SEP = "|"
+
+
+def _keyset_cursor(timestamp: str, row_id: str) -> str:
+    """The ``next_before`` of a keyset page: the boundary row's time and id, as one string."""
+    return f"{timestamp}{_KEYSET_SEP}{row_id}"
+
+
+def _keyset_parts(cursor: str | None) -> tuple[str | None, str | None]:
+    """Split a ``--before`` cursor into the server's ``(before, before_id)``.
+
+    A bare timestamp (no id) is accepted too: it pages by time alone.
+    """
+    if not cursor:
+        return None, None
+    before, sep, before_id = cursor.partition(_KEYSET_SEP)
+    return before, (before_id if sep and before_id else None)
+
+
+def _page_limit_ok(args: argparse.Namespace) -> bool:
+    """A usage error (reported) when ``--limit`` is outside the server's 1..100."""
+    if args.limit is not None and not 1 <= args.limit <= 100:
+        _emit_error(args, "usage", "--limit must be between 1 and 100")
+        return False
+    return True
 
 
 def cmd_scheduled_task_runs(args: argparse.Namespace) -> int:
-    """``pepper scheduled-tasks runs <task> [--limit N]``."""
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            task_id = _resolve_task_id(api, args.task)
-            if task_id is None:
-                return 2
-            rows = api.list_scheduled_task_runs(task_id, limit=args.limit)
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    render.render_scheduled_task_runs(rows)
-    return 0
+    """``pepper scheduled-tasks runs <task> [--limit N] [--before CURSOR] [--json]``."""
+    if not _page_limit_ok(args):
+        return 2
+    before, before_id = _keyset_parts(args.before)
+
+    def run(api: api_client.ApiClient) -> int:
+        task_id = _resolve_task_id(api, args.task, args=args)
+        if task_id is None:
+            return 2
+        rows = api.list_scheduled_task_runs(
+            task_id, limit=args.limit, before=before, before_id=before_id
+        )
+        # Newest first: the last row bounds the next (older) page. A short page is the end.
+        more = bool(rows) and len(rows) >= args.limit
+        cursor = _keyset_cursor(rows[-1].fired_at, rows[-1].id) if more else None
+        _emit_list(rows, args, lambda: render.render_scheduled_task_runs(rows), cursor)
+        return 0
+
+    return _with_api(run, _report_api_error, args)
 
 
 def cmd_scheduled_task_thread(args: argparse.Namespace) -> int:
-    """``pepper scheduled-tasks thread <task> [--limit N]``.
+    """``pepper scheduled-tasks thread <task> [--limit N] [--before CURSOR] [--json]``.
 
     Read-only. To reply into the thread, chat normally — the server
     routes a reply by conversation, not through this command.
     """
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            task_id = _resolve_task_id(api, args.task)
-            if task_id is None:
-                return 2
-            rows = api.get_scheduled_task_thread(task_id, limit=args.limit)
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    render.render_scheduled_task_thread(rows)
-    return 0
+    if not _page_limit_ok(args):
+        return 2
+    before, before_id = _keyset_parts(args.before)
+
+    def run(api: api_client.ApiClient) -> int:
+        task_id = _resolve_task_id(api, args.task, args=args)
+        if task_id is None:
+            return 2
+        rows = api.get_scheduled_task_thread(
+            task_id, limit=args.limit, before=before, before_id=before_id
+        )
+        # Oldest first within the page: the first row bounds the next (older) page.
+        more = bool(rows) and len(rows) >= args.limit
+        cursor = _keyset_cursor(rows[0].created_at, rows[0].id) if more else None
+        _emit_list(rows, args, lambda: render.render_scheduled_task_thread(rows), cursor)
+        return 0
+
+    return _with_api(run, _report_api_error, args)
 
 
 def cmd_scheduled_task_create(args: argparse.Namespace) -> int:
@@ -2625,21 +2773,23 @@ def cmd_scheduled_task_create(args: argparse.Namespace) -> int:
     """
     dialect_err = _destination_dialect_error(args.to, room=args.room, topic=args.deliver_topic)
     if dialect_err is not None:
-        render.error(dialect_err)
+        _emit_error(args, "usage", dialect_err)
         return 2
     if args.room:
         return _create_room_scheduled_task(args)
     if (args.cron is None) == (args.at is None):
-        render.error("pass exactly one of --cron (recurring) or --at (one-off)")
+        _emit_error(args, "usage", "pass exactly one of --cron (recurring) or --at (one-off)")
         return 2
     if args.to and args.silent:
-        render.error("--silent means announce nowhere; it can't be combined with --to")
+        _emit_error(
+            args, "usage", "--silent means announce nowhere; it can't be combined with --to"
+        )
         return 2
     run_at: str | None = None
     if args.at:
         run_at, err = _parse_due(args.at, flag="--at")
         if err is not None:
-            render.error(err)
+            _emit_error(args, "usage", err)
             return 2
     # Three states on the wire, and only one of them is "don't send the
     # key": omitting inherits the user's notification preference, ``[]``
@@ -2650,40 +2800,39 @@ def cmd_scheduled_task_create(args: argparse.Namespace) -> int:
     elif args.to:
         destinations = _wire_destinations(args.to)
 
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            task = api.create_scheduled_task(
-                name=args.name,
-                prompt=args.prompt,
-                cron=args.cron,
-                run_at=run_at,
-                timezone=args.timezone,
-                description=args.description,
-                destinations=destinations,
-            )
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    render.info(f"Scheduled {task.name!r}.")
-    render.render_scheduled_task_list([task])
-    return 0
+    def run(api: api_client.ApiClient) -> int:
+        task = api.create_scheduled_task(
+            name=args.name,
+            prompt=args.prompt,
+            cron=args.cron,
+            run_at=run_at,
+            timezone=args.timezone,
+            description=args.description,
+            destinations=destinations,
+        )
+
+        def human() -> None:
+            render.info(f"Scheduled {task.name!r}.")
+            render.render_scheduled_task_list([task])
+
+        _emit(task, args, human)
+        return 0
+
+    return _with_api(run, _report_api_error, args)
 
 
 def _create_room_scheduled_task(args: argparse.Namespace) -> int:
     """``scheduled-tasks create --room``. The dialect is already checked."""
     if args.at is not None or args.description is not None:
-        render.error("--at and --description aren't available with --room")
+        _emit_error(args, "usage", "--at and --description aren't available with --room")
         return 2
     if args.cron is None:
-        render.error("with --room, pass --cron — a room's task is recurring")
+        _emit_error(args, "usage", "with --room, pass --cron — a room's task is recurring")
         return 2
     if args.to and args.silent:
-        render.error("--silent means announce nowhere; it can't be combined with --to")
+        _emit_error(
+            args, "usage", "--silent means announce nowhere; it can't be combined with --to"
+        )
         return 2
     # Omitted leaves the delivery to the server (what it picks depends on
     # the deployment); ``[]`` is silent, a list pins those.
@@ -2700,14 +2849,18 @@ def _create_room_scheduled_task(args: argparse.Namespace) -> int:
             cron=args.cron,
             timezone=args.timezone,
             destinations=destinations,
-            group_id=_need_group(api, args.room),
+            group_id=_need_group(api, args.room, args=args),
             topic=args.deliver_topic,
         )
-        render.info(f"Scheduled {task.name!r} on the room.")
-        render.render_scheduled_task_list([task])
+
+        def human() -> None:
+            render.info(f"Scheduled {task.name!r} on the room.")
+            render.render_scheduled_task_list([task])
+
+        _emit(task, args, human)
         return 0
 
-    return _with_api(run, _report_room_task_error)
+    return _with_api(run, _report_room_task_error, args)
 
 
 #: ``scheduled-tasks edit``'s field keys as the flags that set them, for messages.
@@ -2718,6 +2871,14 @@ _EDIT_FLAG_NAMES = {
     "timezone": "--timezone",
     "description": "--description",
 }
+
+
+def _saved_flags(edits: dict[str, object]) -> str:
+    """The flags of the field edits that landed, for the partial-save message."""
+    return ", ".join(
+        "--clear-description" if k == "description" and v is None else _EDIT_FLAG_NAMES.get(k, k)
+        for k, v in edits.items()
+    )
 
 
 def cmd_scheduled_task_edit(args: argparse.Namespace) -> int:
@@ -2740,7 +2901,7 @@ def cmd_scheduled_task_edit(args: argparse.Namespace) -> int:
     room has no notification preference of its own to follow).
     """
     if args.description is not None and args.clear_description:
-        render.error("pass either --description or --clear-description, not both")
+        _emit_error(args, "usage", "pass either --description or --clear-description, not both")
         return 2
     edits: dict[str, object] = {}
     if args.prompt is not None:
@@ -2750,7 +2911,7 @@ def cmd_scheduled_task_edit(args: argparse.Namespace) -> int:
     if args.at is not None:
         run_at, err = _parse_due(args.at, flag="--at")
         if err is not None:
-            render.error(err)
+            _emit_error(args, "usage", err)
             return 2
         edits["run_at"] = run_at
     if args.timezone is not None:
@@ -2760,33 +2921,35 @@ def cmd_scheduled_task_edit(args: argparse.Namespace) -> int:
     elif args.clear_description:
         edits["description"] = None
     if sum([bool(args.to), args.use_default, args.silent]) > 1:
-        render.error("pass only one of --to (repeatable), --default, or --silent")
+        _emit_error(args, "usage", "pass only one of --to (repeatable), --default, or --silent")
         return 2
     has_delivery = bool(args.to) or args.use_default or args.silent
     if not edits and not has_delivery and args.deliver_topic is None:
-        render.error("nothing to change — pass at least one field to edit")
+        _emit_error(args, "usage", "nothing to change — pass at least one field to edit")
         return 2
     if args.room and edits:
-        render.error(
+        _emit_error(
+            args,
+            "usage",
             "with --room, edit changes delivery only (--to or --silent) — "
-            "the server can't change a room task's prompt or schedule yet"
+            "the server can't change a room task's prompt or schedule yet",
         )
         return 2
     if args.room and args.use_default:
-        render.error("--default isn't available with --room — pass --to or --silent")
+        _emit_error(args, "usage", "--default isn't available with --room — pass --to or --silent")
         return 2
     if args.room and not has_delivery:
-        render.error("with --room, pass --to or --silent")
+        _emit_error(args, "usage", "with --room, pass --to or --silent")
         return 2
     dialect_err = _destination_dialect_error(args.to, room=args.room, topic=args.deliver_topic)
     if dialect_err is not None:
-        render.error(dialect_err)
+        _emit_error(args, "usage", dialect_err)
         return 2
     destinations: list[str] | None = None if args.use_default else _wire_destinations(args.to)
 
     def run(api: api_client.ApiClient) -> int:
-        group_id = _need_group(api, args.room) if args.room else None
-        task_id = _resolve_task_id(api, args.task, group_id=group_id)
+        group_id = _need_group(api, args.room, args=args) if args.room else None
+        task_id = _resolve_task_id(api, args.task, group_id=group_id, args=args)
         if task_id is None:
             return 2
         task = api.update_scheduled_task(task_id, edits=edits) if edits else None
@@ -2796,25 +2959,35 @@ def cmd_scheduled_task_edit(args: argparse.Namespace) -> int:
                 task = api.set_scheduled_task_destinations(
                     task_id, destinations=destinations, group_id=group_id, topic=args.deliver_topic
                 )
-            except (api_client.ApiError, httpx.RequestError):
+            except (api_client.ApiError, httpx.RequestError) as exc:
                 if saved is not None:
-                    # The field PATCH already landed; say so before the cause is reported.
-                    flags = ", ".join(
-                        "--clear-description"
-                        if k == "description" and v is None
-                        else _EDIT_FLAG_NAMES[k]
-                        for k, v in edits.items()
+                    # The field PATCH already landed; say so with the cause.
+                    note = (
+                        f"saved {_saved_flags(edits)} on {saved.name!r}, "
+                        "but changing its delivery failed"
                     )
-                    render.error(
-                        f"saved {flags} on {saved.name!r}, but changing its delivery failed:",
-                        soft_wrap=True,
-                    )
+                    if _json_mode(args):
+                        status = exc.status if isinstance(exc, api_client.ApiError) else None
+                        cause = (
+                            (exc.detail or f"Server returned {exc.status}.")
+                            if isinstance(exc, api_client.ApiError)
+                            else str(exc)
+                        )
+                        _emit_error(
+                            args, _error_code_for_status(status), f"{note}: {cause}", status=status
+                        )
+                        raise _UnavailableError from exc
+                    render.error(f"{note}:", soft_wrap=True)
                 raise
-        render.info(f"Updated {task.name!r}.")
-        render.render_scheduled_task_list([task])
+        _emit(task, args, lambda: _edited_human(task))
         return 0
 
-    return _with_api(run, _report_room_task_error if args.room else _report_api_error)
+    return _with_api(run, _task_report(args), args)
+
+
+def _edited_human(task: api_client.ScheduledTaskSummary) -> None:
+    render.info(f"Updated {task.name!r}.")
+    render.render_scheduled_task_list([task])
 
 
 def cmd_scheduled_task_renew(args: argparse.Namespace) -> int:
@@ -2842,56 +3015,40 @@ def cmd_scheduled_task_renew(args: argparse.Namespace) -> int:
 
 def cmd_scheduled_task_pause(args: argparse.Namespace) -> int:
     """``pepper scheduled-tasks pause <task> [--room ROOM]`` — soft delete, resumable."""
-    return _flip_scheduled_task(args.task, resume=False, room=args.room)
+    return _flip_scheduled_task(args, resume=False)
 
 
 def cmd_scheduled_task_resume(args: argparse.Namespace) -> int:
     """``pepper scheduled-tasks resume <task> [--room ROOM]``."""
-    return _flip_scheduled_task(args.task, resume=True, room=args.room)
+    return _flip_scheduled_task(args, resume=True)
 
 
-def _flip_scheduled_task(task: str, *, resume: bool, room: str | None = None) -> int:
+def _flip_scheduled_task(args: argparse.Namespace, *, resume: bool) -> int:
     """Shared body for ``pause`` / ``resume``.
 
     A 422 on resume is the server saying the row exists but can't go back
     on the schedule (a one-off whose moment has passed) — its ``detail``
     is written for the user, so :func:`_report_api_error` prints it as is.
 
-    With ``room`` the task is looked up among, and flipped on, that room.
+    With ``--room`` the task is looked up among, and flipped on, that room.
     """
-    if room:
 
-        def run(api: api_client.ApiClient) -> int:
-            group_id = _need_group(api, room)
-            task_id = _resolve_task_id(api, task, group_id=group_id)
-            if task_id is None:
-                return 2
-            flip = api.resume_scheduled_task if resume else api.cancel_scheduled_task
-            row = flip(task_id, group_id=group_id)
+    def run(api: api_client.ApiClient) -> int:
+        group_id = _need_group(api, args.room, args=args) if args.room else None
+        task_id = _resolve_task_id(api, args.task, group_id=group_id, args=args)
+        if task_id is None:
+            return 2
+        flip = api.resume_scheduled_task if resume else api.cancel_scheduled_task
+        row = flip(task_id, group_id=group_id) if group_id else flip(task_id)
+
+        def human() -> None:
             render.info(f"{'Resumed' if resume else 'Paused'}: {row.name}")
             render.render_scheduled_task_list([row])
-            return 0
 
-        return _with_api(run, _report_room_task_error)
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            task_id = _resolve_task_id(api, task)
-            if task_id is None:
-                return 2
-            row = (
-                api.resume_scheduled_task(task_id) if resume else api.cancel_scheduled_task(task_id)
-            )
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    render.info(f"{'Resumed' if resume else 'Paused'}: {row.name}")
-    render.render_scheduled_task_list([row])
-    return 0
+        _emit(row, args, human)
+        return 0
+
+    return _with_api(run, _task_report(args), args)
 
 
 def _room_skill_shared_by(row: api_client.RoomSkill) -> str:
@@ -2925,7 +3082,12 @@ def _room_skill_line(row: api_client.RoomSkill) -> str:
     )
 
 
-def _resolve_room_skill(api: api_client.ApiClient, value: str, group_id: str) -> str:
+def _resolve_room_skill(
+    api: api_client.ApiClient,
+    value: str,
+    group_id: str,
+    args: argparse.Namespace | None = None,
+) -> str:
     """Turn a shared skill's name into its **grant id**, or exit 2.
 
     The API is keyed by grant id because a name does not pick a row: two
@@ -2940,82 +3102,103 @@ def _resolve_room_skill(api: api_client.ApiClient, value: str, group_id: str) ->
     if len(matches) == 1:
         return matches[0].id
     if not matches:
-        render.error(
+        _emit_error(
+            args,
+            "not_found",
             f"no skill named {value!r} is shared with that room — "
-            "run 'pepper skills list --room ROOM'"
+            "run 'pepper skills list --room ROOM'",
         )
         raise _BadInputError
-    render.error(
+    lines = [
+        sanitize_line(f"{row.id}  shared by {_room_skill_shared_by(row)} ({row.state})")
+        for row in matches
+    ]
+    head = (
         f"{len(matches)} skills named {value!r} are shared with that room — "
-        "pass the grant id in place of the name:",
-        soft_wrap=True,
+        "pass the grant id in place of the name:"
     )
-    for row in matches:
-        line = f"  {row.id}  shared by {_room_skill_shared_by(row)} ({row.state})"
-        sys.stderr.write(sanitize_line(line) + "\n")
+    if args is not None and _json_mode(args):
+        _emit_error(args, "ambiguous", f"{head} {'; '.join(lines)}")
+    else:
+        render.error(head, soft_wrap=True)
+        for line in lines:
+            sys.stderr.write(f"  {line}\n")
     raise _BadInputError
 
 
-def _report_room_skill_share_error(exc: api_client.ApiError) -> int:
+def _report_room_skill_share_error(
+    exc: api_client.ApiError, args: argparse.Namespace | None = None
+) -> int:
     """``skills share --room``: 409 is the sealed-room refusal, said in one
     fixed sentence; everything else carries the server's own ``detail`` (no
     such skill of yours, a toolset a room can't run, the room unavailable),
     which is written to be read."""
     if exc.status == 409:
-        render.error(_ROOM_SKILL_SEALED)
+        _emit_error(args, "conflict", _ROOM_SKILL_SEALED, status=409)
         return 1
-    return _report_api_error(exc)
+    return _report_api_error(exc, args)
 
 
-def _report_room_skill_revoke_error(exc: api_client.ApiError) -> int:
+def _report_room_skill_revoke_error(
+    exc: api_client.ApiError, args: argparse.Namespace | None = None
+) -> int:
     """``skills revoke --room``: 403 is the who-may-revoke gate, said in one
     fixed sentence; everything else carries the server's ``detail``."""
     if exc.status == 403:
-        render.error(_ROOM_SKILL_REVOKE_FORBIDDEN)
+        _emit_error(args, "forbidden", _ROOM_SKILL_REVOKE_FORBIDDEN, status=403)
         return 1
-    return _report_api_error(exc)
+    return _report_api_error(exc, args)
 
 
 def _refuse_room_for_owned_skill(args: argparse.Namespace, verb: str) -> bool:
     """True (after saying why) when ``--room`` was passed to a command that
     only ever acts on the caller's own library."""
     if getattr(args, "room", None):
-        render.error(_ROOM_OWNS_NO_SKILL.format(verb=verb), soft_wrap=True)
+        _emit_error(args, "usage", _ROOM_OWNS_NO_SKILL.format(verb=verb), soft_wrap=True)
         return True
     return False
 
 
 def _cmd_room_skills_list(args: argparse.Namespace) -> int:
     def run(api: api_client.ApiClient) -> int:
-        rows = api.list_room_skills(_need_group(api, args.room))
-        # Primary output → stdout, plain and grep-able like the own-library
-        # listing; the grant id ends every line because it is what tells two
-        # same-named rows apart.
-        if not rows:
-            sys.stdout.write(
-                "(no skills shared with this room — try `pepper skills share NAME --room ROOM`)\n"
-            )
-            return 0
-        for row in rows:
-            sys.stdout.write(_room_skill_line(row) + "\n")
-        if any(row.can_revoke for row in rows):
-            render.info("* you can revoke it: pepper skills revoke NAME --room ROOM")
+        rows = api.list_room_skills(_need_group(api, args.room, args=args))
+
+        def human() -> None:
+            # Primary output → stdout, plain and grep-able like the own-library
+            # listing; the grant id ends every line because it is what tells two
+            # same-named rows apart.
+            if not rows:
+                sys.stdout.write(
+                    "(no skills shared with this room — "
+                    "try `pepper skills share NAME --room ROOM`)\n"
+                )
+                return
+            for row in rows:
+                sys.stdout.write(_room_skill_line(row) + "\n")
+            if any(row.can_revoke for row in rows):
+                render.info("* you can revoke it: pepper skills revoke NAME --room ROOM")
+
+        _emit_list(rows, args, human)
         return 0
 
-    return _with_api(run, _report_api_error)
+    return _with_api(run, _report_api_error, args)
 
 
 def _cmd_room_skills_show(args: argparse.Namespace) -> int:
     def run(api: api_client.ApiClient) -> int:
-        group_id = _need_group(api, args.room)
-        detail = api.get_room_skill(group_id, _resolve_room_skill(api, args.name, group_id))
-        note = f"(shared with this room by {_room_skill_shared_by(detail.row)}"
-        state = _room_skill_state_note(detail.row)
-        render.info(f"{note} — {state})" if state else f"{note})")
-        render.write_document(skill_doc.compose_skill_md(_fields_from_detail(detail.skill)))
+        group_id = _need_group(api, args.room, args=args)
+        detail = api.get_room_skill(group_id, _resolve_room_skill(api, args.name, group_id, args))
+
+        def human() -> None:
+            note = f"(shared with this room by {_room_skill_shared_by(detail.row)}"
+            state = _room_skill_state_note(detail.row)
+            render.info(f"{note} — {state})" if state else f"{note})")
+            render.write_document(skill_doc.compose_skill_md(_fields_from_detail(detail.skill)))
+
+        _emit(detail, args, human)
         return 0
 
-    return _with_api(run, _report_api_error)
+    return _with_api(run, _report_api_error, args)
 
 
 def cmd_skills_share(args: argparse.Namespace) -> int:
@@ -3026,14 +3209,18 @@ def cmd_skills_share(args: argparse.Namespace) -> int:
     """
 
     def run(api: api_client.ApiClient) -> int:
-        row = api.share_room_skill(_need_group(api, args.room), args.name)
-        render.info(f"Shared {row.name!r} with the room.")
-        state = _room_skill_state_note(row)
-        if state:
-            render.info(f"It is {state}.")
+        row = api.share_room_skill(_need_group(api, args.room, args=args), args.name)
+
+        def human() -> None:
+            render.info(f"Shared {row.name!r} with the room.")
+            state = _room_skill_state_note(row)
+            if state:
+                render.info(f"It is {state}.")
+
+        _emit(row, args, human)
         return 0
 
-    return _with_api(run, _report_room_skill_share_error)
+    return _with_api(run, _report_room_skill_share_error, args)
 
 
 def cmd_skills_revoke(args: argparse.Namespace) -> int:
@@ -3052,82 +3239,98 @@ def cmd_skills_revoke(args: argparse.Namespace) -> int:
         return code
 
     def run(api: api_client.ApiClient) -> int:
-        group_id = _need_group(api, args.room)
-        api.revoke_room_skill(group_id, _resolve_room_skill(api, args.name, group_id))
+        group_id = _need_group(api, args.room, args=args)
+        grant_id = _resolve_room_skill(api, args.name, group_id, args)
+        api.revoke_room_skill(group_id, grant_id)
         what = "that skill" if _valid_uuid(args.name) else repr(args.name)
-        render.info(f"Stopped sharing {what} with the room. The skill itself is untouched.")
+        _emit(
+            _mutation_result(None, grant_id),
+            args,
+            lambda: render.info(
+                f"Stopped sharing {what} with the room. The skill itself is untouched."
+            ),
+        )
         return 0
 
-    return _with_api(run, _report_room_skill_revoke_error)
+    return _with_api(run, _report_room_skill_revoke_error, args)
 
 
 def cmd_skills_list(args: argparse.Namespace) -> int:
-    """``pepper skills list [--room ROOM]`` — yours first, then Pepper's
+    """``pepper skills list [--room ROOM] [--json]`` — yours first, then Pepper's
     built-ins; with ``--room``, the skills shared with that room."""
     if getattr(args, "room", None):
         return _cmd_room_skills_list(args)
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            rows = api.list_skills()
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    yours = [r for r in rows if not r.builtin]
-    builtin = [r for r in rows if r.builtin]
-    # The listing is primary output → stdout (pipeable); render.info is
-    # stderr chrome, reserved for status lines around commands.
-    if yours:
-        sys.stdout.write("Yours:\n")
-        for row in yours:
-            sys.stdout.write(sanitize_line(f"  {row.name} — {row.description}") + "\n")
-    else:
-        sys.stdout.write("Yours: (none yet — try `pepper skills create <name>`)\n")
-    if builtin:
-        sys.stdout.write("Built-in (edit creates an override on your account):\n")
-        for row in builtin:
-            sys.stdout.write(sanitize_line(f"  {row.name} — {row.description}") + "\n")
-    return 0
+
+    def run(api: api_client.ApiClient) -> int:
+        rows = api.list_skills()
+
+        def human() -> None:
+            yours = [r for r in rows if not r.builtin]
+            builtin = [r for r in rows if r.builtin]
+            # The listing is primary output → stdout (pipeable); render.info is
+            # stderr chrome, reserved for status lines around commands.
+            if yours:
+                sys.stdout.write("Yours:\n")
+                for row in yours:
+                    sys.stdout.write(sanitize_line(f"  {row.name} — {row.description}") + "\n")
+            else:
+                sys.stdout.write("Yours: (none yet — try `pepper skills create <name>`)\n")
+            if builtin:
+                sys.stdout.write("Built-in (edit creates an override on your account):\n")
+                for row in builtin:
+                    sys.stdout.write(sanitize_line(f"  {row.name} — {row.description}") + "\n")
+
+        _emit_list(rows, args, human)
+        return 0
+
+    return _run_personal(args, run)
 
 
 def cmd_skills_show(args: argparse.Namespace) -> int:
-    """``pepper skills show <name> [--room ROOM]`` — print the skill as SKILL.md.
+    """``pepper skills show <name> [--room ROOM] [--json]`` — print the skill as SKILL.md.
 
     With ``--room``, one of the skills shared with that room (a grant id is
     accepted in place of the name)."""
     if getattr(args, "room", None):
         return _cmd_room_skills_show(args)
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            detail = api.get_skill(args.name)
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    if detail.builtin:
-        render.info("(built-in — ``pepper skills edit`` creates an override on your account)")
-    render.write_document(skill_doc.compose_skill_md(_fields_from_detail(detail)))
-    return 0
+
+    def run(api: api_client.ApiClient) -> int:
+        detail = api.get_skill(args.name)
+
+        def human() -> None:
+            if detail.builtin:
+                render.info(
+                    "(built-in — ``pepper skills edit`` creates an override on your account)"
+                )
+            render.write_document(skill_doc.compose_skill_md(_fields_from_detail(detail)))
+
+        _emit(detail, args, human)
+        return 0
+
+    return _run_personal(args, run)
 
 
-def _skill_document_from_file(path: str) -> skill_doc.SkillFields | None:
+def _skill_document_from_file(
+    path: str, args: argparse.Namespace | None = None
+) -> skill_doc.SkillFields | None:
     """Parse a SKILL.md read from ``path`` (``-`` = stdin); report why and return ``None``
     when it can't be read or parsed."""
-    text = _read_file_or_stdin(path)
+    text = _read_file_or_stdin(path, args)
     if text is None:
         return None
     fields, err = skill_doc.parse_skill_md(text)
     if fields is None:
-        render.error(f"couldn't parse the document: {err}")
+        _emit_error(args, "usage", f"couldn't parse the document: {err}")
     return fields
+
+
+def _skill_editor_refused(args: argparse.Namespace) -> bool:
+    """True (after saying why) in JSON mode without ``--file``: JSON mode never opens an
+    editor or prompts (J2), so the document has to come from ``--file``."""
+    if _json_mode(args) and not args.file:
+        _emit_error(args, "usage", "JSON mode does not open an editor; pass --file PATH (or -)")
+        return True
+    return False
 
 
 def cmd_skills_create(args: argparse.Namespace) -> int:
@@ -3135,7 +3338,7 @@ def cmd_skills_create(args: argparse.Namespace) -> int:
 
     Exit codes: 0 ok · 1 auth/API/transport · 2 bad document / aborted / ``--room``.
     """
-    if _refuse_room_for_owned_skill(args, "write"):
+    if _refuse_room_for_owned_skill(args, "write") or _skill_editor_refused(args):
         return 2
     template = skill_doc.SkillFields(
         name=args.name,
@@ -3146,37 +3349,33 @@ def cmd_skills_create(args: argparse.Namespace) -> int:
         ),
     )
     if args.file:
-        fields = _skill_document_from_file(args.file)
+        fields = _skill_document_from_file(args.file, args)
     else:
         fields = _edit_skill_document(skill_doc.compose_skill_md(template))
     if fields is None:
         return 2
     if fields.name != args.name:
-        render.error(
+        _emit_error(
+            args,
+            "usage",
             f"the document renamed the skill ({args.name!r} → {fields.name!r}) — "
-            "keep the name; it's the identifier you asked to create"
+            "keep the name; it's the identifier you asked to create",
         )
         return 2
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            api.create_skill(
-                name=fields.name,
-                description=fields.description,
-                body=fields.body,
-                model=fields.model,
-                toolsets=list(fields.toolsets),
-                max_tool_rounds=fields.max_tool_rounds,
-            )
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    render.info(f"Created skill {fields.name!r}.")
-    return 0
+
+    def run(api: api_client.ApiClient) -> int:
+        created = api.create_skill(
+            name=fields.name,
+            description=fields.description,
+            body=fields.body,
+            model=fields.model,
+            toolsets=list(fields.toolsets),
+            max_tool_rounds=fields.max_tool_rounds,
+        )
+        _emit(created, args, lambda: render.info(f"Created skill {fields.name!r}."))
+        return 0
+
+    return _run_personal(args, run)
 
 
 def cmd_skills_edit(args: argparse.Namespace) -> int:
@@ -3187,19 +3386,18 @@ def cmd_skills_edit(args: argparse.Namespace) -> int:
     the edited document is saved as YOUR same-named skill, which shadows
     the built-in on your account only.
     """
-    if _refuse_room_for_owned_skill(args, "edit"):
+    if _refuse_room_for_owned_skill(args, "edit") or _skill_editor_refused(args):
         return 2
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            detail = api.get_skill(args.name)
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
+
+    fetched: list[api_client.SkillDetail] = []
+
+    def fetch(api: api_client.ApiClient) -> int:
+        fetched.append(api.get_skill(args.name))
+        return 0
+
+    if (code := _run_personal(args, fetch)) != 0:
+        return code
+    detail = fetched[0]
 
     if detail.builtin and not args.file:
         answer = _prompt(
@@ -3211,49 +3409,48 @@ def cmd_skills_edit(args: argparse.Namespace) -> int:
             return 0
 
     if args.file:
-        fields = _skill_document_from_file(args.file)
+        fields = _skill_document_from_file(args.file, args)
     else:
         fields = _edit_skill_document(skill_doc.compose_skill_md(_fields_from_detail(detail)))
     if fields is None:
         return 2
     if fields.name != detail.name:
-        render.error(
+        _emit_error(
+            args,
+            "usage",
             f"the document renamed the skill ({detail.name!r} → {fields.name!r}) — "
-            "names are immutable (rename = delete + create)"
+            "names are immutable (rename = delete + create)",
         )
         return 2
 
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            if detail.builtin:
-                api.create_skill(
-                    name=fields.name,
-                    description=fields.description,
-                    body=fields.body,
-                    model=fields.model,
-                    toolsets=list(fields.toolsets),
-                    max_tool_rounds=fields.max_tool_rounds,
-                )
-                render.info(
-                    f"Created your override of {fields.name!r} — it shadows the "
-                    "built-in on your account."
-                )
-            else:
-                api.update_skill(
-                    name=fields.name,
-                    description=fields.description,
-                    body=fields.body,
-                    model=fields.model,
-                    toolsets=list(fields.toolsets),
-                    max_tool_rounds=fields.max_tool_rounds,
-                )
-                render.info(f"Updated skill {fields.name!r}.")
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    return 0
+    def save(api: api_client.ApiClient) -> int:
+        if detail.builtin:
+            saved = api.create_skill(
+                name=fields.name,
+                description=fields.description,
+                body=fields.body,
+                model=fields.model,
+                toolsets=list(fields.toolsets),
+                max_tool_rounds=fields.max_tool_rounds,
+            )
+            said = (
+                f"Created your override of {fields.name!r} — it shadows the "
+                "built-in on your account."
+            )
+        else:
+            saved = api.update_skill(
+                name=fields.name,
+                description=fields.description,
+                body=fields.body,
+                model=fields.model,
+                toolsets=list(fields.toolsets),
+                max_tool_rounds=fields.max_tool_rounds,
+            )
+            said = f"Updated skill {fields.name!r}."
+        _emit(saved, args, lambda: render.info(said))
+        return 0
+
+    return _run_personal(args, save)
 
 
 def cmd_skills_delete(args: argparse.Namespace) -> int:
@@ -3269,19 +3466,17 @@ def cmd_skills_delete(args: argparse.Namespace) -> int:
         )
     ) is not None:
         return code
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            api.delete_skill(args.name)
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    render.info(f"Deleted skill {args.name!r}.")
-    return 0
+
+    def run(api: api_client.ApiClient) -> int:
+        api.delete_skill(args.name)
+        _emit(
+            _mutation_result(None, args.name),
+            args,
+            lambda: render.info(f"Deleted skill {args.name!r}."),
+        )
+        return 0
+
+    return _run_personal(args, run)
 
 
 def _fields_from_detail(detail: api_client.SkillDetail) -> skill_doc.SkillFields:
@@ -3466,6 +3661,20 @@ def _build_page_parent() -> argparse.ArgumentParser:
 _json_parent = _build_json_parent()
 _yes_parent = _build_yes_parent()
 _page_parent = _build_page_parent()
+
+
+def _build_before_parent() -> argparse.ArgumentParser:
+    """``--before CURSOR`` alone, for keyset lists that page backwards only (§5.3)."""
+    parent = argparse.ArgumentParser(add_help=False)
+    parent.add_argument(
+        "--before",
+        metavar="CURSOR",
+        help="Older than this cursor (a next_before value an earlier call printed).",
+    )
+    return parent
+
+
+_before_parent = _build_before_parent()
 
 
 def _room_parent(
@@ -3895,10 +4104,16 @@ def _report_room_error(exc: api_client.ApiError, args: argparse.Namespace | None
 
 def _with_api(
     run: Callable[[api_client.ApiClient], int],
-    report: Callable[[api_client.ApiError], int] = _report_room_error,
+    report: Callable[[api_client.ApiError, argparse.Namespace | None], int] = _report_room_error,
+    args: argparse.Namespace | None = None,
 ) -> int:
-    """Load credentials, open a client and map the errors every room command shares."""
-    creds = _load_or_error()
+    """Load credentials, open a client and map the errors every room command shares.
+
+    With ``args`` (a leaf that takes ``--json``) every failure goes through
+    :func:`_emit_error`, so JSON mode gets the J8 line; ``report`` is called as
+    ``report(exc, args)``.
+    """
+    creds = _load_or_error(args)
     if creds is None:
         return 1
     try:
@@ -3906,13 +4121,15 @@ def _with_api(
             return run(api)
     except _BadInputError:
         return 2
+    except _UnavailableError:
+        return 1
     except _GroupsDisabledError:
-        render.error("Groups is not enabled for your account.")
+        _emit_error(args, "forbidden", "Rooms are not enabled for your account.")
         return 1
     except api_client.ApiError as exc:
-        return report(exc)
+        return report(exc, args)
     except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
+        _emit_error(args, "network", f"Couldn't reach {creds.server_url}: {exc}")
         return 1
 
 
@@ -4604,6 +4821,99 @@ def cmd_apps_list(args: argparse.Namespace) -> int:
         return 0
 
     return _with_room_api(args, run)
+
+
+def _room_principal(api: api_client.ApiClient, args: argparse.Namespace) -> str | int | None:
+    """``--room`` resolved strictly to a room id, ``None`` when not given, else the exit code."""
+    if not args.room:
+        return None
+    return _resolve_room_strict(api, args, args.room)
+
+
+def _print_pretty_json(obj: object) -> None:
+    """Human view of an app's document or action result: indented JSON.
+
+    ``json.dumps`` escapes control characters, so server text cannot reach the terminal raw.
+    """
+    print(json.dumps(obj, indent=2, ensure_ascii=False, sort_keys=True))
+
+
+def cmd_apps_show(args: argparse.Namespace) -> int:
+    """``pepper apps show SLUG [--room R] [--json]``: the app's data document
+    (``GET /apps/{slug}/data``), yours or the room's. ``--json`` answers ``{"rev", "data"}``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        principal = _room_principal(api, args)
+        if isinstance(principal, int):
+            return principal
+        doc = api.get_app_data(args.slug, principal=principal)
+        _emit(doc, args, lambda: _print_pretty_json(doc))
+        return 0
+
+    return _run_personal(args, run)
+
+
+def _parse_params(args: argparse.Namespace) -> dict[str, str] | None:
+    """``--param k=v`` pairs as a dict of strings, else a usage error (``None``).
+
+    Values are always sent as strings: the CLI cannot know an action's parameter types, and
+    guessing (``"007"`` to an integer) would corrupt ids and codes.
+    """
+    params: dict[str, str] = {}
+    for raw in args.param or []:
+        key, sep, value = raw.partition("=")
+        if not sep or not key:
+            _emit_error(args, "usage", f"--param expects KEY=VALUE, got {raw!r}")
+            return None
+        if key in params:
+            _emit_error(args, "usage", f"--param {key!r} given twice")
+            return None
+        params[key] = value
+    return params
+
+
+def cmd_apps_run(args: argparse.Namespace) -> int:
+    """``pepper apps run SLUG [ACTION] [--room R] [--param k=v]... [--json]``.
+
+    With ACTION: ``POST /apps/{slug}/actions/{action}``, answering the server's
+    ``{"result": ...}``. With ``--room`` the action writes to the room's data, which a human
+    run says on stderr before sending.
+
+    Without ACTION: the actions the server will name for the app. ``GET /apps`` lists only an
+    app's ``owner_scoped_actions``, so the answer is partial and says so.
+    """
+    params = _parse_params(args)
+    if params is None:
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        if args.action is None:
+            summary = next((a for a in api.list_apps() if a.get("slug") == args.slug), None)
+            if summary is None:
+                _emit_error(args, "not_found", f"no app {args.slug!r}")
+                return 2
+            names = [str(n) for n in summary.get("owner_scoped_actions") or []]
+
+            def human() -> None:
+                for name in names:
+                    print(sanitize_line(name))
+                render.info(
+                    "(owner-scoped actions only: the server does not list the rest; "
+                    "name an action to run it)"
+                )
+
+            _emit({"slug": args.slug, "owner_scoped_actions": names}, args, human)
+            return 0
+        principal = _room_principal(api, args)
+        if isinstance(principal, int):
+            return principal
+        if principal is not None and not _json_mode(args):
+            render.info(f"Running {args.action!r} writes to the room's {args.slug!r} data.")
+        result = api.run_app_action(args.slug, args.action, params, principal=principal)
+        _emit(result, args, lambda: _print_pretty_json(result.get("result", result)))
+        return 0
+
+    return _run_personal(args, run)
 
 
 def cmd_apps_install(args: argparse.Namespace) -> int:
@@ -5468,7 +5778,9 @@ def _handle_of(
     return match["handle"]
 
 
-def _report_notes_api_error(exc: api_client.ApiError) -> int:
+def _report_notes_api_error(
+    exc: api_client.ApiError, args: argparse.Namespace | None = None
+) -> int:
     """Map an :class:`ApiError` from a notes/artifacts call to an exit code.
 
     Two statuses get specific wording
@@ -5485,16 +5797,20 @@ def _report_notes_api_error(exc: api_client.ApiError) -> int:
     Everything else (401 included) falls back to :func:`_report_api_error`.
     """
     if exc.status == 404:
-        render.error("no such room or note, or you are not a member")
+        _emit_error(args, "not_found", "no such room or note, or you are not a member", status=404)
         return 2
     if exc.status == 503:
-        render.error("membership check unavailable, try again")
+        _emit_error(args, "server", "membership check unavailable, try again", status=503)
         return 1
-    return _report_api_error(exc)
+    return _report_api_error(exc, args)
 
 
 def _resolve_note(
-    api: api_client.ApiClient, *, room_principal: str | None, value: str
+    api: api_client.ApiClient,
+    *,
+    room_principal: str | None,
+    value: str,
+    args: argparse.Namespace | None = None,
 ) -> str | None:
     """Resolve ``<note>`` to its id, scoped to ``room_principal`` (``None``
     for the caller's own notes).
@@ -5539,7 +5855,9 @@ def _resolve_note(
             limit=_NOTE_RESOLVE_LIMIT,
         )
     if result.truncated:
-        render.error(
+        _emit_error(
+            args,
+            "ambiguous",
             f"too many notes match {value!r} to resolve it by name; "
             "use the note's id (pepper notes search shows it)",
             soft_wrap=True,
@@ -5550,71 +5868,50 @@ def _resolve_note(
         return match.id
     if candidates:
         listing = ", ".join(f"{n.name!r} ({n.id})" for n in candidates)
-        render.error(f"{value!r} matches more than one note: {listing}", soft_wrap=True)
+        _emit_error(
+            args, "ambiguous", f"{value!r} matches more than one note: {listing}", soft_wrap=True
+        )
     else:
         where = "in that room" if room_principal else "of yours"
-        render.error(f"no note named {value!r} {where}")
+        _emit_error(args, "not_found", f"no note named {value!r} {where}")
     return None
+
+
+def _note_not_found(args: argparse.Namespace | None) -> None:
+    _emit_error(args, "not_found", "no such room or note, or you are not a member", status=404)
+
+
+def _notes_listing(args: argparse.Namespace, *, q: str | None = None) -> int:
+    """Shared body of ``notes list`` / ``notes search``: one J3 envelope, unpaged."""
+
+    def run(api: api_client.ApiClient) -> int:
+        room_principal = _opt_group(api, args.room, args=args)
+        result = api.list_artifacts(
+            principal=room_principal, kind=_NOTES_KIND, q=q, label=args.label
+        )
+        _emit_list(
+            result.items,
+            args,
+            lambda: render.render_note_list(result),
+            truncated=result.truncated,
+        )
+        return 0
+
+    return _with_api(run, _report_notes_api_error, args)
 
 
 def cmd_notes_list(args: argparse.Namespace) -> int:
     """``pepper notes list [--room ROOM] [--label LABEL] [--json]``."""
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            room_principal = _resolve_group(api, args.room) if args.room else None
-            if args.room and room_principal is None:
-                return 2
-            result = api.list_artifacts(
-                principal=room_principal, kind=_NOTES_KIND, label=args.label
-            )
-    except _GroupsDisabledError:
-        render.error("Groups is not enabled for your account.")
-        return 1
-    except api_client.ApiError as exc:
-        return _report_notes_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    if args.json:
-        _print_json(result)
-        return 0
-    render.render_note_list(result)
-    return 0
+    return _notes_listing(args)
 
 
 def cmd_notes_search(args: argparse.Namespace) -> int:
     """``pepper notes search QUERY [--room ROOM] [--label LABEL] [--json]``."""
     query = " ".join(args.query).strip()
     if not query:
-        render.error("search text cannot be empty")
+        _emit_error(args, "usage", "search text cannot be empty")
         return 2
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            room_principal = _resolve_group(api, args.room) if args.room else None
-            if args.room and room_principal is None:
-                return 2
-            result = api.list_artifacts(
-                principal=room_principal, kind=_NOTES_KIND, q=query, label=args.label
-            )
-    except _GroupsDisabledError:
-        render.error("Groups is not enabled for your account.")
-        return 1
-    except api_client.ApiError as exc:
-        return _report_notes_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    if args.json:
-        _print_json(result)
-        return 0
-    render.render_note_list(result)
-    return 0
+    return _notes_listing(args, q=query)
 
 
 def cmd_notes_show(args: argparse.Namespace) -> int:
@@ -5631,38 +5928,24 @@ def cmd_notes_show(args: argparse.Namespace) -> int:
     own docstring) — ``--room`` here only scopes *name* resolution to that
     room's notes; a bare UUID resolves the same regardless of ``--room``.
     """
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            room_principal = _resolve_group(api, args.room) if args.room else None
-            if args.room and room_principal is None:
-                return 2
-            note_id = _resolve_note(api, room_principal=room_principal, value=args.note)
-            if note_id is None:
-                return 2
-            detail = api.get_artifact_detail(note_id)
-            if detail.kind != _NOTES_KIND:
-                # A raw UUID that resolves to a real artifact of some other
-                # kind (an image, a link) is not a note as far as this
-                # surface is concerned — the same "doesn't exist for you"
-                # answer a 404 would give, not a confusing partial read.
-                render.error("no such room or note, or you are not a member")
-                return 2
-    except _GroupsDisabledError:
-        render.error("Groups is not enabled for your account.")
-        return 1
-    except api_client.ApiError as exc:
-        return _report_notes_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    if args.json:
-        _print_json(detail)
+
+    def run(api: api_client.ApiClient) -> int:
+        room_principal = _opt_group(api, args.room, args=args)
+        note_id = _resolve_note(api, room_principal=room_principal, value=args.note, args=args)
+        if note_id is None:
+            return 2
+        detail = api.get_artifact_detail(note_id)
+        if detail.kind != _NOTES_KIND:
+            # A raw UUID that resolves to a real artifact of some other
+            # kind (an image, a link) is not a note as far as this
+            # surface is concerned — the same "doesn't exist for you"
+            # answer a 404 would give, not a confusing partial read.
+            _note_not_found(args)
+            return 2
+        _emit(detail, args, lambda: render.render_markdown(detail.body or ""))
         return 0
-    render.render_markdown(detail.body or "")
-    return 0
+
+    return _with_api(run, _report_notes_api_error, args)
 
 
 def _stdin_is_tty() -> bool:
@@ -5672,7 +5955,7 @@ def _stdin_is_tty() -> bool:
     return sys.stdin.isatty()
 
 
-def _read_file_or_stdin(path: str) -> str | None:
+def _read_file_or_stdin(path: str, args: argparse.Namespace | None = None) -> str | None:
     """Read a note body from ``path``, or stdin when ``path`` is ``'-'``.
 
     Mirrors :func:`_read_attachment`'s "read local input before any network
@@ -5692,7 +5975,7 @@ def _read_file_or_stdin(path: str) -> str | None:
             return sys.stdin.read()
         return Path(path).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        render.error(f"couldn't read {label}: {exc}")
+        _emit_error(args, "usage", f"couldn't read {label}: {exc}")
         return None
 
 
@@ -5801,57 +6084,76 @@ def _print_note_diff(current_body: str, mine: str) -> None:
     sys.stderr.writelines(make_visible(line) for line in diff)
 
 
+def _notes_editor_refused(args: argparse.Namespace) -> bool:
+    """True (after the J8 usage error) when JSON mode would need to open ``$EDITOR`` (J2)."""
+    if _json_mode(args):
+        _emit_error(args, "usage", "JSON mode does not open an editor; pass --file PATH (or -)")
+        return True
+    return False
+
+
 def cmd_notes_create(args: argparse.Namespace) -> int:
-    """``pepper notes create <name> [--room ROOM] [--file PATH|-]``.
+    """``pepper notes create <name> [--room ROOM] [--file PATH|-] [--json]``.
 
     Body comes from ``$EDITOR`` by default, or from ``--file`` (a path, or
     ``-`` for stdin) read up front, before any network call — same shape as
     ``messages post --attach``. ``--room`` is resolved before the editor
-    opens, so a bad room name fails before the user writes anything.
+    opens, so a bad room name fails before the user writes anything. Under
+    ``--json`` there is no editor (J2): without ``--file`` it is a usage
+    error. ``--json`` answers the created note.
 
     Exit codes: 0 ok · 1 auth/API/transport/membership-seam-down · 2 bad
     input (empty body, aborted editor, unreadable ``--file``).
     """
     file_body: str | None = None
     if args.file is not None:
-        file_body = _read_file_or_stdin(args.file)
+        file_body = _read_file_or_stdin(args.file, args)
         if file_body is None:
             return 2
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            room_principal = _resolve_group(api, args.room) if args.room else None
-            if args.room and room_principal is None:
+    elif _notes_editor_refused(args):
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        room_principal = _opt_group(api, args.room, args=args)
+        if file_body is not None:
+            body = file_body
+        else:
+            edited = _open_in_editor("")
+            if edited is None:
                 return 2
-            if file_body is not None:
-                body = file_body
-            else:
-                edited = _open_in_editor("")
-                if edited is None:
-                    return 2
-                body = edited
-            if not body.strip():
-                render.error("note body is empty — aborting")
-                return 2
-            result = api.create_artifact(name=args.name, body=body, principal=room_principal)
-    except _GroupsDisabledError:
-        render.error("Groups is not enabled for your account.")
-        return 1
-    except api_client.ApiError as exc:
-        return _report_notes_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    render.info(f"Created {result.name!r}.")
-    print(sanitize_line(result.id))
-    return 0
+            body = edited
+        if not body.strip():
+            _emit_error(args, "usage", "note body is empty — aborting")
+            return 2
+        result = api.create_artifact(name=args.name, body=body, principal=room_principal)
+
+        def human() -> None:
+            render.info(f"Created {result.name!r}.")
+            print(sanitize_line(result.id))
+
+        _emit(result, args, human)
+        return 0
+
+    return _with_api(run, _report_notes_api_error, args)
+
+
+def _edit_conflict_json(
+    args: argparse.Namespace, name: str, etag: str | None, text: str | None
+) -> int:
+    """JSON-mode answer to a stale ``If-Match``: one J8 ``conflict`` line, exit 1.
+
+    No diff and no prompt (J2); the user's text is still saved beside the cwd and the
+    path named, so a script can recover it.
+    """
+    saved = _save_conflict_copy(name, etag, text) if text is not None else None
+    suffix = f" — your text is saved at {saved}" if saved else ""
+    _emit_error(args, "conflict", f"that note has changed since you read it{suffix}", status=412)
+    return 1
 
 
 def cmd_notes_edit(args: argparse.Namespace) -> int:
     """``pepper notes edit <note> [--room ROOM] [--file PATH|-] [--name NAME]
-    [--if-match ETAG | --force]``.
+    [--if-match ETAG | --force] [--json]``.
 
     Fetches the note's current detail first: it seeds ``$EDITOR`` with the
     current body (skipped when ``--file``/stdin supplies one directly) and
@@ -5875,137 +6177,135 @@ def cmd_notes_edit(args: argparse.Namespace) -> int:
     so its conflict offers only ``[o]verwrite`` (resend the rename alone,
     never the body) or ``[q]uit``.
 
+    Under ``--json`` there is no editor and no prompt (J2): without
+    ``--file`` it is a usage error, a conflict is one J8 ``conflict`` line
+    (exit 1), and success answers the updated note — or, when nothing
+    changed, the note as it stands.
+
     Exit codes: 0 ok · 1 auth/API/transport/membership-seam-down/conflict
     left unresolved · 2 bad input (no such note, empty body, aborted
     editor, unreadable ``--file``).
     """
     file_body: str | None = None
     if args.file is not None:
-        file_body = _read_file_or_stdin(args.file)
+        file_body = _read_file_or_stdin(args.file, args)
         if file_body is None:
             return 2
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    updated: api_client.ArtifactDetail | None = None
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            room_principal = _resolve_group(api, args.room) if args.room else None
-            if args.room and room_principal is None:
-                return 2
-            note_id = _resolve_note(api, room_principal=room_principal, value=args.note)
-            if note_id is None:
-                return 2
-            current = api.get_artifact_detail(note_id)
-            if current.kind != _NOTES_KIND:
-                render.error("no such room or note, or you are not a member")
-                return 2
+    elif _notes_editor_refused(args):
+        return 2
 
-            if file_body is not None:
-                new_body = file_body
-            else:
-                edited = _open_in_editor(current.body or "")
-                if edited is None:
-                    return 2
-                new_body = edited
+    def run(api: api_client.ApiClient) -> int:
+        room_principal = _opt_group(api, args.room, args=args)
+        note_id = _resolve_note(api, room_principal=room_principal, value=args.note, args=args)
+        if note_id is None:
+            return 2
+        current = api.get_artifact_detail(note_id)
+        if current.kind != _NOTES_KIND:
+            _note_not_found(args)
+            return 2
 
-            # The trailing-newline tolerance is for editors that append one
-            # on save; ``--file``/stdin is byte-exact (the ``show > f.md``
-            # round trip), so a one-newline change there is a real change.
-            if file_body is not None:
-                unchanged = new_body == (current.body or "")
-            else:
-                unchanged = _texts_match(current.body or "", new_body)
-            rename = args.name if args.name and args.name != current.name else None
-            if unchanged and rename is None:
-                render.info("Nothing to change.")
-                return 0
-            body_to_send = None if unchanged else new_body
-            if body_to_send is not None and not body_to_send.strip():
-                render.error("note body is empty — aborting")
+        if file_body is not None:
+            new_body = file_body
+        else:
+            edited = _open_in_editor(current.body or "")
+            if edited is None:
                 return 2
-            if args.force:
-                if_match: str | None = None
-            elif args.if_match:
-                if_match = args.if_match
-            else:
-                if_match = current.etag
+            new_body = edited
 
-            while True:
-                try:
-                    updated = api.edit_artifact(
-                        note_id,
-                        name=rename,
-                        body=body_to_send,
-                        principal=room_principal,
-                        if_match=if_match,
-                    )
-                except api_client.ArtifactConflictError as exc:
-                    if body_to_send is None:
-                        # Rename only: the user wrote no text, so there is
-                        # nothing to save or diff, and nothing to re-open —
-                        # overwriting resends the rename alone and leaves
-                        # the other writer's body as it is.
-                        render.error("that note has changed since you read it")
-                        if not _stdin_is_tty():
-                            return 1
-                        choice = _prompt("[o]verwrite the name, or [q]uit? ").lower()
-                        if choice in ("o", "overwrite"):
-                            if_match = exc.current_etag
-                            continue
-                        render.info("Aborted.")
-                        return 1
-                    saved_path = _save_conflict_copy(current.name, exc.current_etag, new_body)
-                    _print_note_diff(exc.current_body or "", new_body)
-                    if saved_path is not None:
-                        render.error(
-                            f"that note has changed — your text is saved at {saved_path}",
-                            soft_wrap=True,
-                        )
-                    else:
-                        render.error("that note has changed — your text is in the diff above")
+        # The trailing-newline tolerance is for editors that append one
+        # on save; ``--file``/stdin is byte-exact (the ``show > f.md``
+        # round trip), so a one-newline change there is a real change.
+        if file_body is not None:
+            unchanged = new_body == (current.body or "")
+        else:
+            unchanged = _texts_match(current.body or "", new_body)
+        rename = args.name if args.name and args.name != current.name else None
+        if unchanged and rename is None:
+            _emit(current, args, lambda: render.info("Nothing to change."))
+            return 0
+        body_to_send = None if unchanged else new_body
+        if body_to_send is not None and not body_to_send.strip():
+            _emit_error(args, "usage", "note body is empty — aborting")
+            return 2
+        if args.force:
+            if_match: str | None = None
+        elif args.if_match:
+            if_match = args.if_match
+        else:
+            if_match = current.etag
+
+        while True:
+            try:
+                updated = api.edit_artifact(
+                    note_id,
+                    name=rename,
+                    body=body_to_send,
+                    principal=room_principal,
+                    if_match=if_match,
+                )
+            except api_client.ArtifactConflictError as exc:
+                if _json_mode(args):
+                    return _edit_conflict_json(args, current.name, exc.current_etag, body_to_send)
+                if body_to_send is None:
+                    # Rename only: the user wrote no text, so there is
+                    # nothing to save or diff, and nothing to re-open —
+                    # overwriting resends the rename alone and leaves
+                    # the other writer's body as it is.
+                    render.error("that note has changed since you read it")
                     if not _stdin_is_tty():
                         return 1
-                    choice = _prompt("[r]e-open the editor, [o]verwrite, or [q]uit? ").lower()
+                    choice = _prompt("[o]verwrite the name, or [q]uit? ").lower()
                     if choice in ("o", "overwrite"):
-                        if_match = exc.current_etag
-                        continue
-                    if choice in ("r", "reopen", "re-open"):
-                        reopened = _open_in_editor(new_body)
-                        if reopened is None:
-                            return 2
-                        if not reopened.strip():
-                            render.error("note body is empty — aborting")
-                            return 2
-                        new_body = reopened
-                        body_to_send = new_body
                         if_match = exc.current_etag
                         continue
                     render.info("Aborted.")
                     return 1
+                saved_path = _save_conflict_copy(current.name, exc.current_etag, new_body)
+                _print_note_diff(exc.current_body or "", new_body)
+                if saved_path is not None:
+                    render.error(
+                        f"that note has changed — your text is saved at {saved_path}",
+                        soft_wrap=True,
+                    )
                 else:
-                    break
-    except _GroupsDisabledError:
-        render.error("Groups is not enabled for your account.")
-        return 1
-    except api_client.ApiError as exc:
-        return _report_notes_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    assert updated is not None  # every non-return exit from the loop sets it
-    render.info(f"Updated {updated.name!r}.")
-    return 0
+                    render.error("that note has changed — your text is in the diff above")
+                if not _stdin_is_tty():
+                    return 1
+                choice = _prompt("[r]e-open the editor, [o]verwrite, or [q]uit? ").lower()
+                if choice in ("o", "overwrite"):
+                    if_match = exc.current_etag
+                    continue
+                if choice in ("r", "reopen", "re-open"):
+                    reopened = _open_in_editor(new_body)
+                    if reopened is None:
+                        return 2
+                    if not reopened.strip():
+                        render.error("note body is empty — aborting")
+                        return 2
+                    new_body = reopened
+                    body_to_send = new_body
+                    if_match = exc.current_etag
+                    continue
+                render.info("Aborted.")
+                return 1
+            else:
+                break
+        _emit(updated, args, lambda: render.info(f"Updated {updated.name!r}."))
+        return 0
+
+    return _with_api(run, _report_notes_api_error, args)
 
 
 def cmd_notes_delete(args: argparse.Namespace) -> int:
-    """``pepper notes delete <note> [--room ROOM] [--yes]``.
+    """``pepper notes delete <note> [--room ROOM] [--yes] [--json]``.
 
-    Confirms before deleting unless ``--yes``. The delete itself
+    Confirms before deleting unless ``--yes`` (JSON mode never prompts, so it
+    needs ``--yes``). The delete itself
     (``POST /api/v1/apps/notes/actions/delete``) is a soft delete — any
     room member may delete a room note — recorded with the acting
     user; there is no ``pepper notes restore`` yet, so this is the
-    only undo there is until the retention window closes.
+    only undo there is until the retention window closes. ``--json``
+    answers ``{"ok": true, "id": ...}``.
 
     Reads the detail first, for the same kind check ``show``/``edit`` make:
     the delete action itself deletes any artifact kind, so a raw UUID of an
@@ -6020,44 +6320,37 @@ def cmd_notes_delete(args: argparse.Namespace) -> int:
     Exit codes: 0 ok · 1 auth/API/transport/membership-seam-down · 2 bad
     input (no such note, or not a note).
     """
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            room_principal = _resolve_group(api, args.room) if args.room else None
-            if args.room and room_principal is None:
-                return 2
-            note_id = _resolve_note(api, room_principal=room_principal, value=args.note)
-            if note_id is None:
-                return 2
-            detail = api.get_artifact_detail(note_id)
-            if detail.kind != _NOTES_KIND:
-                render.error("no such room or note, or you are not a member")
-                return 2
-            if (
-                code := _confirm_destructive(
-                    args, f"Delete {detail.name!r}? This cannot be undone.", yes=args.yes
-                )
-            ) is not None:
-                return code
-            try:
-                name = api.delete_artifact(note_id, principal=room_principal)
-            except api_client.ApiError as exc:
-                if exc.status != 422:
-                    raise
-                render.error("no such room or note, or you are not a member")
-                return 2
-    except _GroupsDisabledError:
-        render.error("Groups is not enabled for your account.")
-        return 1
-    except api_client.ApiError as exc:
-        return _report_notes_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    render.info(f"Deleted {name!r}.")
-    return 0
+
+    def run(api: api_client.ApiClient) -> int:
+        room_principal = _opt_group(api, args.room, args=args)
+        note_id = _resolve_note(api, room_principal=room_principal, value=args.note, args=args)
+        if note_id is None:
+            return 2
+        detail = api.get_artifact_detail(note_id)
+        if detail.kind != _NOTES_KIND:
+            _note_not_found(args)
+            return 2
+        if (
+            code := _confirm_destructive(
+                args, f"Delete {detail.name!r}? This cannot be undone.", yes=args.yes
+            )
+        ) is not None:
+            return code
+        try:
+            name = api.delete_artifact(note_id, principal=room_principal)
+        except api_client.ApiError as exc:
+            if exc.status != 422:
+                raise
+            _note_not_found(args)
+            return 2
+        _emit(
+            _mutation_result(None, note_id),
+            args,
+            lambda: render.info(f"Deleted {name!r}."),
+        )
+        return 0
+
+    return _with_api(run, _report_notes_api_error, args)
 
 
 def cmd_takeout(args: argparse.Namespace) -> int:
@@ -6070,19 +6363,17 @@ def cmd_takeout(args: argparse.Namespace) -> int:
     memory. Open to every account; it only ever exports the token's own
     user.
     """
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            out_path = api.download_takeout(out_path=args.out)
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    render.info(f"Wrote takeout archive to {out_path}")
-    return 0
+
+    def run(api: api_client.ApiClient) -> int:
+        out_path = api.download_takeout(out_path=args.out)
+        _emit(
+            {"path": str(out_path), "bytes": os.path.getsize(out_path)},
+            args,
+            lambda: render.info(f"Wrote takeout archive to {out_path}"),
+        )
+        return 0
+
+    return _run_personal(args, run)
 
 
 def cmd_agents_guide(args: argparse.Namespace) -> int:
@@ -6124,12 +6415,14 @@ def cmd_agents_guide(args: argparse.Namespace) -> int:
 
 
 def cmd_logout(args: argparse.Namespace) -> int:
-    del args
     path = credentials.credentials_path()
-    if credentials.delete():
-        render.info(f"Removed credentials at {path}.")
-    else:
-        render.info(f"No credentials at {path} — nothing to remove.")
+    removed = credentials.delete()
+    message = (
+        f"Removed credentials at {path}."
+        if removed
+        else f"No credentials at {path} — nothing to remove."
+    )
+    _emit({"ok": True}, args, lambda: render.info(message))
     return 0
 
 

@@ -99,11 +99,11 @@ class _FakeTaskApi:
         self.calls.append(("show", task_id))
         return self._result("task_detail")
 
-    def list_scheduled_task_runs(self, task_id, *, limit=20):
+    def list_scheduled_task_runs(self, task_id, *, limit=20, before=None, before_id=None):
         self.calls.append(("runs", task_id, limit))
         return self._result("task_runs")
 
-    def get_scheduled_task_thread(self, task_id, *, limit=20):
+    def get_scheduled_task_thread(self, task_id, *, limit=20, before=None, before_id=None):
         self.calls.append(("thread", task_id, limit))
         return self._result("task_thread")
 

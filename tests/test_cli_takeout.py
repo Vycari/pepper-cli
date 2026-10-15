@@ -48,6 +48,7 @@ class _FakeTakeoutApi:
             raise result
         if result is None:
             raise AssertionError("test forgot to set result")
+        Path(result).write_bytes(b"zip")
         return result
 
 
@@ -70,7 +71,7 @@ def _login(tmp_home: Path) -> None:
 
 def test_takeout_writes_to_disk_and_reports_path(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
-    patch_api(result="pepper-takeout-alice-20260721T000000Z.zip")
+    patch_api(result=str(tmp_home / "pepper-takeout-alice-20260721T000000Z.zip"))
     rc = cli.main(["takeout"])
     assert rc == 0
     assert _FakeTakeoutApi.instances[-1].calls == [("download_takeout", None)]
@@ -79,7 +80,7 @@ def test_takeout_writes_to_disk_and_reports_path(tmp_home, patch_api, capsys) ->
 
 def test_takeout_passes_out_flag(tmp_home, patch_api) -> None:
     _login(tmp_home)
-    patch_api(result="mine.zip")
+    patch_api(result=str(tmp_home / "mine.zip"))
     rc = cli.main(["takeout", "--out", "mine.zip"])
     assert rc == 0
     assert _FakeTakeoutApi.instances[-1].calls == [("download_takeout", "mine.zip")]

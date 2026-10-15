@@ -175,7 +175,9 @@ def test_todos_list_json_dumps_rows(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(todo_list=[_todo(title="Buy milk")])
     assert cli.main(["todos", "list", "--json"]) == 0
-    assert json.loads(capsys.readouterr().out)[0]["title"] == "Buy milk"
+    out = json.loads(capsys.readouterr().out)
+    assert out["items"][0]["title"] == "Buy milk"
+    assert out["next_before"] is None
 
 
 def test_todos_list_passes_status_flag(tmp_home, patch_api) -> None:

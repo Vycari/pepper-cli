@@ -86,6 +86,26 @@ _PAYLOAD = {
 }
 
 
+_ROOM = "11111111-1111-4111-8111-111111111111"
+
+
+def test_calendar_range_and_planning_send_the_room_principal() -> None:
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json=_PAYLOAD)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with api_client.ApiClient(server_url="http://x", token=SecretStr("t"), client=client) as api:
+        api.calendar_range(start="2026-10-02", days=1, principal=_ROOM)
+        api.calendar_planning(start="2026-10-02", days=1, principal=_ROOM)
+    assert seen == [
+        f"http://x/api/v1/calendars/range?start=2026-10-02&days=1&principal={_ROOM}",
+        f"http://x/api/v1/calendars/planning?start=2026-10-02&days=1&principal={_ROOM}",
+    ]
+
+
 def test_calendar_range_sends_start_and_days() -> None:
     seen = {}
 
@@ -120,8 +140,14 @@ def fake_api(monkeypatch, tmp_path):
         def whoami(self):
             return SimpleNamespace(timezone="Asia/Tokyo")
 
-        def calendar_range(self, *, start, days):
+        def list_groups(self, *, archived=False):
+            groups = [] if archived else [SimpleNamespace(group_id=_ROOM, display_name="Family")]
+            return SimpleNamespace(enabled=True, degraded=False, groups=groups)
+
+        def calendar_range(self, *, start, days, principal=None):
             calls.append((start, days))
+            if principal is not None:
+                calls.append(("principal", principal))
             return copy.deepcopy(_PAYLOAD)
 
         def calendar_environment(self, *, dates, focus):
@@ -143,8 +169,8 @@ def fake_api(monkeypatch, tmp_path):
                 raise api_client.ApiError(status=404, body="", detail="nf")
             return plan[0]
 
-        def calendar_planning(self, *, start, days):
-            calls.append(("planning", start, days))
+        def calendar_planning(self, *, start, days, principal=None):
+            calls.append(("planning", start, days, principal))
             return {"cards": [{"kind": "setup", "title": "Add a home address"}], "acted_on": []}
 
     monkeypatch.setattr(api_client, "ApiClient", Fake)
@@ -259,3 +285,29 @@ def test_calendar_schedule_merges_proposed_blocks_and_degrades_on_404(fake_api, 
     out = capsys.readouterr().out
     assert "Draft budget  (proposed todo block - Due today.)" in out
     assert "Held" not in out
+
+
+def test_calendar_room_resolves_strictly_and_scopes_both_reads(fake_api, capsys) -> None:
+    argv = ["calendar", "--planning", "--room", "fam", "--start", "2026-10-02", "--json"]
+    assert cli.main(argv) == 0
+    assert fake_api.calls == [
+        ("2026-10-02", 1),
+        ("principal", _ROOM),
+        ("planning", "2026-10-02", 1, _ROOM),
+    ]
+    out = json.loads(capsys.readouterr().out)
+    # A room view carries none of the caller's own weather or drive layers.
+    assert "environment" not in out["range"]
+
+
+def test_calendar_unknown_room_is_a_json_error(fake_api, capsys) -> None:
+    assert cli.main(["calendar", "--room", "nope", "--json"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err)["error"]["code"] == "not_found"
+    assert fake_api.calls == []
+
+
+def test_calendar_room_rejects_the_schedule_view(fake_api, capsys) -> None:
+    assert cli.main(["calendar", "schedule", "--room", "fam", "--json"]) == 2
+    assert json.loads(capsys.readouterr().err)["error"]["code"] == "usage"

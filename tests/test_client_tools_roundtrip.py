@@ -224,7 +224,7 @@ def test_cmd_chat_without_a_root_streams_without_local_tools(monkeypatch, capsys
     monkeypatch.setattr(
         cli,
         "_load_or_error",
-        lambda: credentials.Credentials(server_url="http://test", token=SecretStr("t")),
+        lambda *_: credentials.Credentials(server_url="http://test", token=SecretStr("t")),
     )
     monkeypatch.setattr(cli.api_client, "ApiClient", lambda **kw: _Api())
     args = cli._build_parser()[0].parse_args(["chat", "hello"])
@@ -257,7 +257,7 @@ def test_cmd_chat_requires_terminal_reply(monkeypatch, capsys, events, expected)
     monkeypatch.setattr(
         cli,
         "_load_or_error",
-        lambda: credentials.Credentials(server_url="http://test", token=SecretStr("t")),
+        lambda *_: credentials.Credentials(server_url="http://test", token=SecretStr("t")),
     )
     monkeypatch.setattr(cli.api_client, "ApiClient", lambda **kw: _Api())
     args = cli._build_parser()[0].parse_args(["chat", "hello"])
@@ -280,13 +280,13 @@ def test_cmd_chat_with_a_root_streams_instead(monkeypatch, notes: Path) -> None:
     monkeypatch.setattr(
         cli,
         "_load_or_error",
-        lambda: credentials.Credentials(server_url="http://test", token=SecretStr("t")),
+        lambda *_: credentials.Credentials(server_url="http://test", token=SecretStr("t")),
     )
     monkeypatch.setattr(cli.api_client, "ApiClient", lambda **kw: _Api())
     monkeypatch.setattr(
         cli,
         "_stream_one_turn",
-        lambda api, message, *, provider, trace: streamed.append((message, trace)) or True,
+        lambda api, message, *, provider, trace, json_args=None: streamed.append((message, trace)) or True,
     )
     args = cli._build_parser()[0].parse_args(["chat", "--root", str(notes), "hello"])
     assert cli.cmd_chat(args) == 0
@@ -297,7 +297,7 @@ def test_a_bad_root_fails_before_any_request(monkeypatch, tmp_path: Path) -> Non
     monkeypatch.setattr(
         cli,
         "_load_or_error",
-        lambda: credentials.Credentials(server_url="http://test", token=SecretStr("t")),
+        lambda *_: credentials.Credentials(server_url="http://test", token=SecretStr("t")),
     )
     args = cli._build_parser()[0].parse_args(["chat", "--root", str(tmp_path / "nope"), "hello"])
     assert cli.cmd_chat(args) == 2
