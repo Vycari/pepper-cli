@@ -3612,6 +3612,10 @@ class _BadInputError(Exception):
     """A name that didn't resolve (already reported); the command exits 2."""
 
 
+class _UnavailableError(Exception):
+    """The server said it couldn't ask (already reported); the command exits 1."""
+
+
 def _need_group(
     api: api_client.ApiClient, value: str, *, args: argparse.Namespace | None = None
 ) -> str:
@@ -3693,6 +3697,8 @@ def _with_room_api(args: argparse.Namespace, run: Callable[[api_client.ApiClient
             return run(api)
     except _BadInputError:
         return 2
+    except _UnavailableError:
+        return 1
     except _GroupsDisabledError:
         _emit_error(args, "forbidden", "Rooms are not enabled for your account.")
         return 1
@@ -4295,7 +4301,14 @@ def cmd_sharing_edit(args: argparse.Namespace) -> int:
 
     Changes the named calendars and re-sends the rest as they are, because the
     server replaces the whole record. ``LEVEL`` ``default`` drops the explicit choice.
+    Each ``--set`` must name a calendar before its ``=``: an empty name would be a
+    prefix of every calendar, so ``--set busy`` with one calendar would change it.
     """
+    for item in args.set:
+        name, sep, level = item.rpartition("=")
+        if not sep or not name.strip() or not level:
+            _emit_error(args, "usage", f"--set takes CALENDAR=LEVEL, got {item!r}")
+            return 2
 
     def run(api: api_client.ApiClient) -> int:
         gid = _need_group(api, args.room, args=args)
@@ -4333,7 +4346,9 @@ def cmd_apps_list(args: argparse.Namespace) -> int:
     def run(api: api_client.ApiClient) -> int:
         gid = _need_group(api, args.room, args=args)
         tiles, unavailable = api.group_app_launcher(gid)
-        catalog = (api.get_group(gid).get("apps") or {}).get("catalog") or []
+        apps = api.get_group(gid).get("apps") or {}
+        catalog = apps.get("catalog") or []
+        catalog_unavailable = bool(apps.get("catalog_unavailable"))
 
         def human() -> None:
             for t in tiles:
@@ -4342,11 +4357,20 @@ def cmd_apps_list(args: argparse.Namespace) -> int:
                 render.info("(installed apps unavailable right now)")
             elif not tiles:
                 print("(no apps installed)")
-            if catalog:
+            if catalog_unavailable:
+                render.info("(installable apps unavailable right now)")
+            elif catalog:
                 keys = ", ".join(sanitize_line(a["app_key"]) for a in catalog)
                 render.info("installable: " + keys)
 
-        _emit_list(tiles, args, human, installed_unavailable=unavailable, catalog=catalog)
+        _emit_list(
+            tiles,
+            args,
+            human,
+            installed_unavailable=unavailable,
+            catalog=catalog,
+            catalog_unavailable=catalog_unavailable,
+        )
         return 0
 
     return _with_room_api(args, run)
@@ -4365,7 +4389,12 @@ def cmd_apps_uninstall(args: argparse.Namespace) -> int:
     """``pepper apps uninstall --room R APP [--yes]`` (``APP``: key, title or install id)."""
 
     def call(api: api_client.ApiClient, g: str) -> tuple[object, str]:
-        installed = (api.get_group(g).get("apps") or {}).get("installed") or []
+        apps = api.get_group(g).get("apps") or {}
+        if apps.get("unavailable"):
+            # Couldn't ask is not "not installed": a retry may find it.
+            _emit_error(args, "server", "installed apps unavailable right now, try again")
+            raise _UnavailableError
+        installed = apps.get("installed") or []
         want = args.app.lower()
         hits = [a for a in installed if want in (a["install_id"], a["app_key"], a["title"].lower())]
         if len(hits) != 1:

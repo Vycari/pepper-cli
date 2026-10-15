@@ -206,7 +206,7 @@ Commands that take `--json` also switch to JSON output when the environment vari
 | `pepper members edit --room ROOM PERSON --role owner\|member [--yes]` | Change a member's role. |
 | `pepper sharing show --room ROOM [--json]` | Show which calendars the room sees and at what level. |
 | `pepper sharing edit --room ROOM --set CALENDAR=LEVEL …` | Change calendar sharing (`LEVEL` `default` drops the explicit choice). |
-| `pepper apps list --room ROOM [--json]` | List the room's installed apps and the apps you can install. |
+| `pepper apps list --room ROOM [--json]` | List the room's installed apps and the apps you can install. `--json` adds `catalog`, `installed_unavailable` and `catalog_unavailable` (true when the server couldn't ask, which is not an empty list). |
 | `pepper apps install --room ROOM APP_KEY` | Install an app in the room. |
 | `pepper apps uninstall --room ROOM APP [--yes]` | Uninstall an app (`APP` is an install id, app key or title). |
 | `pepper groups` | Retired: exits 2 and names the commands above. |

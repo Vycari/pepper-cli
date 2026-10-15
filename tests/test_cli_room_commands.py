@@ -400,6 +400,40 @@ def test_sharing_edit_rejects_an_unknown_calendar_or_level(api, capsys, item) ->
     assert not any(call[0] == "set_group_sharing" for call in api.calls)
 
 
+@pytest.mark.parametrize("item", ["busy", "=busy", " =busy", "Work="])
+def test_sharing_edit_needs_a_calendar_and_a_level_in_each_set(api, capsys, item) -> None:
+    api.canned["get_group_sharing"] = {
+        **_SHARING,
+        "available_calendars": [{"calendar_id": "c1", "summary": "Work"}],
+    }
+    assert cli.main(["sharing", "edit", "--room", "Trip", "--set", item, "--json"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err)["error"]["code"] == "usage"
+    assert api.calls == []
+
+
+def test_apps_list_says_when_the_catalog_could_not_be_loaded(api, capsys) -> None:
+    api.canned["group_app_launcher"] = ([], False)
+    api.canned["get_group"] = {"apps": {"catalog": [], "catalog_unavailable": True}}
+    assert cli.main(["apps", "list", "--room", "Trip", "--json"]) == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["catalog"] == []
+    assert body["catalog_unavailable"] is True
+    assert cli.main(["apps", "list", "--room", "Trip"]) == 0
+    assert "installable apps unavailable right now" in capsys.readouterr().err
+
+
+def test_apps_uninstall_reports_an_outage_not_absence(api, capsys) -> None:
+    api.canned["get_group"] = {"apps": {"installed": [], "unavailable": True}}
+    argv = ["apps", "uninstall", "--room", "Trip", "notes", "--yes", "--json"]
+    assert cli.main(argv) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err)["error"]["code"] == "server"
+    assert not any(call[0] == "uninstall_group_app" for call in api.calls)
+
+
 def test_apps_list_json_is_the_envelope_with_the_catalog(api, capsys) -> None:
     api.canned["group_app_launcher"] = (
         [api_client.GroupAppTile("notes", "notes", "Notes", GID)],
@@ -412,6 +446,7 @@ def test_apps_list_json_is_the_envelope_with_the_catalog(api, capsys) -> None:
     assert body["next_before"] is None
     assert body["installed_unavailable"] is False
     assert body["catalog"] == [{"app_key": "shopping"}]
+    assert body["catalog_unavailable"] is False
 
 
 def test_apps_list_text_says_when_nothing_is_installed(api, capsys) -> None:
