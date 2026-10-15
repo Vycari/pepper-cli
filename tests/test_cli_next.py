@@ -138,9 +138,9 @@ def test_due_soon_window_is_48_elapsed_hours_across_dst() -> None:
     assert not next_view._in_window(None, "2026-11-02T11:30:00-05:00", now)
 
 
-def test_room_narrows_by_case_insensitive_prefix(server, capsys) -> None:
+def test_source_narrows_by_case_insensitive_prefix(server, capsys) -> None:
     _mock_plan(server, _plan([_block("B", "Pepper Design", 10, 40), _block("A", "Home", 40, 70)]))
-    data = json.loads(_run(capsys, "--json", "--room", "pepper"))
+    data = json.loads(_run(capsys, "--json", "--source", "pepper"))
     assert [i["title"] for i in data["do_next"]["items"]] == ["B"]
     assert data["due_soon"] == [] and data["later"]["count"] == 0
 
@@ -229,3 +229,60 @@ def test_room_items_carry_their_room_id_and_room_accepts_it(server, capsys) -> N
     data = json.loads(_run(capsys, "--json", "--room", gid))
     assert [(i["title"], i["principal"]) for i in data["do_next"]["items"]] == [("B", gid)]
     assert f"room {gid}" in _run(capsys)
+
+
+def _rooms(server, *names: str) -> dict[str, str]:
+    ids = {n: f"00000000-0000-0000-0000-{i:012d}" for i, n in enumerate(names, start=1)}
+    rows = [
+        {
+            "group_id": gid,
+            "display_name": n,
+            "color": "#000",
+            "sub": "",
+            "member_count": 2,
+            "archived": False,
+        }
+        for n, gid in ids.items()
+    ]
+    server.add(
+        "/api/v1/groups",
+        {
+            "enabled": True,
+            "degraded": False,
+            "total": len(rows),
+            "archived_total": 0,
+            "groups": rows,
+        },
+    )
+    return ids
+
+
+def test_room_resolves_a_name_to_its_id(server, capsys) -> None:
+    ids = _rooms(server, "Trip", "Home")
+    room = {**_block("B", "Trip", 10, 40), "principal": ids["Trip"]}
+    other = {**_block("A", "Home", 40, 70), "principal": ids["Home"]}
+    _mock_plan(server, _plan([room, other]))
+    data = json.loads(_run(capsys, "--json", "--room", "trip"))
+    assert [i["title"] for i in data["do_next"]["items"]] == ["B"]
+
+
+def test_room_that_matches_nothing_is_exit_2_not_an_empty_list(server, capsys) -> None:
+    _rooms(server, "Trip")
+    assert cli.main(["next", "--room", "nope"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and "no room named 'nope'" in captured.err
+
+
+def test_room_that_matches_two_rooms_is_ambiguous(server, capsys) -> None:
+    _rooms(server, "Trip A", "Trip B")
+    assert cli.main(["next", "--json", "--room", "trip"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    err = json.loads(captured.err)["error"]
+    assert err["code"] == "ambiguous" and "Trip A" in err["message"]
+
+
+def test_room_miss_under_json_is_a_j8_not_found(server, capsys) -> None:
+    _rooms(server, "Trip")
+    assert cli.main(["next", "--json", "--room", "zzz"]) == 2
+    assert json.loads(capsys.readouterr().err)["error"]["code"] == "not_found"

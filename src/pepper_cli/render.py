@@ -311,7 +311,7 @@ def render_tool_result(payload: dict[str, Any]) -> None:
         _stderr.print(f"{glyph} [bold]{name}[/bold] ({_s(status)})")
 
 
-#: Per-event payload preview budget for ``pepper trajectory show``.
+#: Per-event payload preview budget for ``pepper trajectories show``.
 #: Part of the rendered shape below, so changing it changes what
 #: parsers of that output see.
 _TRAJECTORY_EVENT_PREVIEW_CHARS = 300
@@ -331,7 +331,7 @@ def render_trajectory(detail: TrajectoryDetail) -> None:
         [seq] event_type: <payload truncated>
         ...
 
-    Stdout, not stderr — so ``pepper trajectory show <id> > out.txt``
+    Stdout, not stderr — so ``pepper trajectories show <id> > out.txt``
     captures the rendered view. The ``--json`` flag bypasses this
     function entirely.
     """

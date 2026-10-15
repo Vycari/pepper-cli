@@ -45,11 +45,34 @@ def _tolerate(call: Any) -> Any:
         return None
 
 
-def _room_ok(item: dict[str, Any], room: str | None) -> bool:
-    if not room:
-        return True
-    names = [item.get("source_label"), item.get("room"), item.get("source"), item.get("principal")]
-    return any(isinstance(n, str) and n.lower().startswith(room.lower()) for n in names)
+@dataclasses.dataclass(frozen=True)
+class Scope:
+    """What ``--room`` and ``--source`` narrow ``next`` to; empty (falsy) keeps everything.
+
+    ``room_id`` is a room's id, already resolved strictly by the caller (an item belongs
+    to it when its ``principal`` is that id). ``source`` is a case-insensitive prefix of
+    the item's source label, room name or source.
+    """
+
+    room_id: str | None = None
+    source: str | None = None
+
+    def __bool__(self) -> bool:
+        return bool(self.room_id or self.source)
+
+
+def _same_id(a: object, b: str) -> bool:
+    return isinstance(a, str) and a.lower() == b.lower()
+
+
+def _room_ok(item: dict[str, Any], scope: Scope) -> bool:
+    if scope.room_id and not _same_id(item.get("principal"), scope.room_id):
+        return False
+    if scope.source:
+        names = [item.get("source_label"), item.get("room"), item.get("source")]
+        prefix = scope.source.lower()
+        return any(isinstance(n, str) and n.lower().startswith(prefix) for n in names)
+    return True
 
 
 def _in_window(day: str | None, at: str | None, now: datetime) -> bool:
@@ -67,7 +90,7 @@ def _in_window(day: str | None, at: str | None, now: datetime) -> bool:
 
 
 def _due_soon(
-    todos: list[dict[str, Any]], cards: list[dict[str, Any]], now: datetime, room: str | None
+    todos: list[dict[str, Any]], cards: list[dict[str, Any]], now: datetime, scope: Scope
 ) -> list[dict[str, Any]]:
     """Todos (already minus Do next) due in the window plus email-deadline cards, by title."""
     items = [
@@ -84,7 +107,7 @@ def _due_soon(
     out = []
     for it in items:
         key = (it.get("title") or "").strip().lower()
-        if key and key not in seen and _room_ok(it, room):
+        if key and key not in seen and _room_ok(it, scope):
             seen.add(key)
             out.append(it)
     return out
@@ -95,11 +118,11 @@ def _cards(api: Any, now: datetime) -> list[dict[str, Any]]:
     return list((body or {}).get("cards") or [])
 
 
-def _later(rest: list[dict[str, Any]], count: int | None, room: str | None, show_all: bool) -> dict:
+def _later(rest: list[dict[str, Any]], count: int | None, scope: Scope, show_all: bool) -> dict:
     """``count`` is the server's total when it is known and unfiltered, else the items' own."""
-    items = [t for t in rest if _room_ok(t, room)]
+    items = [t for t in rest if _room_ok(t, scope)]
     return {
-        "count": count if count is not None and not room else len(items),
+        "count": count if count is not None and not scope else len(items),
         "items": items if show_all else items[:_LATER_SHOWN],
     }
 
@@ -157,7 +180,7 @@ def _plan_info(plan: dict[str, Any], first: str, now: datetime) -> dict[str, Any
 
 
 def _from_plan(
-    api: Any, plan: dict[str, Any], room: str | None, show_all: bool, first: str | None = None
+    api: Any, plan: dict[str, Any], scope: Scope, show_all: bool, first: str | None = None
 ) -> dict:
     now = datetime.fromisoformat(plan["now"])
     key = first if first and _plan_for(plan, first) else plan.get("active")
@@ -166,10 +189,10 @@ def _from_plan(
     left_out = chosen.get("left_out") or []
     more = (plan.get("more") or {}).get("items") or []
     note = None if ahead else chosen.get("summary")
-    blocks = [t for t in (ahead or left_out) if _room_ok(t, room)]
+    blocks = [t for t in (ahead or left_out) if _room_ok(t, scope)]
     claimed = {b.get("todo_id") for b in blocks}
     pool = [t for t in left_out + more if t.get("todo_id") not in claimed]
-    due = _due_soon(pool, _cards(api, now), now, room)
+    due = _due_soon(pool, _cards(api, now), now, scope)
     due_ids = {t.get("todo_id") for t in due}
     # An unplaced left_out todo that isn't due soon goes to Later, ahead of ``more``.
     rest = [t for t in pool if t.get("todo_id") not in due_ids]
@@ -183,7 +206,7 @@ def _from_plan(
         "later": _later(
             rest,
             (plan.get("more") or {}).get("count", len(more)) - len(more) + len(rest),
-            room,
+            scope,
             show_all,
         ),
     }
@@ -211,7 +234,7 @@ def _next_event(api: Any, now: datetime) -> list[dict[str, Any]]:
     return timed[:1]
 
 
-def _fallback(api: Any, now: datetime, room: str | None, show_all: bool) -> dict:
+def _fallback(api: Any, now: datetime, scope: Scope, show_all: bool) -> dict:
     todos = [dataclasses.asdict(t) for t in api.list_todos(status="open")]
     for t in todos:
         t["todo_id"] = t["id"]
@@ -219,10 +242,10 @@ def _fallback(api: Any, now: datetime, room: str | None, show_all: bool) -> dict
         t["due"] = {"date": (t["due_date"] or "")[:10] or None, "at": None, "label": None}
         if t["due_date"] and not t["due_is_date_only"]:
             t["due"]["at"] = t["due_date"]
-    todos = [t for t in todos if _room_ok(t, room)]
+    todos = [t for t in todos if _room_ok(t, scope)]
     head = todos[:_FALLBACK_DO_NEXT]
     tail = todos[len(head) :]
-    due = _due_soon(tail, _cards(api, now), now, room)
+    due = _due_soon(tail, _cards(api, now), now, scope)
     ids = {t["id"] for t in due}
     return {
         "source": "fallback",
@@ -230,22 +253,23 @@ def _fallback(api: Any, now: datetime, room: str | None, show_all: bool) -> dict
         "now": _next_event(api, now),
         "do_next": {"note": UNRANKED_NOTE, "items": head},
         "due_soon": due,
-        "later": _later([t for t in tail if t["id"] not in ids], None, room, show_all),
+        "later": _later([t for t in tail if t["id"] not in ids], None, scope, show_all),
     }
 
 
 def assemble(
-    api: Any, *, room: str | None = None, show_all: bool = False, first: str | None = None
+    api: Any, *, scope: Scope | None = None, show_all: bool = False, first: str | None = None
 ) -> dict[str, Any]:
     """Build the ``pepper next`` result; the documented ``--json`` shape (see the README)."""
+    scope = scope or Scope()
     try:
         plan = api.calendar_schedule_plan()
     except api_client.ApiError as exc:
         if exc.status != 404:
             raise
         now = user_now(api)
-        result = _fallback(api, now, room, show_all)
+        result = _fallback(api, now, scope, show_all)
     else:
         now = datetime.fromisoformat(plan["now"])
-        result = _from_plan(api, plan, room, show_all, first)
+        result = _from_plan(api, plan, scope, show_all, first)
     return {"generated_at": now.isoformat(), **result}

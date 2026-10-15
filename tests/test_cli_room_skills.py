@@ -300,7 +300,7 @@ def test_share_to_an_unknown_room_writes_nothing(api) -> None:
 
 def test_revoke_resolves_the_name_and_deletes_that_grant(api, capsys) -> None:
     api.rows = [_row(id=_G2, name="trip-budget"), _row()]
-    assert cli.main(["skills", "revoke", "meal-plan", "--room", "trip"]) == 0
+    assert cli.main(["skills", "revoke", "meal-plan", "--room", "trip", "--yes"]) == 0
     assert api.calls == [("list", _ROOM), ("revoke", _ROOM, _G1)]
     err = _flat(capsys.readouterr().err)
     assert "Stopped sharing 'meal-plan' with the room." in err
@@ -309,7 +309,7 @@ def test_revoke_resolves_the_name_and_deletes_that_grant(api, capsys) -> None:
 
 def test_revoke_refuses_an_ambiguous_name_and_shows_the_grant_ids(api, capsys) -> None:
     api.rows = [_row(owner_is_you=True), _row(id=_G2, granted_by="Kim", state="shadowed")]
-    assert cli.main(["skills", "revoke", "meal-plan", "--room", _ROOM]) == 2
+    assert cli.main(["skills", "revoke", "meal-plan", "--room", _ROOM, "--yes"]) == 2
     # Neither was guessed at.
     assert api.calls == [("list", _ROOM)]
     err = capsys.readouterr().err
@@ -322,13 +322,13 @@ def test_revoke_refuses_an_ambiguous_name_and_shows_the_grant_ids(api, capsys) -
 
 def test_revoke_by_grant_id_picks_one_of_two_same_named(api, capsys) -> None:
     api.rows = [_row(), _row(id=_G2)]
-    assert cli.main(["skills", "revoke", _G2, "--room", _ROOM]) == 0
+    assert cli.main(["skills", "revoke", _G2, "--room", _ROOM, "--yes"]) == 0
     assert api.calls == [("revoke", _ROOM, _G2)]
     assert "Stopped sharing that skill with the room." in _flat(capsys.readouterr().err)
 
 
 def test_revoke_of_a_name_the_room_does_not_hold_is_exit_2(api, capsys) -> None:
-    assert cli.main(["skills", "revoke", "meal-plan", "--room", _ROOM]) == 2
+    assert cli.main(["skills", "revoke", "meal-plan", "--room", _ROOM, "--yes"]) == 2
     assert api.calls == [("list", _ROOM)]
     assert "no skill named 'meal-plan' is shared with that room" in _flat(capsys.readouterr().err)
 
@@ -336,7 +336,7 @@ def test_revoke_of_a_name_the_room_does_not_hold_is_exit_2(api, capsys) -> None:
 def test_revoke_refused_says_who_can(api, capsys) -> None:
     api.rows = [_row()]
     api.revoked = _err(403, "the server's own wording")
-    assert cli.main(["skills", "revoke", "meal-plan", "--room", _ROOM]) == 1
+    assert cli.main(["skills", "revoke", "meal-plan", "--room", _ROOM, "--yes"]) == 1
     err = _flat(capsys.readouterr().err)
     assert "only the skill's owner or a room owner can revoke it." in err
     assert "Stopped sharing" not in err
@@ -344,7 +344,7 @@ def test_revoke_refused_says_who_can(api, capsys) -> None:
 
 def test_revoke_of_a_grant_that_is_gone_carries_the_servers_reason(api, capsys) -> None:
     api.revoked = _err(404, "No such skill is shared with this room.")
-    assert cli.main(["skills", "revoke", _G1, "--room", _ROOM]) == 1
+    assert cli.main(["skills", "revoke", _G1, "--room", _ROOM, "--yes"]) == 1
     assert "Server returned 404: No such skill is shared with this room." in _flat(
         capsys.readouterr().err
     )
@@ -365,7 +365,7 @@ def test_share_and_revoke_require_a_room(api, capsys, verb) -> None:
 @pytest.mark.parametrize(
     ("argv", "verb"),
     [
-        (["skills", "new", "meal-plan", "--room", "trip"], "write"),
+        (["skills", "create", "meal-plan", "--room", "trip"], "write"),
         (["skills", "edit", "meal-plan", "--room", "trip"], "edit"),
         (["skills", "delete", "meal-plan", "--yes", "--room", "trip"], "delete"),
     ],

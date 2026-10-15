@@ -1043,7 +1043,7 @@ def _make_detail() -> api_client.TrajectoryDetail:
 def test_trajectory_show_prints_events(tmp_home: Path, patch_api, capsys) -> None:
     credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
     patch_api(trajectory=_make_detail())
-    rc = cli.main(["trajectory", "show", _VALID_TRAJ_ID])
+    rc = cli.main(["trajectories", "show", _VALID_TRAJ_ID])
     assert rc == 0
     out = capsys.readouterr().out
     # Header line carries the trajectory id and channel.
@@ -1063,7 +1063,7 @@ def test_trajectory_show_json_dumps_raw_body(tmp_home: Path, patch_api, capsys) 
     credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
     raw = {"trajectory": {"id": _VALID_TRAJ_ID, "channel": "client_api"}, "events": []}
     patch_api(trajectory_raw=raw)
-    rc = cli.main(["trajectory", "show", _VALID_TRAJ_ID, "--json"])
+    rc = cli.main(["trajectories", "show", _VALID_TRAJ_ID, "--json"])
     assert rc == 0
     out = capsys.readouterr().out
     # Parseable JSON, not Rich-formatted output.
@@ -1077,7 +1077,7 @@ def test_trajectory_show_rejects_non_uuid(tmp_home: Path, patch_api, capsys) -> 
     matches the bash-script behaviour and returns the usage exit code."""
     credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
     patch_api()  # no responses needed; we shouldn't hit the API
-    rc = cli.main(["trajectory", "show", "not-a-uuid"])
+    rc = cli.main(["trajectories", "show", "not-a-uuid"])
     assert rc == 2
     err = capsys.readouterr().err
     assert "UUID" in err
@@ -1091,7 +1091,7 @@ def test_trajectory_show_returns_1_on_404(tmp_home: Path, patch_api, capsys) -> 
     this exit code to fall back to the service-token script."""
     credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
     patch_api(trajectory=api_client.ApiError(status=404, body="", detail="trajectory not found"))
-    rc = cli.main(["trajectory", "show", _VALID_TRAJ_ID])
+    rc = cli.main(["trajectories", "show", _VALID_TRAJ_ID])
     assert rc == 1
     err = " ".join(capsys.readouterr().err.split())
     assert "404" in err
@@ -1099,7 +1099,7 @@ def test_trajectory_show_returns_1_on_404(tmp_home: Path, patch_api, capsys) -> 
 
 
 def test_trajectory_show_without_credentials_errors(tmp_home: Path, patch_api) -> None:
-    rc = cli.main(["trajectory", "show", _VALID_TRAJ_ID])
+    rc = cli.main(["trajectories", "show", _VALID_TRAJ_ID])
     assert rc == 1
 
 
@@ -1120,7 +1120,7 @@ def test_trajectory_list_prints_rows(tmp_home: Path, patch_api, capsys) -> None:
             )
         ]
     )
-    rc = cli.main(["trajectory", "list", "--limit", "5"])
+    rc = cli.main(["trajectories", "list", "--limit", "5"])
     assert rc == 0
     out = capsys.readouterr().out
     assert _VALID_TRAJ_ID in out
@@ -1133,10 +1133,106 @@ def test_trajectory_list_empty_message(tmp_home: Path, patch_api, capsys) -> Non
     """An empty result set prints a friendly message, not nothing."""
     credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
     patch_api(trajectory_list=[])
-    rc = cli.main(["trajectory", "list"])
+    rc = cli.main(["trajectories", "list"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "no trajectories" in out.lower()
+
+
+def _entry(i: int) -> api_client.TrajectoryListEntry:
+    return api_client.TrajectoryListEntry(
+        id=f"00000000-0000-0000-0000-{i:012d}",
+        channel="client_api",
+        created_at="2026-05-31T12:00:00Z",
+        closed_at=None,
+        meta={},
+        event_count=1,
+        first_user_message=f"msg {i}",
+        group_id=None,
+        group_name=None,
+    )
+
+
+def test_trajectories_list_json_is_the_envelope_with_a_cursor(
+    tmp_home: Path, patch_api, capsys
+) -> None:
+    import json as _json
+
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
+    patch_api(trajectory_list=[_entry(1), _entry(2)])
+    assert cli.main(["trajectories", "list", "--limit", "2", "--json"]) == 0
+    body = _json.loads(capsys.readouterr().out)
+    assert [r["id"][-1] for r in body["items"]] == ["1", "2"]
+    assert body["next_before"] == "2"
+    assert _FakeApi.instances[0].requested_offset == 0
+
+
+def test_trajectories_list_short_page_has_no_cursor(tmp_home: Path, patch_api, capsys) -> None:
+    import json as _json
+
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
+    patch_api(trajectory_list=[_entry(1)])
+    assert cli.main(["trajectories", "list", "--limit", "5", "--json"]) == 0
+    assert _json.loads(capsys.readouterr().out)["next_before"] is None
+
+
+def test_trajectories_list_before_requests_that_offset(tmp_home: Path, patch_api, capsys) -> None:
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
+    patch_api(trajectory_list=[_entry(1), _entry(2)])
+    assert cli.main(["trajectories", "list", "--limit", "2", "--before", "40"]) == 0
+    assert _FakeApi.instances[0].requested_offset == 40
+    assert "--before 42" in capsys.readouterr().err
+
+
+def test_trajectories_list_rejects_offset_bad_cursor_and_zero_limit(
+    tmp_home: Path, patch_api, capsys
+) -> None:
+    import json as _json
+
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
+    patch_api(trajectory_list=[])
+    with pytest.raises(SystemExit) as ei:
+        cli.main(["trajectories", "list", "--offset", "5"])
+    assert ei.value.code == 2
+    capsys.readouterr()
+    assert cli.main(["trajectories", "list", "--before", "abc"]) == 2
+    assert "--before expects a cursor" in capsys.readouterr().err
+    assert cli.main(["trajectories", "list", "--limit", "0", "--json"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and _json.loads(captured.err)["error"]["code"] == "usage"
+    assert _FakeApi.instances == []
+
+
+def test_trajectories_list_json_error_is_j8(tmp_home: Path, patch_api, capsys) -> None:
+    import json as _json
+
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
+    patch_api(trajectory_list=api_client.ApiError(status=500, body="", detail="boom"))
+    assert cli.main(["trajectories", "list", "--json"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert _json.loads(captured.err)["error"]["status"] == 500
+
+
+def test_trajectories_show_json_error_is_j8(tmp_home: Path, patch_api, capsys) -> None:
+    import json as _json
+
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
+    patch_api()
+    assert cli.main(["trajectories", "show", "nope", "--json"]) == 2
+    assert _json.loads(capsys.readouterr().err)["error"]["code"] == "usage"
+
+
+@pytest.mark.parametrize("argv", [["trajectory", "list"], ["trajectory", "show", "x", "--json"]])
+def test_trajectory_noun_is_a_stub(tmp_home: Path, patch_api, capsys, argv) -> None:
+    patch_api()
+    assert cli.main(argv) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.strip() == (
+        "pepper: 'trajectory' was renamed in 0.2.0 — see 'pepper trajectories --help'"
+    )
+    assert _FakeApi.instances == []
 
 
 def test_trajectory_subcommand_recognized_for_implicit_chat_dispatch(monkeypatch) -> None:
@@ -1156,7 +1252,7 @@ def test_trajectory_subcommand_recognized_for_implicit_chat_dispatch(monkeypatch
 
     monkeypatch.setattr(cli, "cmd_chat", fake_cmd_chat)
     monkeypatch.setattr(cli, "cmd_trajectory_show", fake_cmd_trajectory_show)
-    rc = cli.main(["trajectory", "show", _VALID_TRAJ_ID])
+    rc = cli.main(["trajectories", "show", _VALID_TRAJ_ID])
     assert rc == 0
     assert seen["trajectory_id"] == _VALID_TRAJ_ID
     assert "chat_message" not in seen

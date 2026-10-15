@@ -1675,6 +1675,16 @@ class ApiClient:
         resp = self._request("POST", f"/api/v1/scheduled-tasks/{task_id}/resume")
         return _scheduled_task_from_dict(resp.json())
 
+    def renew_scheduled_task(self, task_id: str) -> ScheduledTaskSummary:
+        """``POST /api/v1/scheduled-tasks/{id}/renew``. Keep a task going past its
+        renewal warning ("Keep it going" in the web UI).
+
+        422 when the server refuses (nothing to renew, a one-off, a paused task); its
+        ``detail`` is written for the user and the CLI surfaces it verbatim. Personal
+        tasks only: the room routes have no renew."""
+        resp = self._request("POST", f"/api/v1/scheduled-tasks/{task_id}/renew")
+        return _scheduled_task_from_dict(resp.json())
+
     def _patch_room_scheduled_task(
         self, group_id: str, task_id: str, change: dict[str, Any]
     ) -> RoomScheduledTaskSummary:
@@ -1724,14 +1734,14 @@ class ApiClient:
 
         Visibility is scoped to the calling user's principal — own
         trajectories plus group ones — and 404s otherwise. The CLI's
-        ``pepper trajectory show`` command surfaces that as "not found,
+        ``pepper trajectories show`` command surfaces that as "not found,
         or not yours".
         """
         return _trajectory_detail_from_dict(self.trajectory_get_raw(trajectory_id))
 
     def trajectory_get_raw(self, trajectory_id: str) -> dict[str, Any]:
         """Same call as :meth:`trajectory_get` but returns the raw JSON
-        body so ``pepper trajectory show --json`` can pipe the wire
+        body so ``pepper trajectories show --json`` can pipe the wire
         format through unchanged."""
         resp = self._request("GET", f"/api/v1/trajectories/{trajectory_id}")
         body = resp.json()

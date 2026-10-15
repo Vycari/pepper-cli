@@ -117,7 +117,6 @@ JSON_EXEMPT = frozenset({"login"})
 #: §5.4 fill list and every leaf that has no ``--json`` today. Phase 2a-2d.
 JSON_PENDING = frozenset(
     {
-        "agent-skill",
         "chat",
         "groups archive",
         "groups archive-topic",
@@ -142,11 +141,10 @@ JSON_PENDING = frozenset(
         "groups unmute",
         "groups unreact",
         "logout",
+        "notes create",
+        "notes delete",
         "notes edit",
-        "notes new",
-        "notes rm",
-        "scheduled-tasks add",
-        "scheduled-tasks destinations",
+        "scheduled-tasks create",
         "scheduled-tasks edit",
         "scheduled-tasks list",
         "scheduled-tasks pause",
@@ -157,16 +155,15 @@ JSON_PENDING = frozenset(
         "skills delete",
         "skills edit",
         "skills list",
-        "skills new",
+        "skills create",
         "skills revoke",
         "skills share",
         "skills show",
         "takeout",
-        "todos add",
+        "todos create",
         "todos dismiss",
         "todos done",
         "todos reopen",
-        "trajectory list",
         "whoami",
     }
 )
@@ -178,8 +175,8 @@ ROOM_NA = {
     "whoami": "session command",
     "chat": "talking to Pepper in a room is `messages post --mention`",
     "takeout": "exports the account, not a room",
-    "agent-skill": "prints the bundled guide (`agents guide` after the rename)",
-    "skills new": "a room holds a grant of someone's skill, never a skill (`skills create`)",
+    "agents guide": "prints the bundled guide; nothing about it is per room",
+    "skills create": "a room holds a grant of someone's skill, never a skill",
     "skills edit": "a room holds a grant of someone's skill, never a skill",
     "skills delete": "a room holds a grant of someone's skill, never a skill",
 }
@@ -220,12 +217,12 @@ ROOM_PENDING = frozenset(
         "groups uninstall-app",
         "groups unmute",
         "groups unreact",
-        "scheduled-tasks edit",
+        "scheduled-tasks renew",  # server: no room renew route yet
         "scheduled-tasks runs",
         "scheduled-tasks show",
         "scheduled-tasks thread",
-        "trajectory list",
-        "trajectory show",
+        "trajectories list",  # server: GET /trajectories takes no room filter
+        "trajectories show",
     }
 )
 
@@ -247,23 +244,13 @@ VERB_PENDING = frozenset(
         "groups topics",
         "groups unarchive-topic",
         "groups uninstall-app",
-        "notes new",
-        "notes rm",
-        "scheduled-tasks add",
-        "scheduled-tasks destinations",
         "scheduled-tasks runs",
         "scheduled-tasks thread",
-        "skills new",
-        "todos add",
     }
 )
 
-#: Destructive verbs (``DESTRUCTIVE``) lacking ``--yes``. Phase 2a-2c.
-YES_PENDING = frozenset(
-    {
-        "skills revoke",
-    }
-)
+#: Destructive verbs (``DESTRUCTIVE``) lacking ``--yes`` (empty since phase 2c).
+YES_PENDING: frozenset[str] = frozenset()
 
 #: Leaves with a positional ``group`` (rule 2: none survives). Phase 2a/2b.
 GROUP_POSITIONAL_PENDING = frozenset(
@@ -305,12 +292,11 @@ WORDING_PENDING = frozenset(
     {
         "notes edit",
         "notes list",
-        "notes new",
-        "notes rm",
+        "notes create",
+        "notes delete",
         "notes search",
         "notes show",
-        "scheduled-tasks add",
-        "scheduled-tasks destinations",
+        "scheduled-tasks create",
         "scheduled-tasks list",
         "scheduled-tasks pause",
         "scheduled-tasks resume",
@@ -318,7 +304,7 @@ WORDING_PENDING = frozenset(
         "skills revoke",
         "skills share",
         "skills show",
-        "todos add",
+        "todos create",
         "todos dismiss",
         "todos done",
         "todos list",
@@ -326,18 +312,12 @@ WORDING_PENDING = frozenset(
     }
 )
 
-#: ``--to`` must list ``room`` as a choice; today it spells the wire value (phase 2c).
-TO_ROOM_PENDING = frozenset(
-    {
-        "scheduled-tasks add",
-        "scheduled-tasks destinations",
-    }
-)
+#: ``--to`` must list ``room`` as a choice (empty since phase 2c).
+TO_ROOM_PENDING: frozenset[str] = frozenset()
 
 #: §8: list leaves (J3) that do not emit the envelope yet. Phase 2a-2d.
 ENVELOPE_PENDING = frozenset(
     {
-        "trajectory list",
         "todos list",
         "scheduled-tasks list",
         "scheduled-tasks runs",
@@ -356,7 +336,7 @@ ENVELOPE_PENDING = frozenset(
 )
 
 #: Renamed nouns that are still real commands, not yet stubs (phase 2a/2c).
-RENAMED_PENDING = RENAMED
+RENAMED_PENDING = frozenset({"groups"})
 
 # ---------------------------------------------------------------------------
 # Discovery: from --help text only
@@ -389,6 +369,8 @@ def _discover() -> dict[str, str]:
     leaves: dict[str, str] = {}
     for noun in _children(_help()):
         text = _help(noun)
+        if not text.strip():  # a renamed-noun stub: it answers on stderr, with no help
+            continue
         verbs = _children(text)
         if not verbs:
             leaves[noun] = text
@@ -571,6 +553,7 @@ _M = "00000000-0000-0000-0000-0000000000c1"
 _P = "00000000-0000-0000-0000-0000000000d1"
 _TRAJ = "00000000-0000-0000-0000-0000000000f1"
 _NOTE = "00000000-0000-0000-0000-0000000000e1"
+_TASK = "00000000-0000-0000-0000-0000000000a9"
 
 _TOPIC = {"topic_id": _T, "name": "General", "last_activity_at": "2026-10-01T12:00:00+00:00"}
 _MESSAGE = {
@@ -639,6 +622,7 @@ ROUTES: dict[str, object] = {
         "more": {"count": 0, "items": []},
     },
     "/api/v1/calendars/planning": {"cards": []},
+    "/api/v1/trajectories": [],
     "/api/v1/todos": [],
     "/api/v1/groups": {
         "enabled": True,
@@ -670,9 +654,23 @@ ROUTES: dict[str, object] = {
     f"/api/v1/artifacts/{_NOTE}/detail": {**_NOTE_ROW, "shared": False, "body": "hello note"},
 }
 
+_TASK_ROW = {
+    "id": _TASK,
+    "name": "morning-weather",
+    "description": None,
+    "cron": "0 8 * * 1-5",
+    "timezone": "UTC",
+    "destinations": None,
+    "active": True,
+    "one_shot": False,
+    "last_run_at": None,
+    "next_run_at": "2026-10-02T08:00:00+00:00",
+}
+
 #: POST routes: the room post answers ``{"message": {...}}``.
 POST_ROUTES: dict[str, object] = {
     f"/api/v1/groups/{_G}/topics/{_T}/messages": {"message": {**_MESSAGE, "topic_id": _T}},
+    f"/api/v1/scheduled-tasks/{_TASK}/renew": _TASK_ROW,
 }
 
 
@@ -730,7 +728,10 @@ def _watch_one_event(monkeypatch) -> None:
 
 #: The leaves that take ``--json`` today, with an argv that runs each against ROUTES.
 JSON_CASES: dict[str, list[str]] = {
-    "trajectory show": ["trajectory", "show", _TRAJ],
+    "trajectories show": ["trajectories", "show", _TRAJ],
+    "trajectories list": ["trajectories", "list"],
+    "agents guide": ["agents", "guide"],
+    "scheduled-tasks renew": ["scheduled-tasks", "renew", _TASK],
     "calendar": ["calendar"],
     "next": ["next"],
     "todos list": ["todos", "list"],
@@ -801,7 +802,7 @@ def test_renamed_nouns_are_stubs(_env, monkeypatch, capsys) -> None:
     # A chat fall-through would reach the fake server (and so fail the check); an empty
     # stdin keeps any interactive path from waiting on the terminal.
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
-    assert {_noun(leaf) for leaf in LEAVES} >= RENAMED
+    assert set(_children(_help())) >= RENAMED
     failing = {noun for noun in RENAMED if not _is_stub(noun, _env, capsys)}
     _ratchet("renamed stub", failing, RENAMED_PENDING)
 

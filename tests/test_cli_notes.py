@@ -551,7 +551,7 @@ def test_notes_new_editor_round_trip_creates_the_note(
     _login(tmp_home)
     patch_api(create=_create_result())
     monkeypatch.setattr(cli, "_open_in_editor", lambda initial: "- sunscreen\n")
-    rc = cli.main(["notes", "new", "Packing list"])
+    rc = cli.main(["notes", "create", "Packing list"])
     assert rc == 0
     captured = capsys.readouterr()
     assert "Created 'Packing list'" in captured.err
@@ -566,7 +566,7 @@ def test_notes_new_aborted_editor_exits_2_without_a_call(
     _login(tmp_home)
     patch_api()
     monkeypatch.setattr(cli, "_open_in_editor", lambda initial: None)
-    rc = cli.main(["notes", "new", "Packing list"])
+    rc = cli.main(["notes", "create", "Packing list"])
     assert rc == 2
     assert not any(c[0] == "create_artifact" for c in _FakeNotesApi.instances[-1].calls)
 
@@ -577,7 +577,7 @@ def test_notes_new_empty_body_exits_2_without_a_call(
     _login(tmp_home)
     patch_api()
     monkeypatch.setattr(cli, "_open_in_editor", lambda initial: "   \n")
-    rc = cli.main(["notes", "new", "Packing list"])
+    rc = cli.main(["notes", "create", "Packing list"])
     assert rc == 2
     assert "empty" in capsys.readouterr().err
     assert not any(c[0] == "create_artifact" for c in _FakeNotesApi.instances[-1].calls)
@@ -588,7 +588,7 @@ def test_notes_new_reads_body_from_file(tmp_home, patch_api, tmp_path) -> None:
     patch_api(create=_create_result())
     body_path = tmp_path / "body.md"
     body_path.write_text("- passport\n", encoding="utf-8")
-    rc = cli.main(["notes", "new", "Packing list", "--file", str(body_path)])
+    rc = cli.main(["notes", "create", "Packing list", "--file", str(body_path)])
     assert rc == 0
     calls = _FakeNotesApi.instances[-1].calls
     assert calls == [("create_artifact", "Packing list", "- passport\n", None)]
@@ -598,7 +598,7 @@ def test_notes_new_reads_body_from_stdin(tmp_home, patch_api, monkeypatch) -> No
     _login(tmp_home)
     patch_api(create=_create_result())
     monkeypatch.setattr(sys, "stdin", io.StringIO("- passport\n"))
-    rc = cli.main(["notes", "new", "Packing list", "--file", "-"])
+    rc = cli.main(["notes", "create", "Packing list", "--file", "-"])
     assert rc == 0
     calls = _FakeNotesApi.instances[-1].calls
     assert calls == [("create_artifact", "Packing list", "- passport\n", None)]
@@ -610,7 +610,7 @@ def test_notes_new_unreadable_file_exits_2_before_any_client_is_built(
     _login(tmp_home)
     patch_api()
     missing = tmp_path / "nope.md"
-    rc = cli.main(["notes", "new", "Packing list", "--file", str(missing)])
+    rc = cli.main(["notes", "create", "Packing list", "--file", str(missing)])
     assert rc == 2
     assert "couldn't read" in capsys.readouterr().err
     assert _FakeNotesApi.instances == []
@@ -620,7 +620,7 @@ def test_notes_new_resolves_room_by_name(tmp_home, patch_api, monkeypatch) -> No
     _login(tmp_home)
     patch_api(groups=_group_list(_group()), create=_create_result())
     monkeypatch.setattr(cli, "_open_in_editor", lambda initial: "body\n")
-    rc = cli.main(["notes", "new", "Packing list", "--room", "trip"])
+    rc = cli.main(["notes", "create", "Packing list", "--room", "trip"])
     assert rc == 0
     calls = _FakeNotesApi.instances[-1].calls
     assert ("create_artifact", "Packing list", "body\n", _GID_TRIP) in calls
@@ -629,7 +629,7 @@ def test_notes_new_resolves_room_by_name(tmp_home, patch_api, monkeypatch) -> No
 def test_notes_new_404_prints_the_uniform_message(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(groups=api_client.ApiError(status=404, body="", detail="not found"))
-    rc = cli.main(["notes", "new", "Packing list", "--room", "trip"])
+    rc = cli.main(["notes", "create", "Packing list", "--room", "trip"])
     assert rc == 2
     assert "no such room or note, or you are not a member" in capsys.readouterr().err
 
@@ -637,7 +637,7 @@ def test_notes_new_404_prints_the_uniform_message(tmp_home, patch_api, capsys) -
 def test_notes_new_503_prints_retry_message(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(groups=api_client.ApiError(status=503, body="", detail="down"))
-    rc = cli.main(["notes", "new", "Packing list", "--room", "trip"])
+    rc = cli.main(["notes", "create", "Packing list", "--room", "trip"])
     assert rc == 1
     assert "membership check unavailable, try again" in capsys.readouterr().err
 
@@ -688,7 +688,7 @@ def test_notes_edit_rename_only_sends_name_with_no_body(tmp_home, patch_api, mon
         edit=_detail(name="Renamed"),
     )
     monkeypatch.setattr(cli, "_open_in_editor", lambda initial: "same\n")
-    rc = cli.main(["notes", "edit", _NID_PACKING, "--rename", "Renamed"])
+    rc = cli.main(["notes", "edit", _NID_PACKING, "--name", "Renamed"])
     assert rc == 0
     calls = [c for c in _FakeNotesApi.instances[-1].calls if c[0] == "edit_artifact"]
     assert calls == [("edit_artifact", _NID_PACKING, "Renamed", None, None, "abc123")]
@@ -700,7 +700,7 @@ def test_notes_edit_rename_to_same_name_and_unchanged_body_is_a_noop(
     _login(tmp_home)
     patch_api(detail=_detail(name="Packing list", body="same\n"))
     monkeypatch.setattr(cli, "_open_in_editor", lambda initial: "same\n")
-    rc = cli.main(["notes", "edit", _NID_PACKING, "--rename", "Packing list"])
+    rc = cli.main(["notes", "edit", _NID_PACKING, "--name", "Packing list"])
     assert rc == 0
     assert "Nothing to change." in capsys.readouterr().err
     assert not any(c[0] == "edit_artifact" for c in _FakeNotesApi.instances[-1].calls)
@@ -944,7 +944,7 @@ def test_notes_new_invalid_utf8_stdin_exits_2_before_any_client_is_built(
     _login(tmp_home)
     patch_api(create=_create_result())
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"\xff"), encoding="utf-8"))
-    rc = cli.main(["notes", "new", "Trip plan", "--file", "-"])
+    rc = cli.main(["notes", "create", "Trip plan", "--file", "-"])
     assert rc == 2
     assert "couldn't read stdin" in capsys.readouterr().err
     assert _FakeNotesApi.instances == []
@@ -965,7 +965,7 @@ def test_notes_edit_rename_only_conflict_overwrite_never_sends_the_body(
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     prompts: list[str] = []
     monkeypatch.setattr(cli, "_prompt", lambda prompt: prompts.append(prompt) or "o")
-    rc = cli.main(["notes", "edit", _NID_PACKING, "--rename", "Renamed"])
+    rc = cli.main(["notes", "edit", _NID_PACKING, "--name", "Renamed"])
     assert rc == 0
     calls = [c for c in _FakeNotesApi.instances[-1].calls if c[0] == "edit_artifact"]
     assert calls == [
@@ -986,7 +986,7 @@ def test_notes_edit_rename_only_conflict_off_tty_exits_1(
     patch_api(detail=_detail(body="same\n", etag="stale1"), edit=_conflict())
     monkeypatch.setattr(cli, "_open_in_editor", lambda initial: "same\n")
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
-    rc = cli.main(["notes", "edit", _NID_PACKING, "--rename", "Renamed"])
+    rc = cli.main(["notes", "edit", _NID_PACKING, "--name", "Renamed"])
     assert rc == 1
     assert "that note has changed" in capsys.readouterr().err
     assert list(tmp_path.glob("*.mine*.md")) == []
@@ -1189,32 +1189,53 @@ def test_notes_edit_other_kind_is_treated_as_not_a_note(tmp_home, patch_api, cap
 
 
 # ---------------------------------------------------------------------------
-# rm
+# delete
 
 
-def test_notes_rm_confirms_before_deleting(tmp_home, patch_api, capsys, monkeypatch) -> None:
+def test_notes_delete_confirms_before_deleting(tmp_home, patch_api, capsys, monkeypatch) -> None:
     _login(tmp_home)
     patch_api(detail=_detail(name="Packing list"), delete="Packing list")
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(cli, "_prompt", lambda prompt: "y")
-    rc = cli.main(["notes", "rm", _NID_PACKING])
+    rc = cli.main(["notes", "delete", _NID_PACKING])
     assert rc == 0
     assert "Deleted 'Packing list'" in capsys.readouterr().err
     assert any(c[0] == "delete_artifact" for c in _FakeNotesApi.instances[-1].calls)
 
 
-def test_notes_rm_declining_the_prompt_aborts_without_deleting(
+def test_notes_delete_declining_the_prompt_aborts_without_deleting(
     tmp_home, patch_api, capsys, monkeypatch
 ) -> None:
     _login(tmp_home)
     patch_api(detail=_detail(name="Packing list"))
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(cli, "_prompt", lambda prompt: "n")
-    rc = cli.main(["notes", "rm", _NID_PACKING])
+    rc = cli.main(["notes", "delete", _NID_PACKING])
     assert rc == 0
     assert "Aborted." in capsys.readouterr().err
     assert not any(c[0] == "delete_artifact" for c in _FakeNotesApi.instances[-1].calls)
 
 
-def test_notes_rm_yes_skips_the_prompt(tmp_home, patch_api, monkeypatch) -> None:
+def test_notes_delete_off_a_terminal_without_yes_is_exit_2(
+    tmp_home, patch_api, capsys, monkeypatch
+) -> None:
+    _login(tmp_home)
+    patch_api(detail=_detail(name="Packing list"), delete="Packing list")
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+    rc = cli.main(["notes", "delete", _NID_PACKING])
+    assert rc == 2
+    assert "--yes" in capsys.readouterr().err
+    assert not any(c[0] == "delete_artifact" for c in _FakeNotesApi.instances[-1].calls)
+
+
+def test_notes_old_spellings_are_rejected(tmp_home, capsys) -> None:
+    for argv in (["notes", "new", "x"], ["notes", "rm", "x"]):
+        with pytest.raises(SystemExit) as ei:
+            cli.main(argv)
+        assert ei.value.code == 2
+
+
+def test_notes_delete_yes_skips_the_prompt(tmp_home, patch_api, monkeypatch) -> None:
     _login(tmp_home)
     patch_api(detail=_detail(name="Packing list"), delete="Packing list")
 
@@ -1222,52 +1243,53 @@ def test_notes_rm_yes_skips_the_prompt(tmp_home, patch_api, monkeypatch) -> None
         raise AssertionError("should not prompt with --yes")
 
     monkeypatch.setattr(cli, "_prompt", fail_prompt)
-    rc = cli.main(["notes", "rm", _NID_PACKING, "--yes"])
+    rc = cli.main(["notes", "delete", _NID_PACKING, "--yes"])
     assert rc == 0
     assert any(c[0] == "delete_artifact" for c in _FakeNotesApi.instances[-1].calls)
 
 
-def test_notes_rm_404_prints_the_uniform_message(tmp_home, patch_api, capsys) -> None:
+def test_notes_delete_404_prints_the_uniform_message(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(notes=api_client.ApiError(status=404, body="", detail="not found"))
-    rc = cli.main(["notes", "rm", "nope", "--yes"])
+    rc = cli.main(["notes", "delete", "nope", "--yes"])
     assert rc == 2
     assert "no such room or note, or you are not a member" in capsys.readouterr().err
 
 
-def test_notes_rm_503_prints_retry_message(tmp_home, patch_api, capsys) -> None:
+def test_notes_delete_503_prints_retry_message(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(notes=api_client.ApiError(status=503, body="", detail="down"))
-    rc = cli.main(["notes", "rm", "nope", "--yes"])
+    rc = cli.main(["notes", "delete", "nope", "--yes"])
     assert rc == 1
     assert "membership check unavailable, try again" in capsys.readouterr().err
 
 
-def test_notes_rm_other_kind_is_refused_without_deleting(tmp_home, patch_api, capsys) -> None:
+def test_notes_delete_other_kind_is_refused_without_deleting(tmp_home, patch_api, capsys) -> None:
     """The delete action deletes any artifact kind; a raw UUID of an image
     must not reach it through ``pepper notes rm``."""
     _login(tmp_home)
     patch_api(detail=_detail(kind="image"), delete="photo.png")
-    rc = cli.main(["notes", "rm", _NID_PACKING, "--yes"])
+    rc = cli.main(["notes", "delete", _NID_PACKING, "--yes"])
     assert rc == 2
     assert "no such room or note, or you are not a member" in capsys.readouterr().err
     assert not any(c[0] == "delete_artifact" for c in _FakeNotesApi.instances[-1].calls)
 
 
-def test_notes_rm_prompt_names_the_note_not_the_raw_argument(
+def test_notes_delete_prompt_names_the_note_not_the_raw_argument(
     tmp_home, patch_api, monkeypatch
 ) -> None:
     _login(tmp_home)
     patch_api(detail=_detail(name="Packing list"), delete="Packing list")
     prompts: list[str] = []
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(cli, "_prompt", lambda prompt: prompts.append(prompt) or "y")
-    rc = cli.main(["notes", "rm", _NID_PACKING])
+    rc = cli.main(["notes", "delete", _NID_PACKING])
     assert rc == 0
     assert "'Packing list'" in prompts[0]
     assert _NID_PACKING not in prompts[0]
 
 
-def test_notes_rm_422_from_the_action_is_the_uniform_missing_note(
+def test_notes_delete_422_from_the_action_is_the_uniform_missing_note(
     tmp_home, patch_api, capsys
 ) -> None:
     """Deleted between the read and the delete, or a ``--room`` that doesn't
@@ -1277,24 +1299,24 @@ def test_notes_rm_422_from_the_action_is_the_uniform_missing_note(
         detail=_detail(),
         delete=api_client.ApiError(status=422, body="", detail="not in your collection"),
     )
-    rc = cli.main(["notes", "rm", _NID_PACKING, "--yes"])
+    rc = cli.main(["notes", "delete", _NID_PACKING, "--yes"])
     assert rc == 2
     assert "no such room or note, or you are not a member" in capsys.readouterr().err
 
 
-def test_notes_rm_404_on_the_detail_read_is_the_uniform_missing_note(
+def test_notes_delete_404_on_the_detail_read_is_the_uniform_missing_note(
     tmp_home, patch_api, capsys
 ) -> None:
     _login(tmp_home)
     patch_api(detail=api_client.ApiError(status=404, body="", detail="not found"))
-    rc = cli.main(["notes", "rm", _NID_PACKING, "--yes"])
+    rc = cli.main(["notes", "delete", _NID_PACKING, "--yes"])
     assert rc == 2
     assert "no such room or note, or you are not a member" in capsys.readouterr().err
     assert not any(c[0] == "delete_artifact" for c in _FakeNotesApi.instances[-1].calls)
 
 
-def test_notes_rm_other_api_errors_keep_the_generic_handling(tmp_home, patch_api) -> None:
+def test_notes_delete_other_api_errors_keep_the_generic_handling(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api(detail=_detail(), delete=api_client.ApiError(status=500, body="", detail="boom"))
-    rc = cli.main(["notes", "rm", _NID_PACKING, "--yes"])
+    rc = cli.main(["notes", "delete", _NID_PACKING, "--yes"])
     assert rc == 1

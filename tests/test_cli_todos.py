@@ -249,7 +249,7 @@ def test_todos_list_renders_date_only_due_with_no_clock(
 def test_todos_add_joins_title_and_parses_due(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(todo_created=_todo(title="buy milk"))
-    rc = cli.main(["todos", "add", "buy", "milk", "--due", "2026-06-10", "--priority", "high"])
+    rc = cli.main(["todos", "create", "buy", "milk", "--due", "2026-06-10", "--priority", "high"])
     assert rc == 0
     create = _FakeTodoApi.instances[-1].calls[-1]
     assert create[0] == "create"
@@ -265,7 +265,7 @@ def test_todos_add_joins_title_and_parses_due(tmp_home, patch_api, capsys) -> No
 def test_todos_add_rejects_bad_due_without_calling_api(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api(todo_created=_todo())
-    rc = cli.main(["todos", "add", "x", "--due", "not-a-date"])
+    rc = cli.main(["todos", "create", "x", "--due", "not-a-date"])
     assert rc == 2
     # never constructed a client / made a call
     assert _FakeTodoApi.instances == []
@@ -306,7 +306,7 @@ def test_room_todos_list_add_dismiss_use_the_room_routes(tmp_home, patch_api) ->
         todo_dismissed=_todo(id=tid, status="dismissed", title="Book"),
     )
     assert cli.main(["todos", "list", "--room", "Trip", "--status", "all"]) == 0
-    assert cli.main(["todos", "add", "Book", "--due", "2026-10-09", "--room", "Trip"]) == 0
+    assert cli.main(["todos", "create", "Book", "--due", "2026-10-09", "--room", "Trip"]) == 0
     assert cli.main(["todos", "dismiss", tid, "--room", "Trip"]) == 0
     calls = [c for i in _FakeTodoApi.instances for c in i.calls]
     assert calls == [
@@ -319,7 +319,7 @@ def test_room_todos_list_add_dismiss_use_the_room_routes(tmp_home, patch_api) ->
 def test_room_todo_add_refuses_flags_the_room_form_lacks(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api()
-    assert cli.main(["todos", "add", "x", "--priority", "high", "--room", "Trip"]) == 2
+    assert cli.main(["todos", "create", "x", "--priority", "high", "--room", "Trip"]) == 2
 
 
 def test_todos_dismiss_calls_dismiss(tmp_home, patch_api, capsys) -> None:

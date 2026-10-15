@@ -13,6 +13,7 @@ the user actually named or the server can't tell "leave it" from "set it".
 from __future__ import annotations
 
 import dataclasses
+import json
 import time
 from pathlib import Path
 
@@ -122,9 +123,13 @@ class _FakeTaskApi:
         self.calls.append(("resume", task_id))
         return self._result("task_resumed")
 
-    def set_scheduled_task_destinations(self, task_id, *, destinations):
+    def set_scheduled_task_destinations(self, task_id, *, destinations, group_id=None, topic=None):
         self.calls.append(("destinations", task_id, destinations))
         return self._result("task_destinations")
+
+    def renew_scheduled_task(self, task_id):
+        self.calls.append(("renew", task_id))
+        return self._result("task_renewed")
 
 
 @pytest.fixture
@@ -318,13 +323,13 @@ def test_a_uuid_skips_the_lookup(tmp_home, patch_api) -> None:
 # add
 
 
-def test_add_sends_cron_and_destinations(tmp_home, patch_api, capsys) -> None:
+def test_create_sends_cron_and_destinations(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(task_created=_task(destinations=["main_chat"]))
     rc = cli.main(
         [
             "scheduled-tasks",
-            "add",
+            "create",
             "morning-weather",
             "--prompt",
             "Give me the forecast.",
@@ -343,11 +348,19 @@ def test_add_sends_cron_and_destinations(tmp_home, patch_api, capsys) -> None:
     assert "Scheduled" in capsys.readouterr().err
 
 
-def test_add_parses_at_into_an_aware_timestamp(tmp_home, patch_api) -> None:
+def test_create_parses_at_into_an_aware_timestamp(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api(task_created=_task(one_shot=True, cron=None))
     rc = cli.main(
-        ["scheduled-tasks", "add", "call-mom", "--prompt", "Ring her.", "--at", "2099-01-02 15:30"]
+        [
+            "scheduled-tasks",
+            "create",
+            "call-mom",
+            "--prompt",
+            "Ring her.",
+            "--at",
+            "2099-01-02 15:30",
+        ]
     )
     assert rc == 0
     run_at = _last_call("create")[1]["run_at"]
@@ -357,33 +370,33 @@ def test_add_parses_at_into_an_aware_timestamp(tmp_home, patch_api) -> None:
     assert run_at[-6] in "+-"
 
 
-def test_add_omits_destinations_to_mean_inherit(tmp_home, patch_api) -> None:
+def test_create_omits_destinations_to_mean_inherit(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api(task_created=_task())
-    rc = cli.main(["scheduled-tasks", "add", "x", "--prompt", "p", "--cron", "0 8 * * *"])
+    rc = cli.main(["scheduled-tasks", "create", "x", "--prompt", "p", "--cron", "0 8 * * *"])
     assert rc == 0
     assert _last_call("create")[1]["destinations"] is None
 
 
-def test_add_silent_sends_an_empty_list(tmp_home, patch_api) -> None:
+def test_create_silent_sends_an_empty_list(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api(task_created=_task(destinations=[]))
     rc = cli.main(
-        ["scheduled-tasks", "add", "x", "--prompt", "p", "--cron", "0 8 * * *", "--silent"]
+        ["scheduled-tasks", "create", "x", "--prompt", "p", "--cron", "0 8 * * *", "--silent"]
     )
     assert rc == 0
     assert _last_call("create")[1]["destinations"] == []
 
 
-def test_add_requires_exactly_one_of_cron_or_at(tmp_home, patch_api, capsys) -> None:
+def test_create_requires_exactly_one_of_cron_or_at(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(task_created=_task())
-    assert cli.main(["scheduled-tasks", "add", "x", "--prompt", "p"]) == 2
+    assert cli.main(["scheduled-tasks", "create", "x", "--prompt", "p"]) == 2
     assert (
         cli.main(
             [
                 "scheduled-tasks",
-                "add",
+                "create",
                 "x",
                 "--prompt",
                 "p",
@@ -399,13 +412,13 @@ def test_add_requires_exactly_one_of_cron_or_at(tmp_home, patch_api, capsys) -> 
     assert _FakeTaskApi.instances == []  # nothing reached the network
 
 
-def test_add_rejects_silent_alongside_to(tmp_home, patch_api) -> None:
+def test_create_rejects_silent_alongside_to(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api(task_created=_task())
     rc = cli.main(
         [
             "scheduled-tasks",
-            "add",
+            "create",
             "x",
             "--prompt",
             "p",
@@ -420,23 +433,23 @@ def test_add_rejects_silent_alongside_to(tmp_home, patch_api) -> None:
     assert _FakeTaskApi.instances == []
 
 
-def test_add_rejects_an_unparseable_at(tmp_home, patch_api, capsys) -> None:
+def test_create_rejects_an_unparseable_at(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(task_created=_task())
-    rc = cli.main(["scheduled-tasks", "add", "x", "--prompt", "p", "--at", "next tuesday"])
+    rc = cli.main(["scheduled-tasks", "create", "x", "--prompt", "p", "--at", "next tuesday"])
     assert rc == 2
     assert "--at" in capsys.readouterr().err
     assert _FakeTaskApi.instances == []
 
 
-def test_add_surfaces_a_name_conflict(tmp_home, patch_api, capsys) -> None:
+def test_create_surfaces_a_name_conflict(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(
         task_created=api_client.ApiError(
             status=409, body="", detail="a scheduled task named 'x' already exists"
         )
     )
-    rc = cli.main(["scheduled-tasks", "add", "x", "--prompt", "p", "--cron", "0 8 * * *"])
+    rc = cli.main(["scheduled-tasks", "create", "x", "--prompt", "p", "--cron", "0 8 * * *"])
     assert rc == 1
     assert "already exists" in capsys.readouterr().err
 
@@ -521,50 +534,51 @@ def test_pause_handles_an_unreachable_server(tmp_home, patch_api, capsys) -> Non
 # destinations
 
 
-def test_destinations_to_sends_the_list(tmp_home, patch_api) -> None:
+def test_edit_delivery_to_sends_the_list(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api(task_destinations=_task(destinations=["main_chat", "resend_email"]))
     rc = cli.main(
-        ["scheduled-tasks", "destinations", _TASK_ID, "--to", "main_chat", "--to", "resend_email"]
+        ["scheduled-tasks", "edit", _TASK_ID, "--to", "main_chat", "--to", "resend_email"]
     )
     assert rc == 0
     assert _last_call("destinations")[2] == ["main_chat", "resend_email"]
 
 
-def test_destinations_default_sends_null(tmp_home, patch_api) -> None:
+def test_edit_delivery_default_sends_null(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api(task_destinations=_task(destinations=None))
-    rc = cli.main(["scheduled-tasks", "destinations", _TASK_ID, "--default"])
+    rc = cli.main(["scheduled-tasks", "edit", _TASK_ID, "--default"])
     assert rc == 0
     assert _last_call("destinations")[2] is None
 
 
-def test_destinations_silent_sends_an_empty_list(tmp_home, patch_api) -> None:
+def test_edit_delivery_silent_sends_an_empty_list(tmp_home, patch_api) -> None:
     """The difference from ``--default`` is the point: a later change to
     the user's notification preference must not un-silence the task."""
     _login(tmp_home)
     patch_api(task_destinations=_task(destinations=[]))
-    rc = cli.main(["scheduled-tasks", "destinations", _TASK_ID, "--silent"])
+    rc = cli.main(["scheduled-tasks", "edit", _TASK_ID, "--silent"])
     assert rc == 0
     assert _last_call("destinations")[2] == []
 
 
-def test_destinations_requires_exactly_one_choice(tmp_home, patch_api, capsys) -> None:
+def test_edit_delivery_requires_exactly_one_choice(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(task_destinations=_task())
-    assert cli.main(["scheduled-tasks", "destinations", _TASK_ID]) == 2
-    assert cli.main(["scheduled-tasks", "destinations", _TASK_ID, "--default", "--silent"]) == 2
-    assert "exactly one" in capsys.readouterr().err
+    assert cli.main(["scheduled-tasks", "edit", _TASK_ID]) == 2
+    assert "nothing to change" in capsys.readouterr().err
+    assert cli.main(["scheduled-tasks", "edit", _TASK_ID, "--default", "--silent"]) == 2
+    assert "pass only one of" in capsys.readouterr().err
     assert _FakeTaskApi.instances == []
 
 
-def test_destinations_rejects_an_unknown_name_locally(tmp_home, patch_api) -> None:
+def test_edit_delivery_rejects_an_unknown_name_locally(tmp_home, patch_api) -> None:
     """A typo becomes an argparse usage error (``choices``) rather than a
     round-trip 422."""
     _login(tmp_home)
     patch_api(task_destinations=_task())
     with pytest.raises(SystemExit):
-        cli.main(["scheduled-tasks", "destinations", _TASK_ID, "--to", "carrier-pigeon"])
+        cli.main(["scheduled-tasks", "edit", _TASK_ID, "--to", "carrier-pigeon"])
     assert _FakeTaskApi.instances == []
 
 
@@ -686,13 +700,13 @@ def test_room_list_all_includes_paused(tmp_home, patch_room_api) -> None:
     assert _calls() == [("list", True, _ROOM)]
 
 
-def test_room_add_sends_the_room_form(tmp_home, patch_room_api, capsys) -> None:
+def test_room_create_sends_the_room_form(tmp_home, patch_room_api, capsys) -> None:
     _login(tmp_home)
     patch_room_api(task_created=_room_task(name="weekly-menu"))
     rc = cli.main(
         [
             "scheduled-tasks",
-            "add",
+            "create",
             "weekly-menu",
             "--prompt",
             "Plan the week's dinners.",
@@ -718,16 +732,26 @@ def test_room_add_sends_the_room_form(tmp_home, patch_room_api, capsys) -> None:
     assert "on the room" in capsys.readouterr().err
 
 
-def test_room_add_delivery_states(tmp_home, patch_room_api) -> None:
+def test_room_create_delivery_states(tmp_home, patch_room_api) -> None:
     """Silent, a pinned set and a named topic are three different requests."""
     _login(tmp_home)
     patch_room_api(task_created=_room_task())
-    base = ["scheduled-tasks", "add", "t", "--prompt", "p", "--cron", "0 9 * * 0", "--room", "Trip"]
+    base = [
+        "scheduled-tasks",
+        "create",
+        "t",
+        "--prompt",
+        "p",
+        "--cron",
+        "0 9 * * 0",
+        "--room",
+        "Trip",
+    ]
     assert cli.main([*base, "--silent"]) == 0
     assert _last_call("create")[1]["destinations"] == []
     assert cli.main([*base, "--to", "resend_email"]) == 0
     assert _last_call("create")[1]["destinations"] == ["resend_email"]
-    assert cli.main([*base, "--to", "groups_service", "--topic", "Dinner"]) == 0
+    assert cli.main([*base, "--to", "groups_service", "--deliver-topic", "Dinner"]) == 0
     last = _last_call("create")[1]
     assert (last["destinations"], last["topic"]) == (["groups_service"], "Dinner")
 
@@ -737,21 +761,24 @@ def test_room_add_delivery_states(tmp_home, patch_room_api) -> None:
     [
         (["--cron", "0 9 * * 0", "--to", "twilio_sms"], "isn't available with --room"),
         (["--cron", "0 9 * * 0", "--to", "main_chat"], "isn't available with --room"),
-        (["--cron", "0 9 * * 0", "--topic", "Dinner"], "--to groups_service"),
-        (["--cron", "0 9 * * 0", "--to", "resend_email", "--topic", "Dinner"], "groups_service"),
+        (["--cron", "0 9 * * 0", "--deliver-topic", "Dinner"], "--to room"),
+        (
+            ["--cron", "0 9 * * 0", "--to", "resend_email", "--deliver-topic", "Dinner"],
+            "--to room",
+        ),
         (["--cron", "0 9 * * 0", "--description", "d"], "aren't available with --room"),
         (["--at", "2030-01-01 09:00"], "aren't available with --room"),
         ([], "pass --cron"),
         (["--cron", "0 9 * * 0", "--to", "resend_email", "--silent"], "--silent"),
     ],
 )
-def test_room_add_refuses_what_the_room_form_lacks(
+def test_room_create_refuses_what_the_room_form_lacks(
     tmp_home, patch_room_api, capsys, extra, said
 ) -> None:
     """Each is a usage error before any request: nothing reaches the server."""
     _login(tmp_home)
     patch_room_api(task_created=_room_task())
-    base = ["scheduled-tasks", "add", "t", "--prompt", "p", "--room", "Trip"]
+    base = ["scheduled-tasks", "create", "t", "--prompt", "p", "--room", "Trip"]
     assert cli.main([*base, *extra]) == 2
     assert said in capsys.readouterr().err
     assert _calls() == []
@@ -762,14 +789,14 @@ def test_room_only_flags_are_refused_on_a_personal_task(tmp_home, patch_api, cap
     of your own is a usage error, not a 422 from the personal route."""
     _login(tmp_home)
     patch_api(task_created=_task(), task_destinations=_task())
-    add = ["scheduled-tasks", "add", "t", "--prompt", "p", "--cron", "0 9 * * 0"]
+    add = ["scheduled-tasks", "create", "t", "--prompt", "p", "--cron", "0 9 * * 0"]
     assert cli.main([*add, "--to", "groups_service"]) == 2
     assert "only available with --room" in capsys.readouterr().err
-    assert cli.main([*add, "--topic", "Dinner"]) == 2
+    assert cli.main([*add, "--deliver-topic", "Dinner"]) == 2
     assert "only available with --room" in capsys.readouterr().err
-    dest = ["scheduled-tasks", "destinations", _TASK_ID]
+    dest = ["scheduled-tasks", "edit", _TASK_ID]
     assert cli.main([*dest, "--to", "groups_service"]) == 2
-    assert cli.main([*dest, "--default", "--topic", "Dinner"]) == 2
+    assert cli.main([*dest, "--default", "--deliver-topic", "Dinner"]) == 2
     assert _FakeTaskApi.instances == []
 
 
@@ -818,34 +845,36 @@ def test_room_unknown_room_exits_two_without_a_task_call(tmp_home, patch_room_ap
     ("flags", "destinations", "topic"),
     [
         (["--to", "resend_email"], ["resend_email"], None),
-        (["--to", "groups_service", "--topic", "Dinner"], ["groups_service"], "Dinner"),
+        (["--to", "groups_service", "--deliver-topic", "Dinner"], ["groups_service"], "Dinner"),
         (["--silent"], [], None),
     ],
 )
-def test_room_destinations_states(tmp_home, patch_room_api, flags, destinations, topic) -> None:
+def test_room_edit_delivery_states(tmp_home, patch_room_api, flags, destinations, topic) -> None:
     _login(tmp_home)
     patch_room_api(task_destinations=_room_task())
-    rc = cli.main(["scheduled-tasks", "destinations", _TASK_ID, *flags, "--room", "Trip"])
+    rc = cli.main(["scheduled-tasks", "edit", _TASK_ID, *flags, "--room", "Trip"])
     assert rc == 0
     assert _calls() == [("destinations", _TASK_ID, destinations, _ROOM, topic)]
 
 
-def test_room_destinations_has_no_default(tmp_home, patch_room_api, capsys) -> None:
+def test_room_edit_delivery_has_no_default(tmp_home, patch_room_api, capsys) -> None:
     """A room has no notification preference to follow, and what the server
     stores for "default" depends on a deployment flag — so the room form makes
     the owner say where, rather than send a sentinel on their behalf."""
     _login(tmp_home)
     patch_room_api(task_destinations=_room_task())
-    args = ["scheduled-tasks", "destinations", _TASK_ID, "--default", "--room", "Trip"]
+    args = ["scheduled-tasks", "edit", _TASK_ID, "--default", "--room", "Trip"]
     assert cli.main(args) == 2
     assert "--default isn't available with --room" in capsys.readouterr().err
     assert _calls() == []
 
 
-def test_room_destinations_refuses_a_personal_destination(tmp_home, patch_room_api, capsys) -> None:
+def test_room_edit_delivery_refuses_a_personal_destination(
+    tmp_home, patch_room_api, capsys
+) -> None:
     _login(tmp_home)
     patch_room_api(task_destinations=_room_task())
-    args = ["scheduled-tasks", "destinations", _TASK_ID, "--to", "whatsapp", "--room", "Trip"]
+    args = ["scheduled-tasks", "edit", _TASK_ID, "--to", "whatsapp", "--room", "Trip"]
     assert cli.main(args) == 2
     assert "isn't available with --room" in capsys.readouterr().err
     assert _calls() == []
@@ -854,10 +883,10 @@ def test_room_destinations_refuses_a_personal_destination(tmp_home, patch_room_a
 @pytest.mark.parametrize(
     "argv",
     [
-        ["add", "t", "--prompt", "p", "--cron", "0 9 * * 0"],
+        ["create", "t", "--prompt", "p", "--cron", "0 9 * * 0"],
         ["pause", _TASK_ID],
         ["resume", _TASK_ID],
-        ["destinations", _TASK_ID, "--silent"],
+        ["edit", _TASK_ID, "--silent"],
     ],
 )
 def test_a_non_owner_is_told_only_an_owner_can(tmp_home, patch_room_api, capsys, argv) -> None:
@@ -883,7 +912,17 @@ def test_room_errors_other_than_403_carry_the_servers_detail(
     _login(tmp_home)
     full = api_client.ApiError(status=409, body="", detail="This room is at its limit of tasks.")
     patch_room_api(task_created=full)
-    argv = ["scheduled-tasks", "add", "t", "--prompt", "p", "--cron", "0 9 * * 0", "--room", "Trip"]
+    argv = [
+        "scheduled-tasks",
+        "create",
+        "t",
+        "--prompt",
+        "p",
+        "--cron",
+        "0 9 * * 0",
+        "--room",
+        "Trip",
+    ]
     assert cli.main(argv) == 1
     err = capsys.readouterr().err
     assert "This room is at its limit of tasks." in err
@@ -898,9 +937,141 @@ def test_personal_commands_never_touch_a_room(tmp_home, patch_room_api) -> None:
     patch_room_api(task_list=[row], task_cancelled=row, task_destinations=row)
     assert cli.main(["scheduled-tasks", "list"]) == 0
     assert cli.main(["scheduled-tasks", "pause", _TASK_ID]) == 0
-    assert cli.main(["scheduled-tasks", "destinations", _TASK_ID, "--silent"]) == 0
+    assert cli.main(["scheduled-tasks", "edit", _TASK_ID, "--silent"]) == 0
     assert _calls() == [
         ("list", False, None),
         ("cancel", _TASK_ID, None),
         ("destinations", _TASK_ID, [], None, None),
     ]
+
+
+# ---------------------------------------------------------------------------
+# 0.2.0 shape: edit absorbs destinations, `--to room`, renew, old verbs gone
+
+
+@pytest.mark.parametrize("old", ["add", "destinations", "new", "rm"])
+def test_old_verbs_are_rejected(tmp_home, patch_api, old) -> None:
+    _login(tmp_home)
+    with pytest.raises(SystemExit) as ei:
+        cli.main(["scheduled-tasks", old, _TASK_ID])
+    assert ei.value.code == 2
+    assert _FakeTaskApi.instances == []
+
+
+def test_edit_sends_fields_first_then_delivery(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(task_updated=_task(), task_destinations=_task())
+    rc = cli.main(["scheduled-tasks", "edit", _TASK_ID, "--prompt", "New.", "--silent"])
+    assert rc == 0
+    kinds = [c[0] for c in _FakeTaskApi.instances[-1].calls]
+    assert kinds == ["update", "destinations"]
+    assert _last_call("update")[2] == {"prompt": "New."}
+    assert _last_call("destinations")[2] == []
+
+
+def test_edit_with_only_fields_makes_no_delivery_call(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(task_updated=_task())
+    assert cli.main(["scheduled-tasks", "edit", _TASK_ID, "--prompt", "New."]) == 0
+    assert [c[0] for c in _FakeTaskApi.instances[-1].calls] == ["update"]
+
+
+def test_edit_to_room_on_a_personal_task_is_refused(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(task_destinations=_task())
+    assert cli.main(["scheduled-tasks", "edit", _TASK_ID, "--to", "room"]) == 2
+    assert "only available with --room" in capsys.readouterr().err
+    assert cli.main(["scheduled-tasks", "edit", _TASK_ID, "--deliver-topic", "Dinner"]) == 2
+    assert "only available with --room" in capsys.readouterr().err
+    assert _FakeTaskApi.instances == []
+
+
+def test_room_create_to_room_goes_over_the_wire_as_groups_service(tmp_home, patch_room_api) -> None:
+    _login(tmp_home)
+    patch_room_api(task_created=_room_task())
+    base = ["scheduled-tasks", "create", "t", "--prompt", "p", "--cron", "0 9 * * 0"]
+    assert cli.main([*base, "--room", "Trip", "--to", "room", "--deliver-topic", "Dinner"]) == 0
+    last = _last_call("create")[1]
+    assert (last["destinations"], last["topic"]) == (["groups_service"], "Dinner")
+
+
+def test_room_edit_to_room_goes_over_the_wire_as_groups_service(tmp_home, patch_room_api) -> None:
+    _login(tmp_home)
+    patch_room_api(task_destinations=_room_task())
+    argv = ["scheduled-tasks", "edit", _TASK_ID, "--room", "Trip", "--to", "room"]
+    assert cli.main([*argv, "--deliver-topic", "Dinner"]) == 0
+    assert _calls() == [("destinations", _TASK_ID, ["groups_service"], _ROOM, "Dinner")]
+
+
+@pytest.mark.parametrize(
+    ("extra", "said"),
+    [
+        (["--prompt", "New."], "delivery only"),
+        (["--cron", "0 9 * * 1"], "delivery only"),
+        (["--silent", "--prompt", "New."], "delivery only"),
+        (["--default"], "--default isn't available with --room"),
+        ([], "nothing to change"),
+        (["--to", "room", "--silent"], "pass only one of"),
+    ],
+)
+def test_room_edit_is_delivery_only(tmp_home, patch_room_api, capsys, extra, said) -> None:
+    _login(tmp_home)
+    patch_room_api(task_destinations=_room_task())
+    assert cli.main(["scheduled-tasks", "edit", _TASK_ID, "--room", "Trip", *extra]) == 2
+    assert said in capsys.readouterr().err
+    assert _calls() == []
+
+
+def test_renew_by_id_prints_the_task(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(task_renewed=_task(name="morning-weather"))
+    assert cli.main(["scheduled-tasks", "renew", _TASK_ID]) == 0
+    assert _FakeTaskApi.instances[-1].calls == [("renew", _TASK_ID)]
+    assert "Renewed 'morning-weather'" in capsys.readouterr().err
+
+
+def test_renew_by_name_looks_the_task_up(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(task_list=[_task(name="morning-weather")], task_renewed=_task())
+    assert cli.main(["scheduled-tasks", "renew", "morning-weather"]) == 0
+    calls = _FakeTaskApi.instances[-1].calls
+    assert [c[0] for c in calls] == ["list", "renew"]
+
+
+def test_renew_refusal_prints_the_servers_reason(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(
+        task_renewed=api_client.ApiError(
+            status=422, body="", detail="This task isn't due for renewal."
+        )
+    )
+    assert cli.main(["scheduled-tasks", "renew", _TASK_ID]) == 1
+    assert "isn't due for renewal" in capsys.readouterr().err
+
+
+def test_renew_json_emits_the_task_and_j8_on_error(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(task_renewed=_task(name="morning-weather"))
+    assert cli.main(["scheduled-tasks", "renew", _TASK_ID, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["name"] == "morning-weather"
+    patch_api(
+        task_renewed=api_client.ApiError(status=422, body="", detail="Not due."),
+    )
+    assert cli.main(["scheduled-tasks", "renew", _TASK_ID, "--json"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err)["error"]["status"] == 422
+
+
+def test_renew_unknown_name_json_is_not_found(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(task_list=[], task_renewed=_task())
+    assert cli.main(["scheduled-tasks", "renew", "ghost", "--json"]) == 2
+    assert json.loads(capsys.readouterr().err)["error"]["code"] == "not_found"
+
+
+def test_renew_has_no_room_variant(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    with pytest.raises(SystemExit) as ei:
+        cli.main(["scheduled-tasks", "renew", _TASK_ID, "--room", "Trip"])
+    assert ei.value.code == 2

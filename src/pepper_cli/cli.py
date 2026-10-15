@@ -16,23 +16,25 @@ Subcommands:
 - ``pepper chat MESSAGE`` — one-shot turn against the server, render
   the reply. ``pepper chat`` with no message (or bare ``pepper``) opens
   the interactive REPL, which streams each turn over SSE.
-- ``pepper trajectory show <id> | list`` — inspect saved turns.
+- ``pepper trajectories show <id> | list`` — inspect saved turns.
 - ``pepper calendar [today|week|schedule] [--planning]`` — read-only agenda.
-- ``pepper next [--room R] [--first K] [--all] [--json]`` — Now / Do next / Due soon / Later.
-- ``pepper todos list | add | done | dismiss | reopen`` — manage tracked
+- ``pepper next [--room R] [--source PREFIX] [--first K] [--all] [--json]`` — Now / Do next /
+  Due soon / Later.
+- ``pepper todos list | create | done | dismiss | reopen`` — manage tracked
   action items; ``--room`` acts on a room's todos instead of yours.
-- ``pepper scheduled-tasks list | show | runs | thread | add | edit |
-  pause | resume | destinations`` — manage recurring and one-off
-  scheduled prompts; ``--room`` (on ``list``/``add``/``pause``/``resume``/
-  ``destinations``) acts on a room's tasks instead of yours — any member
-  lists, only a room owner changes.
-- ``pepper skills list | show | new | edit | delete`` — author skills as
-  SKILL.md documents in ``$EDITOR``. ``delete`` asks before deleting
+- ``pepper scheduled-tasks list | show | runs | thread | create | edit |
+  pause | resume | renew`` — manage recurring and one-off
+  scheduled prompts; ``--room`` (on ``list``/``create``/``edit``/``pause``/
+  ``resume``) acts on a room's tasks instead of yours — any member
+  lists, only a room owner changes. ``edit --to/--default/--silent`` sets
+  where a task announces its results.
+- ``pepper skills list | show | create | edit | delete`` — author skills as
+  SKILL.md documents in ``$EDITOR`` or ``--file``. ``delete`` asks before deleting
   unless ``--yes``. ``pepper skills share | revoke NAME --room ROOM`` puts one
   of your skills in a room or takes it out, and ``list``/``show`` take
   ``--room`` to read what a room holds — any member reads and shares, the
   skill's owner or a room owner revokes. A room never owns a skill, so
-  ``new``/``edit``/``delete`` refuse ``--room``.
+  ``create``/``edit``/``delete`` refuse ``--room``.
 - ``pepper groups list | show | topics | read | post`` — read and post in
   your rooms/channels and their topics. ``pepper groups watch [--room ROOM
   [--topic TOPIC]] [--since CURSOR] [--cursor-file PATH] [--json] [--kinds K,...]
@@ -48,19 +50,19 @@ Subcommands:
   the groups API — this is the surface a native port
   reproduces, so a shape change here mirrors the server contract, not the
   other way round.
-- ``pepper notes list | search | show | new | edit | rm`` — your text
+- ``pepper notes list | search | show | create | edit | delete`` — your text
   artifacts: your own, or a room's shared ones with ``--room``. Reference
   client for the artifacts API — ``show`` writes a note's raw
   markdown body to stdout, byte-exact when piped, so ``show > f.md``
-  round-trips through ``notes edit --file f.md``. ``new``/``edit`` take the
+  round-trips through ``notes edit --file f.md``. ``create``/``edit`` take the
   body from ``$EDITOR``, ``--file PATH``, or ``--file -`` for stdin;
   ``edit`` sends nothing when the text is unchanged and runs the
   conflict flow (save + diff + re-open/overwrite/quit) on a stale
-  ``If-Match``. ``rm`` asks before deleting unless ``--yes``.
+  ``If-Match``. ``delete`` asks before deleting unless ``--yes``.
 - ``pepper takeout [--out FILE]`` — download a zip archive of everything
   Pepper holds about your account.
 - ``pepper logout`` — delete the credentials file.
-- ``pepper agent-skill [--write DIR [--force]]`` — print (or write) the
+- ``pepper agents guide [--write DIR [--force]]`` — print (or write) the
   SKILL.md shipped in this package that teaches an agent member to use the
   CLI in rooms. Reads no credentials and makes no network call.
 
@@ -157,12 +159,34 @@ _DESTINATION_CHOICES = ("main_chat", "resend_email", "twilio_sms", "whatsapp")
 #: ``pepper.agent.scheduled_tasks.destinations.GROUP_OFFERED``.
 _ROOM_DESTINATION_CHOICES = ("groups_service", "resend_email")
 
+#: The CLI's spelling of a room destination is ``room`` (the product says "Delivery",
+#: not the service name); the server's enum value is unchanged, so ``room`` is mapped
+#: to it just before a request is built. ``groups_service`` stays an accepted, unlisted
+#: spelling of the same thing.
+_ROOM_DESTINATION_WIRE = {"room": "groups_service"}
+_ROOM_DESTINATION_SHOWN = ("room", "resend_email")
+
 #: What ``--to`` accepts at parse time: both dialects, since argparse cannot
 #: see ``--room``. :func:`_destination_dialect_error` narrows it afterwards.
 _ANY_DESTINATION_CHOICES = (
     *_DESTINATION_CHOICES,
     *(d for d in _ROOM_DESTINATION_CHOICES if d not in _DESTINATION_CHOICES),
+    *_ROOM_DESTINATION_WIRE,
 )
+
+
+#: ``--to`` help: every choice before the first full stop (the conformance test reads it so),
+#: then which ones a room's task takes.
+_TO_CHOICES_TEXT = (
+    f"{', '.join(_DESTINATION_CHOICES)}, room (room tasks take only "
+    f"{' and '.join(_ROOM_DESTINATION_SHOWN)}, with --room)"
+)
+
+
+def _wire_destinations(to: list[str] | None) -> list[str]:
+    """``--to`` values as the server spells them (``room`` -> ``groups_service``)."""
+    return [_ROOM_DESTINATION_WIRE.get(d, d) for d in to or []]
+
 
 #: The one sentence a non-owner gets for any refused room-task write.
 _ROOM_TASK_OWNER_ONLY = "only a room owner can change its scheduled tasks."
@@ -174,7 +198,7 @@ _ROOM_SKILL_SEALED = (
     "sharing a skill into this kind of room isn't allowed yet — "
     "a skill can only be shared into a named channel."
 )
-#: ``skills new|edit|delete --room``: there is no such thing to do.
+#: ``skills create|edit|delete --room``: there is no such thing to do.
 _ROOM_OWNS_NO_SKILL = (
     "a room never owns a skill, so there is nothing to {verb} there — {verb} your own "
     "skill (without --room) and it updates everywhere it is shared. "
@@ -345,7 +369,7 @@ def _reject_command_typo(first: str, subcommand_names: frozenset[str]) -> int | 
     """Guard implicit chat: return exit code 2 (after a stderr hint) when ``first``
     looks like a mistyped command, or when ``PEPPER_NO_IMPLICIT_CHAT`` is set.
 
-    zsh doesn't word-split ``$var``, so ``pepper "todos add"`` arrives as one
+    zsh doesn't word-split ``$var``, so ``pepper "todos create"`` arrives as one
     word; its first token is checked too. Returns ``None`` to let chat proceed.
     """
     # Truthy-looking values only: "0"/"false"/"" leave implicit chat on.
@@ -389,8 +413,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
             "Pepper CLI — chat with your agent over /api/v1. "
             "Bare ``pepper`` opens the REPL; ``pepper <message>`` is shorthand "
             "for ``pepper chat <message>``. Use a subcommand "
-            "(login / whoami / chat / trajectory / todos / scheduled-tasks / "
-            "skills / groups / notes / agent-skill / logout) for everything else."
+            "(login / whoami / chat / trajectories / todos / scheduled-tasks / "
+            "skills / groups / notes / agents / logout) for everything else."
         ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -479,25 +503,24 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_chat.set_defaults(handler=cmd_chat)
 
     p_traj = sub.add_parser(
-        "trajectory",
+        "trajectories",
         help=(
-            "Inspect saved trajectories you own (or share via a group). "
+            "Inspect saved trajectories you own (or share via a room). "
             "Use ``show <id>`` for one turn, ``list`` for recent turns."
         ),
     )
-    # Nested subparser: ``pepper trajectory show ...`` / ``... list``.
-    # ``required=True`` so ``pepper trajectory`` alone prints help rather
+    # Nested subparser: ``pepper trajectories show ...`` / ``... list``.
+    # ``required=True`` so ``pepper trajectories`` alone prints help rather
     # than silently doing nothing.
     sub_traj = p_traj.add_subparsers(dest="trajectory_action", required=True)
-    p_traj_show = sub_traj.add_parser("show", help="Print one trajectory's events.")
-    p_traj_show.add_argument("trajectory_id", help="Trajectory UUID.")
-    p_traj_show.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit the raw JSON response (full payloads, no truncation).",
+    p_traj_show = sub_traj.add_parser(
+        "show", help="Print one trajectory's events.", parents=[_json_parent]
     )
+    p_traj_show.add_argument("trajectory_id", help="Trajectory UUID.")
     p_traj_show.set_defaults(handler=cmd_trajectory_show)
-    p_traj_list = sub_traj.add_parser("list", help="List your recent trajectories.")
+    p_traj_list = sub_traj.add_parser(
+        "list", help="List your recent trajectories.", parents=[_json_parent]
+    )
     p_traj_list.add_argument(
         "--limit",
         type=int,
@@ -505,12 +528,12 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         help="Number of rows (default 20, max 200).",
     )
     p_traj_list.add_argument(
-        "--offset",
-        type=int,
-        default=0,
-        help="Skip this many rows. Use for paging.",
+        "--before",
+        metavar="CURSOR",
+        help="Older than this cursor (a next_before value an earlier call printed).",
     )
     p_traj_list.set_defaults(handler=cmd_trajectory_list)
+    _add_renamed_stub(sub, "trajectory", "see 'pepper trajectories --help'")
 
     p_cal = sub.add_parser(
         "calendar",
@@ -547,7 +570,14 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         ),
     )
     p_next.add_argument(
-        "--room", help="Only items whose room or source starts with this (case-insensitive)."
+        "--room",
+        metavar="ROOM",
+        help="Only this room's items: its UUID, or a case-insensitive unique name prefix.",
+    )
+    p_next.add_argument(
+        "--source",
+        metavar="PREFIX",
+        help="Only items whose source or room name starts with this (case-insensitive).",
     )
     p_next.add_argument(
         "--first",
@@ -561,7 +591,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_todos = sub.add_parser(
         "todos",
         help=(
-            "Your tracked action items. ``list`` to see them, ``add`` to create, "
+            "Your tracked action items. ``list`` to see them, ``create`` to add one, "
             "``done``/``dismiss`` to close one."
         ),
     )
@@ -579,8 +609,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_todos_list.add_argument("--json", action="store_true", help="Emit the raw JSON response.")
     p_todos_list.set_defaults(handler=cmd_todo_list)
 
-    p_todos_add = sub_todos.add_parser("add", help="Create a todo.")
-    # ``nargs="+"`` so ``pepper todos add buy milk`` joins unquoted words
+    p_todos_add = sub_todos.add_parser("create", help="Create a todo.")
+    # ``nargs="+"`` so ``pepper todos create buy milk`` joins unquoted words
     # into one title, mirroring ``pepper chat``'s message handling.
     p_todos_add.add_argument("title", nargs="+", help="The todo title. Multi-word OK.")
     p_todos_add.add_argument("--details", help="Optional longer description (not with --room).")
@@ -592,7 +622,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_todos_add.add_argument(
         "--priority", help="Free-form priority label, e.g. high (not with --room)."
     )
-    p_todos_add.set_defaults(handler=cmd_todo_add)
+    p_todos_add.set_defaults(handler=cmd_todo_create)
 
     for name, handler, text in (
         ("done", cmd_todo_done, "Mark a todo done, as ticking it on Schedule does."),
@@ -602,7 +632,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         p_todo = sub_todos.add_parser(name, help=text)
         p_todo.add_argument("todo_id", help="Todo UUID (from ``todos list`` or ``next --json``).")
         p_todo.set_defaults(handler=handler)
-    for name in ("list", "add", "done", "dismiss", "reopen"):
+    for name in ("list", "create", "done", "dismiss", "reopen"):
         sub_todos.choices[name].add_argument(
             "--room", help=_GROUP_ARG_HELP + " Acts on the room's todos instead of yours."
         )
@@ -611,8 +641,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "scheduled-tasks",
         help=(
             "Your scheduled prompts. ``list``/``show``/``runs``/``thread`` to "
-            "inspect, ``add``/``edit`` to change one, ``pause``/``resume`` to "
-            "take it off and put it back on the schedule."
+            "inspect, ``create``/``edit`` to change one, ``pause``/``resume`` to "
+            "take it off and put it back on the schedule, ``renew`` to keep "
+            "one going."
         ),
     )
     sub_tasks = p_tasks.add_subparsers(dest="scheduled_tasks_action", required=True)
@@ -646,7 +677,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_tasks_thread.set_defaults(handler=cmd_scheduled_task_thread)
 
     p_tasks_add = sub_tasks.add_parser(
-        "add",
+        "create",
         help="Schedule a new task. Pass exactly one of --cron or --at.",
     )
     p_tasks_add.add_argument(
@@ -680,10 +711,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         choices=_ANY_DESTINATION_CHOICES,
         metavar="DEST",
         help=(
-            "Where to announce the result; repeatable. Choices: "
-            f"{', '.join(_DESTINATION_CHOICES)}. Omit to use your default "
-            f"notification channel. With --room: {', '.join(_ROOM_DESTINATION_CHOICES)}; "
-            "omit to let the server pick the room's delivery."
+            "Where to announce the result; repeatable. "
+            f"Choices: {_TO_CHOICES_TEXT}. Omit to use your default "
+            "notification channel (with --room, to let the server pick the room's delivery)."
         ),
     )
     p_tasks_add.add_argument(
@@ -691,7 +721,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         action="store_true",
         help="Announce nowhere — the result still lands in the task's own thread.",
     )
-    p_tasks_add.set_defaults(handler=cmd_scheduled_task_add)
+    p_tasks_add.set_defaults(handler=cmd_scheduled_task_create)
 
     p_tasks_edit = sub_tasks.add_parser(
         "edit",
@@ -708,6 +738,33 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         action="store_true",
         help="Remove the label entirely (distinct from leaving it alone).",
     )
+    p_tasks_edit.add_argument(
+        "--to",
+        action="append",
+        choices=_ANY_DESTINATION_CHOICES,
+        metavar="DEST",
+        help=(
+            "Where to announce the result, replacing the whole set; repeatable. "
+            f"Choices: {_TO_CHOICES_TEXT}."
+        ),
+    )
+    p_tasks_edit.add_argument(
+        "--default",
+        action="store_true",
+        dest="use_default",
+        help="Follow your notification preference instead of a pinned set. Not with --room.",
+    )
+    p_tasks_edit.add_argument(
+        "--silent",
+        action="store_true",
+        help="Announce nowhere. Distinct from --default: a later change to your "
+        "notification preference won't un-silence it.",
+    )
+    p_tasks_edit.add_argument(
+        "--deliver-topic",
+        metavar="NAME",
+        help="With --room and --to room: the name of the room topic the result is posted into.",
+    )
     p_tasks_edit.set_defaults(handler=cmd_scheduled_task_edit)
 
     p_tasks_pause = sub_tasks.add_parser(
@@ -723,35 +780,15 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_tasks_resume.add_argument("task", help=_TASK_ARG_HELP)
     p_tasks_resume.set_defaults(handler=cmd_scheduled_task_resume)
 
-    p_tasks_dest = sub_tasks.add_parser(
-        "destinations",
-        help="Set where a task announces its results (replaces the whole set).",
+    p_tasks_renew = sub_tasks.add_parser(
+        "renew",
+        help="Keep a task going past its renewal warning. Prints the server's reason if refused.",
+        parents=[_json_parent],
     )
-    p_tasks_dest.add_argument("task", help=_TASK_ARG_HELP)
-    p_tasks_dest.add_argument(
-        "--to",
-        action="append",
-        choices=_ANY_DESTINATION_CHOICES,
-        metavar="DEST",
-        help=(
-            f"Repeatable. Choices: {', '.join(_DESTINATION_CHOICES)}. "
-            f"With --room: {', '.join(_ROOM_DESTINATION_CHOICES)}."
-        ),
-    )
-    p_tasks_dest.add_argument(
-        "--default",
-        action="store_true",
-        dest="use_default",
-        help="Follow your notification preference instead of a pinned set. Not with --room.",
-    )
-    p_tasks_dest.add_argument(
-        "--silent",
-        action="store_true",
-        help="Announce nowhere. Distinct from --default: a later change to your "
-        "notification preference won't un-silence it.",
-    )
-    p_tasks_dest.set_defaults(handler=cmd_scheduled_task_destinations)
-    for name in ("list", "add", "pause", "resume", "destinations"):
+    p_tasks_renew.add_argument("task", help=_TASK_ARG_HELP)
+    p_tasks_renew.set_defaults(handler=cmd_scheduled_task_renew)
+
+    for name in ("list", "create", "pause", "resume"):
         sub_tasks.choices[name].add_argument(
             "--room",
             help=(
@@ -759,21 +796,25 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
                 "Any member can list them; only a room owner can change them."
             ),
         )
-    for name in ("add", "destinations"):
-        sub_tasks.choices[name].add_argument(
-            "--topic",
-            metavar="NAME",
-            help=(
-                "With --room and --to groups_service: the name of the room topic "
-                "the result is posted into."
-            ),
-        )
+    sub_tasks.choices["edit"].add_argument(
+        "--room",
+        metavar="ROOM",
+        help=(
+            "Room: its UUID, or a case-insensitive unique name prefix. Changes the room "
+            "task's delivery (--to, --silent) instead of yours; only a room owner can."
+        ),
+    )
+    sub_tasks.choices["create"].add_argument(
+        "--deliver-topic",
+        metavar="NAME",
+        help="With --room and --to room: the name of the room topic the result is posted into.",
+    )
 
     p_skills = sub.add_parser(
         "skills",
         help=(
-            "Your skill library. ``list``/``show`` to inspect, ``new``/``edit`` "
-            "to author in $EDITOR, ``delete`` to remove one of yours. "
+            "Your skill library. ``list``/``show`` to inspect, ``create``/``edit`` "
+            "to author in $EDITOR or from --file, ``delete`` to remove one of yours. "
             "``share``/``revoke`` with --room put one in a room or take it out."
         ),
     )
@@ -786,9 +827,16 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_skills_show.add_argument("name", help="Skill name (from ``skills list``).")
     p_skills_show.set_defaults(handler=cmd_skills_show)
 
-    p_skills_new = sub_skills.add_parser("new", help="Author a new skill in $EDITOR and save it.")
+    p_skills_new = sub_skills.add_parser(
+        "create", help="Author a new skill in $EDITOR (or from --file) and save it."
+    )
     p_skills_new.add_argument("name", help="Slug name for the new skill.")
-    p_skills_new.set_defaults(handler=cmd_skills_new)
+    p_skills_new.add_argument(
+        "--file",
+        metavar="PATH",
+        help="Read the SKILL.md document from this path, or '-' for stdin, instead of $EDITOR.",
+    )
+    p_skills_new.set_defaults(handler=cmd_skills_create)
 
     p_skills_edit = sub_skills.add_parser(
         "edit",
@@ -798,13 +846,19 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         ),
     )
     p_skills_edit.add_argument("name", help="Skill name (from ``skills list``).")
+    p_skills_edit.add_argument(
+        "--file",
+        metavar="PATH",
+        help="Read the new SKILL.md document from this path, or '-' for stdin, instead of $EDITOR.",
+    )
     p_skills_edit.set_defaults(handler=cmd_skills_edit)
 
     p_skills_delete = sub_skills.add_parser(
-        "delete", help="Delete one of YOUR skills (built-ins can't be deleted)."
+        "delete",
+        help="Delete one of YOUR skills (built-ins can't be deleted).",
+        parents=[_yes_parent],
     )
     p_skills_delete.add_argument("name", help="Skill name (from ``skills list``).")
-    p_skills_delete.add_argument("--yes", action="store_true", help="Skip the confirmation prompt.")
     p_skills_delete.set_defaults(handler=cmd_skills_delete)
 
     p_skills_share = sub_skills.add_parser(
@@ -824,6 +878,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
             "Stop sharing a skill with a room. The skill itself is untouched. "
             "Its owner can always do this; a room owner can in a channel."
         ),
+        parents=[_yes_parent],
     )
     p_skills_revoke.add_argument("name", help=_ROOM_SKILL_ARG_HELP)
     p_skills_revoke.add_argument("--room", required=True, help=_GROUP_ARG_HELP)
@@ -837,7 +892,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
                 "your own library. Any member can."
             ),
         )
-    for name in ("new", "edit", "delete"):
+    for name in ("create", "edit", "delete"):
         # Accepted so the refusal can explain itself (exit 2) instead of
         # argparse's "unrecognized arguments".
         sub_skills.choices[name].add_argument(
@@ -1196,7 +1251,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_notes_show.set_defaults(handler=cmd_notes_show)
 
     p_notes_new = sub_notes.add_parser(
-        "new",
+        "create",
         help="Create a note. Body from $EDITOR, --file PATH, or --file - for stdin.",
     )
     p_notes_new.add_argument("name", help="The new note's name.")
@@ -1206,7 +1261,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_notes_new.add_argument(
         "--file", help="Read the body from this path, or '-' to read stdin, instead of $EDITOR."
     )
-    p_notes_new.set_defaults(handler=cmd_notes_new)
+    p_notes_new.set_defaults(handler=cmd_notes_create)
 
     p_notes_edit = sub_notes.add_parser(
         "edit",
@@ -1218,7 +1273,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "--file",
         help="Read the new body from this path, or '-' to read stdin, instead of $EDITOR.",
     )
-    p_notes_edit.add_argument("--rename", metavar="NAME", help="Rename the note to NAME.")
+    p_notes_edit.add_argument("--name", metavar="NAME", help="Rename the note to NAME.")
     p_notes_edit_precondition = p_notes_edit.add_mutually_exclusive_group()
     p_notes_edit_precondition.add_argument(
         "--if-match",
@@ -1230,11 +1285,10 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     )
     p_notes_edit.set_defaults(handler=cmd_notes_edit)
 
-    p_notes_rm = sub_notes.add_parser("rm", help="Delete a note.")
+    p_notes_rm = sub_notes.add_parser("delete", help="Delete a note.", parents=[_yes_parent])
     p_notes_rm.add_argument("note", help=_NOTE_ARG_HELP)
     p_notes_rm.add_argument("--room", help=_GROUP_ARG_HELP + " Omit for your own notes.")
-    p_notes_rm.add_argument("--yes", action="store_true", help="Skip the confirmation prompt.")
-    p_notes_rm.set_defaults(handler=cmd_notes_rm)
+    p_notes_rm.set_defaults(handler=cmd_notes_delete)
 
     p_takeout = sub.add_parser(
         "takeout",
@@ -1252,8 +1306,13 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_logout = sub.add_parser("logout", help="Delete the credentials file.")
     p_logout.set_defaults(handler=cmd_logout)
 
-    p_agent_skill = sub.add_parser(
-        "agent-skill",
+    p_agents = sub.add_parser(
+        "agents",
+        help="Agent members: ``guide`` prints the usage guide for taking part in rooms.",
+    )
+    sub_agents = p_agents.add_subparsers(dest="agents_action", required=True)
+    p_agents_guide = sub_agents.add_parser(
+        "guide",
         help="Print the agent-usage guide (SKILL.md) for taking part in rooms as an agent member.",
         description=(
             "Print the SKILL.md that tells an agent member how to use this CLI in Pepper "
@@ -1261,16 +1320,18 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
             "login and makes no network call. (Not 'pepper skills', which manages your "
             "account's own skills.)"
         ),
+        parents=[_json_parent],
     )
-    p_agent_skill.add_argument(
+    p_agents_guide.add_argument(
         "--write",
         metavar="DIR",
         help="Write DIR/SKILL.md (creating DIR) instead of printing; refuses to overwrite.",
     )
-    p_agent_skill.add_argument(
+    p_agents_guide.add_argument(
         "--force", action="store_true", help="With --write: overwrite an existing SKILL.md."
     )
-    p_agent_skill.set_defaults(handler=cmd_agent_skill)
+    p_agents_guide.set_defaults(handler=cmd_agents_guide)
+    _add_renamed_stub(sub, "agent-skill", "see 'pepper agents guide'")
 
     # ``sub.choices`` is the public mapping of subparser name → parser
     # that argparse exposes (``argparse.SubParsersAction.choices``).
@@ -1956,7 +2017,7 @@ def _serve_client_tool_call(
 
 
 def cmd_trajectory_show(args: argparse.Namespace) -> int:
-    """``pepper trajectory show <id> [--json]``.
+    """``pepper trajectories show <id> [--json]``.
 
     Default mode prints a header and then one line per event (see
     :func:`render.render_trajectory` for the exact shape, which is kept
@@ -1968,61 +2029,65 @@ def cmd_trajectory_show(args: argparse.Namespace) -> int:
       1 — auth failure (revoked / missing token), other API errors
       2 — invalid trajectory id format
     """
-    import json
-    import sys
-
     # Validate the UUID shape locally before splatting it into a URL —
     # gives a friendlier error than the server's 422.
-    if not re.fullmatch(
-        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
-        args.trajectory_id,
-    ):
-        render.error(f"trajectory id must be a UUID (got: {args.trajectory_id})")
+    if not _valid_uuid(args.trajectory_id):
+        _emit_error(args, "usage", f"trajectory id must be a UUID (got: {args.trajectory_id})")
         return 2
 
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            if args.json:
-                raw = api.trajectory_get_raw(args.trajectory_id)
-                # Plain stdout — scriptable, pipe to jq.
-                sys.stdout.write(json.dumps(raw, indent=2))
-                sys.stdout.write("\n")
-                return 0
-            detail = api.trajectory_get(args.trajectory_id)
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
+    def run(api: api_client.ApiClient) -> int:
+        if args.json:
+            # The raw wire body, passed through unchanged (J7).
+            _print_json(api.trajectory_get_raw(args.trajectory_id))
+        else:
+            render.render_trajectory(api.trajectory_get(args.trajectory_id))
+        return 0
 
-    render.render_trajectory(detail)
-    return 0
+    return _run_personal(args, run)
+
+
+def _offset_cursor(value: str | None) -> int | None:
+    """Decode a ``trajectories list --before`` cursor (the next offset); ``None`` if malformed.
+
+    The server pages by offset only, so the cursor is that offset as text. It is
+    opaque to callers: they pass back whatever ``next_before`` printed.
+    """
+    if value is None:
+        return 0
+    return int(value) if value.isdecimal() else None
 
 
 def cmd_trajectory_list(args: argparse.Namespace) -> int:
-    """``pepper trajectory list [--limit N] [--offset N]``.
+    """``pepper trajectories list [--limit N] [--before CURSOR] [--json]``.
 
     Renders newest-first. Each row shows seq + channel + created time
     + a snippet of the first user message — same shape as the web
-    list page, condensed for terminal output.
+    list page, condensed for terminal output. ``--json`` is the J3
+    envelope; ``next_before`` is set when a full page came back (there may be more).
     """
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            rows = api.trajectory_list(limit=args.limit, offset=args.offset)
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
+    offset = _offset_cursor(args.before)
+    if offset is None:
+        _emit_error(
+            args, "usage", f"--before expects a cursor from a previous call (got: {args.before})"
+        )
+        return 2
+    if args.limit < 1:
+        _emit_error(args, "usage", "--limit must be at least 1")
+        return 2
 
-    render.render_trajectory_list(rows)
-    return 0
+    def run(api: api_client.ApiClient) -> int:
+        rows = api.trajectory_list(limit=args.limit, offset=offset)
+        more = str(offset + len(rows)) if len(rows) >= args.limit else None
+
+        def human() -> None:
+            render.render_trajectory_list(rows)
+            if more is not None:
+                render.info(f"More: pepper trajectories list --before {more}")
+
+        _emit_list(rows, args, human, next_before=more)
+        return 0
+
+    return _run_personal(args, run)
 
 
 def _add_calendar_extras(api: Any, payload: dict[str, Any], *, schedule: bool) -> None:
@@ -2095,26 +2160,54 @@ def cmd_calendar(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_next(args: argparse.Namespace) -> int:
-    """``pepper next [--room R] [--first K] [--all] [--json]``."""
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            result = next_view.assemble(api, room=args.room, show_all=args.all, first=args.first)
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    if args.first and result["source"] == "fallback":
-        render.info("Pepper's plans aren't available on this server yet; showing the todos list.")
-    if args.json:
-        _print_json(result)
+def _resolve_room_strict(
+    api: api_client.ApiClient, args: argparse.Namespace, value: str
+) -> str | None:
+    """Resolve ``--room`` to a room id, reporting a miss as exit 2 (J8 under ``--json``).
+
+    A UUID passes straight through; otherwise an exact, else a unique prefix, match on the
+    name of one of your rooms (archived ones too). An unknown or ambiguous name is an
+    error, never a silent empty result.
+    """
+    if _valid_uuid(value):
+        return value
+    rooms = list(api.list_groups().groups)
+    match, candidates = _match_by_name(value, rooms, name_of=lambda g: g.display_name)
+    if match is None and not candidates:
+        archived = api.list_groups(archived=True).groups
+        match, candidates = _match_by_name(value, archived, name_of=lambda g: g.display_name)
+    if match is not None:
+        return match.group_id
+    if candidates:
+        listing = ", ".join(f"{g.display_name!r} ({g.group_id})" for g in candidates)
+        _emit_error(args, "ambiguous", f"{value!r} matches more than one room: {listing}")
     else:
-        render.render_next(result)
-    return 0
+        _emit_error(args, "not_found", f"no room named {value!r} — run 'pepper groups list'")
+    return None
+
+
+def cmd_next(args: argparse.Namespace) -> int:
+    """``pepper next [--room R] [--source PREFIX] [--first K] [--all] [--json]``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        room_id = None
+        if args.room:
+            room_id = _resolve_room_strict(api, args, args.room)
+            if room_id is None:
+                return 2
+        scope = next_view.Scope(room_id=room_id, source=args.source)
+        result = next_view.assemble(api, scope=scope, show_all=args.all, first=args.first)
+        if args.first and result["source"] == "fallback":
+            render.info(
+                "Pepper's plans aren't available on this server yet; showing the todos list."
+            )
+        if args.json:
+            _print_json(result)
+        else:
+            render.render_next(result)
+        return 0
+
+    return _run_personal(args, run)
 
 
 def cmd_todo_list(args: argparse.Namespace) -> int:
@@ -2131,8 +2224,8 @@ def cmd_todo_list(args: argparse.Namespace) -> int:
     return _with_api(run, _report_api_error)
 
 
-def cmd_todo_add(args: argparse.Namespace) -> int:
-    """``pepper todos add <title...> [--details D] [--due DATE] [--priority P] [--room ROOM]``.
+def cmd_todo_create(args: argparse.Namespace) -> int:
+    """``pepper todos create <title...> [--details D] [--due DATE] [--priority P] [--room ROOM]``.
 
     A room's todo takes only a title and a ``YYYY-MM-DD`` due date. Exit codes: 0 ok ·
     1 auth/API/transport · 2 bad input (blank title / unparseable ``--due`` / a flag the
@@ -2217,7 +2310,11 @@ def cmd_todo_dismiss(args: argparse.Namespace) -> int:
 
 
 def _resolve_task_id(
-    api: api_client.ApiClient, task: str, *, group_id: str | None = None
+    api: api_client.ApiClient,
+    task: str,
+    *,
+    group_id: str | None = None,
+    args: argparse.Namespace | None = None,
 ) -> str | None:
     """Turn a task name into its id, passing a UUID straight through.
 
@@ -2234,7 +2331,17 @@ def _resolve_task_id(
     room's names are its own namespace, so yours never answer for it. A
     UUID still passes straight through: the server refuses one that is not
     this room's task.
+
+    With ``args`` the miss is reported through :func:`_emit_error` (J8 under
+    ``--json``) instead of plain text.
     """
+
+    def say(message: str) -> None:
+        if args is None:
+            render.error(message)
+        else:
+            _emit_error(args, "not_found", message)
+
     if _valid_uuid(task):
         return task
     if group_id:
@@ -2245,12 +2352,12 @@ def _resolve_task_id(
         if row.name == task:
             return row.id
     if group_id:
-        render.error(
+        say(
             f"no scheduled task named {task!r} in that room — "
             "run 'pepper scheduled-tasks list --all --room ROOM'"
         )
     else:
-        render.error(f"no scheduled task named {task!r} — run 'pepper scheduled-tasks list --all'")
+        say(f"no scheduled task named {task!r} — run 'pepper scheduled-tasks list --all'")
     return None
 
 
@@ -2274,20 +2381,20 @@ def _destination_dialect_error(
     one applies, so a wrong pairing is a usage error (exit 2) rather than a
     round-trip 422.
     """
-    chosen = to or []
+    chosen = _wire_destinations(to)
     if room:
-        wrong = [d for d in chosen if d not in _ROOM_DESTINATION_CHOICES]
+        wrong = [d for d in to or [] if _wire_destinations([d])[0] not in _ROOM_DESTINATION_CHOICES]
         if wrong:
             return (
                 f"--to {wrong[0]} isn't available with --room — a room's task "
-                f"announces to: {', '.join(_ROOM_DESTINATION_CHOICES)}"
+                f"announces to: {', '.join(_ROOM_DESTINATION_SHOWN)}"
             )
         if topic is not None and "groups_service" not in chosen:
-            return "--topic picks the topic for --to groups_service; pass that too"
+            return "--deliver-topic picks the topic for --to room; pass that too"
         return None
     if topic is not None:
-        return "--topic is only available with --room"
-    wrong = [d for d in chosen if d not in _DESTINATION_CHOICES]
+        return "--deliver-topic is only available with --room"
+    wrong = [d for d in to or [] if d not in _DESTINATION_CHOICES]
     if wrong:
         return f"--to {wrong[0]} is only available with --room"
     return None
@@ -2383,8 +2490,8 @@ def cmd_scheduled_task_thread(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_scheduled_task_add(args: argparse.Namespace) -> int:
-    """``pepper scheduled-tasks add <name> --prompt P (--cron C | --at T) ...``.
+def cmd_scheduled_task_create(args: argparse.Namespace) -> int:
+    """``pepper scheduled-tasks create <name> --prompt P (--cron C | --at T) ...``.
 
     Exit codes: 0 ok · 1 auth/API/transport · 2 bad input (neither or both
     of --cron/--at, --to alongside --silent, unparseable --at).
@@ -2393,12 +2500,12 @@ def cmd_scheduled_task_add(args: argparse.Namespace) -> int:
     ``--description``, and ``--to`` in the room's dialect. A flag the room
     form lacks is exit 2; a non-owner is refused by the server (exit 1).
     """
-    dialect_err = _destination_dialect_error(args.to, room=args.room, topic=args.topic)
+    dialect_err = _destination_dialect_error(args.to, room=args.room, topic=args.deliver_topic)
     if dialect_err is not None:
         render.error(dialect_err)
         return 2
     if args.room:
-        return _add_room_scheduled_task(args)
+        return _create_room_scheduled_task(args)
     if (args.cron is None) == (args.at is None):
         render.error("pass exactly one of --cron (recurring) or --at (one-off)")
         return 2
@@ -2418,7 +2525,7 @@ def cmd_scheduled_task_add(args: argparse.Namespace) -> int:
     if args.silent:
         destinations = []
     elif args.to:
-        destinations = list(args.to)
+        destinations = _wire_destinations(args.to)
 
     creds = _load_or_error()
     if creds is None:
@@ -2444,8 +2551,8 @@ def cmd_scheduled_task_add(args: argparse.Namespace) -> int:
     return 0
 
 
-def _add_room_scheduled_task(args: argparse.Namespace) -> int:
-    """``scheduled-tasks add --room``. The dialect is already checked."""
+def _create_room_scheduled_task(args: argparse.Namespace) -> int:
+    """``scheduled-tasks create --room``. The dialect is already checked."""
     if args.at is not None or args.description is not None:
         render.error("--at and --description aren't available with --room")
         return 2
@@ -2461,7 +2568,7 @@ def _add_room_scheduled_task(args: argparse.Namespace) -> int:
     if args.silent:
         destinations = []
     elif args.to:
-        destinations = list(args.to)
+        destinations = _wire_destinations(args.to)
 
     def run(api: api_client.ApiClient) -> int:
         task = api.create_scheduled_task(
@@ -2471,7 +2578,7 @@ def _add_room_scheduled_task(args: argparse.Namespace) -> int:
             timezone=args.timezone,
             destinations=destinations,
             group_id=_need_group(api, args.room),
-            topic=args.topic,
+            topic=args.deliver_topic,
         )
         render.info(f"Scheduled {task.name!r} on the room.")
         render.render_scheduled_task_list([task])
@@ -2481,11 +2588,21 @@ def _add_room_scheduled_task(args: argparse.Namespace) -> int:
 
 
 def cmd_scheduled_task_edit(args: argparse.Namespace) -> int:
-    """``pepper scheduled-tasks edit <task> [--prompt ...] [--cron ...] ...``.
+    """``pepper scheduled-tasks edit <task> [field flags] [--to D... | --default | --silent]``.
 
     Only the flags actually passed are sent, so the server can tell "leave
     this alone" from "set it to this" — which is why the edits dict is
     built key by key rather than from a namespace dump.
+
+    The delivery flags replace the whole set, so exactly one of ``--to``
+    (repeatable), ``--default`` and ``--silent`` may be given: a command with
+    no choice on it would have to guess between inherit and silent, which are
+    opposite answers. Field flags and delivery are two requests (the server
+    takes them separately); field changes are sent first.
+
+    With ``--room`` only delivery can change (the room API takes nothing else
+    yet): ``--to`` in the room's dialect or ``--silent``, no ``--default`` (a
+    room has no notification preference of its own to follow).
     """
     if args.description is not None and args.clear_description:
         render.error("pass either --description or --clear-description, not both")
@@ -2507,27 +2624,69 @@ def cmd_scheduled_task_edit(args: argparse.Namespace) -> int:
         edits["description"] = args.description
     elif args.clear_description:
         edits["description"] = None
-    if not edits:
+    if sum([bool(args.to), args.use_default, args.silent]) > 1:
+        render.error("pass only one of --to (repeatable), --default, or --silent")
+        return 2
+    has_delivery = bool(args.to) or args.use_default or args.silent
+    if not edits and not has_delivery and args.deliver_topic is None:
         render.error("nothing to change — pass at least one field to edit")
         return 2
+    if args.room and edits:
+        render.error(
+            "with --room, edit changes delivery only (--to or --silent) — "
+            "the server can't change a room task's prompt or schedule yet"
+        )
+        return 2
+    if args.room and args.use_default:
+        render.error("--default isn't available with --room — pass --to or --silent")
+        return 2
+    if args.room and not has_delivery:
+        render.error("with --room, pass --to or --silent")
+        return 2
+    dialect_err = _destination_dialect_error(args.to, room=args.room, topic=args.deliver_topic)
+    if dialect_err is not None:
+        render.error(dialect_err)
+        return 2
+    destinations: list[str] | None = None if args.use_default else _wire_destinations(args.to)
 
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            task_id = _resolve_task_id(api, args.task)
-            if task_id is None:
-                return 2
-            task = api.update_scheduled_task(task_id, edits=edits)
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    render.info(f"Updated {task.name!r}.")
-    render.render_scheduled_task_list([task])
-    return 0
+    def run(api: api_client.ApiClient) -> int:
+        group_id = _need_group(api, args.room) if args.room else None
+        task_id = _resolve_task_id(api, args.task, group_id=group_id)
+        if task_id is None:
+            return 2
+        task = api.update_scheduled_task(task_id, edits=edits) if edits else None
+        if has_delivery or task is None:  # no field edits means delivery was asked for
+            task = api.set_scheduled_task_destinations(
+                task_id, destinations=destinations, group_id=group_id, topic=args.deliver_topic
+            )
+        render.info(f"Updated {task.name!r}.")
+        render.render_scheduled_task_list([task])
+        return 0
+
+    return _with_api(run, _report_room_task_error if args.room else _report_api_error)
+
+
+def cmd_scheduled_task_renew(args: argparse.Namespace) -> int:
+    """``pepper scheduled-tasks renew <task>`` — keep a task going past its renewal warning.
+
+    A refusal (422) prints the server's own reason as is. Personal tasks only: the
+    server has no room renew yet.
+    """
+
+    def run(api: api_client.ApiClient) -> int:
+        task_id = _resolve_task_id(api, args.task, args=args)
+        if task_id is None:
+            return 2
+        task = api.renew_scheduled_task(task_id)
+
+        def human() -> None:
+            render.info(f"Renewed {task.name!r}.")
+            render.render_scheduled_task_list([task])
+
+        _emit(task, args, human)
+        return 0
+
+    return _run_personal(args, run)
 
 
 def cmd_scheduled_task_pause(args: argparse.Namespace) -> int:
@@ -2581,66 +2740,6 @@ def _flip_scheduled_task(task: str, *, resume: bool, room: str | None = None) ->
         return 1
     render.info(f"{'Resumed' if resume else 'Paused'}: {row.name}")
     render.render_scheduled_task_list([row])
-    return 0
-
-
-def cmd_scheduled_task_destinations(args: argparse.Namespace) -> int:
-    """``pepper scheduled-tasks destinations <task> (--to D... | --default | --silent)``.
-
-    Exactly one of the three must be given. There is no "unset" default
-    here on purpose: the write replaces the whole set, so a command with
-    no choice on it would have to guess between inherit and silent, which
-    are opposite answers.
-
-    With ``--room`` it is ``--to`` (the room's dialect) or ``--silent`` only:
-    a room has no notification preference of its own for ``--default`` to
-    follow, so the choice has to be said.
-    """
-    if args.room and args.use_default:
-        render.error("--default isn't available with --room — pass --to or --silent")
-        return 2
-    chosen = [bool(args.to), args.use_default, args.silent]
-    if sum(chosen) != 1:
-        render.error("pass exactly one of --to (repeatable), --default, or --silent")
-        return 2
-    dialect_err = _destination_dialect_error(args.to, room=args.room, topic=args.topic)
-    if dialect_err is not None:
-        render.error(dialect_err)
-        return 2
-    destinations: list[str] | None = None if args.use_default else list(args.to or [])
-    if args.room:
-        pinned = list(args.to or [])
-
-        def run(api: api_client.ApiClient) -> int:
-            group_id = _need_group(api, args.room)
-            task_id = _resolve_task_id(api, args.task, group_id=group_id)
-            if task_id is None:
-                return 2
-            task = api.set_scheduled_task_destinations(
-                task_id, destinations=pinned, group_id=group_id, topic=args.topic
-            )
-            render.info(f"Updated delivery for {task.name!r}.")
-            render.render_scheduled_task_list([task])
-            return 0
-
-        return _with_api(run, _report_room_task_error)
-
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            task_id = _resolve_task_id(api, args.task)
-            if task_id is None:
-                return 2
-            task = api.set_scheduled_task_destinations(task_id, destinations=destinations)
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    render.info(f"Updated delivery for {task.name!r}.")
-    render.render_scheduled_task_list([task])
     return 0
 
 
@@ -2794,6 +2893,12 @@ def cmd_skills_revoke(args: argparse.Namespace) -> int:
     Exit codes: 0 ok · 1 auth/API/transport, or not yours to revoke ·
     2 no such room, no such shared skill, or an ambiguous name.
     """
+    if (
+        code := _confirm_destructive(
+            args, f"Stop sharing {args.name!r} with that room?", yes=args.yes
+        )
+    ) is not None:
+        return code
 
     def run(api: api_client.ApiClient) -> int:
         group_id = _need_group(api, args.room)
@@ -2830,7 +2935,7 @@ def cmd_skills_list(args: argparse.Namespace) -> int:
         for row in yours:
             sys.stdout.write(sanitize_line(f"  {row.name} — {row.description}") + "\n")
     else:
-        sys.stdout.write("Yours: (none yet — try `pepper skills new <name>`)\n")
+        sys.stdout.write("Yours: (none yet — try `pepper skills create <name>`)\n")
     if builtin:
         sys.stdout.write("Built-in (edit creates an override on your account):\n")
         for row in builtin:
@@ -2862,8 +2967,20 @@ def cmd_skills_show(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_skills_new(args: argparse.Namespace) -> int:
-    """``pepper skills new <name>`` — template → $EDITOR → POST.
+def _skill_document_from_file(path: str) -> skill_doc.SkillFields | None:
+    """Parse a SKILL.md read from ``path`` (``-`` = stdin); report why and return ``None``
+    when it can't be read or parsed."""
+    text = _read_file_or_stdin(path)
+    if text is None:
+        return None
+    fields, err = skill_doc.parse_skill_md(text)
+    if fields is None:
+        render.error(f"couldn't parse the document: {err}")
+    return fields
+
+
+def cmd_skills_create(args: argparse.Namespace) -> int:
+    """``pepper skills create <name> [--file PATH|-]`` — template → $EDITOR (or file) → POST.
 
     Exit codes: 0 ok · 1 auth/API/transport · 2 bad document / aborted / ``--room``.
     """
@@ -2877,7 +2994,10 @@ def cmd_skills_new(args: argparse.Namespace) -> int:
             "arguments, the output format, and the don'ts.\n"
         ),
     )
-    fields = _edit_skill_document(skill_doc.compose_skill_md(template))
+    if args.file:
+        fields = _skill_document_from_file(args.file)
+    else:
+        fields = _edit_skill_document(skill_doc.compose_skill_md(template))
     if fields is None:
         return 2
     if fields.name != args.name:
@@ -2909,7 +3029,8 @@ def cmd_skills_new(args: argparse.Namespace) -> int:
 
 
 def cmd_skills_edit(args: argparse.Namespace) -> int:
-    """``pepper skills edit <name>`` — fetch → $EDITOR → PUT (or POST override).
+    """``pepper skills edit <name> [--file PATH|-]`` — fetch → $EDITOR (or file) → PUT (or
+    POST override).
 
     Editing a built-in never touches the shared row: after confirmation
     the edited document is saved as YOUR same-named skill, which shadows
@@ -2929,7 +3050,7 @@ def cmd_skills_edit(args: argparse.Namespace) -> int:
         render.error(f"Couldn't reach {creds.server_url}: {exc}")
         return 1
 
-    if detail.builtin:
+    if detail.builtin and not args.file:
         answer = _prompt(
             f"{args.name!r} is a built-in skill. Editing creates an override on "
             "your account (the shared version is untouched). Continue? [y/N] "
@@ -2938,13 +3059,16 @@ def cmd_skills_edit(args: argparse.Namespace) -> int:
             render.info("Aborted — built-in left as is.")
             return 0
 
-    fields = _edit_skill_document(skill_doc.compose_skill_md(_fields_from_detail(detail)))
+    if args.file:
+        fields = _skill_document_from_file(args.file)
+    else:
+        fields = _edit_skill_document(skill_doc.compose_skill_md(_fields_from_detail(detail)))
     if fields is None:
         return 2
     if fields.name != detail.name:
         render.error(
             f"the document renamed the skill ({detail.name!r} → {fields.name!r}) — "
-            "names are immutable (rename = delete + new)"
+            "names are immutable (rename = delete + create)"
         )
         return 2
 
@@ -2988,11 +3112,12 @@ def cmd_skills_delete(args: argparse.Namespace) -> int:
     """
     if _refuse_room_for_owned_skill(args, "delete"):
         return 2
-    if not args.yes:
-        answer = _prompt(f"Delete your skill {args.name!r}? This cannot be undone. [y/N] ")
-        if answer.lower() not in ("y", "yes"):
-            render.info("Aborted.")
-            return 0
+    if (
+        code := _confirm_destructive(
+            args, f"Delete your skill {args.name!r}? This cannot be undone.", yes=args.yes
+        )
+    ) is not None:
+        return code
     creds = _load_or_error()
     if creds is None:
         return 1
@@ -3291,6 +3416,67 @@ def _emit_error(
         sys.stderr.write(line + "\n")
     else:
         render.error(message)
+
+
+def _creds_or_fail(args: argparse.Namespace) -> credentials.Credentials | None:
+    """:func:`_load_or_error` with the J8 error shape in JSON mode."""
+    try:
+        return credentials.load()
+    except credentials.CredentialsError as exc:
+        _emit_error(args, "auth", str(exc))
+        return None
+
+
+def _fail_api(args: argparse.Namespace, exc: api_client.ApiError) -> int:
+    """:func:`_report_api_error` with the J8 error shape in JSON mode (exit 1)."""
+    if exc.status == 401:
+        message = "Authentication failed (401). Run 'pepper login' to refresh your token."
+    elif exc.detail:
+        message = f"Server returned {exc.status}: {exc.detail}"
+    else:
+        message = f"Server returned {exc.status}."
+    _emit_error(args, _error_code_for_status(exc.status), message, status=exc.status)
+    return 1
+
+
+def _run_personal(
+    args: argparse.Namespace,
+    run: Callable[[api_client.ApiClient], int],
+    report: Callable[[argparse.Namespace, api_client.ApiError], int] = _fail_api,
+) -> int:
+    """Open a client for ``run`` and map the failures every personal command shares.
+
+    Errors follow J8 under ``--json`` (one JSON line on stderr), else the usual text.
+    """
+    creds = _creds_or_fail(args)
+    if creds is None:
+        return 1
+    try:
+        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
+            return run(api)
+    except api_client.ApiError as exc:
+        return report(args, exc)
+    except httpx.RequestError as exc:
+        _emit_error(args, "network", f"Couldn't reach {creds.server_url}: {exc}")
+        return 1
+
+
+def _confirm_destructive(args: argparse.Namespace, prompt: str, *, yes: bool) -> int | None:
+    """Gate a destructive personal command: ``None`` to go ahead, else the exit code.
+
+    ``--yes`` skips it; a terminal gets a y/N question; with no terminal (or under
+    JSON mode, which never prompts) it refuses with exit 2, since a script must say
+    ``--yes`` out loud.
+    """
+    if yes:
+        return None
+    if _json_mode(args) or not _stdin_is_tty():
+        _emit_error(args, "usage", "this deletes for good; pass --yes to run it without a prompt")
+        return 2
+    if _prompt(f"{prompt} [y/N] ").lower() not in ("y", "yes"):
+        render.info("Aborted.")
+        return 0
+    return None
 
 
 class _RenamedStubParser(argparse.ArgumentParser):
@@ -5280,8 +5466,8 @@ def _print_note_diff(current_body: str, mine: str) -> None:
     sys.stderr.writelines(make_visible(line) for line in diff)
 
 
-def cmd_notes_new(args: argparse.Namespace) -> int:
-    """``pepper notes new <name> [--room ROOM] [--file PATH|-]``.
+def cmd_notes_create(args: argparse.Namespace) -> int:
+    """``pepper notes create <name> [--room ROOM] [--file PATH|-]``.
 
     Body comes from ``$EDITOR`` by default, or from ``--file`` (a path, or
     ``-`` for stdin) read up front, before any network call — same shape as
@@ -5329,7 +5515,7 @@ def cmd_notes_new(args: argparse.Namespace) -> int:
 
 
 def cmd_notes_edit(args: argparse.Namespace) -> int:
-    """``pepper notes edit <note> [--room ROOM] [--file PATH|-] [--rename NAME]
+    """``pepper notes edit <note> [--room ROOM] [--file PATH|-] [--name NAME]
     [--if-match ETAG | --force]``.
 
     Fetches the note's current detail first: it seeds ``$EDITOR`` with the
@@ -5395,7 +5581,7 @@ def cmd_notes_edit(args: argparse.Namespace) -> int:
                 unchanged = new_body == (current.body or "")
             else:
                 unchanged = _texts_match(current.body or "", new_body)
-            rename = args.rename if args.rename and args.rename != current.name else None
+            rename = args.name if args.name and args.name != current.name else None
             if unchanged and rename is None:
                 render.info("Nothing to change.")
                 return 0
@@ -5477,8 +5663,8 @@ def cmd_notes_edit(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_notes_rm(args: argparse.Namespace) -> int:
-    """``pepper notes rm <note> [--room ROOM] [--yes]``.
+def cmd_notes_delete(args: argparse.Namespace) -> int:
+    """``pepper notes delete <note> [--room ROOM] [--yes]``.
 
     Confirms before deleting unless ``--yes``. The delete itself
     (``POST /api/v1/apps/notes/actions/delete``) is a soft delete — any
@@ -5514,11 +5700,12 @@ def cmd_notes_rm(args: argparse.Namespace) -> int:
             if detail.kind != _NOTES_KIND:
                 render.error("no such room or note, or you are not a member")
                 return 2
-            if not args.yes:
-                answer = _prompt(f"Delete {detail.name!r}? This cannot be undone. [y/N] ")
-                if answer.lower() not in ("y", "yes"):
-                    render.info("Aborted.")
-                    return 0
+            if (
+                code := _confirm_destructive(
+                    args, f"Delete {detail.name!r}? This cannot be undone.", yes=args.yes
+                )
+            ) is not None:
+                return code
             try:
                 name = api.delete_artifact(note_id, principal=room_principal)
             except api_client.ApiError as exc:
@@ -5563,8 +5750,8 @@ def cmd_takeout(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_agent_skill(args: argparse.Namespace) -> int:
-    """``pepper agent-skill [--write DIR [--force]]``.
+def cmd_agents_guide(args: argparse.Namespace) -> int:
+    """``pepper agents guide [--write DIR [--force]] [--json]``.
 
     Reads packaged data only: no credentials, no network, so it behaves the
     same under any ``--profile`` and with no login at all. Exit codes: 0 ok ·
@@ -5573,23 +5760,31 @@ def cmd_agent_skill(args: argparse.Namespace) -> int:
     """
     if args.write is None:
         if args.force:
-            render.error("--force only applies with --write DIR")
+            _emit_error(args, "usage", "--force only applies with --write DIR")
             return 2
-        sys.stdout.write(agent_skill.render())
+        if _json_mode(args):
+            _print_json({"markdown": agent_skill.render()})
+        else:
+            sys.stdout.write(agent_skill.render())
         return 0
     from pathlib import Path
 
     try:
         target = agent_skill.write_to(Path(args.write), force=args.force)
     except FileExistsError:
-        render.error(
-            f"{Path(args.write) / 'SKILL.md'} already exists; pass --force to overwrite it."
+        _emit_error(
+            args,
+            "conflict",
+            f"{Path(args.write) / 'SKILL.md'} already exists; pass --force to overwrite it.",
         )
         return 1
     except OSError as exc:
-        render.error(f"couldn't write {args.write!r}: {exc.strerror or exc}")
+        _emit_error(args, "gap", f"couldn't write {args.write!r}: {exc.strerror or exc}")
         return 1
-    render.info(f"Wrote {target}.")
+    if _json_mode(args):
+        _print_json({"path": str(target)})
+    else:
+        render.info(f"Wrote {target}.")
     return 0
 
 
@@ -5632,7 +5827,7 @@ def _parse_due(raw: str, *, flag: str = "--due") -> tuple[str | None, str | None
     server stores it as UTC.
 
     ``flag`` only names the option in the error message. Shared by
-    ``todos add --due`` and ``scheduled-tasks add/edit --at``: both take a
+    ``todos create --due`` and ``scheduled-tasks create/edit --at``: both take a
     local wall-clock time and both must send an *aware* value, since the
     server has no way to guess the client's zone.
 

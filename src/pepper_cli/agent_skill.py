@@ -1,4 +1,4 @@
-"""The agent-usage skill shipped inside the CLI (``pepper agent-skill``).
+"""The agent-usage skill shipped inside the CLI (``pepper agents guide``).
 
 Not to be confused with :mod:`pepper_cli.skill_doc`, which is about the
 account's server-side skills (``pepper skills``). This document is packaged

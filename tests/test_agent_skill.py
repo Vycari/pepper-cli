@@ -1,4 +1,4 @@
-"""Tests for ``pepper agent-skill`` and the drift guard on the document it prints.
+"""Tests for ``pepper agents guide`` and the drift guard on the document it prints.
 
 The drift guard holds the shipped SKILL.md to four rules, so that nothing in it
 that names a command can go unchecked. Nothing is executed: the parser is only
@@ -514,7 +514,7 @@ def _frontmatter(text: str) -> dict:
 
 
 def test_prints_a_valid_skill_with_no_credentials(no_credentials, capsys) -> None:
-    assert cli.main(["agent-skill"]) == 0
+    assert cli.main(["agents", "guide"]) == 0
     out = capsys.readouterr().out
     meta = _frontmatter(out)
     assert meta["name"]
@@ -524,7 +524,7 @@ def test_prints_a_valid_skill_with_no_credentials(no_credentials, capsys) -> Non
 
 
 def test_works_under_a_profile(no_credentials, capsys) -> None:
-    assert cli.main(["--profile", "agent-x", "agent-skill"]) == 0
+    assert cli.main(["--profile", "agent-x", "agents", "guide"]) == 0
     assert _frontmatter(capsys.readouterr().out)["name"]
 
 
@@ -535,28 +535,28 @@ def test_is_not_swallowed_by_implicit_chat(no_credentials, capsys) -> None:
 
 def test_write_creates_dir_and_refuses_to_overwrite(no_credentials, tmp_path, capsys) -> None:
     target = tmp_path / "skills" / "pepper-agent"
-    assert cli.main(["agent-skill", "--write", str(target)]) == 0
+    assert cli.main(["agents", "guide", "--write", str(target)]) == 0
     written = (target / "SKILL.md").read_text(encoding="utf-8")
     assert written == agent_skill.render()
     assert _frontmatter(written)["name"]
 
     (target / "SKILL.md").write_text("mine", encoding="utf-8")
-    assert cli.main(["agent-skill", "--write", str(target)]) != 0
+    assert cli.main(["agents", "guide", "--write", str(target)]) != 0
     assert (target / "SKILL.md").read_text(encoding="utf-8") == "mine"
 
-    assert cli.main(["agent-skill", "--write", str(target), "--force"]) == 0
+    assert cli.main(["agents", "guide", "--write", str(target), "--force"]) == 0
     assert (target / "SKILL.md").read_text(encoding="utf-8") == written
 
 
 def test_force_without_write_is_a_usage_error(no_credentials, capsys) -> None:
-    assert cli.main(["agent-skill", "--force"]) == 2
+    assert cli.main(["agents", "guide", "--force"]) == 2
     assert capsys.readouterr().out == ""
 
 
 def test_write_into_an_unwritable_place_exits_nonzero(no_credentials, tmp_path, capsys) -> None:
     blocker = tmp_path / "file"
     blocker.write_text("x", encoding="utf-8")
-    assert cli.main(["agent-skill", "--write", str(blocker / "sub")]) == 1
+    assert cli.main(["agents", "guide", "--write", str(blocker / "sub")]) == 1
 
 
 # --------------------------------------------------------------------------
@@ -569,7 +569,7 @@ def test_document_is_packaged_data_inside_the_wheel_package() -> None:
 
     ``packages = ["src/pepper_cli"]`` includes non-Python files in it; this pins
     both halves so moving the file out of the package, or narrowing the wheel
-    config, fails here rather than at ``pepper agent-skill`` on an installed copy.
+    config, fails here rather than at ``pepper agents guide`` on an installed copy.
     """
     resource = resources.files("pepper_cli") / "data" / "agent-skill" / "SKILL.md"
     assert resource.is_file()
@@ -579,3 +579,37 @@ def test_document_is_packaged_data_inside_the_wheel_package() -> None:
     assert wheel["packages"] == ["src/pepper_cli"]
     assert not wheel.get("exclude")
     assert not config["tool"]["hatch"]["build"].get("exclude")
+
+
+def test_guide_json_wraps_the_markdown(no_credentials, capsys) -> None:
+    import json
+
+    assert cli.main(["agents", "guide", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["markdown"] == agent_skill.render()
+
+
+def test_guide_json_write_reports_the_path(no_credentials, capsys, tmp_path) -> None:
+    import json
+
+    assert cli.main(["agents", "guide", "--write", str(tmp_path), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["path"] == str(tmp_path / "SKILL.md")
+
+
+def test_guide_json_errors_are_j8(no_credentials, capsys, tmp_path) -> None:
+    import json
+
+    assert cli.main(["agents", "guide", "--force", "--json"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and json.loads(captured.err)["error"]["code"] == "usage"
+    (tmp_path / "SKILL.md").write_text("x", encoding="utf-8")
+    assert cli.main(["agents", "guide", "--write", str(tmp_path), "--json"]) == 1
+    assert json.loads(capsys.readouterr().err)["error"]["code"] == "conflict"
+
+
+def test_agent_skill_noun_is_a_stub(no_credentials, capsys) -> None:
+    assert cli.main(["agent-skill", "--write", "/nonexistent"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.strip() == (
+        "pepper: 'agent-skill' was renamed in 0.2.0 — see 'pepper agents guide'"
+    )

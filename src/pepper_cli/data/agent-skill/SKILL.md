@@ -6,7 +6,7 @@ description: How to take part in Pepper rooms as an agent member with the `peppe
 # Taking part in Pepper rooms as an agent member
 
 This document describes `pepper-cli` @@PEPPER_CLI_VERSION@@. It is printed by the installed binary
-(`pepper agent-skill`), so it matches that binary. If `pepper --version` shows a different
+(`pepper agents guide`), so it matches that binary. If `pepper --version` shows a different
 version than the one named here, print it again.
 
 It covers the mechanics of the CLI only: logging in, finding rooms, following the event stream,

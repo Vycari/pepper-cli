@@ -215,7 +215,7 @@ def test_skills_new_creates_with_extras(logged_in, fake_api, monkeypatch):
         )
     )
     monkeypatch.setattr(cli, "_open_in_editor", lambda initial: edited)
-    assert cli.main(["skills", "new", "fresh-skill"]) == 0
+    assert cli.main(["skills", "create", "fresh-skill"]) == 0
     calls = [c for inst in fake_api.instances for c in inst.calls]
     create = next(kw for name, kw in calls if name == "create_skill")
     assert create["model"] == "flash"
@@ -223,12 +223,25 @@ def test_skills_new_creates_with_extras(logged_in, fake_api, monkeypatch):
 
 
 def test_skills_delete_requires_confirmation(logged_in, fake_api, monkeypatch):
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(cli, "_prompt", lambda prompt: "n")
     assert cli.main(["skills", "delete", "meeting-notes"]) == 0
     assert not any(name == "delete_skill" for inst in fake_api.instances for name, _ in inst.calls)
     monkeypatch.setattr(cli, "_prompt", lambda prompt: "y")
     assert cli.main(["skills", "delete", "meeting-notes"]) == 0
     assert any(name == "delete_skill" for inst in fake_api.instances for name, _ in inst.calls)
+
+
+def test_skills_delete_off_a_terminal_without_yes_is_exit_2(logged_in, fake_api, monkeypatch):
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+    assert cli.main(["skills", "delete", "meeting-notes"]) == 2
+    assert not any(name == "delete_skill" for inst in fake_api.instances for name, _ in inst.calls)
+
+
+def test_skills_old_new_spelling_is_rejected(logged_in, fake_api):
+    with pytest.raises(SystemExit) as ei:
+        cli.main(["skills", "new", "x"])
+    assert ei.value.code == 2
 
 
 def test_skills_delete_yes_skips_the_prompt(logged_in, fake_api, monkeypatch):
@@ -238,3 +251,70 @@ def test_skills_delete_yes_skips_the_prompt(logged_in, fake_api, monkeypatch):
     monkeypatch.setattr(cli, "_prompt", fail_prompt)
     assert cli.main(["skills", "delete", "meeting-notes", "--yes"]) == 0
     assert any(name == "delete_skill" for inst in fake_api.instances for name, _ in inst.calls)
+
+
+def _skill_file(tmp_path, **kw):
+    fields = {"name": "fresh-skill", "description": "Trigger.", "body": "Steps."} | kw
+    path = tmp_path / "SKILL.md"
+    path.write_text(skill_doc.compose_skill_md(skill_doc.SkillFields(**fields)), encoding="utf-8")
+    return str(path)
+
+
+def _no_editor(monkeypatch):
+    def boom(initial):
+        raise AssertionError("--file must not open $EDITOR")
+
+    monkeypatch.setattr(cli, "_open_in_editor", boom)
+
+
+def test_skills_create_file_posts_without_the_editor(logged_in, fake_api, monkeypatch, tmp_path):
+    _no_editor(monkeypatch)
+    path = _skill_file(tmp_path, model="flash")
+    assert cli.main(["skills", "create", "fresh-skill", "--file", path]) == 0
+    calls = [c for inst in fake_api.instances for c in inst.calls]
+    create = next(kw for name, kw in calls if name == "create_skill")
+    assert create["name"] == "fresh-skill" and create["model"] == "flash"
+
+
+def test_skills_create_file_name_must_match_the_argument(
+    logged_in, fake_api, monkeypatch, tmp_path, capsys
+):
+    _no_editor(monkeypatch)
+    path = _skill_file(tmp_path, name="other-name")
+    assert cli.main(["skills", "create", "fresh-skill", "--file", path]) == 2
+    assert not any(n == "create_skill" for inst in fake_api.instances for n, _ in inst.calls)
+
+
+def test_skills_create_file_unreadable_or_unparseable_is_exit_2(
+    logged_in, fake_api, monkeypatch, tmp_path, capsys
+):
+    _no_editor(monkeypatch)
+    assert cli.main(["skills", "create", "x", "--file", str(tmp_path / "missing.md")]) == 2
+    bad = tmp_path / "bad.md"
+    bad.write_text("no frontmatter here", encoding="utf-8")
+    assert cli.main(["skills", "create", "x", "--file", str(bad)]) == 2
+    assert "couldn't parse the document" in capsys.readouterr().err
+
+
+def test_skills_edit_file_updates_without_the_editor(logged_in, fake_api, monkeypatch, tmp_path):
+    _no_editor(monkeypatch)
+    path = _skill_file(tmp_path, name="meeting-notes", description="From a file.")
+    assert cli.main(["skills", "edit", "meeting-notes", "--file", path]) == 0
+    calls = [c for inst in fake_api.instances for c in inst.calls]
+    update = next(kw for name, kw in calls if name == "update_skill")
+    assert update["description"] == "From a file."
+
+
+def test_skills_edit_file_on_a_builtin_creates_the_override_without_prompting(
+    logged_in, fake_api, monkeypatch, tmp_path
+):
+    fake_api.canned_detail = _detail(name="morning-brief", builtin=True)
+    _no_editor(monkeypatch)
+
+    def no_prompt(prompt):
+        raise AssertionError("--file is non-interactive")
+
+    monkeypatch.setattr(cli, "_prompt", no_prompt)
+    path = _skill_file(tmp_path, name="morning-brief")
+    assert cli.main(["skills", "edit", "morning-brief", "--file", path]) == 0
+    assert any(n == "create_skill" for inst in fake_api.instances for n, _ in inst.calls)

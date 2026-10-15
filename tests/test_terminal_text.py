@@ -599,7 +599,7 @@ def test_json_output_is_byte_exact_with_what_the_server_sent(capsys) -> None:
     raw = {"trajectory": {"id": H, "channel": H}, "events": [{"payload": {"text": H}}]}
     _FakeApi.raw = raw
     trajectory_id = "019a2b3c-0000-7000-8000-000000000001"
-    assert cli.main(["trajectory", "show", trajectory_id, "--json"]) == 0
+    assert cli.main(["trajectories", "show", trajectory_id, "--json"]) == 0
     assert capsys.readouterr().out == json.dumps(raw, indent=2) + "\n"
 
 

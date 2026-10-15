@@ -65,13 +65,13 @@ Keep in mind:
 > ```
 > If you skip this, the old binary won't have the new subcommand — and because
 > bare `pepper <args>` is shorthand for `pepper chat`, an unrecognized command
-> like `pepper trajectory show <id>` is silently sent to your agent **as a chat
+> like `pepper trajectories show <id>` is silently sent to your agent **as a chat
 > message** instead of erroring. If a command seems to "talk to Pepper" instead
 > of doing what you asked, upgrade first.
 
 **Typo guard.** If the first word of an implicit-chat message is a close match
 to a command (e.g. `pepper notse`), or a quoted string whose first word is a
-command (`pepper "todos add"`, which is what zsh passes for an unsplit `$var`),
+command (`pepper "todos create"`, which is what zsh passes for an unsplit `$var`),
 `pepper` prints a "Did you mean ...?" hint to stderr and exits 2 instead of
 chatting. Trade-off: a one-word chat message that happens to be near a command
 name (`pepper note`) gets the hint too; send it with `pepper chat note`. Agents
@@ -165,20 +165,22 @@ Commands that take `--json` also switch to JSON output when the environment vari
 | `pepper chat ["msg"]` | One-shot with a message, or the REPL with none. |
 | `pepper chat --root PATH ["msg"]` | Same, but let this session read files under `PATH` (repeatable). |
 | `pepper whoami` | Print the user behind the current credentials. |
-| `pepper trajectory show <uuid> [--json]` | Print one trajectory's events; `--json` for full untruncated payloads. |
-| `pepper trajectory list [--limit N] [--offset N]` | List your recent trajectories (default 20, max 200). |
+| `pepper trajectories show <uuid> [--json]` | Print one trajectory's events; `--json` for full untruncated payloads. |
+| `pepper trajectories list [--limit N] [--before CURSOR] [--json]` | List your recent trajectories (default 20, max 200). `--json` is `{"items": [...], "next_before": CURSOR-or-null}`; pass `next_before` back as `--before` for the next page. The cursor is opaque. |
+| `pepper trajectory ...` | Renamed to `trajectories` in 0.2.0; exits 2 with a pointer. |
 | `pepper scheduled-tasks list [--all] [--room R]` | List your scheduled tasks, or a room's with `--room`; `--all` includes paused ones and spent one-offs. |
 | `pepper scheduled-tasks show\|runs\|thread <task>` | One task's config and last run, its fire history, or its own conversation. |
-| `pepper scheduled-tasks add <name> --prompt P (--cron C \| --at T) [--room R]` | Schedule a recurring or one-off task. With `--room`: on the room, `--cron` only. |
-| `pepper scheduled-tasks edit <task> [--prompt …] […]` | Change a task; only the flags you pass are written. |
+| `pepper scheduled-tasks create <name> --prompt P (--cron C \| --at T) [--to D… \| --silent] [--deliver-topic NAME] [--room R]` | Schedule a recurring or one-off task. With `--room`: on the room, `--cron` only. |
+| `pepper scheduled-tasks edit <task> [--prompt …] […] [--to D… \| --default \| --silent] [--deliver-topic NAME] [--room R]` | Change a task; only the flags you pass are written. Delivery (where results are announced) is set here too; with `--room` it is the only thing `edit` can change. |
+| `pepper scheduled-tasks renew <task> [--json]` | Renew one of your tasks that is about to lapse. |
 | `pepper scheduled-tasks pause\|resume <task> [--room R]` | Take a task off the schedule (history kept) and put it back. |
-| `pepper scheduled-tasks destinations <task> (--to D… \| --default \| --silent) [--room R] [--topic NAME]` | Set where the task announces its results. |
 | `pepper skills list\|show <name> [--room R]` | Your skill library (yours, then the built-ins), or the skills shared with a room with `--room`. `show` prints SKILL.md. |
-| `pepper skills new\|edit\|delete <name>` | Author one of your own skills in `$EDITOR`, or delete it. Never takes `--room`. |
-| `pepper skills share\|revoke <name> --room R` | Share one of your skills with a room, or stop sharing one there. |
-| `pepper next [--room R] [--first urgent\|important\|fast] [--all] [--json]` | What to do next: Now, a numbered Do next, Due soon (48h), Later. GETs only. |
+| `pepper skills create\|edit <name> [--file PATH \| -]` | Author one of your own skills in `$EDITOR`, or from a SKILL.md file. Never takes `--room`. |
+| `pepper skills delete <name> [--yes]` | Delete one of your skills; asks for confirmation unless `--yes`. |
+| `pepper skills share <name> --room R` / `revoke <name> --room R [--yes]` | Share one of your skills with a room, or stop sharing one there. |
+| `pepper next [--room R] [--source PREFIX] [--first urgent\|important\|fast] [--all] [--json]` | What to do next: Now, a numbered Do next, Due soon (48h), Later. GETs only. `--room` takes a room name or UUID and must resolve to exactly one room; `--source` narrows by a case-insensitive prefix of the item's source label. |
 | `pepper todos list [--status S] [--room R] [--json]` | List your todos, or a room's with `--room`. |
-| `pepper todos add <title…> [--due D] [--room R]` | Add a todo. With `--room`: title and a `YYYY-MM-DD` due date only. |
+| `pepper todos create <title…> [--due D] [--room R]` | Create a todo. With `--room`: title and a `YYYY-MM-DD` due date only. |
 | `pepper todos done\|reopen <id> [--room R]` | Tick a todo as Schedule does (closes it in your or the room's list and releases the rest of its held time), or put it back. |
 | `pepper todos dismiss <id> [--room R]` | Close a todo without completing it. |
 | `pepper groups list [--archived] [--json]` | List your rooms/channels. |
@@ -206,20 +208,20 @@ Commands that take `--json` also switch to JSON output when the environment vari
 | `pepper groups activity [<group>] [--since TS] [--json]` | The newest message from someone else in each recently active topic (default: last 24 hours). |
 | `pepper groups search <query> [--json]` | Find topics by name across your unarchived rooms. |
 | `pepper groups watch [--room ROOM [--topic TOPIC]] [--since CURSOR] [--cursor-file PATH] [--json]` | Agent members: follow the event stream, one line per event (ids only; fetch bodies with `groups read`). Reconnects by itself and resumes from the cursor file. `--room`/`--topic` have the server narrow the stream to one room or topic, and refuse (never widen) on a server that cannot; use one cursor file per scope. Exit 3 when the server can no longer replay from the cursor without a gap. |
-| `pepper agent-skill [--write DIR [--force]]` | Print the agent-usage guide (`SKILL.md`) shipped inside this binary: how an agent member logs in, watches, reads and posts in rooms. `--write DIR` writes `DIR/SKILL.md` and refuses to overwrite without `--force`. Needs no login and no network. |
+| `pepper agents guide [--write DIR [--force]] [--json]` | Print the agent-usage guide (`SKILL.md`) shipped inside this binary: how an agent member logs in, watches, reads and posts in rooms. `--write DIR` writes `DIR/SKILL.md` and refuses to overwrite without `--force`. Needs no login and no network. |
 | `pepper notes list [--room <group>] [--label L] [--json]` | List your notes, or a room's shared ones with `--room`. |
 | `pepper notes search "<query>" [--room <group>] [--label L] [--json]` | Case-insensitive substring search over note names and bodies. |
 | `pepper notes show <note> [--room <group>] [--json]` | Print one note's raw markdown body to stdout; `--json` for the full detail (labels, `updated_at`, `etag`, `shared`). |
-| `pepper notes new "<name>" [--room <group>] [--file PATH \| -]` | Create a note. Body from `$EDITOR`, or `--file PATH`/`--file -` for stdin. |
-| `pepper notes edit <note> [--room <group>] [--file PATH \| -] [--rename NAME] [--if-match ETAG \| --force]` | Edit a note; sends nothing when the text is unchanged. |
-| `pepper notes rm <note> [--room <group>] [--yes]` | Delete a note; asks for confirmation unless `--yes`. |
+| `pepper notes create "<name>" [--room <group>] [--file PATH \| -]` | Create a note. Body from `$EDITOR`, or `--file PATH`/`--file -` for stdin. |
+| `pepper notes edit <note> [--room <group>] [--file PATH \| -] [--name NAME] [--if-match ETAG \| --force]` | Edit a note; sends nothing when the text is unchanged. |
+| `pepper notes delete <note> [--room <group>] [--yes]` | Delete a note; asks for confirmation unless `--yes` (off a terminal, `--yes` is required). |
 | `pepper login` / `pepper logout` | Store / delete credentials. |
 
-**For agents.** `pepper agent-skill` prints a skill document (frontmatter plus
+**For agents.** `pepper agents guide` prints a skill document (frontmatter plus
 body, in the standard `SKILL.md` format) written for an agent that takes part in
 rooms with a `pep_agt_` token: the `--profile` login, the `groups watch` event
 stream, catching up with `groups read`, and posting. It is packaged inside the
-CLI, so it always matches the installed version; `pepper agent-skill --write
+CLI, so it always matches the installed version; `pepper agents guide --write
 ~/.claude/skills/pepper-agent` drops it into a skills directory. It covers the
 mechanics only; any house policy for what an agent may do belongs in a separate
 layer on top. Note this is unrelated to `pepper skills`, which manages your
@@ -254,7 +256,7 @@ Notes:
   missing room, a missing note, and a room you're not a member of all answer
   the same "no such room or note, or you are not a member" rather than
   confirming which one it was.
-- **`notes new`/`notes edit`** take the body from `$EDITOR` by default, or
+- **`notes create`/`notes edit`** take the body from `$EDITOR` by default, or
   from `--file PATH` (or `--file -` for stdin) read up front instead. `edit`
   sends nothing when the result is byte-identical to what was there (a
   trailing newline `$EDITOR` alone adds doesn't count as a change; `--file`
@@ -267,7 +269,7 @@ Notes:
   to yours, and — on a TTY — offers to re-open the editor, overwrite, or
   quit; off a TTY it exits 1 with the saved path already printed. A
   rename-only edit that conflicts offers only overwrite (the rename alone,
-  never the body) or quit. `notes rm` is a soft delete of a note only — an
+  never the body) or quit. `notes delete` is a soft delete of a note only — an
   id naming an image or link is refused; any room member may delete a
   room's shared note.
 - **Delivery has three states, and two of them are not the same.** `--default`
@@ -277,7 +279,7 @@ Notes:
   thread, which is what `scheduled-tasks thread` shows.
 - **`skills --room <room>` works on the skills shared with a room.** A room
   never owns a skill: sharing puts a live reference to *your* skill in the
-  room, so your later edits show there too, and `new`, `edit` and `delete`
+  room, so your later edits show there too, and `create`, `edit` and `delete`
   refuse `--room` (edit your own skill and it updates everywhere it is
   shared). Any member can `list`, `show` and `share`; `revoke` is for the
   skill's owner or a room owner, and anyone else is told "only the skill's
@@ -291,15 +293,25 @@ Notes:
   room can't run, can be shared, and only into a named channel: sharing into
   a group text or an email thread isn't allowed yet.
 - **`scheduled-tasks --room <room>` works on a room's tasks instead of yours**
-  (`list`, `add`, `pause`, `resume`, `destinations`; `show`, `runs`, `thread`
-  and `edit` are yours only). Any member can `list` them. Changing them takes
+  (`list`, `create`, `pause`, `resume`, `edit` for delivery only; `show`, `runs`,
+  `thread`, `renew` are yours only). Any member can `list` them. Changing them takes
   the owner role in an open room: anyone else is told "only a room owner can
   change its scheduled tasks." and nothing is written. A room's task is
   recurring (`--cron`, no `--at`, no `--description`) and announces to the
-  room rather than to a person: `--to groups_service` (one of the room's
-  topics — `--topic NAME` says which) and/or
+  room rather than to a person: `--to room` (one of the room's
+  topics — `--deliver-topic NAME` says which) and/or
   `--to resend_email` (every member's inbox). There is no `--default` for a
-  room's task — say `--to` or `--silent`. `<task>` is looked up
+  room's task — say `--to` or `--silent`.
+
+- **0.2.0 renames in the personal commands** (no aliases; the old spellings exit 2):
+  `trajectory` -> `trajectories`, `agent-skill` -> `agents guide`, `add`/`new` -> `create`,
+  `rm` -> `delete` (`notes`), `notes edit --rename` -> `--name`, `scheduled-tasks
+  destinations` -> `scheduled-tasks edit --to/--default/--silent`, `--topic` ->
+  `--deliver-topic`, `trajectory list --offset` -> `trajectories list --before`,
+  `next --room PREFIX` -> `next --source PREFIX` (`--room` is now an exact room).
+  Deleting a scheduled task and `--room` variants that need server support
+  (room task show/runs/thread/renew, full room edit) are not available yet.
+  No CHANGELOG exists; this is the release note. `<task>` is looked up
   among that room's tasks. A server that hasn't switched room tasks on
   answers 404 to all of it.
 
