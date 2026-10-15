@@ -75,7 +75,9 @@ def test_takeout_writes_to_disk_and_reports_path(tmp_home, patch_api, capsys) ->
     rc = cli.main(["takeout"])
     assert rc == 0
     assert _FakeTakeoutApi.instances[-1].calls == [("download_takeout", None)]
-    assert "pepper-takeout-alice-20260721T000000Z.zip" in capsys.readouterr().err
+    # The console wraps a long path at the terminal width (80 columns in CI).
+    err = "".join(capsys.readouterr().err.split())
+    assert "pepper-takeout-alice-20260721T000000Z.zip" in err
 
 
 def test_takeout_passes_out_flag(tmp_home, patch_api) -> None:
