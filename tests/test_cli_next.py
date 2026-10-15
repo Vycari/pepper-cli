@@ -223,7 +223,7 @@ def test_first_on_fallback_notes_on_stderr_and_still_lists(server, capsys) -> No
 
 
 def test_room_items_carry_their_room_id_and_room_accepts_it(server, capsys) -> None:
-    gid = "00000000-0000-0000-0000-0000000000a1"
+    gid = _rooms(server, "Trip")["Trip"]
     room = {**_block("B", "Trip", 10, 40), "principal": gid}
     _mock_plan(server, _plan([room, _block("A", "Home", 40, 70)]))
     data = json.loads(_run(capsys, "--json", "--room", gid))
@@ -286,3 +286,41 @@ def test_room_miss_under_json_is_a_j8_not_found(server, capsys) -> None:
     _rooms(server, "Trip")
     assert cli.main(["next", "--json", "--room", "zzz"]) == 2
     assert json.loads(capsys.readouterr().err)["error"]["code"] == "not_found"
+
+
+def test_room_uuid_that_is_not_one_of_yours_is_not_found(server, capsys) -> None:
+    _rooms(server, "Trip")
+    stranger = "00000000-0000-0000-0000-0000000000ff"
+    assert cli.main(["next", "--json", "--room", stranger]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    err = json.loads(captured.err)["error"]
+    assert err["code"] == "not_found" and stranger in err["message"]
+
+
+def test_room_uuid_matches_case_insensitively_and_uses_the_canonical_id(server, capsys) -> None:
+    gid = _rooms(server, "Trip")["Trip"]
+    room = {**_block("B", "Trip", 10, 40), "principal": gid}
+    _mock_plan(server, _plan([room, _block("A", "Home", 40, 70)]))
+    data = json.loads(_run(capsys, "--json", "--room", gid.upper()))
+    assert [i["title"] for i in data["do_next"]["items"]] == ["B"]
+
+
+@pytest.mark.parametrize(
+    ("flags", "said"),
+    [
+        ({"enabled": False, "degraded": False}, "not enabled"),
+        ({"enabled": True, "degraded": True}, "could not read your rooms"),
+    ],
+)
+def test_room_lookup_when_the_rooms_list_is_unavailable_is_not_a_miss(
+    server, capsys, flags, said
+) -> None:
+    server.add("/api/v1/groups", {**flags, "total": 0, "archived_total": 0, "groups": []})
+    assert cli.main(["next", "--json", "--room", "trip"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    err = json.loads(captured.err)["error"]
+    assert err["code"] == "server" and said in err["message"]
+    assert cli.main(["next", "--room", "trip"]) == 1
+    assert said in capsys.readouterr().err

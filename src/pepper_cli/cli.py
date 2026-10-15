@@ -2162,28 +2162,42 @@ def cmd_calendar(args: argparse.Namespace) -> int:
 
 def _resolve_room_strict(
     api: api_client.ApiClient, args: argparse.Namespace, value: str
-) -> str | None:
-    """Resolve ``--room`` to a room id, reporting a miss as exit 2 (J8 under ``--json``).
+) -> str | int:
+    """Resolve ``--room`` to a room id, else report why (J8 under ``--json``) and return
+    the exit code.
 
-    A UUID passes straight through; otherwise an exact, else a unique prefix, match on the
-    name of one of your rooms (archived ones too). An unknown or ambiguous name is an
-    error, never a silent empty result.
+    A UUID must be the id of one of your rooms; a name matches exactly, else as a unique
+    prefix, on one of their names (archived rooms too). An unknown or ambiguous room is
+    exit 2, never a silent empty result: ``next`` filters locally, so an id nobody
+    checked would read as an empty room. A rooms list the server could not produce
+    (groups off, or degraded) is exit 1 and says so, rather than "no such room" — the
+    input may be fine.
     """
-    if _valid_uuid(value):
-        return value
-    rooms = list(api.list_groups().groups)
-    match, candidates = _match_by_name(value, rooms, name_of=lambda g: g.display_name)
-    if match is None and not candidates:
-        archived = api.list_groups(archived=True).groups
-        match, candidates = _match_by_name(value, archived, name_of=lambda g: g.display_name)
-    if match is not None:
-        return match.group_id
-    if candidates:
-        listing = ", ".join(f"{g.display_name!r} ({g.group_id})" for g in candidates)
-        _emit_error(args, "ambiguous", f"{value!r} matches more than one room: {listing}")
-    else:
-        _emit_error(args, "not_found", f"no room named {value!r} — run 'pepper groups list'")
-    return None
+    for archived in (False, True):
+        gl = api.list_groups(archived=archived)
+        if not gl.enabled:
+            _emit_error(args, "server", "Groups is not enabled for your account.")
+            return 1
+        if gl.degraded:
+            _emit_error(
+                args, "server", "The groups service could not read your rooms. Try again shortly."
+            )
+            return 1
+        if _valid_uuid(value):
+            hit = next((g for g in gl.groups if g.group_id.lower() == value.lower()), None)
+            if hit is not None:
+                return hit.group_id
+            continue
+        match, candidates = _match_by_name(value, gl.groups, name_of=lambda g: g.display_name)
+        if match is not None:
+            return match.group_id
+        if candidates:
+            listing = ", ".join(f"{g.display_name!r} ({g.group_id})" for g in candidates)
+            _emit_error(args, "ambiguous", f"{value!r} matches more than one room: {listing}")
+            return 2
+    what = "id" if _valid_uuid(value) else "named"
+    _emit_error(args, "not_found", f"no room {what} {value!r} — run 'pepper groups list'")
+    return 2
 
 
 def cmd_next(args: argparse.Namespace) -> int:
@@ -2192,9 +2206,10 @@ def cmd_next(args: argparse.Namespace) -> int:
     def run(api: api_client.ApiClient) -> int:
         room_id = None
         if args.room:
-            room_id = _resolve_room_strict(api, args, args.room)
-            if room_id is None:
-                return 2
+            room = _resolve_room_strict(api, args, args.room)
+            if isinstance(room, int):
+                return room
+            room_id = room
         scope = next_view.Scope(room_id=room_id, source=args.source)
         result = next_view.assemble(api, scope=scope, show_all=args.all, first=args.first)
         if args.first and result["source"] == "fallback":
