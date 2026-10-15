@@ -1409,21 +1409,30 @@ class ApiClient:
             raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
         return [_todo_from_dict(row) for row in body]
 
-    def calendar_range(self, *, start: str, days: int) -> dict[str, Any]:
-        """``GET /api/v1/calendars/range?start=YYYY-MM-DD&days=N`` (1-31 days).
+    def calendar_range(
+        self, *, start: str, days: int, principal: str | None = None
+    ) -> dict[str, Any]:
+        """``GET /api/v1/calendars/range?start=YYYY-MM-DD&days=N[&principal=]`` (1-31 days).
 
+        ``principal`` is a room id: the room's calendar view instead of the caller's.
         Returns the server's preformatted agenda payload as-is."""
-        resp = self._request("GET", f"/api/v1/calendars/range?start={start}&days={days}")
-        body = resp.json()
-        if not isinstance(body, dict):
-            raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
-        return body
+        return self._calendar_object("range", start=start, days=days, principal=principal)
 
-    def calendar_planning(self, *, start: str, days: int) -> dict[str, Any]:
-        """``GET /api/v1/calendars/planning?start=&days=`` (1-7 days).
+    def calendar_planning(
+        self, *, start: str, days: int, principal: str | None = None
+    ) -> dict[str, Any]:
+        """``GET /api/v1/calendars/planning?start=&days=[&principal=]`` (1-7 days).
 
         ``{"cards": [...], "acted_on": [...]}``: Planning's detector cards."""
-        resp = self._request("GET", f"/api/v1/calendars/planning?start={start}&days={days}")
+        return self._calendar_object("planning", start=start, days=days, principal=principal)
+
+    def _calendar_object(
+        self, view: str, *, start: str, days: int, principal: str | None
+    ) -> dict[str, Any]:
+        path = f"/api/v1/calendars/{view}?start={start}&days={days}"
+        if principal is not None:
+            path += f"&principal={principal}"
+        resp = self._request("GET", path)
         body = resp.json()
         if not isinstance(body, dict):
             raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
@@ -1540,26 +1549,45 @@ class ApiClient:
         )
 
     def list_scheduled_task_runs(
-        self, task_id: str, *, limit: int = 20
+        self,
+        task_id: str,
+        *,
+        limit: int = 20,
+        before: str | None = None,
+        before_id: str | None = None,
     ) -> list[ScheduledTaskRunEntry]:
         """``GET /api/v1/scheduled-tasks/{id}/runs``. Fire history, newest first.
 
-        The server caps ``limit`` at 100. Keyset pagination
-        (``before``/``before_id``) exists on the endpoint but isn't
-        surfaced here — the CLI renders one page to a terminal."""
-        resp = self._request("GET", f"/api/v1/scheduled-tasks/{task_id}/runs?limit={limit}")
+        The server caps ``limit`` at 100. ``before`` (a ``fired_at``) and
+        ``before_id`` (that row's id) are the keyset cursor for the next, older
+        page; the server refuses ``before_id`` without ``before``."""
+        resp = self._request(
+            "GET",
+            f"/api/v1/scheduled-tasks/{task_id}/runs",
+            params=_keyset_params(limit, before, before_id),
+        )
         body = resp.json()
         if not isinstance(body, list):
             raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
         return [_scheduled_run_from_dict(row) for row in body]
 
     def get_scheduled_task_thread(
-        self, task_id: str, *, limit: int = 20
+        self,
+        task_id: str,
+        *,
+        limit: int = 20,
+        before: str | None = None,
+        before_id: str | None = None,
     ) -> list[ScheduledTaskMessage]:
         """``GET /api/v1/scheduled-tasks/{id}/thread``. The newest ``limit``
         messages of the task's own conversation, oldest first within the
-        page. The server caps ``limit`` at 100."""
-        resp = self._request("GET", f"/api/v1/scheduled-tasks/{task_id}/thread?limit={limit}")
+        page. The server caps ``limit`` at 100. ``before`` (a ``created_at``)
+        and ``before_id`` (that message's id) page back to older messages."""
+        resp = self._request(
+            "GET",
+            f"/api/v1/scheduled-tasks/{task_id}/thread",
+            params=_keyset_params(limit, before, before_id),
+        )
         body = resp.json()
         if not isinstance(body, list):
             raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
@@ -2560,6 +2588,45 @@ class ApiClient:
         result = resp.get("result") or {}
         return str(result.get("name", ""))
 
+    def list_apps(self) -> list[dict[str, Any]]:
+        """``GET /api/v1/apps``: every app's summary (``slug``, ``title``, ``description``,
+        ``owner_scoped_actions``, ...). The list is the only place the server names an
+        app's actions, and it names just the ``owner_scoped`` ones."""
+        body = self._request("GET", "/api/v1/apps").json()
+        if not isinstance(body, list):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return [row for row in body if isinstance(row, dict)]
+
+    def get_app_data(self, slug: str, *, principal: str | None = None) -> dict[str, Any]:
+        """``GET /api/v1/apps/{slug}/data[?principal=]``: ``{"rev": int, "data": {...}}``,
+        the app's document for the caller, or for the room ``principal``."""
+        params = {"principal": principal} if principal is not None else None
+        body = self._request("GET", f"/api/v1/apps/{slug}/data", params=params).json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return body
+
+    def run_app_action(
+        self,
+        slug: str,
+        action: str,
+        params: dict[str, Any],
+        *,
+        principal: str | None = None,
+    ) -> dict[str, Any]:
+        """``POST /api/v1/apps/{slug}/actions/{action}[?principal=]`` with ``{"params": ...}``:
+        the action's ``{"result": {...}}``. An action the app does not declare is a 404."""
+        query = {"principal": principal} if principal is not None else None
+        body = self._request(
+            "POST",
+            f"/api/v1/apps/{slug}/actions/{action}",
+            json={"params": params},
+            params=query,
+        ).json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return body
+
     def download_takeout(self, *, out_path: str | None = None) -> str:
         """``GET /api/v1/takeout``. Streams the zip archive straight to
         disk — never buffers the whole body in memory, since an archive
@@ -2767,6 +2834,16 @@ def _room_scheduled_task_from_dict(row: dict[str, Any]) -> RoomScheduledTaskSumm
         delivery=row["delivery"],
         last_run_status=row.get("last_run_status"),
     )
+
+
+def _keyset_params(limit: int, before: str | None, before_id: str | None) -> dict[str, Any]:
+    """Query params for a ``before``/``before_id`` keyset page (None cursor parts dropped)."""
+    params: dict[str, Any] = {"limit": limit}
+    if before is not None:
+        params["before"] = before
+    if before_id is not None:
+        params["before_id"] = before_id
+    return params
 
 
 def _scheduled_run_from_dict(row: dict[str, Any]) -> ScheduledTaskRunEntry:
