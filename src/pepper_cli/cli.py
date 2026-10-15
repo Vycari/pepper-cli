@@ -74,6 +74,7 @@ import argparse
 import contextlib
 import difflib
 import getpass
+import json
 import mimetypes
 import os
 import re
@@ -82,7 +83,7 @@ import sys
 import time
 import uuid
 import webbrowser
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -272,6 +273,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     # errors and help text stay sensible.
 
     args = parser.parse_args(argv)
+    if hasattr(args, "json"):
+        # Resolve J10 once, here: every leaf that declares ``--json`` reads the
+        # result from ``args.json`` below, so ``PEPPER_JSON=1`` reaches all of
+        # them. ``chat`` and ``login`` declare no ``--json``, so they never see it.
+        args.json = _json_mode(args)
     handler = args.handler
     try:
         return handler(args)
@@ -3080,6 +3086,21 @@ def _open_in_editor(initial: str) -> str | None:
         os.unlink(path)
 
 
+def _to_plain(value: object) -> object:
+    """A dataclass instance as a plain dict (recursively); anything else unchanged."""
+    import dataclasses
+
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    return value
+
+
+def _write_json(data: object) -> None:
+    """The one place JSON documents reach stdout: indented, newline-terminated."""
+    sys.stdout.write(json.dumps(data, indent=2, default=str))
+    sys.stdout.write("\n")
+
+
 def _print_json(obj: object) -> None:
     """Serialize a dataclass (or a plain list/dict of them) to stdout as JSON.
 
@@ -3091,17 +3112,233 @@ def _print_json(obj: object) -> None:
     converted element-wise. ``default=str`` is defensive, not load-bearing
     — every field on these wire shapes is already JSON-safe.
     """
-    import dataclasses
-    import json
+    _write_json([_to_plain(v) for v in obj] if isinstance(obj, list) else _to_plain(obj))
 
-    def _to_plain(value: object) -> object:
-        if dataclasses.is_dataclass(value) and not isinstance(value, type):
-            return dataclasses.asdict(value)
-        return value
 
-    data = [_to_plain(v) for v in obj] if isinstance(obj, list) else _to_plain(obj)
-    sys.stdout.write(json.dumps(data, indent=2, default=str))
-    sys.stdout.write("\n")
+# ---------------------------------------------------------------------------
+# Shared flags, JSON mode, output and error helpers
+#
+# The building blocks of the CLI contract in ``planning/cli-information-
+# architecture.md`` (§5). Phase 1 only builds them; the commands that adopt
+# them move over in the phases that rename those commands, because attaching a
+# parent parser changes a leaf's ``--help`` and a list/error shape is a
+# breaking change (invariant 4).
+# ---------------------------------------------------------------------------
+
+#: ``PEPPER_JSON`` switches JSON mode on only when it is exactly this (J10).
+_PEPPER_JSON_ON = "1"
+
+
+def _json_mode(args: argparse.Namespace) -> bool:
+    """Is this invocation in JSON mode (J10)?
+
+    ``--json`` on the command line always wins; otherwise ``PEPPER_JSON`` set to
+    exactly ``1``. Any other value, or unset, is off — there is no ``--no-json``;
+    ``PEPPER_JSON= pepper …`` switches it off for one command. Only leaves that
+    accept ``--json`` call this (the REPL and ``login`` never do, which is the J1
+    exemption), so a leaf without the flag never reaches the ``getattr`` default.
+    """
+    return bool(getattr(args, "json", False)) or os.environ.get("PEPPER_JSON") == _PEPPER_JSON_ON
+
+
+def _build_json_parent() -> argparse.ArgumentParser:
+    parent = argparse.ArgumentParser(add_help=False)
+    parent.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit JSON on stdout instead of text (also on when PEPPER_JSON=1).",
+    )
+    return parent
+
+
+def _build_topic_parent() -> argparse.ArgumentParser:
+    parent = argparse.ArgumentParser(add_help=False)
+    parent.add_argument(
+        "--topic",
+        metavar="TOPIC",
+        help="Topic: its UUID, or a case-insensitive unique name prefix (needs --room).",
+    )
+    return parent
+
+
+def _build_yes_parent() -> argparse.ArgumentParser:
+    parent = argparse.ArgumentParser(add_help=False)
+    parent.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the confirmation prompt (required when there is no terminal).",
+    )
+    return parent
+
+
+def _build_page_parent() -> argparse.ArgumentParser:
+    parent = argparse.ArgumentParser(add_help=False)
+    parent.add_argument("--limit", type=int, metavar="N", help="At most N items.")
+    parent.add_argument(
+        "--before",
+        metavar="CURSOR",
+        help="Older than this cursor (a next_before value an earlier call printed).",
+    )
+    parent.add_argument("--since", metavar="CURSOR", help="Newer than this cursor.")
+    return parent
+
+
+#: Built once, attached with ``parents=[...]`` (each has ``add_help=False``).
+_json_parent = _build_json_parent()
+_topic_parent = _build_topic_parent()
+_yes_parent = _build_yes_parent()
+_page_parent = _build_page_parent()
+
+
+def _room_parent(*, required: bool = False) -> argparse.ArgumentParser:
+    """``--room ROOM`` parent: required where the verb acts inside a room (§6)."""
+    parent = argparse.ArgumentParser(add_help=False)
+    parent.add_argument(
+        "--room",
+        metavar="ROOM",
+        required=required,
+        help="Room: its UUID, or a case-insensitive unique name prefix."
+        + ("" if required else " Omit to act on your own."),
+    )
+    return parent
+
+
+def _emit(obj: object, args: argparse.Namespace, human: Callable[[], None]) -> None:
+    """Write ``obj`` as one JSON document in JSON mode, else call ``human()``.
+
+    ``human`` is the existing ``render.py`` formatter, closed over its inputs, so
+    JSON mode never runs it and no colour, prose or progress reaches stdout (J2).
+    """
+    if _json_mode(args):
+        _print_json(obj)
+    else:
+        human()
+
+
+def _list_envelope(
+    items: Sequence[object], next_before: str | None = None, **meta: object
+) -> dict[str, object]:
+    """The J3 list envelope: ``{"items": [...], "next_before": str|null, **meta}``.
+
+    ``next_before`` is always present (``None`` on the last page and on unpaged
+    lists). Server list-level metadata rides beside the two keys as ``meta``.
+    """
+    return {"items": [_to_plain(item) for item in items], "next_before": next_before, **meta}
+
+
+def _emit_list(
+    items: Sequence[object],
+    args: argparse.Namespace,
+    human: Callable[[], None],
+    next_before: str | None = None,
+    **meta: object,
+) -> None:
+    """Emit a list: the J3 envelope in JSON mode, else ``human()``."""
+    if _json_mode(args):
+        _write_json(_list_envelope(items, next_before, **meta))
+    else:
+        human()
+
+
+#: The J8 ``error.code`` vocabulary.
+_ERROR_CODES = frozenset(
+    {
+        "auth",
+        "forbidden",
+        "not_found",
+        "conflict",
+        "validation",
+        "ambiguous",
+        "usage",
+        "upgrade_required",
+        "server",
+        "network",
+        "gap",
+    }
+)
+
+_ERROR_CODE_BY_STATUS = {
+    401: "auth",
+    403: "forbidden",
+    404: "not_found",
+    409: "conflict",
+    412: "conflict",
+    426: "upgrade_required",
+}
+
+
+def _error_code_for_status(status: int | None) -> str:
+    """Map an HTTP status (``None`` = no response) to a J8 ``code``."""
+    if status is None:
+        return "network"
+    if status in _ERROR_CODE_BY_STATUS:
+        return _ERROR_CODE_BY_STATUS[status]
+    return "server" if status >= 500 else "validation"
+
+
+def _emit_error(
+    args: argparse.Namespace, code: str, message: str, *, status: int | None = None
+) -> None:
+    """Report an error: one J8 JSON line on stderr in JSON mode, else the usual text line.
+
+    stdout is left empty either way. The caller still returns the exit code (J9).
+    ``message`` must never carry a token.
+    """
+    if code not in _ERROR_CODES:
+        raise ValueError(f"unknown error code {code!r}")
+    if _json_mode(args):
+        line = json.dumps({"error": {"code": code, "status": status, "message": message}})
+        sys.stderr.write(line + "\n")
+    else:
+        render.error(message)
+
+
+class _RenamedStubParser(argparse.ArgumentParser):
+    """Parser for a retired noun: accepts any argument tail without looking at it.
+
+    ``REMAINDER`` alone is not enough, because an option-looking first token
+    (``pepper groups --json``, ``pepper groups -h``) would still be rejected as
+    unrecognized before the handler ran.
+    """
+
+    def __init__(self, prog: str, handler: Callable[[argparse.Namespace], int]) -> None:
+        super().__init__(prog=prog, add_help=False)
+        self._stub_handler = handler
+
+    def parse_known_args(
+        self, args: Iterable[str] | None = None, namespace: Any = None
+    ) -> tuple[Any, list[str]]:
+        del args
+        out = namespace if namespace is not None else argparse.Namespace()
+        out.handler = self._stub_handler
+        return out, []
+
+
+def _renamed_stub_handler(old: str, hint: str) -> Callable[[argparse.Namespace], int]:
+    def run(args: argparse.Namespace) -> int:
+        del args
+        print(f"pepper: '{old}' was renamed in 0.2.0 — {hint}", file=sys.stderr)
+        return 2
+
+    return run
+
+
+def _add_renamed_stub(
+    sub: Any,  # the object ``ArgumentParser.add_subparsers`` returns
+    old: str,
+    hint: str,
+) -> argparse.ArgumentParser:
+    """Register ``old`` as a retired noun (§7): it names its replacement and exits 2.
+
+    The name must stay registered so the implicit-chat fallback never sends
+    ``pepper <old> …`` to Pepper as a message. The stub runs nothing (no
+    credentials, no network) and swallows whatever follows, options included, so
+    the exit is the same whatever the old command line was. It is left out of the
+    subcommand help listing (no ``help=``).
+    """
+    stub = _RenamedStubParser(f"pepper {old}", _renamed_stub_handler(old, hint))
+    sub.choices[old] = stub
+    return stub
 
 
 def _match_by_name[T](

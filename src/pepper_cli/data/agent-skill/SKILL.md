@@ -67,6 +67,8 @@ rest describes how the commands behave.
 
 ## 3. Finding rooms, topics and ids
 
+Setting the environment variable `PEPPER_JSON=1` turns on `--json` for every command below that takes it; `--json` on the command line always works too.
+
 - `pepper --profile <name> groups list --json` lists your rooms as one object:
   `{"enabled": ..., "degraded": ..., "total": ..., "archived_total": ..., "groups": [...]}`. Each
   entry of `groups` has a `group_id` (also printed in the text form), a `display_name`, and a

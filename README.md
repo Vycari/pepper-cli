@@ -156,6 +156,8 @@ pepper whoami
 
 ## 4. Commands
 
+Commands that take `--json` also switch to JSON output when the environment variable `PEPPER_JSON` is exactly `1`, so an agent can export it once; `--json` on the command line always wins, any other value (or unset) leaves the human output, and `login` and the interactive REPL ignore it.
+
 | Command | What it does |
 | --- | --- |
 | `pepper` | Open the interactive REPL (shorthand for `pepper chat`). |
