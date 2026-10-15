@@ -156,7 +156,7 @@ pepper whoami
 
 ## 4. Commands
 
-Commands that take `--json` also switch to JSON output when the environment variable `PEPPER_JSON` is exactly `1`, so an agent can export it once; `--json` on the command line always wins, any other value (or unset) leaves the human output, and `login` and the interactive REPL ignore it.
+Every command except `login` and the interactive REPL takes `--json`, and also switches to JSON output when the environment variable `PEPPER_JSON` is exactly `1`, so an agent can export it once; `--json` on the command line always wins, any other value (or unset) leaves the human output, and `login` and the interactive REPL ignore it. List commands answer `{"items": [...], "next_before": CURSOR-or-null}` (unpaged lists always have `null`); a failure under `--json` is one line on stderr, `{"error": {"code", "status", "message"}}`, with stdout empty. In JSON mode nothing prompts or opens an editor: pass `--yes` to destructive commands and `--file` to `notes`/`skills` create and edit, or the command exits 2.
 
 | Command | What it does |
 | --- | --- |
@@ -164,12 +164,17 @@ Commands that take `--json` also switch to JSON output when the environment vari
 | `pepper <message>` | Send a one-shot message — multi-word, no quotes needed. |
 | `pepper chat ["msg"]` | One-shot with a message, or the REPL with none. |
 | `pepper chat --root PATH ["msg"]` | Same, but let this session read files under `PATH` (repeatable). |
-| `pepper whoami` | Print the user behind the current credentials. |
+| `pepper whoami [--json]` | Print the user behind the current credentials. |
+| `pepper chat "msg" --json` | One-shot chat; prints one JSON line per event, `{"kind", "payload"}`. The REPL ignores `--json`. |
+| `pepper calendar [WINDOW] [--planning] [--room R] [--json]` | Your calendar, or a room's with `--room` (any window except `schedule`; the room view has no weather, drive or schedule-plan layers). |
+| `pepper apps show SLUG [--room R] [--json]` | An app's data document, `{"rev", "data"}`, yours or the room's. |
+| `pepper apps run SLUG [ACTION] [--param KEY=VALUE]… [--room R] [--json]` | Run an app action (values are strings). With no ACTION, lists the owner-scoped actions from `GET /apps` (partial: the server has no route listing every declared action). |
+| `pepper takeout --out PATH [--json]` | Download your data archive; `--json` prints `{"path", "bytes"}`. |
 | `pepper trajectories show <uuid> [--json]` | Print one trajectory's events; `--json` for full untruncated payloads. |
 | `pepper trajectories list [--limit N] [--before CURSOR] [--json]` | List your recent trajectories (default 20, max 200). `--json` is `{"items": [...], "next_before": CURSOR-or-null}`; pass `next_before` back as `--before` for the next page. The cursor is opaque. |
 | `pepper trajectory ...` | Renamed to `trajectories` in 0.2.0; exits 2 with a pointer. |
 | `pepper scheduled-tasks list [--all] [--room R]` | List your scheduled tasks, or a room's with `--room`; `--all` includes paused ones and spent one-offs. |
-| `pepper scheduled-tasks show\|runs\|thread <task>` | One task's config and last run, its fire history, or its own conversation. |
+| `pepper scheduled-tasks show\|runs\|thread <task> [--before CURSOR] [--limit N]` | One task's config and last run, its fire history, or its own conversation. `runs` and `thread` page back with `--before` (the `next_before` of the previous page, `<timestamp>\|<id>`; limit 1-100). |
 | `pepper scheduled-tasks create <name> --prompt P (--cron C \| --at T) [--to D… \| --silent] [--deliver-topic NAME] [--room R]` | Schedule a recurring or one-off task. With `--room`: on the room, `--cron` only. |
 | `pepper scheduled-tasks edit <task> [--prompt …] […] [--to D… \| --default \| --silent] [--deliver-topic NAME] [--room R]` | Change a task; only the flags you pass are written. Delivery (where results are announced) is set here too; with `--room` it is the only thing `edit` can change. |
 | `pepper scheduled-tasks renew <task> [--json]` | Renew one of your tasks that is about to lapse. |

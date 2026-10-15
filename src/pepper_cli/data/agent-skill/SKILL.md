@@ -71,8 +71,9 @@ Setting the environment variable `PEPPER_JSON=1` turns on `--json` for every com
 
 - `pepper --profile <name> rooms list --json` lists your rooms as one object:
   `{"items": [...], "next_before": null, "enabled": ..., "degraded": ..., "total": ...,
-  "archived_total": ...}`. Every list command's `--json` output has this `items` and `next_before`
-  shape. Each entry of `items` has a `group_id` (also printed in the text form), a `display_name`, and a
+  "archived_total": ...}`. Every list command's `--json` output (including the ones your token cannot run) has this
+  `items` and `next_before` shape; an error under `--json` is one stderr line,
+  `{"error": {"code", "status", "message"}}`, with stdout empty. Each entry of `items` has a `group_id` (also printed in the text form), a `display_name`, and a
   list of topics that holds only the room's most recently active ones. `degraded: true` means the
   server could not ask the groups service, so an empty list then is not "no rooms".
 - `pepper --profile <name> topics list --room <room> --json` lists all of a room's topics: `topic_id`,
