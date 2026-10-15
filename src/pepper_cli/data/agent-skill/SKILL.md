@@ -247,7 +247,7 @@ EOF
   server answers 401 and nothing is posted. Agent members post text only.
 - On success the command prints `Posted.` to stderr and the new message's id to stdout, and exits
   0. Exit 1 is an auth, API or network failure and exit 2 is bad input (empty body, unknown or
-  ambiguous room or topic, unreadable attachment).
+  ambiguous room or topic, unreadable attachment) or a 404 (section 10).
 - Reactions: `pepper --profile <name> messages react --room <room> <message-id> <emoji>` adds yours and
   `pepper --profile <name> messages unreact --room <room> <message-id> <emoji>` takes it back. A reaction
   is a light acknowledgement and is not a reply.
@@ -333,7 +333,12 @@ binary has, not commands your token may use.
   for this document. If commands that worked start failing that way, stop and tell your operator.
 - `Rooms are not enabled`: the server has no groups service for this login.
 - 404: the room, topic or message is not one you can reach, or you were removed from the room.
-  Reactions print `not found, or you are not a member of that room` and exit 2; the other
-  commands print `Server returned 404` with the server's detail and exit 1.
+  Every `rooms`, `topics`, `messages` and `attachments` command prints `not found, or you are not
+  a member of that room` and exits 2. With `--json` (or `PEPPER_JSON=1`) stdout stays empty and
+  stderr carries one line instead: `{"error": {"code": "not_found", "status": 404, "message":
+  "not found, or you are not a member of that room"}}`. A 403 prints `not allowed:` and the
+  server's reason and exits 1 (JSON code `forbidden`). The watch is the exception:
+  `pepper --profile <name> rooms watch` treats a 404 as a server with no stream and exits 1
+  (section 4).
 - An unknown first word is sent to Pepper as a chat message (section 2); check `--help` before
   guessing at a command.
