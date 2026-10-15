@@ -56,15 +56,14 @@ def _error(capsys) -> dict:
     ],
 )
 def test_expired_token_is_an_auth_error_line(server, capsys, argv) -> None:
-    for method in ("GET",):
-        for path in (
-            "/api/v1/todos",
-            "/api/v1/scheduled-tasks",
-            "/api/v1/skills",
-            "/api/v1/whoami",
-            "/api/v1/artifacts",
-        ):
-            server.routes[(method, path)] = httpx.Response(401, json={"detail": "bad token"})
+    for path in (
+        "/api/v1/todos",
+        "/api/v1/scheduled-tasks",
+        "/api/v1/skills",
+        "/api/v1/whoami",
+        "/api/v1/artifacts",
+    ):
+        server.routes[("GET", path)] = httpx.Response(401, json={"detail": "bad token"})
     rc = cli.main([*argv, "--json"])
     assert rc != 0
     err = _error(capsys)
@@ -134,3 +133,9 @@ def test_bare_timestamp_cursor_is_accepted(server, capsys) -> None:
     params = server.requests[-1].url.params
     assert params["before"] == "2026-10-01"
     assert "before_id" not in params
+
+
+def test_saved_flags_tolerates_a_field_without_a_flag_name() -> None:
+    # A future edit field must not raise inside the partial-save error path (#26).
+    assert cli._saved_flags({"future_field": 1}) == "future_field"
+    assert cli._saved_flags({"description": None}) == "--clear-description"

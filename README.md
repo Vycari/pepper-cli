@@ -174,7 +174,8 @@ Every command except `login` and the interactive REPL takes `--json`, and also s
 | `pepper trajectories list [--limit N] [--before CURSOR] [--json]` | List your recent trajectories (default 20, max 200). `--json` is `{"items": [...], "next_before": CURSOR-or-null}`; pass `next_before` back as `--before` for the next page. The cursor is opaque. |
 | `pepper trajectory ...` | Renamed to `trajectories` in 0.2.0; exits 2 with a pointer. |
 | `pepper scheduled-tasks list [--all] [--room R]` | List your scheduled tasks, or a room's with `--room`; `--all` includes paused ones and spent one-offs. |
-| `pepper scheduled-tasks show\|runs\|thread <task> [--before CURSOR] [--limit N]` | One task's config and last run, its fire history, or its own conversation. `runs` and `thread` page back with `--before` (the `next_before` of the previous page, `<timestamp>\|<id>`; limit 1-100). |
+| `pepper scheduled-tasks show <task>` | One task's config and last run. |
+| `pepper scheduled-tasks runs\|thread <task> [--before CURSOR] [--limit N]` | A task's fire history, or its own conversation. They page back with `--before` (the `next_before` of the previous page, `<timestamp>\|<id>`; limit 1-100). |
 | `pepper scheduled-tasks create <name> --prompt P (--cron C \| --at T) [--to D… \| --silent] [--deliver-topic NAME] [--room R]` | Schedule a recurring or one-off task. With `--room`: on the room, `--cron` only. |
 | `pepper scheduled-tasks edit <task> [--prompt …] […] [--to D… \| --default \| --silent] [--deliver-topic NAME] [--room R]` | Change a task; only the flags you pass are written. Delivery (where results are announced) is set here too; with `--room` it is the only thing `edit` can change. |
 | `pepper scheduled-tasks renew <task> [--json]` | Renew one of your tasks that is about to lapse. |

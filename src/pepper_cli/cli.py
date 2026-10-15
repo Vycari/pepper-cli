@@ -416,9 +416,10 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
             "Pepper CLI — chat with your agent over /api/v1. "
             "Bare ``pepper`` opens the REPL; ``pepper <message>`` is shorthand "
             "for ``pepper chat <message>``. Use a subcommand "
-            "(login / whoami / chat / trajectories / todos / scheduled-tasks / "
-            "skills / rooms / topics / messages / attachments / notes / agents / "
-            "logout) for everything else."
+            "(login / whoami / chat / trajectories / calendar / next / todos / "
+            "scheduled-tasks / skills / rooms / topics / messages / attachments / "
+            "members / sharing / apps / notes / takeout / agents / logout) "
+            "for everything else."
         ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -1379,7 +1380,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "notes",
         help=(
             "Your text artifacts. ``list``/``search`` to find one, ``show`` "
-            "to print it, ``new``/``edit``/``rm`` to write it. ``--room`` "
+            "to print it, ``create``/``edit``/``delete`` to write it. ``--room`` "
             "scopes to a room's shared notes instead of your own."
         ),
     )
