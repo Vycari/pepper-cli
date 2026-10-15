@@ -144,12 +144,8 @@ ROOM_NA = {
 #: the ``groups`` leaves take the room as a positional until phase 2a/2b.
 ROOM_PENDING = frozenset(
     {
-        "scheduled-tasks renew",  # server: no room renew route yet
-        "scheduled-tasks runs",
-        "scheduled-tasks show",
-        "scheduled-tasks thread",
-        "trajectories list",  # server: GET /trajectories takes no room filter
-        "trajectories show",
+        # server: no room delete route yet (pepper#4734 is the personal one only)
+        "scheduled-tasks delete",
     }
 )
 
@@ -762,6 +758,7 @@ JSON_CASES: dict[str, list[str]] = {
         "0 8 * * *",
     ],
     "scheduled-tasks edit": ["scheduled-tasks", "edit", _TASK, "--prompt", "q"],
+    "scheduled-tasks delete": ["scheduled-tasks", "delete", _TASK, "--yes"],
     "scheduled-tasks pause": ["scheduled-tasks", "pause", _TASK],
     "scheduled-tasks resume": ["scheduled-tasks", "resume", _TASK],
     "skills list": ["skills", "list"],

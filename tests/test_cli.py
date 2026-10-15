@@ -113,8 +113,9 @@ class _FakeApi:
         return self.trajectory_raw_response
 
     def trajectory_list(
-        self, *, limit: int = 20, offset: int = 0
+        self, *, limit: int = 20, offset: int = 0, principal: str | None = None
     ) -> list[api_client.TrajectoryListEntry]:
+        self.requested_principal = principal
         self.requested_limit = limit
         self.requested_offset = offset
         if isinstance(self.trajectory_list_response, Exception):
@@ -1127,6 +1128,124 @@ def test_trajectory_list_prints_rows(tmp_home: Path, patch_api, capsys) -> None:
     assert "client_api" in out
     assert "hi there" in out
     assert _FakeApi.instances[0].requested_limit == 5
+
+
+_TRAJ_ROOM = "22222222-2222-2222-2222-222222222222"
+
+
+def _trip_rooms() -> api_client.GroupList:
+    return api_client.GroupList(
+        enabled=True,
+        degraded=False,
+        total=1,
+        archived_total=0,
+        groups=[
+            api_client.GroupSummary(
+                group_id=_TRAJ_ROOM,
+                display_name="Trip",
+                color="#fff",
+                sub="",
+                member_count=2,
+                archived=False,
+            )
+        ],
+    )
+
+
+def test_trajectory_list_room_asks_the_server_for_that_principal(
+    tmp_home: Path, patch_api, capsys
+) -> None:
+    """``--room`` is a server-side filter (``?principal=``), not a client-side one."""
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
+    patch_api(groups=_trip_rooms(), trajectory_list=[])
+    assert cli.main(["trajectories", "list", "--room", "trip"]) == 0
+    assert _FakeApi.instances[-1].requested_principal == _TRAJ_ROOM
+    assert cli.main(["trajectories", "list"]) == 0
+    assert _FakeApi.instances[-1].requested_principal is None
+
+
+def test_trajectory_list_room_cursor_hint_keeps_the_room(tmp_home: Path, patch_api, capsys) -> None:
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
+    entry = api_client.TrajectoryListEntry(
+        id=_VALID_TRAJ_ID,
+        channel="client_api",
+        created_at="2026-05-31T12:00:00Z",
+        closed_at=None,
+        meta={},
+        event_count=1,
+        first_user_message="hi",
+        group_id=_TRAJ_ROOM,
+        group_name="Trip",
+    )
+    patch_api(groups=_trip_rooms(), trajectory_list=[entry])
+    assert cli.main(["trajectories", "list", "--room", "trip", "--limit", "1"]) == 0
+    assert "pepper trajectories list --room trip --before 1" in capsys.readouterr().err
+    assert cli.main(["trajectories", "list", "--room", "trip", "--limit", "1", "--json"]) == 0
+    import json as _json
+
+    assert _json.loads(capsys.readouterr().out)["next_before"] == "1"
+
+
+def test_trajectory_list_unknown_room_exits_two(tmp_home: Path, patch_api, capsys) -> None:
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
+    patch_api(groups=_trip_rooms(), trajectory_list=[])
+    assert cli.main(["trajectories", "list", "--room", "nowhere"]) == 2
+    assert not hasattr(_FakeApi.instances[-1], "requested_principal")
+
+
+def test_trajectory_list_room_404_says_not_a_member(tmp_home: Path, patch_api, capsys) -> None:
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
+    patch_api(
+        groups=_trip_rooms(),
+        trajectory_list=api_client.ApiError(status=404, body="", detail="not found"),
+    )
+    assert cli.main(["trajectories", "list", "--room", "trip"]) == 2
+    assert "not a member" in capsys.readouterr().err
+
+
+def test_trajectory_show_room_prints_a_trajectory_of_that_room(
+    tmp_home: Path, patch_api, capsys
+) -> None:
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
+    patch_api(groups=_trip_rooms(), trajectory=_make_detail())
+    assert cli.main(["trajectories", "show", _VALID_TRAJ_ID, "--room", "trip"]) == 0
+    assert "[0] user_message" in capsys.readouterr().out
+
+
+def test_trajectory_show_room_refuses_one_that_is_not_the_rooms(
+    tmp_home: Path, patch_api, capsys
+) -> None:
+    """The route takes no room, so the CLI checks the header's owner: a turn
+    of another principal is exit 2 and nothing is printed."""
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
+    other = _make_detail()
+    other = api_client.TrajectoryDetail(
+        trajectory=api_client.TrajectoryRef(
+            **{**other.trajectory.__dict__, "user_id": "33333333-3333-3333-3333-333333333333"}
+        ),
+        events=other.events,
+    )
+    patch_api(groups=_trip_rooms(), trajectory=other)
+    assert cli.main(["trajectories", "show", _VALID_TRAJ_ID, "--room", "trip"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "isn't one of this room's turns" in captured.err
+
+
+def test_trajectory_show_room_json_checks_the_raw_header(tmp_home: Path, patch_api, capsys) -> None:
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
+    import json as _json
+
+    mine = {"trajectory": {"id": _VALID_TRAJ_ID, "user_id": _TRAJ_ROOM}, "events": []}
+    patch_api(groups=_trip_rooms(), trajectory_raw=mine)
+    assert cli.main(["trajectories", "show", _VALID_TRAJ_ID, "--room", "trip", "--json"]) == 0
+    assert _json.loads(capsys.readouterr().out) == mine
+    theirs = {"trajectory": {"id": _VALID_TRAJ_ID, "user_id": "x"}, "events": []}
+    patch_api(groups=_trip_rooms(), trajectory_raw=theirs)
+    assert cli.main(["trajectories", "show", _VALID_TRAJ_ID, "--room", "trip", "--json"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert _json.loads(captured.err)["error"]["code"] == "not_found"
 
 
 def test_trajectory_list_empty_message(tmp_home: Path, patch_api, capsys) -> None:

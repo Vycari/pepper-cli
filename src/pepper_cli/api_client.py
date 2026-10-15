@@ -591,9 +591,18 @@ class ScheduledTaskRunEntry:
 class ScheduledTaskDetail(ScheduledTaskSummary):
     """``GET /api/v1/scheduled-tasks/{id}`` — the summary plus the most
     recent fire, so a caller can show a task card in one round-trip.
-    ``latest_run`` is ``None`` when the task has never fired."""
+    ``latest_run`` is ``None`` when the task has never fired.
+
+    The ``group_*`` fields are filled only for a *room* task (the room
+    detail route): the room's name, its members' display names, and the
+    server's own sentence for where the task delivers. A room task's
+    ``destinations`` of ``None`` means the room's default, so
+    ``group_delivery`` is the thing to print there."""
 
     latest_run: ScheduledTaskRunEntry | None
+    group_name: str | None = None
+    group_members: list[str] = field(default_factory=list)
+    group_delivery: str | None = None
 
 
 # MIRROR: src/pepper/api/scheduled_tasks.py::ThreadMessageEntry
@@ -1535,17 +1544,25 @@ class ApiClient:
             return [_room_scheduled_task_from_dict(row) for row in body]
         return [_scheduled_task_from_dict(row) for row in body]
 
-    def get_scheduled_task(self, task_id: str) -> ScheduledTaskDetail:
+    def get_scheduled_task(
+        self, task_id: str, *, group_id: str | None = None
+    ) -> ScheduledTaskDetail:
         """``GET /api/v1/scheduled-tasks/{id}``. Config + most recent fire.
 
         404 whether the id is unknown or belongs to another user — the
-        server never distinguishes the two."""
-        resp = self._request("GET", f"/api/v1/scheduled-tasks/{task_id}")
+        server never distinguishes the two.
+
+        With ``group_id``, ``GET /api/v1/groups/{id}/scheduled-tasks/{task}``:
+        a room task, readable by any member, with the ``group_*`` fields set."""
+        resp = self._request("GET", f"{_scheduled_tasks_path(group_id)}/{task_id}")
         row = resp.json()
         latest = row.get("latest_run")
         return ScheduledTaskDetail(
             **_scheduled_task_fields(row),
             latest_run=_scheduled_run_from_dict(latest) if latest else None,
+            group_name=row.get("group_name"),
+            group_members=row.get("group_members") or [],
+            group_delivery=row.get("group_delivery"),
         )
 
     def list_scheduled_task_runs(
@@ -1555,15 +1572,19 @@ class ApiClient:
         limit: int = 20,
         before: str | None = None,
         before_id: str | None = None,
+        group_id: str | None = None,
     ) -> list[ScheduledTaskRunEntry]:
         """``GET /api/v1/scheduled-tasks/{id}/runs``. Fire history, newest first.
 
         The server caps ``limit`` at 100. ``before`` (a ``fired_at``) and
         ``before_id`` (that row's id) are the keyset cursor for the next, older
-        page; the server refuses ``before_id`` without ``before``."""
+        page; the server refuses ``before_id`` without ``before``.
+
+        With ``group_id``, the room route under
+        ``/api/v1/groups/{id}/scheduled-tasks`` — any member may read."""
         resp = self._request(
             "GET",
-            f"/api/v1/scheduled-tasks/{task_id}/runs",
+            f"{_scheduled_tasks_path(group_id)}/{task_id}/runs",
             params=_keyset_params(limit, before, before_id),
         )
         body = resp.json()
@@ -1578,14 +1599,18 @@ class ApiClient:
         limit: int = 20,
         before: str | None = None,
         before_id: str | None = None,
+        group_id: str | None = None,
     ) -> list[ScheduledTaskMessage]:
         """``GET /api/v1/scheduled-tasks/{id}/thread``. The newest ``limit``
         messages of the task's own conversation, oldest first within the
         page. The server caps ``limit`` at 100. ``before`` (a ``created_at``)
-        and ``before_id`` (that message's id) page back to older messages."""
+        and ``before_id`` (that message's id) page back to older messages.
+
+        With ``group_id``, the room route under
+        ``/api/v1/groups/{id}/scheduled-tasks`` — any member may read."""
         resp = self._request(
             "GET",
-            f"/api/v1/scheduled-tasks/{task_id}/thread",
+            f"{_scheduled_tasks_path(group_id)}/{task_id}/thread",
             params=_keyset_params(limit, before, before_id),
         )
         body = resp.json()
@@ -1608,7 +1633,7 @@ class ApiClient:
         self,
         *,
         name: str,
-        prompt: str,
+        prompt: str | None = None,
         cron: str | None = None,
         run_at: str | None = None,
         timezone: str | None = None,
@@ -1616,6 +1641,7 @@ class ApiClient:
         destinations: list[str] | None = None,
         group_id: str | None = None,
         topic: str | None = None,
+        skill: str | None = None,
     ) -> ScheduledTaskSummary:
         """``POST /api/v1/scheduled-tasks``. Schedule a new task.
 
@@ -1627,23 +1653,37 @@ class ApiClient:
 
         With ``group_id``, ``POST /api/v1/groups/{id}/scheduled-tasks``: a
         task on that room — a room owner's write (403 otherwise). A room
-        task is cron-only and has no description, so ``run_at`` and
-        ``description`` are never sent; ``destinations`` omitted leaves the
-        delivery to the server, and ``topic`` (which needs ``destinations``)
-        names the room topic a ``groups_service`` delivery posts into. 409
-        for a taken name or a room at its task budget.
+        task takes exactly one of ``cron`` / ``run_at`` and at least one of
+        ``prompt`` / ``skill`` (a room-granted skill's name; 422 otherwise),
+        and has no description, so ``description`` is never sent. Keys the
+        caller left unset are *omitted*, never sent as ``null`` (the server
+        types ``prompt`` and ``cron`` as strings). ``destinations`` omitted
+        leaves the delivery to the server, and ``topic`` (which needs
+        ``destinations``) names the room topic a ``groups_service`` delivery
+        posts into. 409 for a taken name or a room at its task budget.
         """
         if group_id:
             if topic is not None and destinations is None:
                 msg = "topic needs explicit destinations"
                 raise ValueError(msg)
-            room_payload: dict[str, Any] = {"name": name, "prompt": prompt, "cron": cron}
+            room_payload: dict[str, Any] = {"name": name}
+            if prompt is not None:
+                room_payload["prompt"] = prompt
+            if skill is not None:
+                room_payload["skill"] = skill
+            if cron is not None:
+                room_payload["cron"] = cron
+            if run_at is not None:
+                room_payload["run_at"] = run_at
             if timezone is not None:
                 room_payload["timezone"] = timezone
             if destinations is not None:
                 room_payload["delivery"] = _room_delivery(destinations, topic)
             resp = self._request("POST", _scheduled_tasks_path(group_id), json=room_payload)
             return _room_scheduled_task_from_dict(resp.json())
+        if prompt is None or skill is not None:
+            msg = "a personal task needs a prompt and takes no skill"
+            raise ValueError(msg)
         payload: dict[str, Any] = {"name": name, "prompt": prompt}
         if cron is not None:
             payload["cron"] = cron
@@ -1703,21 +1743,61 @@ class ApiClient:
         resp = self._request("POST", f"/api/v1/scheduled-tasks/{task_id}/resume")
         return _scheduled_task_from_dict(resp.json())
 
-    def renew_scheduled_task(self, task_id: str) -> ScheduledTaskSummary:
+    def renew_scheduled_task(
+        self, task_id: str, *, group_id: str | None = None
+    ) -> ScheduledTaskSummary:
         """``POST /api/v1/scheduled-tasks/{id}/renew``. Keep a task going past its
         renewal warning ("Keep it going" in the web UI).
 
         422 when the server refuses (nothing to renew, a one-off, a paused task); its
-        ``detail`` is written for the user and the CLI surfaces it verbatim. Personal
-        tasks only: the room routes have no renew."""
-        resp = self._request("POST", f"/api/v1/scheduled-tasks/{task_id}/renew")
+        ``detail`` is written for the user and the CLI surfaces it verbatim.
+
+        With ``group_id``, the room route — a room owner's write (403 otherwise)."""
+        resp = self._request("POST", f"{_scheduled_tasks_path(group_id)}/{task_id}/renew")
+        if group_id:
+            return _room_scheduled_task_from_dict(resp.json())
         return _scheduled_task_from_dict(resp.json())
+
+    def delete_scheduled_task(self, task_id: str) -> None:
+        """``DELETE /api/v1/scheduled-tasks/{id}``. Remove a personal task for good
+        (its run history goes with it); 204. 404 whether the id is unknown or
+        another user's. Personal tasks only: there is no room delete route yet."""
+        self._request("DELETE", f"/api/v1/scheduled-tasks/{task_id}")
+
+    def update_room_scheduled_task(
+        self,
+        group_id: str,
+        task_id: str,
+        *,
+        edits: dict[str, Any],
+        destinations: list[str] | None = None,
+        topic: str | None = None,
+    ) -> RoomScheduledTaskSummary:
+        """``PATCH /api/v1/groups/{id}/scheduled-tasks/{task}`` with field edits
+        and, optionally, a new delivery — all in ONE request, which the server
+        applies atomically (a room owner's write; 403 otherwise).
+
+        ``edits`` is passed through verbatim (legal keys: ``prompt``, ``cron``,
+        ``timezone``, ``description`` — the only one that accepts ``null`` —
+        and ``run_at``). ``destinations`` ``None`` leaves the delivery alone —
+        a room has no preference to inherit — while a list (``[]`` is silent)
+        sends ``delivery``; ``topic`` needs ``destinations``. ``active`` is
+        never combined with these: the server answers 422."""
+        if topic is not None and destinations is None:
+            msg = "topic needs explicit destinations"
+            raise ValueError(msg)
+        change = dict(edits)
+        if destinations is not None:
+            change["delivery"] = _room_delivery(destinations, topic)
+        return self._patch_room_scheduled_task(group_id, task_id, change)
 
     def _patch_room_scheduled_task(
         self, group_id: str, task_id: str, change: dict[str, Any]
     ) -> RoomScheduledTaskSummary:
-        """``PATCH /api/v1/groups/{id}/scheduled-tasks/{task}``. One change per
-        request — ``active`` or ``delivery``, never both (the server's 422)."""
+        """``PATCH /api/v1/groups/{id}/scheduled-tasks/{task}``. ``change`` is
+        either ``{"active": ...}`` alone or a set of edit fields (with
+        ``delivery`` among them) applied atomically; mixing ``active`` with
+        anything else is the server's 422."""
         resp = self._request("PATCH", f"{_scheduled_tasks_path(group_id)}/{task_id}", json=change)
         return _room_scheduled_task_from_dict(resp.json())
 
@@ -1777,13 +1857,22 @@ class ApiClient:
             raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
         return body
 
-    def trajectory_list(self, *, limit: int = 20, offset: int = 0) -> list[TrajectoryListEntry]:
+    def trajectory_list(
+        self, *, limit: int = 20, offset: int = 0, principal: str | None = None
+    ) -> list[TrajectoryListEntry]:
         """``GET /api/v1/trajectories?limit=N&offset=N``. Newest-first.
 
         Default ``limit`` is small (20) — the CLI is rendering rows to
         a terminal, not paging a web view. The server caps at 200.
+
+        ``principal`` (a room's id) narrows the listing to that room's turns,
+        filtered server-side so ``limit``/``offset`` page the filtered set;
+        404 for a room the caller isn't in.
         """
-        resp = self._request("GET", f"/api/v1/trajectories?limit={limit}&offset={offset}")
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        if principal is not None:
+            params["principal"] = principal
+        resp = self._request("GET", "/api/v1/trajectories", params=params)
         body = resp.json()
         if not isinstance(body, list):
             raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")

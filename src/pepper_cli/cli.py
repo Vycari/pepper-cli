@@ -16,18 +16,18 @@ Subcommands:
 - ``pepper chat MESSAGE`` — one-shot turn against the server, render
   the reply. ``pepper chat`` with no message (or bare ``pepper``) opens
   the interactive REPL, which streams each turn over SSE.
-- ``pepper trajectories show <id> | list`` — inspect saved turns.
+- ``pepper trajectories show <id> | list`` — inspect saved turns; ``--room`` scopes
+  to one room's.
 - ``pepper calendar [today|week|schedule] [--planning]`` — read-only agenda.
 - ``pepper next [--room R] [--source PREFIX] [--first K] [--all] [--json]`` — Now / Do next /
   Due soon / Later.
 - ``pepper todos list | create | done | dismiss | reopen`` — manage tracked
   action items; ``--room`` acts on a room's todos instead of yours.
 - ``pepper scheduled-tasks list | show | runs | thread | create | edit |
-  pause | resume | renew`` — manage recurring and one-off
-  scheduled prompts; ``--room`` (on ``list``/``create``/``edit``/``pause``/
-  ``resume``) acts on a room's tasks instead of yours — any member
-  lists, only a room owner changes. ``edit --to/--default/--silent`` sets
-  where a task announces its results.
+  pause | resume | renew | delete`` — manage recurring and one-off
+  scheduled prompts; ``--room`` (every leaf but ``delete``) acts on a room's
+  tasks instead of yours — any member reads, only a room owner changes.
+  ``edit --to/--default/--silent`` sets where a task announces its results.
 - ``pepper skills list | show | create | edit | delete`` — author skills as
   SKILL.md documents in ``$EDITOR`` or ``--file``. ``delete`` asks before deleting
   unless ``--yes``. ``pepper skills share | revoke NAME --room ROOM`` puts one
@@ -528,12 +528,25 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     # than silently doing nothing.
     sub_traj = p_traj.add_subparsers(dest="trajectory_action", required=True)
     p_traj_show = sub_traj.add_parser(
-        "show", help="Print one trajectory's events.", parents=[_json_parent]
+        "show",
+        help="Print one trajectory's events. With --room, only if it is that room's.",
+        parents=[
+            _room_parent(
+                omitted="Given, the trajectory must be one of that room's turns "
+                "(a room-shared turn is readable without it)."
+            ),
+            _json_parent,
+        ],
     )
     p_traj_show.add_argument("trajectory_id", help="Trajectory UUID.")
     p_traj_show.set_defaults(handler=cmd_trajectory_show)
     p_traj_list = sub_traj.add_parser(
-        "list", help="List your recent trajectories.", parents=[_json_parent]
+        "list",
+        help="List your recent trajectories, or one room's with --room.",
+        parents=[
+            _room_parent(omitted="Omit for your own, plus the rooms you share."),
+            _json_parent,
+        ],
     )
     p_traj_list.add_argument(
         "--limit",
@@ -627,15 +640,13 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     # ``nargs="+"`` so ``pepper todos create buy milk`` joins unquoted words
     # into one title, mirroring ``pepper chat``'s message handling.
     p_todos_add.add_argument("title", nargs="+", help="The todo title. Multi-word OK.")
-    p_todos_add.add_argument("--details", help="Optional longer description (not with --room).")
+    p_todos_add.add_argument("--details", help="Optional longer description.")
     p_todos_add.add_argument(
         "--due",
         help="Soft deadline: 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM' (your local time; "
         "with --room, 'YYYY-MM-DD' only).",
     )
-    p_todos_add.add_argument(
-        "--priority", help="Free-form priority label, e.g. high (not with --room)."
-    )
+    p_todos_add.add_argument("--priority", help="Free-form priority label, e.g. high.")
     p_todos_add.set_defaults(handler=cmd_todo_create)
 
     for name, handler, text in (
@@ -657,7 +668,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
             "Your scheduled prompts. ``list``/``show``/``runs``/``thread`` to "
             "inspect, ``create``/``edit`` to change one, ``pause``/``resume`` to "
             "take it off and put it back on the schedule, ``renew`` to keep "
-            "one going."
+            "one going, ``delete`` to remove one of yours for good."
         ),
     )
     sub_tasks = p_tasks.add_subparsers(dest="scheduled_tasks_action", required=True)
@@ -702,7 +713,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
 
     p_tasks_add = sub_tasks.add_parser(
         "create",
-        help="Schedule a new task. Pass exactly one of --cron or --at.",
+        help="Schedule a new task. Pass exactly one of --cron or --at, and --prompt.",
         parents=[_json_parent],
     )
     p_tasks_add.add_argument(
@@ -710,11 +721,18 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     )
     p_tasks_add.add_argument(
         "--prompt",
-        required=True,
         help=(
             "What the agent should do when it fires, written as if you were "
             "asking at that moment. Don't include delivery instructions — "
-            "that's --to's job."
+            "that's --to's job. Required, except with --room and --skill."
+        ),
+    )
+    p_tasks_add.add_argument(
+        "--skill",
+        metavar="NAME",
+        help=(
+            "With --room: run a skill shared with that room when it fires "
+            "(alone, or alongside --prompt). Not for personal tasks."
         ),
     )
     p_tasks_add.add_argument("--cron", help="Five-field cron for a recurring task ('0 8 * * 1-5').")
@@ -793,6 +811,15 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     )
     p_tasks_edit.set_defaults(handler=cmd_scheduled_task_edit)
 
+    p_tasks_delete = sub_tasks.add_parser(
+        "delete",
+        help="Delete one of your tasks for good, with its history. "
+        "Pause keeps it; room tasks can't be deleted yet.",
+        parents=[_json_parent, _yes_parent],
+    )
+    p_tasks_delete.add_argument("task", help=_TASK_ARG_HELP)
+    p_tasks_delete.set_defaults(handler=cmd_scheduled_task_delete)
+
     p_tasks_pause = sub_tasks.add_parser(
         "pause",
         help="Take a task off the schedule. Its history is kept and it can be resumed.",
@@ -817,6 +844,19 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_tasks_renew.add_argument("task", help=_TASK_ARG_HELP)
     p_tasks_renew.set_defaults(handler=cmd_scheduled_task_renew)
 
+    for name in ("show", "runs", "thread", "renew"):
+        sub_tasks.choices[name].add_argument(
+            "--room",
+            metavar="ROOM",
+            help=(
+                _ROOM_ARG_HELP
+                + (
+                    " Any member can read a room's tasks."
+                    if name != "renew"
+                    else " Only a room owner can renew one."
+                )
+            ),
+        )
     for name in ("list", "create", "pause", "resume"):
         sub_tasks.choices[name].add_argument(
             "--room",
@@ -829,8 +869,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "--room",
         metavar="ROOM",
         help=(
-            "Room: its UUID, or a case-insensitive unique name prefix. Changes the room "
-            "task's delivery (--to, --silent) instead of yours; only a room owner can."
+            f"{_ROOM_ARG_HELP} Edits the room's task instead of yours: prompt, schedule, "
+            "label and delivery in one atomic request. Only a room owner can. "
+            "To pause or resume it use those commands."
         ),
     )
     sub_tasks.choices["create"].add_argument(
@@ -2243,7 +2284,7 @@ def _serve_client_tool_call(
 
 
 def cmd_trajectory_show(args: argparse.Namespace) -> int:
-    """``pepper trajectories show <id> [--json]``.
+    """``pepper trajectories show <id> [--room ROOM] [--json]``.
 
     Default mode prints a header and then one line per event (see
     :func:`render.render_trajectory` for the exact shape, which is kept
@@ -2262,14 +2303,33 @@ def cmd_trajectory_show(args: argparse.Namespace) -> int:
         return 2
 
     def run(api: api_client.ApiClient) -> int:
+        group_id = _opt_group(api, args.room, args=args)
         if args.json:
             # The raw wire body, passed through unchanged (J7).
-            _print_json(api.trajectory_get_raw(args.trajectory_id))
+            body = api.trajectory_get_raw(args.trajectory_id)
+            if group_id and not _raw_trajectory_in_room(body, group_id):
+                return _not_in_room(args)
+            _print_json(body)
         else:
-            render.render_trajectory(api.trajectory_get(args.trajectory_id))
+            detail = api.trajectory_get(args.trajectory_id)
+            if group_id and detail.trajectory.user_id != group_id:
+                return _not_in_room(args)
+            render.render_trajectory(detail)
         return 0
 
-    return _run_personal(args, run)
+    return _with_api(run, _report_api_error, args)
+
+
+def _raw_trajectory_in_room(body: Any, group_id: str) -> bool:
+    """Whether a raw ``/trajectories/{id}`` body is this room's turn (its ``user_id``)."""
+    header = body.get("trajectory") if isinstance(body, dict) else None
+    return isinstance(header, dict) and header.get("user_id") == group_id
+
+
+def _not_in_room(args: argparse.Namespace) -> int:
+    """``trajectories show --room`` on a trajectory that is not that room's: exit 2."""
+    _emit_error(args, "not_found", "that trajectory isn't one of this room's turns")
+    return 2
 
 
 def _offset_cursor(value: str | None) -> int | None:
@@ -2284,7 +2344,7 @@ def _offset_cursor(value: str | None) -> int | None:
 
 
 def cmd_trajectory_list(args: argparse.Namespace) -> int:
-    """``pepper trajectories list [--limit N] [--before CURSOR] [--json]``.
+    """``pepper trajectories list [--room ROOM] [--limit N] [--before CURSOR] [--json]``.
 
     Renders newest-first. Each row shows seq + channel + created time
     + a snippet of the first user message — same shape as the web
@@ -2302,18 +2362,20 @@ def cmd_trajectory_list(args: argparse.Namespace) -> int:
         return 2
 
     def run(api: api_client.ApiClient) -> int:
-        rows = api.trajectory_list(limit=args.limit, offset=offset)
+        group_id = _opt_group(api, args.room, args=args)
+        rows = api.trajectory_list(limit=args.limit, offset=offset, principal=group_id)
         more = str(offset + len(rows)) if len(rows) >= args.limit else None
 
         def human() -> None:
             render.render_trajectory_list(rows)
             if more is not None:
-                render.info(f"More: pepper trajectories list --before {more}")
+                room = f" --room {args.room}" if args.room else ""
+                render.info(f"More: pepper trajectories list{room} --before {more}")
 
         _emit_list(rows, args, human, next_before=more)
         return 0
 
-    return _run_personal(args, run)
+    return _with_api(run, _report_room_error if args.room else _report_api_error, args)
 
 
 def _add_calendar_extras(api: Any, payload: dict[str, Any], *, schedule: bool) -> None:
@@ -2487,16 +2549,13 @@ def cmd_todo_list(args: argparse.Namespace) -> int:
 def cmd_todo_create(args: argparse.Namespace) -> int:
     """``pepper todos create <title...> [--details D] [--due DATE] [--priority P] [--room ROOM]``.
 
-    A room's todo takes only a title and a ``YYYY-MM-DD`` due date. Exit codes: 0 ok ·
-    1 auth/API/transport · 2 bad input (blank title / unparseable ``--due`` / a flag the
-    room form lacks).
+    A room's todo takes the same fields, but its ``--due`` is a ``YYYY-MM-DD`` day only.
+    Exit codes: 0 ok · 1 auth/API/transport · 2 bad input (blank title / unparseable
+    ``--due``).
     """
     title = " ".join(args.title).strip()
     if not title:
         _emit_error(args, "usage", "todo title cannot be empty")
-        return 2
-    if args.room and (args.details or args.priority):
-        _emit_error(args, "usage", "--details and --priority aren't available with --room")
         return 2
     due_iso: str | None = None
     due_day: str | None = None
@@ -2691,17 +2750,18 @@ def cmd_scheduled_task_list(args: argparse.Namespace) -> int:
 
 
 def cmd_scheduled_task_show(args: argparse.Namespace) -> int:
-    """``pepper scheduled-tasks show <task> [--json]``."""
+    """``pepper scheduled-tasks show <task> [--room ROOM] [--json]``."""
 
     def run(api: api_client.ApiClient) -> int:
-        task_id = _resolve_task_id(api, args.task, args=args)
+        group_id = _opt_group(api, args.room, args=args)
+        task_id = _resolve_task_id(api, args.task, group_id=group_id, args=args)
         if task_id is None:
             return 2
-        detail = api.get_scheduled_task(task_id)
+        detail = api.get_scheduled_task(task_id, group_id=group_id)
         _emit(detail, args, lambda: render.render_scheduled_task(detail))
         return 0
 
-    return _with_api(run, _report_api_error, args)
+    return _with_api(run, _task_report(args), args)
 
 
 #: Separates the timestamp from the row id inside a ``runs``/``thread`` cursor.
@@ -2733,17 +2793,18 @@ def _page_limit_ok(args: argparse.Namespace) -> bool:
 
 
 def cmd_scheduled_task_runs(args: argparse.Namespace) -> int:
-    """``pepper scheduled-tasks runs <task> [--limit N] [--before CURSOR] [--json]``."""
+    """``pepper scheduled-tasks runs <task> [--room ROOM] [--limit N] [--before C] [--json]``."""
     if not _page_limit_ok(args):
         return 2
     before, before_id = _keyset_parts(args.before)
 
     def run(api: api_client.ApiClient) -> int:
-        task_id = _resolve_task_id(api, args.task, args=args)
+        group_id = _opt_group(api, args.room, args=args)
+        task_id = _resolve_task_id(api, args.task, group_id=group_id, args=args)
         if task_id is None:
             return 2
         rows = api.list_scheduled_task_runs(
-            task_id, limit=args.limit, before=before, before_id=before_id
+            task_id, limit=args.limit, before=before, before_id=before_id, group_id=group_id
         )
         # Newest first: the last row bounds the next (older) page. A short page is the end.
         more = bool(rows) and len(rows) >= args.limit
@@ -2751,11 +2812,11 @@ def cmd_scheduled_task_runs(args: argparse.Namespace) -> int:
         _emit_list(rows, args, lambda: render.render_scheduled_task_runs(rows), cursor)
         return 0
 
-    return _with_api(run, _report_api_error, args)
+    return _with_api(run, _task_report(args), args)
 
 
 def cmd_scheduled_task_thread(args: argparse.Namespace) -> int:
-    """``pepper scheduled-tasks thread <task> [--limit N] [--before CURSOR] [--json]``.
+    """``pepper scheduled-tasks thread <task> [--room ROOM] [--limit N] [--before C] [--json]``.
 
     Read-only. To reply into the thread, chat normally — the server
     routes a reply by conversation, not through this command.
@@ -2765,11 +2826,12 @@ def cmd_scheduled_task_thread(args: argparse.Namespace) -> int:
     before, before_id = _keyset_parts(args.before)
 
     def run(api: api_client.ApiClient) -> int:
-        task_id = _resolve_task_id(api, args.task, args=args)
+        group_id = _opt_group(api, args.room, args=args)
+        task_id = _resolve_task_id(api, args.task, group_id=group_id, args=args)
         if task_id is None:
             return 2
         rows = api.get_scheduled_task_thread(
-            task_id, limit=args.limit, before=before, before_id=before_id
+            task_id, limit=args.limit, before=before, before_id=before_id, group_id=group_id
         )
         # Oldest first within the page: the first row bounds the next (older) page.
         more = bool(rows) and len(rows) >= args.limit
@@ -2777,16 +2839,17 @@ def cmd_scheduled_task_thread(args: argparse.Namespace) -> int:
         _emit_list(rows, args, lambda: render.render_scheduled_task_thread(rows), cursor)
         return 0
 
-    return _with_api(run, _report_api_error, args)
+    return _with_api(run, _task_report(args), args)
 
 
 def cmd_scheduled_task_create(args: argparse.Namespace) -> int:
     """``pepper scheduled-tasks create <name> --prompt P (--cron C | --at T) ...``.
 
     Exit codes: 0 ok · 1 auth/API/transport · 2 bad input (neither or both
-    of --cron/--at, --to alongside --silent, unparseable --at).
+    of --cron/--at, no --prompt, --to alongside --silent, unparseable --at).
 
-    With ``--room`` the task is the room's: recurring only (``--cron``), no
+    With ``--room`` the task is the room's: ``--cron`` or ``--at``, a
+    ``--prompt`` and/or a ``--skill`` the room has been granted, no
     ``--description``, and ``--to`` in the room's dialect. A flag the room
     form lacks is exit 2; a non-owner is refused by the server (exit 1).
     """
@@ -2796,6 +2859,12 @@ def cmd_scheduled_task_create(args: argparse.Namespace) -> int:
         return 2
     if args.room:
         return _create_room_scheduled_task(args)
+    if args.skill is not None:
+        _emit_error(args, "usage", "--skill is only available with --room")
+        return 2
+    if args.prompt is None:
+        _emit_error(args, "usage", "--prompt is required")
+        return 2
     if (args.cron is None) == (args.at is None):
         _emit_error(args, "usage", "pass exactly one of --cron (recurring) or --at (one-off)")
         return 2
@@ -2842,12 +2911,21 @@ def cmd_scheduled_task_create(args: argparse.Namespace) -> int:
 
 def _create_room_scheduled_task(args: argparse.Namespace) -> int:
     """``scheduled-tasks create --room``. The dialect is already checked."""
-    if args.at is not None or args.description is not None:
-        _emit_error(args, "usage", "--at and --description aren't available with --room")
+    if args.description is not None:
+        _emit_error(args, "usage", "--description isn't available with --room")
         return 2
-    if args.cron is None:
-        _emit_error(args, "usage", "with --room, pass --cron — a room's task is recurring")
+    if args.prompt is None and args.skill is None:
+        _emit_error(args, "usage", "with --room, pass --prompt, --skill, or both")
         return 2
+    if (args.cron is None) == (args.at is None):
+        _emit_error(args, "usage", "pass exactly one of --cron (recurring) or --at (one-off)")
+        return 2
+    run_at: str | None = None
+    if args.at:
+        run_at, err = _parse_due(args.at, flag="--at")
+        if err is not None:
+            _emit_error(args, "usage", err)
+            return 2
     if args.to and args.silent:
         _emit_error(
             args, "usage", "--silent means announce nowhere; it can't be combined with --to"
@@ -2865,7 +2943,9 @@ def _create_room_scheduled_task(args: argparse.Namespace) -> int:
         task = api.create_scheduled_task(
             name=args.name,
             prompt=args.prompt,
+            skill=args.skill,
             cron=args.cron,
+            run_at=run_at,
             timezone=args.timezone,
             destinations=destinations,
             group_id=_need_group(api, args.room, args=args),
@@ -2915,9 +2995,11 @@ def cmd_scheduled_task_edit(args: argparse.Namespace) -> int:
     either is sent; field changes go first, and if the delivery request then
     fails the error says the field changes were saved.
 
-    With ``--room`` only delivery can change (the room API takes nothing else
-    yet): ``--to`` in the room's dialect or ``--silent``, no ``--default`` (a
-    room has no notification preference of its own to follow).
+    With ``--room`` the room's task is edited, fields and delivery together in
+    ONE request (the server applies it atomically, so there is no partial
+    save): ``--to`` in the room's dialect or ``--silent``, no ``--default`` (a
+    room has no notification preference of its own to follow). Pausing and
+    resuming stay ``pause`` / ``resume``: the server takes ``active`` alone.
     """
     if args.description is not None and args.clear_description:
         _emit_error(args, "usage", "pass either --description or --clear-description, not both")
@@ -2946,19 +3028,11 @@ def cmd_scheduled_task_edit(args: argparse.Namespace) -> int:
     if not edits and not has_delivery and args.deliver_topic is None:
         _emit_error(args, "usage", "nothing to change — pass at least one field to edit")
         return 2
-    if args.room and edits:
-        _emit_error(
-            args,
-            "usage",
-            "with --room, edit changes delivery only (--to or --silent) — "
-            "the server can't change a room task's prompt or schedule yet",
-        )
-        return 2
     if args.room and args.use_default:
         _emit_error(args, "usage", "--default isn't available with --room — pass --to or --silent")
         return 2
-    if args.room and not has_delivery:
-        _emit_error(args, "usage", "with --room, pass --to or --silent")
+    if args.room and not edits and not has_delivery:
+        _emit_error(args, "usage", "nothing to change — pass a field to edit, --to or --silent")
         return 2
     dialect_err = _destination_dialect_error(args.to, room=args.room, topic=args.deliver_topic)
     if dialect_err is not None:
@@ -2971,6 +3045,16 @@ def cmd_scheduled_task_edit(args: argparse.Namespace) -> int:
         task_id = _resolve_task_id(api, args.task, group_id=group_id, args=args)
         if task_id is None:
             return 2
+        if group_id:
+            room_task = api.update_room_scheduled_task(
+                group_id,
+                task_id,
+                edits=edits,
+                destinations=destinations if has_delivery else None,
+                topic=args.deliver_topic,
+            )
+            _emit(room_task, args, lambda: _edited_human(room_task))
+            return 0
         task = api.update_scheduled_task(task_id, edits=edits) if edits else None
         if has_delivery or task is None:  # no field edits means delivery was asked for
             saved = task
@@ -3012,15 +3096,16 @@ def _edited_human(task: api_client.ScheduledTaskSummary) -> None:
 def cmd_scheduled_task_renew(args: argparse.Namespace) -> int:
     """``pepper scheduled-tasks renew <task>`` — keep a task going past its renewal warning.
 
-    A refusal (422) prints the server's own reason as is. Personal tasks only: the
-    server has no room renew yet.
+    A refusal (422) prints the server's own reason as is. With ``--room`` the room's
+    task is renewed (a room owner's write).
     """
 
     def run(api: api_client.ApiClient) -> int:
-        task_id = _resolve_task_id(api, args.task, args=args)
+        group_id = _opt_group(api, args.room, args=args)
+        task_id = _resolve_task_id(api, args.task, group_id=group_id, args=args)
         if task_id is None:
             return 2
-        task = api.renew_scheduled_task(task_id)
+        task = api.renew_scheduled_task(task_id, group_id=group_id)
 
         def human() -> None:
             render.info(f"Renewed {task.name!r}.")
@@ -3029,7 +3114,38 @@ def cmd_scheduled_task_renew(args: argparse.Namespace) -> int:
         _emit(task, args, human)
         return 0
 
-    return _run_personal(args, run)
+    return _with_api(run, _task_report(args), args)
+
+
+def cmd_scheduled_task_delete(args: argparse.Namespace) -> int:
+    """``pepper scheduled-tasks delete <task> [--yes]`` — remove one of YOUR tasks for good.
+
+    Confirms before deleting unless ``--yes`` (required under ``--json``). The
+    task goes with its run history; ``pause`` is the reversible version. Personal
+    tasks only: the server has no room delete route yet.
+    """
+    if (
+        code := _confirm_destructive(
+            args,
+            f"Delete your scheduled task {args.task!r} and its history? This cannot be undone.",
+            yes=args.yes,
+        )
+    ) is not None:
+        return code
+
+    def run(api: api_client.ApiClient) -> int:
+        task_id = _resolve_task_id(api, args.task, args=args)
+        if task_id is None:
+            return 2
+        api.delete_scheduled_task(task_id)
+        _emit(
+            _mutation_result(None, task_id),
+            args,
+            lambda: render.info(f"Deleted scheduled task {args.task!r}."),
+        )
+        return 0
+
+    return _with_api(run, _report_api_error, args)
 
 
 def cmd_scheduled_task_pause(args: argparse.Namespace) -> int:

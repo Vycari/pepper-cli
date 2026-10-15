@@ -308,16 +308,15 @@ def test_room_create_sends_delivery_timezone_and_topic() -> None:
     }
 
 
-def test_room_create_never_sends_the_personal_only_fields() -> None:
-    """A room task has no one-off form and no description; a caller that
-    passes them by habit must not smuggle them onto the room's route."""
+def test_room_create_never_sends_a_description() -> None:
+    """A room task has no description; a caller that passes one by habit must
+    not smuggle it onto the room's route."""
     seen, handler = _capture(httpx.Response(201, json=_room_task_json()))
     with _client(handler) as api:
         api.create_scheduled_task(
             name="t",
             prompt="p",
             cron="0 9 * * 0",
-            run_at="2030-01-01T09:00:00+00:00",
             description="d",
             destinations=[],
             group_id=_ROOM,
@@ -328,6 +327,132 @@ def test_room_create_never_sends_the_personal_only_fields() -> None:
         "cron": "0 9 * * 0",
         "delivery": {"destinations": []},
     }
+
+
+def test_room_create_omits_what_was_not_given_never_null() -> None:
+    """The server types prompt and cron as strings, so an unset one is left out
+    of the body — ``null`` would be a 422."""
+    seen, handler = _capture(httpx.Response(201, json=_room_task_json(one_shot=True, cron=None)))
+    with _client(handler) as api:
+        api.create_scheduled_task(
+            name="t", skill="weekly-menu", run_at="2030-01-01T09:00:00+00:00", group_id=_ROOM
+        )
+    assert seen["method"] == "POST"
+    assert seen["body"] == {
+        "name": "t",
+        "skill": "weekly-menu",
+        "run_at": "2030-01-01T09:00:00+00:00",
+    }
+
+
+def test_personal_create_refuses_a_skill_or_a_missing_prompt() -> None:
+    _, handler = _capture(httpx.Response(201, json=_task_json()))
+    with _client(handler) as api:
+        with pytest.raises(ValueError, match="needs a prompt"):
+            api.create_scheduled_task(name="t", prompt="p", cron="0 9 * * *", skill="s")
+        with pytest.raises(ValueError, match="needs a prompt"):
+            api.create_scheduled_task(name="t", cron="0 9 * * *")
+
+
+def _room_detail_json(**over) -> dict:
+    base = _room_task_json(
+        latest_run=None,
+        group_name="Trip",
+        group_members=["Ada", "Grace"],
+        group_delivery="Posted to the room",
+    )
+    base.update(over)
+    return base
+
+
+def test_room_show_hits_the_room_route_and_parses_the_group_fields() -> None:
+    seen, handler = _capture(httpx.Response(200, json=_room_detail_json()))
+    with _client(handler) as api:
+        detail = api.get_scheduled_task(_TASK_ID, group_id=_ROOM)
+    assert (seen["method"], seen["url"]) == ("GET", f"{_ROOM_TASKS}/{_TASK_ID}")
+    assert detail.group_name == "Trip"
+    assert detail.group_members == ["Ada", "Grace"]
+    assert detail.group_delivery == "Posted to the room"
+    assert detail.latest_run is None
+
+
+def test_personal_show_leaves_the_group_fields_empty() -> None:
+    seen, handler = _capture(httpx.Response(200, json=_task_json(latest_run=None)))
+    with _client(handler) as api:
+        detail = api.get_scheduled_task(_TASK_ID)
+    assert seen["url"] == f"http://example.com/api/v1/scheduled-tasks/{_TASK_ID}"
+    assert (detail.group_name, detail.group_members, detail.group_delivery) == (None, [], None)
+
+
+def test_room_runs_and_thread_use_the_room_routes_with_the_same_cursor() -> None:
+    seen, handler = _capture(httpx.Response(200, json=[]))
+    with _client(handler) as api:
+        api.list_scheduled_task_runs(
+            _TASK_ID, limit=5, before="2026-06-04T15:00:00+00:00", before_id="r1", group_id=_ROOM
+        )
+        runs_url = seen["url"]
+        api.get_scheduled_task_thread(_TASK_ID, limit=7, group_id=_ROOM)
+        thread_url = seen["url"]
+    assert runs_url.startswith(f"{_ROOM_TASKS}/{_TASK_ID}/runs?")
+    assert "limit=5" in runs_url and "before_id=r1" in runs_url
+    assert thread_url == f"{_ROOM_TASKS}/{_TASK_ID}/thread?limit=7"
+
+
+def test_room_renew_is_a_post_to_the_room_route_and_parses_a_room_row() -> None:
+    seen, handler = _capture(httpx.Response(200, json=_room_task_json()))
+    with _client(handler) as api:
+        row = api.renew_scheduled_task(_TASK_ID, group_id=_ROOM)
+    assert (seen["method"], seen["url"]) == ("POST", f"{_ROOM_TASKS}/{_TASK_ID}/renew")
+    assert isinstance(row, api_client.RoomScheduledTaskSummary)
+
+
+def test_room_update_sends_fields_and_delivery_in_one_patch() -> None:
+    seen, handler = _capture(httpx.Response(200, json=_room_task_json()))
+    with _client(handler) as api:
+        api.update_room_scheduled_task(
+            _ROOM,
+            _TASK_ID,
+            edits={"prompt": "New.", "description": None},
+            destinations=["groups_service"],
+            topic="Dinner",
+        )
+    assert (seen["method"], seen["url"]) == ("PATCH", f"{_ROOM_TASKS}/{_TASK_ID}")
+    assert seen["body"] == {
+        "prompt": "New.",
+        "description": None,
+        "delivery": {"destinations": ["groups_service"], "topic": "Dinner"},
+    }
+
+
+def test_room_update_without_destinations_sends_no_delivery_key() -> None:
+    """A room has no preference to inherit, so ``None`` means leave it alone."""
+    seen, handler = _capture(httpx.Response(200, json=_room_task_json()))
+    with _client(handler) as api:
+        api.update_room_scheduled_task(_ROOM, _TASK_ID, edits={"cron": "0 9 * * 1"})
+        assert seen["body"] == {"cron": "0 9 * * 1"}
+        with pytest.raises(ValueError, match="topic needs"):
+            api.update_room_scheduled_task(_ROOM, _TASK_ID, edits={}, topic="Dinner")
+
+
+def test_delete_scheduled_task_is_a_delete_and_tolerates_204() -> None:
+    seen, handler = _capture(httpx.Response(204))
+    with _client(handler) as api:
+        assert api.delete_scheduled_task(_TASK_ID) is None
+    assert (seen["method"], seen["url"]) == (
+        "DELETE",
+        f"http://example.com/api/v1/scheduled-tasks/{_TASK_ID}",
+    )
+
+
+def test_trajectory_list_sends_the_principal_only_when_given() -> None:
+    seen, handler = _capture(httpx.Response(200, json=[]))
+    with _client(handler) as api:
+        api.trajectory_list(limit=5, offset=10)
+        plain = seen["url"]
+        api.trajectory_list(limit=5, offset=10, principal=_ROOM)
+        scoped = seen["url"]
+    assert "principal" not in plain and "limit=5" in plain and "offset=10" in plain
+    assert f"principal={_ROOM}" in scoped
 
 
 @pytest.mark.parametrize(("method", "active"), [("cancel", False), ("resume", True)])

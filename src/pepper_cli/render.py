@@ -668,7 +668,14 @@ def render_scheduled_task(detail: ScheduledTaskDetail) -> None:
     _stdout.print(f"schedule {schedule}")
     stamp = _s(_format_stamp(detail.next_run_at))
     _stdout.print(f"{'next' if detail.active else 'was due'} {stamp}")
-    _stdout.print(f"delivered to {_describe_destinations(detail.destinations)}")
+    if detail.group_name:
+        _stdout.print(f"room {_s(detail.group_name)}")
+    if detail.group_delivery is not None:
+        # A room task's ``None`` destinations is the room's default, which only the
+        # server's own sentence describes ("your default" would be wrong).
+        _stdout.print(f"delivered to {_s(detail.group_delivery)}")
+    else:
+        _stdout.print(f"delivered to {_describe_destinations(detail.destinations)}")
     if detail.latest_run is None:
         _stdout.print("last run (never fired)")
         return

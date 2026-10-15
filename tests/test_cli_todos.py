@@ -318,10 +318,12 @@ def test_room_todos_list_add_dismiss_use_the_room_routes(tmp_home, patch_api) ->
     ]
 
 
-def test_room_todo_add_refuses_flags_the_room_form_lacks(tmp_home, patch_api) -> None:
+def test_room_todo_add_sends_details_and_priority(tmp_home, patch_api) -> None:
     _login(tmp_home)
-    patch_api()
-    assert cli.main(["todos", "create", "x", "--priority", "high", "--room", "Trip"]) == 2
+    patch_api(todo_created=_todo())
+    argv = ["todos", "create", "x", "--details", "d", "--priority", "high", "--room", "Trip"]
+    assert cli.main(argv) == 0
+    assert _FakeTodoApi.instances[-1].calls[-1] == ("create", "x", "d", "high", None, None, _ROOM)
 
 
 def test_todos_dismiss_calls_dismiss(tmp_home, patch_api, capsys) -> None:

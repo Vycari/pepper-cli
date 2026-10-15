@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 import time
 from pathlib import Path
 
@@ -95,15 +96,19 @@ class _FakeTaskApi:
         self.calls.append(("list", include_inactive))
         return self._result("task_list")
 
-    def get_scheduled_task(self, task_id):
+    def get_scheduled_task(self, task_id, *, group_id=None):
         self.calls.append(("show", task_id))
         return self._result("task_detail")
 
-    def list_scheduled_task_runs(self, task_id, *, limit=20, before=None, before_id=None):
+    def list_scheduled_task_runs(
+        self, task_id, *, limit=20, before=None, before_id=None, group_id=None
+    ):
         self.calls.append(("runs", task_id, limit))
         return self._result("task_runs")
 
-    def get_scheduled_task_thread(self, task_id, *, limit=20, before=None, before_id=None):
+    def get_scheduled_task_thread(
+        self, task_id, *, limit=20, before=None, before_id=None, group_id=None
+    ):
         self.calls.append(("thread", task_id, limit))
         return self._result("task_thread")
 
@@ -127,9 +132,13 @@ class _FakeTaskApi:
         self.calls.append(("destinations", task_id, destinations))
         return self._result("task_destinations")
 
-    def renew_scheduled_task(self, task_id):
+    def renew_scheduled_task(self, task_id, *, group_id=None):
         self.calls.append(("renew", task_id))
         return self._result("task_renewed")
+
+    def delete_scheduled_task(self, task_id):
+        self.calls.append(("delete", task_id))
+        self._result("task_deleted")
 
 
 @pytest.fixture
@@ -652,6 +661,32 @@ class _FakeRoomTaskApi(_FakeTaskApi):
         self.calls.append(("destinations", task_id, destinations, group_id, topic))
         return self._result("task_destinations")
 
+    def update_room_scheduled_task(
+        self, group_id, task_id, *, edits, destinations=None, topic=None
+    ):
+        self.calls.append(("room_update", group_id, task_id, edits, destinations, topic))
+        return self._result("task_room_updated")
+
+    def get_scheduled_task(self, task_id, *, group_id=None):
+        self.calls.append(("show", task_id, group_id))
+        return self._result("task_detail")
+
+    def list_scheduled_task_runs(
+        self, task_id, *, limit=20, before=None, before_id=None, group_id=None
+    ):
+        self.calls.append(("runs", task_id, limit, before, before_id, group_id))
+        return self._result("task_runs")
+
+    def get_scheduled_task_thread(
+        self, task_id, *, limit=20, before=None, before_id=None, group_id=None
+    ):
+        self.calls.append(("thread", task_id, limit, before, before_id, group_id))
+        return self._result("task_thread")
+
+    def renew_scheduled_task(self, task_id, *, group_id=None):
+        self.calls.append(("renew", task_id, group_id))
+        return self._result("task_renewed")
+
 
 @pytest.fixture
 def patch_room_api(monkeypatch):
@@ -724,6 +759,8 @@ def test_room_create_sends_the_room_form(tmp_home, patch_room_api, capsys) -> No
         "prompt": "Plan the week's dinners.",
         "cron": "0 9 * * 0",
         "timezone": "America/Los_Angeles",
+        "skill": None,
+        "run_at": None,
         # Omitted --to pins nothing: the server picks the room's delivery.
         "destinations": None,
         "group_id": _ROOM,
@@ -766,9 +803,10 @@ def test_room_create_delivery_states(tmp_home, patch_room_api) -> None:
             ["--cron", "0 9 * * 0", "--to", "resend_email", "--deliver-topic", "Dinner"],
             "--to room",
         ),
-        (["--cron", "0 9 * * 0", "--description", "d"], "aren't available with --room"),
-        (["--at", "2030-01-01 09:00"], "aren't available with --room"),
-        ([], "pass --cron"),
+        (["--cron", "0 9 * * 0", "--description", "d"], "--description isn't available"),
+        (["--at", "2030-01-01 09:00", "--cron", "0 9 * * 0"], "exactly one of --cron"),
+        (["--at", "not-a-time"], "--at"),
+        ([], "exactly one of --cron"),
         (["--cron", "0 9 * * 0", "--to", "resend_email", "--silent"], "--silent"),
     ],
 )
@@ -851,10 +889,10 @@ def test_room_unknown_room_exits_two_without_a_task_call(tmp_home, patch_room_ap
 )
 def test_room_edit_delivery_states(tmp_home, patch_room_api, flags, destinations, topic) -> None:
     _login(tmp_home)
-    patch_room_api(task_destinations=_room_task())
+    patch_room_api(task_room_updated=_room_task())
     rc = cli.main(["scheduled-tasks", "edit", _TASK_ID, *flags, "--room", "Trip"])
     assert rc == 0
-    assert _calls() == [("destinations", _TASK_ID, destinations, _ROOM, topic)]
+    assert _calls() == [("room_update", _ROOM, _TASK_ID, {}, destinations, topic)]
 
 
 def test_room_edit_delivery_has_no_default(tmp_home, patch_room_api, capsys) -> None:
@@ -887,6 +925,8 @@ def test_room_edit_delivery_refuses_a_personal_destination(
         ["pause", _TASK_ID],
         ["resume", _TASK_ID],
         ["edit", _TASK_ID, "--silent"],
+        ["edit", _TASK_ID, "--prompt", "New."],
+        ["renew", _TASK_ID],
     ],
 )
 def test_a_non_owner_is_told_only_an_owner_can(tmp_home, patch_room_api, capsys, argv) -> None:
@@ -898,7 +938,8 @@ def test_a_non_owner_is_told_only_an_owner_can(tmp_home, patch_room_api, capsys,
         task_created=refused,
         task_cancelled=refused,
         task_resumed=refused,
-        task_destinations=refused,
+        task_room_updated=refused,
+        task_renewed=refused,
     )
     assert cli.main(["scheduled-tasks", *argv, "--room", "Trip"]) == 1
     assert "only a room owner can change its scheduled tasks." in capsys.readouterr().err
@@ -1021,29 +1062,192 @@ def test_room_create_to_room_goes_over_the_wire_as_groups_service(tmp_home, patc
 
 def test_room_edit_to_room_goes_over_the_wire_as_groups_service(tmp_home, patch_room_api) -> None:
     _login(tmp_home)
-    patch_room_api(task_destinations=_room_task())
+    patch_room_api(task_room_updated=_room_task())
     argv = ["scheduled-tasks", "edit", _TASK_ID, "--room", "Trip", "--to", "room"]
     assert cli.main([*argv, "--deliver-topic", "Dinner"]) == 0
-    assert _calls() == [("destinations", _TASK_ID, ["groups_service"], _ROOM, "Dinner")]
+    assert _calls() == [("room_update", _ROOM, _TASK_ID, {}, ["groups_service"], "Dinner")]
+
+
+def test_room_edit_sends_fields_and_delivery_as_one_request(tmp_home, patch_room_api) -> None:
+    """Every flag lands in a single call (one atomic PATCH): there is no partial
+    save to report."""
+    _login(tmp_home)
+    patch_room_api(task_room_updated=_room_task())
+    argv = [
+        "scheduled-tasks",
+        "edit",
+        _TASK_ID,
+        "--room",
+        "Trip",
+        "--prompt",
+        "New.",
+        "--cron",
+        "0 9 * * 1",
+        "--timezone",
+        "America/Los_Angeles",
+        "--clear-description",
+        "--silent",
+    ]
+    assert cli.main(argv) == 0
+    edits = {
+        "prompt": "New.",
+        "cron": "0 9 * * 1",
+        "timezone": "America/Los_Angeles",
+        "description": None,
+    }
+    assert _calls() == [("room_update", _ROOM, _TASK_ID, edits, [], None)]
+
+
+def test_room_edit_fields_alone_leave_the_delivery_out(tmp_home, patch_room_api) -> None:
+    _login(tmp_home)
+    patch_room_api(task_room_updated=_room_task())
+    argv = ["scheduled-tasks", "edit", _TASK_ID, "--room", "Trip", "--description", "Menu"]
+    assert cli.main(argv) == 0
+    assert _calls() == [("room_update", _ROOM, _TASK_ID, {"description": "Menu"}, None, None)]
+
+
+def test_room_edit_at_is_sent_as_an_offset_aware_run_at(tmp_home, patch_room_api) -> None:
+    _login(tmp_home)
+    patch_room_api(task_room_updated=_room_task())
+    argv = ["scheduled-tasks", "edit", _TASK_ID, "--room", "Trip", "--at", "2030-01-01 09:00"]
+    assert cli.main(argv) == 0
+    run_at = _calls()[0][3]["run_at"]
+    assert re.fullmatch(r"2030-01-01T\d\d:\d\d:\d\d([+-]\d\d:\d\d|Z)", run_at)
+
+
+def test_room_edit_server_refusals_carry_the_servers_detail(
+    tmp_home, patch_room_api, capsys
+) -> None:
+    """The cross-kind and cadence-floor refusals are the server's sentence."""
+    _login(tmp_home)
+    patch_room_api(
+        task_room_updated=api_client.ApiError(status=409, body="", detail="Too frequent.")
+    )
+    argv = ["scheduled-tasks", "edit", _TASK_ID, "--room", "Trip", "--cron", "* * * * *"]
+    assert cli.main(argv) == 1
+    assert "Too frequent." in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
     ("extra", "said"),
     [
-        (["--prompt", "New."], "delivery only"),
-        (["--cron", "0 9 * * 1"], "delivery only"),
-        (["--silent", "--prompt", "New."], "delivery only"),
         (["--default"], "--default isn't available with --room"),
         ([], "nothing to change"),
         (["--to", "room", "--silent"], "pass only one of"),
+        (["--description", "d", "--clear-description"], "either --description"),
     ],
 )
-def test_room_edit_is_delivery_only(tmp_home, patch_room_api, capsys, extra, said) -> None:
+def test_room_edit_usage_errors(tmp_home, patch_room_api, capsys, extra, said) -> None:
     _login(tmp_home)
-    patch_room_api(task_destinations=_room_task())
+    patch_room_api(task_room_updated=_room_task())
     assert cli.main(["scheduled-tasks", "edit", _TASK_ID, "--room", "Trip", *extra]) == 2
     assert said in capsys.readouterr().err
     assert _calls() == []
+
+
+def test_room_create_with_a_skill_and_no_prompt(tmp_home, patch_room_api) -> None:
+    _login(tmp_home)
+    patch_room_api(task_created=_room_task())
+    argv = ["scheduled-tasks", "create", "t", "--skill", "menu", "--cron", "0 9 * * 0"]
+    assert cli.main([*argv, "--room", "Trip"]) == 0
+    sent = _last_call("create")[1]
+    assert (sent["prompt"], sent["skill"], sent["cron"], sent["run_at"]) == (
+        None,
+        "menu",
+        "0 9 * * 0",
+        None,
+    )
+
+
+def test_room_create_at_sends_run_at_and_no_cron(tmp_home, patch_room_api) -> None:
+    _login(tmp_home)
+    patch_room_api(task_created=_room_task())
+    argv = ["scheduled-tasks", "create", "t", "--prompt", "p", "--at", "2030-01-01 09:00"]
+    assert cli.main([*argv, "--room", "Trip", "--json"]) == 0
+    sent = _last_call("create")[1]
+    assert sent["cron"] is None and sent["run_at"].startswith("2030-01-01T")
+
+
+def test_room_create_needs_a_prompt_or_a_skill(tmp_home, patch_room_api, capsys) -> None:
+    _login(tmp_home)
+    patch_room_api(task_created=_room_task())
+    argv = ["scheduled-tasks", "create", "t", "--cron", "0 9 * * 0", "--room", "Trip"]
+    assert cli.main(argv) == 2
+    assert "--prompt, --skill, or both" in capsys.readouterr().err
+    assert _calls() == []
+
+
+def test_personal_create_needs_a_prompt_and_refuses_a_skill(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(task_created=_task())
+    assert cli.main(["scheduled-tasks", "create", "t", "--cron", "0 9 * * 0"]) == 2
+    assert "--prompt is required" in capsys.readouterr().err
+    argv = ["scheduled-tasks", "create", "t", "--prompt", "p", "--cron", "0 9 * * 0"]
+    assert cli.main([*argv, "--skill", "menu"]) == 2
+    assert "--skill is only available with --room" in capsys.readouterr().err
+    assert _FakeTaskApi.instances == []
+
+
+def test_room_show_by_name_reads_the_room_and_prints_the_rooms_delivery(
+    tmp_home, patch_room_api, capsys
+) -> None:
+    _login(tmp_home)
+    row = _room_task(name="weekly-menu")
+    detail = api_client.ScheduledTaskDetail(
+        **dataclasses.asdict(_task(name="weekly-menu")),
+        latest_run=None,
+        group_name="Trip",
+        group_members=["Ada"],
+        group_delivery="Posted to the room",
+    )
+    patch_room_api(task_list=[row], task_detail=detail)
+    assert cli.main(["scheduled-tasks", "show", "weekly-menu", "--room", "Trip"]) == 0
+    captured = capsys.readouterr()
+    out = " ".join((captured.out + captured.err).split())
+    assert _calls() == [("list", True, _ROOM), ("show", _TASK_ID, _ROOM)]
+    assert "Posted to the room" in out
+    assert "your default" not in out
+
+
+def test_room_runs_and_thread_page_with_the_same_cursor_and_envelope(
+    tmp_home, patch_room_api, capsys
+) -> None:
+    _login(tmp_home)
+    patch_room_api(
+        task_runs=[_run(id="r2"), _run(id="r1", fired_at="2026-06-03T15:00:00+00:00")],
+        task_thread=[
+            api_client.ScheduledTaskMessage(
+                id=f"m{i}",
+                role="assistant",
+                text="hi",
+                channel="main_chat",
+                trajectory_id=None,
+                created_at=f"2026-06-0{i}T10:00:00+00:00",
+            )
+            for i in (1, 2)
+        ],
+    )
+    base = ["scheduled-tasks"]
+    tail = [_TASK_ID, "--room", _ROOM, "--limit", "2", "--json", "--before", "2026-06-09|x9"]
+    assert cli.main([*base, "runs", *tail]) == 0
+    runs = json.loads(capsys.readouterr().out)
+    assert [r["id"] for r in runs["items"]] == ["r2", "r1"]
+    assert runs["next_before"] == "2026-06-03T15:00:00+00:00|r1"
+    assert cli.main([*base, "thread", *tail]) == 0
+    thread = json.loads(capsys.readouterr().out)
+    assert thread["next_before"] == "2026-06-01T10:00:00+00:00|m1"
+    assert _calls() == [
+        ("runs", _TASK_ID, 2, "2026-06-09", "x9", _ROOM),
+        ("thread", _TASK_ID, 2, "2026-06-09", "x9", _ROOM),
+    ]
+
+
+def test_room_renew_goes_to_the_room(tmp_home, patch_room_api, capsys) -> None:
+    _login(tmp_home)
+    patch_room_api(task_renewed=_room_task(name="weekly-menu"))
+    assert cli.main(["scheduled-tasks", "renew", _TASK_ID, "--room", "Trip"]) == 0
+    assert _calls() == [("renew", _TASK_ID, _ROOM)]
+    assert "Renewed 'weekly-menu'" in capsys.readouterr().err
 
 
 def test_renew_by_id_prints_the_task(tmp_home, patch_api, capsys) -> None:
@@ -1094,8 +1298,50 @@ def test_renew_unknown_name_json_is_not_found(tmp_home, patch_api, capsys) -> No
     assert json.loads(capsys.readouterr().err)["error"]["code"] == "not_found"
 
 
-def test_renew_has_no_room_variant(tmp_home, patch_api) -> None:
+def test_delete_by_id_needs_yes_under_json_and_then_reports_ok(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api()
+    assert cli.main(["scheduled-tasks", "delete", _TASK_ID, "--json"]) == 2
+    assert json.loads(capsys.readouterr().err)["error"]["code"] == "usage"
+    assert _FakeTaskApi.instances == []
+
+
+def test_delete_with_yes_resolves_the_name_and_emits_the_j5_result(
+    tmp_home, patch_api, capsys
+) -> None:
+    _login(tmp_home)
+    patch_api(task_list=[_task(name="morning-weather")], task_deleted=True)
+    argv = ["scheduled-tasks", "delete", "morning-weather", "--yes", "--json"]
+    assert cli.main(argv) == 0
+    assert json.loads(capsys.readouterr().out) == {"ok": True, "id": _TASK_ID}
+    assert [c[0] for c in _FakeTaskApi.instances[-1].calls] == ["list", "delete"]
+    assert _last_call("delete") == ("delete", _TASK_ID)
+
+
+def test_delete_human_mode_confirms_and_can_abort(tmp_home, patch_api, monkeypatch, capsys) -> None:
+    _login(tmp_home)
+    patch_api(task_deleted=True)
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_prompt", lambda _p: "n")
+    assert cli.main(["scheduled-tasks", "delete", _TASK_ID]) == 0
+    assert "Aborted." in capsys.readouterr().err
+    assert _FakeTaskApi.instances == []
+    monkeypatch.setattr(cli, "_prompt", lambda _p: "y")
+    assert cli.main(["scheduled-tasks", "delete", _TASK_ID]) == 0
+    assert "Deleted scheduled task" in capsys.readouterr().err
+
+
+def test_delete_unknown_name_is_not_found_and_never_deletes(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(task_list=[], task_deleted=True)
+    assert cli.main(["scheduled-tasks", "delete", "ghost", "--yes", "--json"]) == 2
+    assert json.loads(capsys.readouterr().err)["error"]["code"] == "not_found"
+    assert [c[0] for c in _FakeTaskApi.instances[-1].calls] == ["list"]
+
+
+def test_delete_has_no_room_flag_yet(tmp_home, patch_api) -> None:
+    """The server has no room delete route; the flag is absent rather than a dead end."""
     _login(tmp_home)
     with pytest.raises(SystemExit) as ei:
-        cli.main(["scheduled-tasks", "renew", _TASK_ID, "--room", "Trip"])
+        cli.main(["scheduled-tasks", "delete", _TASK_ID, "--room", "Trip", "--yes"])
     assert ei.value.code == 2

@@ -170,15 +170,16 @@ Every command except `login` and the interactive REPL takes `--json`, and also s
 | `pepper apps show SLUG [--room R] [--json]` | An app's data document, `{"rev", "data"}`, yours or the room's. |
 | `pepper apps run SLUG [ACTION] [--param KEY=VALUE]… [--room R] [--json]` | Run an app action (values are strings). With no ACTION, lists the owner-scoped actions from `GET /apps` (partial: the server has no route listing every declared action). |
 | `pepper takeout --out PATH [--json]` | Download your data archive; `--json` prints `{"path", "bytes"}`. |
-| `pepper trajectories show <uuid> [--json]` | Print one trajectory's events; `--json` for full untruncated payloads. |
-| `pepper trajectories list [--limit N] [--before CURSOR] [--json]` | List your recent trajectories (default 20, max 200). `--json` is `{"items": [...], "next_before": CURSOR-or-null}`; pass `next_before` back as `--before` for the next page. The cursor is opaque. |
+| `pepper trajectories show <uuid> [--room R] [--json]` | Print one trajectory's events; `--json` for full untruncated payloads. With `--room`, only if the trajectory is one of that room's turns (exit 2 otherwise); without it a room-shared trajectory is readable too. |
+| `pepper trajectories list [--room R] [--limit N] [--before CURSOR] [--json]` | List your recent trajectories (default 20, max 200), or one room's turns with `--room` (the server filters, so paging stays correct). `--json` is `{"items": [...], "next_before": CURSOR-or-null}`; pass `next_before` back as `--before` for the next page. The cursor is opaque. |
 | `pepper trajectory ...` | Renamed to `trajectories` in 0.2.0; exits 2 with a pointer. |
 | `pepper scheduled-tasks list [--all] [--room R]` | List your scheduled tasks, or a room's with `--room`; `--all` includes paused ones and spent one-offs. |
-| `pepper scheduled-tasks show <task>` | One task's config and last run. |
-| `pepper scheduled-tasks runs\|thread <task> [--before CURSOR] [--limit N]` | A task's fire history, or its own conversation. They page back with `--before` (the `next_before` of the previous page, `<timestamp>\|<id>`; limit 1-100). |
-| `pepper scheduled-tasks create <name> --prompt P (--cron C \| --at T) [--to D… \| --silent] [--deliver-topic NAME] [--room R]` | Schedule a recurring or one-off task. With `--room`: on the room, `--cron` only. |
-| `pepper scheduled-tasks edit <task> [--prompt …] […] [--to D… \| --default \| --silent] [--deliver-topic NAME] [--room R]` | Change a task; only the flags you pass are written. Delivery (where results are announced) is set here too; with `--room` it is the only thing `edit` can change. |
-| `pepper scheduled-tasks renew <task> [--json]` | Renew one of your tasks that is about to lapse. |
+| `pepper scheduled-tasks show <task> [--room R]` | One task's config and last run. |
+| `pepper scheduled-tasks runs\|thread <task> [--room R] [--before CURSOR] [--limit N]` | A task's fire history, or its own conversation. They page back with `--before` (the `next_before` of the previous page, `<timestamp>\|<id>`; limit 1-100). |
+| `pepper scheduled-tasks create <name> --prompt P (--cron C \| --at T) [--to D… \| --silent] [--deliver-topic NAME] [--room R [--skill NAME]]` | Schedule a recurring or one-off task. With `--room`: on the room; `--skill NAME` (a skill shared with the room) can replace or accompany `--prompt`; no `--description`. |
+| `pepper scheduled-tasks edit <task> [--prompt …] […] [--to D… \| --default \| --silent] [--deliver-topic NAME] [--room R]` | Change a task; only the flags you pass are written. Delivery (where results are announced) is set here too. With `--room`, the prompt, schedule, label and delivery all go in one atomic request; pause and resume stay separate. |
+| `pepper scheduled-tasks renew <task> [--room R] [--json]` | Renew a task that is about to lapse (a room's: owner only). |
+| `pepper scheduled-tasks delete <task> [--yes] [--json]` | Delete one of your tasks and its history for good; `--yes` is required under `--json`. Room tasks can't be deleted yet; `pause` keeps one. |
 | `pepper scheduled-tasks pause\|resume <task> [--room R]` | Take a task off the schedule (history kept) and put it back. |
 | `pepper skills list\|show <name> [--room R]` | Your skill library (yours, then the built-ins), or the skills shared with a room with `--room`. `show` prints SKILL.md. |
 | `pepper skills create\|edit <name> [--file PATH \| -]` | Author one of your own skills in `$EDITOR`, or from a SKILL.md file. Never takes `--room`. |
@@ -186,7 +187,7 @@ Every command except `login` and the interactive REPL takes `--json`, and also s
 | `pepper skills share <name> --room R` / `revoke <name> --room R [--yes]` | Share one of your skills with a room, or stop sharing one there. |
 | `pepper next [--room R] [--source PREFIX] [--first urgent\|important\|fast] [--all] [--json]` | What to do next: Now, a numbered Do next, Due soon (48h), Later. GETs only. `--room` takes a room name or UUID and must resolve to exactly one room; `--source` narrows by a case-insensitive prefix of the item's source label. |
 | `pepper todos list [--status S] [--room R] [--json]` | List your todos, or a room's with `--room`. |
-| `pepper todos create <title…> [--due D] [--room R]` | Create a todo. With `--room`: title and a `YYYY-MM-DD` due date only. |
+| `pepper todos create <title…> [--details D] [--priority P] [--due D] [--room R]` | Create a todo. With `--room`, `--due` is a `YYYY-MM-DD` date. |
 | `pepper todos done\|reopen <id> [--room R]` | Tick a todo as Schedule does (closes it in your or the room's list and releases the rest of its held time), or put it back. |
 | `pepper todos dismiss <id> [--room R]` | Close a todo without completing it. |
 | `pepper rooms list [--archived] [--json]` | List your rooms. `--json` is `{"items": [...], "next_before": null, "enabled", "degraded", "total", "archived_total"}`. |
@@ -303,11 +304,12 @@ Notes:
   room can't run, can be shared, and only into a named channel: sharing into
   a group text or an email thread isn't allowed yet.
 - **`scheduled-tasks --room <room>` works on a room's tasks instead of yours**
-  (`list`, `create`, `pause`, `resume`, `edit` for delivery only; `show`, `runs`,
-  `thread`, `renew` are yours only). Any member can `list` them. Changing them takes
+  (`list`, `show`, `runs`, `thread`, `create`, `edit`, `pause`, `resume`, `renew`;
+  `delete` is yours only for now). Any member can read them. Changing them takes
   the owner role in an open room: anyone else is told "only a room owner can
   change its scheduled tasks." and nothing is written. A room's task is
-  recurring (`--cron`, no `--at`, no `--description`) and announces to the
+  recurring (`--cron`) or one-off (`--at`), may run a skill shared with the room
+  (`--skill NAME`, alone or with `--prompt`), has no `--description`, and announces to the
   room rather than to a person: `--to room` (one of the room's
   topics — `--deliver-topic NAME` says which) and/or
   `--to resend_email` (every member's inbox). There is no `--default` for a
