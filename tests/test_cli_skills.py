@@ -15,13 +15,6 @@ from pepper_cli.secret import SecretStr
 
 
 @pytest.fixture
-def tmp_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    return tmp_path
-
-
-@pytest.fixture
 def logged_in(tmp_home):
     credentials.save(server_url="https://pepper.test", token=SecretStr("pep_pat_test"))
     return tmp_home

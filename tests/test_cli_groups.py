@@ -30,13 +30,6 @@ _TID_ARCHIVED = "00000000-0000-0000-0000-0000000000b3"
 _MID = "00000000-0000-0000-0000-0000000000c1"
 
 
-@pytest.fixture
-def tmp_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    return tmp_path
-
-
 def _login(tmp_home) -> None:
     credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
 

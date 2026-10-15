@@ -9,3 +9,5 @@
   `alice@example.com`). Never put a real token, address, or hostname in a fixture.
 - Tests never read or write the real credentials file; use the temporary-directory fixtures in
   `tests/conftest.py`.
+- Tests must pass on Windows: isolate both `$HOME` and `$USERPROFILE` in fixtures,
+  skip POSIX-only tests on Windows, and avoid assuming interactive TTY buffers exist.

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 import pytest
 
 from pepper_cli import credentials
@@ -17,7 +20,41 @@ def _reset_credentials_profile():
 
 
 @pytest.fixture(autouse=True)
-def _no_pepper_json(monkeypatch):
+def _no_pepper_json(monkeypatch: pytest.MonkeyPatch):
     """``PEPPER_JSON=1`` in the developer's shell would flip every ``--json``-capable
     command to JSON; tests that want it set it themselves."""
     monkeypatch.delenv("PEPPER_JSON", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Redirect ``~`` and ``$XDG_CONFIG_HOME`` to a temp dir across all platforms.
+
+    On POSIX, ``Path.home()`` checks ``$HOME``; on Windows it checks
+    ``$USERPROFILE``. Both are redirected so no test reads or writes the user's
+    real credentials file.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _patch_prompt_session_io(monkeypatch: pytest.MonkeyPatch):
+    """Provide dummy IO on PromptSession so headless/Windows test runs don't require a console."""
+    try:
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.input import DummyInput
+        from prompt_toolkit.output import DummyOutput
+    except ImportError:
+        return
+
+    orig_init = PromptSession.__init__
+
+    def init_with_dummy_io(self: PromptSession, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("output", DummyOutput())
+        kwargs.setdefault("input", DummyInput())
+        orig_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(PromptSession, "__init__", init_with_dummy_io)

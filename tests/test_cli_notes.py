@@ -28,13 +28,6 @@ _NID_RUNBOOK_1 = "00000000-0000-0000-0000-0000000000d2"
 _NID_RUNBOOK_2 = "00000000-0000-0000-0000-0000000000d3"
 
 
-@pytest.fixture
-def tmp_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    return tmp_path
-
-
 def _login(tmp_home) -> None:
     credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
 

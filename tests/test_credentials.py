@@ -17,13 +17,10 @@ from pepper_cli import credentials
 from pepper_cli.secret import SecretStr
 
 
-@pytest.fixture
-def tmp_home(tmp_path, monkeypatch):
-    """Redirect ``~`` and ``$XDG_CONFIG_HOME`` to a temp dir so each
-    test gets a clean slate without touching the real config dir."""
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    return tmp_path
+def test_credentials_path_is_isolated_to_tmp_home(tmp_home: Path) -> None:
+    """Ensure Path.home() and credentials path are safely within tmp_home on all platforms."""
+    assert Path.home() == tmp_home
+    assert str(credentials.credentials_path()).startswith(str(tmp_home))
 
 
 def test_save_then_load_roundtrip(tmp_home: Path) -> None:

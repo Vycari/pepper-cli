@@ -18,13 +18,6 @@ from pepper_cli import api_client, cli, credentials
 from pepper_cli.secret import SecretStr
 
 
-@pytest.fixture
-def tmp_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    return tmp_path
-
-
 class _FakeApi:
     """Stand-in for :class:`api_client.ApiClient` used by the cli tests.
 

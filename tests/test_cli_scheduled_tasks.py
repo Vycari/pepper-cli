@@ -26,13 +26,6 @@ from pepper_cli.secret import SecretStr
 _TASK_ID = "00000000-0000-0000-0000-0000000000a1"
 
 
-@pytest.fixture
-def tmp_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    return tmp_path
-
-
 def _task(**over) -> api_client.ScheduledTaskSummary:
     base = {
         "id": _TASK_ID,

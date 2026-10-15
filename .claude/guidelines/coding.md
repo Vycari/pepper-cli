@@ -14,3 +14,6 @@
   on stderr; the `T201` ignore in `pyproject.toml` is scoped to that one file, so a `print`
   anywhere else fails lint.
 - Keep the CLI dependency-light. A new runtime dependency needs a reason in the PR.
+- Cross-platform support: keep the CLI working on Windows alongside Linux/macOS.
+  Guard Unix-only APIs (like `time.tzset` or `os.umask`) with platform checks,
+  use `pathlib.Path`, and handle Windows file locking (`PermissionError`).

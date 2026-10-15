@@ -20,13 +20,6 @@ from pepper_cli.secret import SecretStr
 
 
 @pytest.fixture
-def tmp_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    return tmp_path
-
-
-@pytest.fixture
 def logged_in(tmp_home):
     """Persist a credentials file so the REPL can load them."""
     credentials.save(

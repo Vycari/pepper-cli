@@ -16,13 +16,6 @@ from pepper_cli import api_client, cli, credentials
 from pepper_cli.secret import SecretStr
 
 
-@pytest.fixture
-def tmp_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    return tmp_path
-
-
 class _FakeTakeoutApi:
     """Records calls and returns a canned ``out_path`` (or raises)."""
 
