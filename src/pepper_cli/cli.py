@@ -2602,6 +2602,16 @@ def _create_room_scheduled_task(args: argparse.Namespace) -> int:
     return _with_api(run, _report_room_task_error)
 
 
+#: ``scheduled-tasks edit``'s field keys as the flags that set them, for messages.
+_EDIT_FLAG_NAMES = {
+    "prompt": "--prompt",
+    "cron": "--cron",
+    "run_at": "--at",
+    "timezone": "--timezone",
+    "description": "--description",
+}
+
+
 def cmd_scheduled_task_edit(args: argparse.Namespace) -> int:
     """``pepper scheduled-tasks edit <task> [field flags] [--to D... | --default | --silent]``.
 
@@ -2613,7 +2623,9 @@ def cmd_scheduled_task_edit(args: argparse.Namespace) -> int:
     (repeatable), ``--default`` and ``--silent`` may be given: a command with
     no choice on it would have to guess between inherit and silent, which are
     opposite answers. Field flags and delivery are two requests (the server
-    takes them separately); field changes are sent first.
+    takes them separately), so every check that can run locally runs before
+    either is sent; field changes go first, and if the delivery request then
+    fails the error says the field changes were saved.
 
     With ``--room`` only delivery can change (the room API takes nothing else
     yet): ``--to`` in the room's dialect or ``--silent``, no ``--default`` (a
@@ -2671,9 +2683,25 @@ def cmd_scheduled_task_edit(args: argparse.Namespace) -> int:
             return 2
         task = api.update_scheduled_task(task_id, edits=edits) if edits else None
         if has_delivery or task is None:  # no field edits means delivery was asked for
-            task = api.set_scheduled_task_destinations(
-                task_id, destinations=destinations, group_id=group_id, topic=args.deliver_topic
-            )
+            saved = task
+            try:
+                task = api.set_scheduled_task_destinations(
+                    task_id, destinations=destinations, group_id=group_id, topic=args.deliver_topic
+                )
+            except (api_client.ApiError, httpx.RequestError):
+                if saved is not None:
+                    # The field PATCH already landed; say so before the cause is reported.
+                    flags = ", ".join(
+                        "--clear-description"
+                        if k == "description" and v is None
+                        else _EDIT_FLAG_NAMES[k]
+                        for k, v in edits.items()
+                    )
+                    render.error(
+                        f"saved {flags} on {saved.name!r}, but changing its delivery failed:",
+                        soft_wrap=True,
+                    )
+                raise
         render.info(f"Updated {task.name!r}.")
         render.render_scheduled_task_list([task])
         return 0

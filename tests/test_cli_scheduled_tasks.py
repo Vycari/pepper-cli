@@ -969,6 +969,30 @@ def test_edit_sends_fields_first_then_delivery(tmp_home, patch_api) -> None:
     assert _last_call("destinations")[2] == []
 
 
+def test_edit_whose_delivery_fails_says_the_fields_were_saved(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(
+        task_updated=_task(),
+        task_destinations=api_client.ApiError(status=503, body="", detail="try later"),
+    )
+    rc = cli.main(
+        ["scheduled-tasks", "edit", _TASK_ID, "--prompt", "New.", "--clear-description", "--silent"]
+    )
+    assert rc == 1
+    assert [c[0] for c in _FakeTaskApi.instances[-1].calls] == ["update", "destinations"]
+    err = capsys.readouterr().err
+    assert "saved --prompt, --clear-description on 'morning-weather'" in err
+    assert "changing its delivery failed" in err and "503: try later" in err
+
+
+def test_edit_delivery_only_failure_claims_nothing_saved(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(task_destinations=api_client.ApiError(status=503, body="", detail="try later"))
+    assert cli.main(["scheduled-tasks", "edit", _TASK_ID, "--silent"]) == 1
+    err = capsys.readouterr().err
+    assert "saved" not in err and "503: try later" in err
+
+
 def test_edit_with_only_fields_makes_no_delivery_call(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api(task_updated=_task())
