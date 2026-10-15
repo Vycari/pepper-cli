@@ -179,7 +179,7 @@ Every command except `login` and the interactive REPL takes `--json`, and also s
 | `pepper scheduled-tasks create <name> --prompt P (--cron C \| --at T) [--to D… \| --silent] [--deliver-topic NAME] [--room R [--skill NAME]]` | Schedule a recurring or one-off task. With `--room`: on the room; `--skill NAME` (a skill shared with the room) can replace or accompany `--prompt`; no `--description`. |
 | `pepper scheduled-tasks edit <task> [--prompt …] […] [--to D… \| --default \| --silent] [--deliver-topic NAME] [--room R]` | Change a task; only the flags you pass are written. Delivery (where results are announced) is set here too. With `--room`, the prompt, schedule, label and delivery all go in one atomic request; pause and resume stay separate. |
 | `pepper scheduled-tasks renew <task> [--room R] [--json]` | Renew a task that is about to lapse (a room's: owner only). |
-| `pepper scheduled-tasks delete <task> [--yes] [--json]` | Delete one of your tasks and its history for good; `--yes` is required under `--json`. Room tasks can't be deleted yet; `pause` keeps one. |
+| `pepper scheduled-tasks delete <task> [--room R] [--yes] [--json]` | Delete a task (a room's with `--room`: owner only) and its history for good; `--yes` is required under `--json`. `pause` keeps one. |
 | `pepper scheduled-tasks pause\|resume <task> [--room R]` | Take a task off the schedule (history kept) and put it back. |
 | `pepper skills list\|show <name> [--room R]` | Your skill library (yours, then the built-ins), or the skills shared with a room with `--room`. `show` prints SKILL.md. |
 | `pepper skills create\|edit <name> [--file PATH \| -]` | Author one of your own skills in `$EDITOR`, or from a SKILL.md file. Never takes `--room`. |
@@ -304,8 +304,7 @@ Notes:
   room can't run, can be shared, and only into a named channel: sharing into
   a group text or an email thread isn't allowed yet.
 - **`scheduled-tasks --room <room>` works on a room's tasks instead of yours**
-  (`list`, `show`, `runs`, `thread`, `create`, `edit`, `pause`, `resume`, `renew`;
-  `delete` is yours only for now). Any member can read them. Changing them takes
+  (`list`, `show`, `runs`, `thread`, `create`, `edit`, `pause`, `resume`, `renew`, `delete`). Any member can read them. Changing them takes
   the owner role in an open room: anyone else is told "only a room owner can
   change its scheduled tasks." and nothing is written. A room's task is
   recurring (`--cron`) or one-off (`--at`), may run a skill shared with the room

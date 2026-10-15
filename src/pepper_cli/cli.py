@@ -25,7 +25,7 @@ Subcommands:
   action items; ``--room`` acts on a room's todos instead of yours.
 - ``pepper scheduled-tasks list | show | runs | thread | create | edit |
   pause | resume | renew | delete`` — manage recurring and one-off
-  scheduled prompts; ``--room`` (every leaf but ``delete``) acts on a room's
+  scheduled prompts; ``--room`` acts on a room's
   tasks instead of yours — any member reads, only a room owner changes.
   ``edit --to/--default/--silent`` sets where a task announces its results.
 - ``pepper skills list | show | create | edit | delete`` — author skills as
@@ -813,8 +813,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
 
     p_tasks_delete = sub_tasks.add_parser(
         "delete",
-        help="Delete one of your tasks for good, with its history. "
-        "Pause keeps it; room tasks can't be deleted yet.",
+        help="Delete a task for good, with its history. Pause keeps it.",
         parents=[_json_parent, _yes_parent],
     )
     p_tasks_delete.add_argument("task", help=_TASK_ARG_HELP)
@@ -844,7 +843,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_tasks_renew.add_argument("task", help=_TASK_ARG_HELP)
     p_tasks_renew.set_defaults(handler=cmd_scheduled_task_renew)
 
-    for name in ("show", "runs", "thread", "renew"):
+    for name in ("show", "runs", "thread", "renew", "delete"):
         sub_tasks.choices[name].add_argument(
             "--room",
             metavar="ROOM",
@@ -852,8 +851,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
                 _ROOM_ARG_HELP
                 + (
                     " Any member can read a room's tasks."
-                    if name != "renew"
-                    else " Only a room owner can renew one."
+                    if name not in ("renew", "delete")
+                    else f" Only a room owner can {name} one."
                 )
             ),
         )
@@ -3123,26 +3122,31 @@ def cmd_scheduled_task_renew(args: argparse.Namespace) -> int:
 
 
 def cmd_scheduled_task_delete(args: argparse.Namespace) -> int:
-    """``pepper scheduled-tasks delete <task> [--yes]`` — remove one of YOUR tasks for good.
+    """``pepper scheduled-tasks delete <task> [--room ROOM] [--yes]`` — remove a task for good.
 
     Confirms before deleting unless ``--yes`` (required under ``--json``). The
-    task goes with its run history; ``pause`` is the reversible version. Personal
-    tasks only: the server has no room delete route yet.
+    task goes with its run history; ``pause`` is the reversible version. With
+    ``--room`` it is the room's task (a room owner's write; 403 otherwise).
     """
+    whose = "the room's" if args.room else "your"
     if (
         code := _confirm_destructive(
             args,
-            f"Delete your scheduled task {args.task!r} and its history? This cannot be undone.",
+            f"Delete {whose} scheduled task {args.task!r} and its history? This cannot be undone.",
             yes=args.yes,
         )
     ) is not None:
         return code
 
     def run(api: api_client.ApiClient) -> int:
-        task_id = _resolve_task_id(api, args.task, args=args)
+        group_id = _opt_group(api, args.room, args=args)
+        task_id = _resolve_task_id(api, args.task, group_id=group_id, args=args)
         if task_id is None:
             return 2
-        api.delete_scheduled_task(task_id)
+        if group_id:
+            api.delete_scheduled_task(task_id, group_id=group_id)
+        else:
+            api.delete_scheduled_task(task_id)
         _emit(
             _mutation_result(None, task_id),
             args,
@@ -3150,7 +3154,7 @@ def cmd_scheduled_task_delete(args: argparse.Namespace) -> int:
         )
         return 0
 
-    return _with_api(run, _report_api_error, args)
+    return _with_api(run, _task_report(args), args)
 
 
 def cmd_scheduled_task_pause(args: argparse.Namespace) -> int:

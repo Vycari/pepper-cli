@@ -1758,11 +1758,14 @@ class ApiClient:
             return _room_scheduled_task_from_dict(resp.json())
         return _scheduled_task_from_dict(resp.json())
 
-    def delete_scheduled_task(self, task_id: str) -> None:
+    def delete_scheduled_task(self, task_id: str, *, group_id: str | None = None) -> None:
         """``DELETE /api/v1/scheduled-tasks/{id}``. Remove a personal task for good
         (its run history goes with it); 204. 404 whether the id is unknown or
-        another user's. Personal tasks only: there is no room delete route yet."""
-        self._request("DELETE", f"/api/v1/scheduled-tasks/{task_id}")
+        another user's.
+
+        With ``group_id``, ``DELETE /api/v1/groups/{id}/scheduled-tasks/{task}`` —
+        a room owner's write (403 otherwise)."""
+        self._request("DELETE", f"{_scheduled_tasks_path(group_id)}/{task_id}")
 
     def update_room_scheduled_task(
         self,

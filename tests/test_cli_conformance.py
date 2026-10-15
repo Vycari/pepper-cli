@@ -142,12 +142,7 @@ ROOM_NA = {
 
 #: Leaves that should take ``--room`` and do not yet. §6 is the per-command authority;
 #: the ``groups`` leaves take the room as a positional until phase 2a/2b.
-ROOM_PENDING = frozenset(
-    {
-        # server: no room delete route yet (pepper#4734 is the personal one only)
-        "scheduled-tasks delete",
-    }
-)
+ROOM_PENDING: frozenset[str] = frozenset()
 
 #: Leaves whose verb is not in §3.1 yet (old spellings; phase 2a-2d renames them).
 VERB_PENDING = frozenset(

@@ -523,3 +523,10 @@ def test_personal_paths_are_unchanged_without_a_group() -> None:
         api.set_scheduled_task_destinations(_TASK_ID, destinations=None)
         assert seen["method"] == "PUT"
         assert seen["body"] == {"destinations": None}
+
+
+def test_room_delete_is_a_delete_to_the_room_route() -> None:
+    seen, handler = _capture(httpx.Response(204))
+    with _client(handler) as api:
+        assert api.delete_scheduled_task(_TASK_ID, group_id=_ROOM) is None
+    assert (seen["method"], seen["url"]) == ("DELETE", f"{_ROOM_TASKS}/{_TASK_ID}")

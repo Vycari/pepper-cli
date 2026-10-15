@@ -687,6 +687,10 @@ class _FakeRoomTaskApi(_FakeTaskApi):
         self.calls.append(("renew", task_id, group_id))
         return self._result("task_renewed")
 
+    def delete_scheduled_task(self, task_id, *, group_id=None):
+        self.calls.append(("delete", task_id, group_id))
+        self._result("task_deleted")
+
 
 @pytest.fixture
 def patch_room_api(monkeypatch):
@@ -1339,9 +1343,48 @@ def test_delete_unknown_name_is_not_found_and_never_deletes(tmp_home, patch_api,
     assert [c[0] for c in _FakeTaskApi.instances[-1].calls] == ["list"]
 
 
-def test_delete_has_no_room_flag_yet(tmp_home, patch_api) -> None:
-    """The server has no room delete route; the flag is absent rather than a dead end."""
+def test_room_delete_by_name_looks_in_the_room_and_deletes_there(
+    tmp_home, patch_room_api, capsys
+) -> None:
     _login(tmp_home)
-    with pytest.raises(SystemExit) as ei:
-        cli.main(["scheduled-tasks", "delete", _TASK_ID, "--room", "Trip", "--yes"])
-    assert ei.value.code == 2
+    patch_room_api(task_list=[_room_task(name="weekly-menu")], task_deleted=True)
+    argv = ["scheduled-tasks", "delete", "weekly-menu", "--room", "Trip", "--yes", "--json"]
+    assert cli.main(argv) == 0
+    assert _calls() == [("list", True, _ROOM), ("delete", _TASK_ID, _ROOM)]
+    assert json.loads(capsys.readouterr().out)["id"] == _TASK_ID
+
+
+def test_room_delete_by_id_skips_the_lookup(tmp_home, patch_room_api, capsys) -> None:
+    _login(tmp_home)
+    patch_room_api(task_deleted=True)
+    assert cli.main(["scheduled-tasks", "delete", _TASK_ID, "--room", _ROOM, "--yes"]) == 0
+    assert _calls() == [("delete", _TASK_ID, _ROOM)]
+    assert "Deleted scheduled task" in capsys.readouterr().err
+
+
+def test_room_delete_confirms_naming_the_room_and_can_abort(
+    tmp_home, patch_room_api, monkeypatch, capsys
+) -> None:
+    _login(tmp_home)
+    patch_room_api(task_deleted=True)
+    prompts: list[str] = []
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_prompt", lambda p: prompts.append(p) or "n")
+    assert cli.main(["scheduled-tasks", "delete", _TASK_ID, "--room", _ROOM]) == 0
+    assert "the room's scheduled task" in prompts[0]
+    assert "Aborted." in capsys.readouterr().err
+    assert _calls() == []
+
+
+def test_room_delete_needs_yes_under_json(tmp_home, patch_room_api) -> None:
+    _login(tmp_home)
+    patch_room_api(task_deleted=True)
+    assert cli.main(["scheduled-tasks", "delete", _TASK_ID, "--room", _ROOM, "--json"]) == 2
+    assert _calls() == []
+
+
+def test_room_delete_by_a_non_owner_says_so(tmp_home, patch_room_api, capsys) -> None:
+    _login(tmp_home)
+    patch_room_api(task_deleted=_forbidden())
+    assert cli.main(["scheduled-tasks", "delete", _TASK_ID, "--room", _ROOM, "--yes"]) != 0
+    assert "only a room owner can change its scheduled tasks." in capsys.readouterr().err
