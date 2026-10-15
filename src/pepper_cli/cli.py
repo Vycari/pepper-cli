@@ -2372,7 +2372,10 @@ def cmd_trajectory_list(args: argparse.Namespace) -> int:
                 # The resolved id, not the typed name: a multi-word name would
                 # print unquoted and break the copy-pasted next-page command.
                 room = f" --room {group_id}" if group_id else ""
-                render.info(f"More: pepper trajectories list{room} --before {more}", soft_wrap=True)
+                render.info(
+                    f"More: pepper trajectories list{room} --limit {args.limit} --before {more}",
+                    soft_wrap=True,
+                )
 
         _emit_list(rows, args, human, next_before=more)
         return 0

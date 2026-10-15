@@ -1179,7 +1179,10 @@ def test_trajectory_list_room_cursor_hint_keeps_the_room(tmp_home: Path, patch_a
     )
     patch_api(groups=_trip_rooms(), trajectory_list=[entry])
     assert cli.main(["trajectories", "list", "--room", "trip", "--limit", "1"]) == 0
-    assert f"pepper trajectories list --room {_TRAJ_ROOM} --before 1" in capsys.readouterr().err
+    assert (
+        f"pepper trajectories list --room {_TRAJ_ROOM} --limit 1 --before 1"
+        in capsys.readouterr().err
+    )
     assert cli.main(["trajectories", "list", "--room", "trip", "--limit", "1", "--json"]) == 0
     import json as _json
 
