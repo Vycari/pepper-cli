@@ -8,13 +8,14 @@ walked.
    its subcommand path and ``--flags`` checked against the real argparse parser
    (:func:`check_document`).
 2. A command may only be written as a full ``pepper ...`` invocation. A code
-   span or fenced line that starts with a subcommand name instead (``groups
+   span or fenced line that starts with a subcommand name instead (``messages
    unreact``, ``topics --json``, a bare ``unreact``) is a failure, because rule
    1 cannot see it (:func:`find_unchecked_commands`).
 3. Every ``--flag`` written anywhere in the document, in a code span or in
    prose, exists somewhere in the parser (:func:`find_unknown_flags`).
-4. Outside the section on what an agent token cannot run, every ``groups``
-   invocation is one the server accepts an agent token for
+4. Outside the section on what an agent token cannot run, every ``rooms``,
+   ``topics``, ``messages`` or ``attachments`` invocation is one the server accepts an agent
+   token for
    (:func:`check_agent_availability`).
 """
 
@@ -44,7 +45,8 @@ _SHELL_END = re.compile(r"^(\||&&|;|\d*>|<<?-?)")
 _PLACEHOLDER = re.compile(r"^<[^<>\s]*>$")
 # Commands the document always shows under a profile; ``agent-skill`` and ``--version``
 # need no login, so the document may show them bare.
-_NEEDS_PROFILE = frozenset({"groups", "login", "logout", "whoami"})
+_API_NOUNS = frozenset({"rooms", "topics", "messages", "attachments"})
+_NEEDS_PROFILE = _API_NOUNS | {"login", "logout", "whoami"}
 _HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
 
 
@@ -54,13 +56,23 @@ _FLAG = re.compile(r"(?<![\w-])--[a-z][a-z0-9-]*")
 _HEADING = re.compile(r"^## ")
 # Heading of the one section allowed to name commands an agent token cannot use.
 _CANNOT_RUN = "cannot run"
-# The ``groups`` subcommands whose server route admits an agent token, and the
+# The ``<noun> <verb>`` commands whose server route admits an agent token, and the
 # flags on them that reach a route which does not. Mirrors
-# the server's allowlist of routes an agent token may reach: ``watch``
-# is the events stream, ``react``/``unreact`` the two reactions routes, ``--mark``
+# the server's allowlist of routes an agent token may reach: ``rooms watch``
+# is the events stream, ``messages react``/``unreact`` the two reactions routes, ``--mark``
 # the read-mark route and ``--attach`` the upload route (both personal-token only).
+# ``members list`` (the old ``groups roster``) joins this set when the members
+# commands land (phase 2b of the CLI information architecture).
 _AGENT_COMMANDS = frozenset(
-    {"list", "topics", "roster", "read", "watch", "post", "react", "unreact"}
+    {
+        "rooms list",
+        "topics list",
+        "messages list",
+        "rooms watch",
+        "messages post",
+        "messages react",
+        "messages unreact",
+    }
 )
 _AGENT_REFUSED_FLAGS = frozenset({"--mark", "--attach"})
 
@@ -189,10 +201,13 @@ def check_document(markdown: str) -> list[str]:
 
 
 def _command_names() -> tuple[frozenset[str], frozenset[str]]:
-    """``(top-level subcommands, groups subcommands)`` of the real parser."""
+    """``(top-level subcommands, verbs under the API nouns)`` of the real parser."""
     root, _ = cli._build_parser()
     top = _subparsers(root) or {}
-    return frozenset(top), frozenset(_subparsers(top["groups"]) or {})
+    verbs: set[str] = set()
+    for noun in _API_NOUNS:
+        verbs |= set(_subparsers(top[noun]) or {})
+    return frozenset(top), frozenset(verbs)
 
 
 def find_unchecked_commands(markdown: str) -> list[str]:
@@ -200,14 +215,14 @@ def find_unchecked_commands(markdown: str) -> list[str]:
 
     The document's rule is that a command is always the full ``pepper ...``
     invocation. So these fail: a fenced line that is not one; a code span of two
-    or more words whose first word is a subcommand name (``groups unreact``,
-    ``topics --json``, ``login --manual``); and a one-word span that is a
-    ``groups`` subcommand name (``unreact``). A one-word top-level name such as
-    ``login`` is allowed, since ``login`` and ``groups`` are also ordinary words
-    for the thing; a ``groups`` subcommand that shares its name with a JSON field
-    has to be written without the code span.
+    or more words whose first word is a subcommand name (``messages unreact``,
+    ``topics --json``, ``login --manual``); and a one-word span that is a verb
+    under an API noun (``unreact``). A one-word top-level name such as
+    ``login`` is allowed, since ``login`` and ``topics`` are also ordinary words
+    for the thing; a verb that shares its name with a JSON field has to be
+    written without the code span.
     """
-    top, groups = _command_names()
+    top, verbs = _command_names()
     problems: list[str] = []
     for unit, in_fence, _section in _code_units(markdown):
         text = _command_text(unit)
@@ -216,7 +231,7 @@ def find_unchecked_commands(markdown: str) -> list[str]:
         words = text.split()
         if in_fence:
             problems.append(f"{text!r}: a fenced line must be a full `pepper ...` invocation")
-        elif words[0] in (top | groups) if len(words) > 1 else words[0] in (groups - top):
+        elif words[0] in (top | verbs) if len(words) > 1 else words[0] in (verbs - top):
             problems.append(
                 f"{text!r}: shortened command; write the full `pepper --profile <name> ...` form"
             )
@@ -244,26 +259,26 @@ def find_unknown_flags(markdown: str) -> list[str]:
     return sorted(mentioned - _all_flags())
 
 
-def _groups_subcommand(args: list[str]) -> str | None:
-    """The ``groups`` subcommand an invocation names, or ``None`` (elided, ``--help``, other)."""
+def _api_command(args: list[str]) -> str | None:
+    """The ``<noun> <verb>`` an invocation names, or ``None`` (elided, ``--help``, other)."""
     rest = args[2:] if args[:1] == ["--profile"] else args
     words = [a for a in rest if not a.startswith("--")]
-    if words[:1] != ["groups"] or len(words) < 2 or "--help" in rest:
+    if words[:1] == [] or words[0] not in _API_NOUNS or len(words) < 2 or "--help" in rest:
         return None
-    return None if _PLACEHOLDER.match(words[1]) else words[1]
+    return None if _PLACEHOLDER.match(words[1]) else f"{words[0]} {words[1]}"
 
 
 def check_agent_availability(markdown: str) -> list[str]:
     """Invocations that present a personal-token-only command as usable by an agent.
 
-    Outside the "cannot run" section every ``groups`` invocation must be one of
+    Outside the "cannot run" section every API-noun invocation must be one of
     :data:`_AGENT_COMMANDS` and carry none of :data:`_AGENT_REFUSED_FLAGS`; inside
     it, a command that an agent token *can* run is the mistake.
     """
     problems: list[str] = []
     for unit, _in_fence, section in _code_units(markdown):
         args = _invocation_args(unit)
-        sub = _groups_subcommand(args) if args is not None else None
+        sub = _api_command(args) if args is not None else None
         if args is None or sub is None:
             continue
         shown = "pepper " + " ".join(args)
@@ -272,7 +287,7 @@ def check_agent_availability(markdown: str) -> list[str]:
             if sub in _AGENT_COMMANDS and not refused:
                 problems.append(f"{shown!r}: listed as unavailable, but an agent token can run it")
         elif sub not in _AGENT_COMMANDS:
-            problems.append(f"{shown!r}: `groups {sub}` needs a personal token (401 for an agent)")
+            problems.append(f"{shown!r}: `{sub}` needs a personal token (401 for an agent)")
         elif refused:
             problems.append(f"{shown!r}: {', '.join(refused)} needs a personal token")
     return problems
@@ -310,10 +325,11 @@ def test_document_only_presents_commands_an_agent_token_can_run() -> None:
 
 def test_agent_commands_are_real_and_the_permission_block_lists_exactly_them() -> None:
     """Section 8's fenced block is the allowlist: no more, no fewer, all in the parser."""
-    _top, groups = _command_names()
-    assert groups >= _AGENT_COMMANDS
+    top, verbs = _command_names()
+    assert {c.split()[1] for c in _AGENT_COMMANDS} <= verbs
+    assert {c.split()[0] for c in _AGENT_COMMANDS} <= top
     listed = [
-        _groups_subcommand(args)
+        _api_command(args)
         for unit, in_fence, section in _code_units(agent_skill.raw_text())
         if in_fence and "can run" in section and (args := _invocation_args(unit)) is not None
     ]
@@ -325,7 +341,12 @@ def test_document_names_the_tempting_commands_as_unavailable() -> None:
     text = agent_skill.raw_text()
     cannot = text[text.index("\n## 9. What an agent token cannot run") :]
     cannot = cannot[: cannot.index("\n## 10.")]
-    for needle in ("groups edit", "groups delete-message", "groups show", "groups download"):
+    for needle in (
+        "messages edit",
+        "messages delete",
+        "rooms show",
+        "attachments download",
+    ):
         assert f"`pepper --profile <name> {needle}`" in cannot, needle
     for flag in _AGENT_REFUSED_FLAGS:
         assert f"`{flag}`" in cannot, flag
@@ -334,11 +355,11 @@ def test_document_names_the_tempting_commands_as_unavailable() -> None:
 def test_document_exercises_the_invocations_the_guard_is_meant_to_cover() -> None:
     joined = [" ".join(a) for a in _extract_invocations(agent_skill.raw_text())]
     for needle in (
-        "groups watch",
-        "groups read",
-        "groups post",
-        "groups react",
-        "groups unreact",
+        "rooms watch",
+        "messages list",
+        "messages post",
+        "messages react",
+        "messages unreact",
         "login",
     ):
         assert any(needle in j for j in joined), needle
@@ -354,24 +375,27 @@ def test_document_names_the_post_json_flag_and_the_watch_kind_filters() -> None:
         assert flag in flags
     joined = [" ".join(a) for a in _extract_invocations(text)]
     assert any(
-        "groups watch" in j and "--ignore-kinds message.link_cards_updated" in j for j in joined
+        "rooms watch" in j and "--ignore-kinds message.link_cards_updated" in j for j in joined
     )
     # ``--json`` exists on several commands, so the flag scan alone would not notice it
-    # leaving ``groups post``; a checked post invocation carrying it does.
-    assert any("groups post" in j and "--json" in j for j in joined)
+    # leaving ``messages post``; a checked post invocation carrying it does.
+    assert any("messages post" in j and "--json" in j for j in joined)
     assert "message.link_cards_updated" in text
 
 
 @pytest.mark.parametrize(
     ("markdown", "expect"),
     [
-        ("`pepper --profile p groups read G --bogus`", "no flag --bogus"),
-        ("`pepper --profile p groups nope G`", "unknown subcommand 'nope'"),
+        ("`pepper --profile p messages list --room G --bogus`", "no flag --bogus"),
+        ("`pepper --profile p messages nope G`", "unknown subcommand 'nope'"),
         ("`pepper --profile p frobnicate`", "unknown subcommand 'frobnicate'"),
-        ("`pepper groups read G`", "missing the leading --profile"),
-        ("`pepper --profile p groups`", "incomplete"),
+        ("`pepper messages list --room G`", "missing the leading --profile"),
+        ("`pepper --profile p rooms`", "incomplete"),
         (
-            "```\npepper --profile p groups post G T - --reply-to M --on-behalf-of-x P\n```",
+            (
+                "```\npepper --profile p messages post --room G --topic T - --reply-to M "
+                "--on-behalf-of-x P\n```"
+            ),
             "no flag --on-behalf-of-x",
         ),
     ],
@@ -385,16 +409,16 @@ def test_drift_guard_reports_a_bad_document(markdown: str, expect: str) -> None:
 @pytest.mark.parametrize(
     "markdown",
     [
-        "`groups unreact` with the same arguments takes it back",
-        "`groups edit <group> <message-id> <text...>` changes a message",
-        "`groups delete-message <group> <message-id> --yes`",
+        "`messages unreact` with the same arguments takes it back",
+        "`messages edit <message-id> <text...>` changes a message",
+        "`messages delete <message-id> --yes`",
         "from `list` and `topics --json`",
         "then `unreact` it",
         "`login --manual` prompts",
-        "## 4. The event stream: `groups watch`",
-        "```\ngroups unreact G M E\n```",
-        "```\n$ groups read G\n```",
-        "```\nPEPPER_NO_IMPLICIT_CHAT=1 pepper --profile p groups list\n```",
+        "## 4. The event stream: `rooms watch`",
+        "```\nmessages unreact G M E\n```",
+        "```\n$ messages list G\n```",
+        "```\nPEPPER_NO_IMPLICIT_CHAT=1 pepper --profile p rooms list\n```",
     ],
 )
 def test_drift_guard_refuses_a_command_it_cannot_check(markdown: str) -> None:
@@ -404,12 +428,15 @@ def test_drift_guard_refuses_a_command_it_cannot_check(markdown: str) -> None:
 @pytest.mark.parametrize(
     "markdown",
     [
-        "`pepper --profile p groups unreact G M E`",
-        "`login` refuses an agent token; each entry of `groups` has a `group_id`",
-        "`Bash(pepper --profile <name> groups read:*)`",
+        "`pepper --profile p messages unreact --room G M E`",
+        "`login` refuses an agent token; each entry of `items` has a `group_id`",
+        "`Bash(pepper --profile <name> messages list:*)`",
         "`pepper-cli` 1.2.3, `person_id`, `-`, `bash -c`, `VAR=value`",
         '`{"kind":"cursor","cursor":N}`',
-        "```\npepper --profile p groups post G T - <<'EOF'\ngroups unreact\nEOF\n```",
+        (
+            "```\npepper --profile p messages post --room G --topic T - <<'EOF'\n"
+            "messages unreact\nEOF\n```"
+        ),
     ],
 )
 def test_drift_guard_leaves_checkable_and_unrelated_code_alone(markdown: str) -> None:
@@ -421,12 +448,12 @@ def test_drift_guard_leaves_checkable_and_unrelated_code_alone(markdown: str) ->
     [
         "`--bogus`",
         "`--bogus PATH` (repeatable)",
-        "`groups delete-message <group> <message-id> --bogus`",
-        "`Bash(pepper --profile <name> groups read --bogus:*)`",
+        "`messages delete <message-id> --bogus`",
+        "`Bash(pepper --profile <name> messages list --bogus:*)`",
         "pass --bogus in prose, outside any code span",
         # Stricter than check_document, which stops at the pipe: the document
         # tells agents to run one plain command, so it has no other tool's flags.
-        "```\npepper --profile p groups list --json | jq --bogus\n```",
+        "```\npepper --profile p rooms list --json | jq --bogus\n```",
     ],
 )
 def test_drift_guard_reports_an_unknown_flag_wherever_it_is_written(markdown: str) -> None:
@@ -436,7 +463,8 @@ def test_drift_guard_reports_an_unknown_flag_wherever_it_is_written(markdown: st
 def test_drift_guard_flag_scan_skips_frontmatter_fences_and_heredoc_bodies() -> None:
     doc = (
         "---\nname: x\n---\n\n`--json` and a well-known--word\n"
-        "```\npepper --profile p groups post G T - <<'EOF'\nuse --bogus here\nEOF\n```\n"
+        "```\npepper --profile p messages post --room G --topic T - <<'EOF'\n"
+        "use --bogus here\nEOF\n```\n"
     )
     assert find_unknown_flags(doc) == []
 
@@ -444,13 +472,25 @@ def test_drift_guard_flag_scan_skips_frontmatter_fences_and_heredoc_bodies() -> 
 @pytest.mark.parametrize(
     ("markdown", "expect"),
     [
-        ("`pepper --profile p groups edit G M text`", "`groups edit` needs a personal token"),
-        ("`pepper --profile p groups delete-message G M --yes`", "`groups delete-message`"),
-        ("```\npepper --profile p groups download G A --out f\n```", "`groups download`"),
-        ("`pepper --profile p groups read G T --mark`", "--mark needs a personal token"),
-        ("`pepper --profile p groups post G T - --attach f`", "--attach needs a personal token"),
         (
-            "## 9. What an agent token cannot run\n`pepper --profile p groups read`",
+            "`pepper --profile p messages edit --room G M text`",
+            "`messages edit` needs a personal token",
+        ),
+        ("`pepper --profile p messages delete --room G M --yes`", "`messages delete`"),
+        (
+            "```\npepper --profile p attachments download --room G A --out f\n```",
+            "`attachments download`",
+        ),
+        (
+            "`pepper --profile p messages list --room G --topic T --mark`",
+            "--mark needs a personal token",
+        ),
+        (
+            "`pepper --profile p messages post --room G --topic T - --attach f`",
+            "--attach needs a personal token",
+        ),
+        (
+            "## 9. What an agent token cannot run\n`pepper --profile p messages list`",
             "an agent token can run it",
         ),
     ],
@@ -465,10 +505,11 @@ def test_drift_guard_reports_a_command_an_agent_token_cannot_run(
 def test_drift_guard_accepts_unavailable_commands_only_in_their_own_section() -> None:
     doc = (
         "## 8. What an agent token can run\n"
-        "`pepper --profile p groups read G T --json`, `pepper --profile p groups --help`,\n"
-        "`pepper --profile p groups <command> --help`, `pepper --profile p whoami`\n"
+        "`pepper --profile p messages list --room G --topic T --json`, "
+        "`pepper --profile p messages --help`,\n"
+        "`pepper --profile p messages <command> --help`, `pepper --profile p whoami`\n"
         "## 9. What an agent token cannot run\n"
-        "`pepper --profile p groups edit`, `pepper --profile p groups read G --mark`\n"
+        "`pepper --profile p messages edit`, `pepper --profile p messages list --room G --mark`\n"
     )
     assert check_agent_availability(doc) == []
 
@@ -476,8 +517,8 @@ def test_drift_guard_accepts_unavailable_commands_only_in_their_own_section() ->
 def test_drift_guard_accepts_flags_after_a_heredoc_and_ignores_body_text() -> None:
     doc = (
         "```\n"
-        "pepper --profile p groups post G T - --reply-to M <<'EOF'\n"
-        "pepper --profile p groups nope --bogus\n"
+        "pepper --profile p messages post --room G --topic T - --reply-to M <<'EOF'\n"
+        "pepper --profile p messages nope --bogus\n"
         "EOF\n"
         "```\n"
     )
@@ -485,7 +526,7 @@ def test_drift_guard_accepts_flags_after_a_heredoc_and_ignores_body_text() -> No
 
 
 def test_drift_guard_stops_at_a_pipe() -> None:
-    assert check_document("```\npepper --profile p groups list --json | jq --bogus\n```") == []
+    assert check_document("```\npepper --profile p rooms list --json | jq --bogus\n```") == []
 
 
 # --------------------------------------------------------------------------

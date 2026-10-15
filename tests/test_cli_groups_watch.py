@@ -1,4 +1,4 @@
-"""``pepper groups watch`` — the agent member's event stream, as one line per event.
+"""``pepper rooms watch`` — the agent member's event stream, as one line per event.
 
 ``ApiClient.watch_agent_events`` is replaced by a scripted fake: each call is
 one connection, which yields its frames and then ends or raises. When the
@@ -109,7 +109,7 @@ def _lines(capsys) -> list[str]:
 def test_json_prints_the_event_fields_plus_the_cursor(monkeypatch, capsys):
     _watch(monkeypatch, _Connection(_event(7)))
 
-    assert cli.main(["groups", "watch", "--json"]) == 0
+    assert cli.main(["rooms", "watch", "--json"]) == 0
 
     (line,) = _lines(capsys)
     assert json.loads(line) == {**_event(7).payload, "cursor": 7}
@@ -118,7 +118,7 @@ def test_json_prints_the_event_fields_plus_the_cursor(monkeypatch, capsys):
 def test_the_human_line_is_short_and_names_the_ids_to_read(monkeypatch, capsys):
     _watch(monkeypatch, _Connection(_event(7)))
 
-    assert cli.main(["groups", "watch"]) == 0
+    assert cli.main(["rooms", "watch"]) == 0
 
     (line,) = _lines(capsys)
     assert line == (
@@ -129,11 +129,11 @@ def test_the_human_line_is_short_and_names_the_ids_to_read(monkeypatch, capsys):
 
 def test_a_cursor_frame_is_silent_by_default_and_a_json_line_under_json(monkeypatch, capsys):
     _watch(monkeypatch, _Connection(_cursor(20)))
-    assert cli.main(["groups", "watch"]) == 0
+    assert cli.main(["rooms", "watch"]) == 0
     assert _lines(capsys) == []
 
     _watch(monkeypatch, _Connection(_event(3), _cursor(20)))
-    assert cli.main(["groups", "watch", "--json"]) == 0
+    assert cli.main(["rooms", "watch", "--json"]) == 0
     event, cursor = (json.loads(line) for line in _lines(capsys))
     assert event["cursor"] == 3
     assert cursor == {"kind": "cursor", "cursor": 20}
@@ -142,7 +142,7 @@ def test_a_cursor_frame_is_silent_by_default_and_a_json_line_under_json(monkeypa
 def test_since_is_the_first_connects_resume_point(monkeypatch):
     watch = _watch(monkeypatch)
 
-    assert cli.main(["groups", "watch", "--since", "41"]) == 0
+    assert cli.main(["rooms", "watch", "--since", "41"]) == 0
 
     assert watch.calls == [{"since": 41, "last_event_id": None}]
 
@@ -152,18 +152,18 @@ def test_the_cursor_file_supplies_the_start_and_since_overrides_it(monkeypatch, 
     cursor_file.write_text("17\n")
 
     watch = _watch(monkeypatch)
-    assert cli.main(["groups", "watch", "--cursor-file", str(cursor_file)]) == 0
+    assert cli.main(["rooms", "watch", "--cursor-file", str(cursor_file)]) == 0
     assert watch.calls == [{"since": 17, "last_event_id": None}]
 
     watch = _watch(monkeypatch)
-    assert cli.main(["groups", "watch", "--cursor-file", str(cursor_file), "--since", "5"]) == 0
+    assert cli.main(["rooms", "watch", "--cursor-file", str(cursor_file), "--since", "5"]) == 0
     assert watch.calls == [{"since": 5, "last_event_id": None}]
 
 
 def test_a_missing_cursor_file_starts_from_the_beginning(monkeypatch, tmp_path):
     watch = _watch(monkeypatch)
 
-    cli.main(["groups", "watch", "--cursor-file", str(tmp_path / "nope")])
+    cli.main(["rooms", "watch", "--cursor-file", str(tmp_path / "nope")])
 
     assert watch.calls == [{"since": 0, "last_event_id": None}]
 
@@ -173,7 +173,7 @@ def test_a_corrupt_cursor_file_is_an_error_not_a_silent_restart(monkeypatch, tmp
     cursor_file.write_text("garbage")
     watch = _watch(monkeypatch)
 
-    assert cli.main(["groups", "watch", "--cursor-file", str(cursor_file)]) == 2
+    assert cli.main(["rooms", "watch", "--cursor-file", str(cursor_file)]) == 2
 
     assert watch.calls == []
     assert "cursor file" in capsys.readouterr().err
@@ -196,7 +196,7 @@ def test_the_cursor_file_follows_each_event_and_each_cursor_frame(monkeypatch, t
     monkeypatch.setattr(cli, "_emit_line", spy)
     _watch(monkeypatch, _Connection(_event(3), _event(4), _cursor(9)))
 
-    assert cli.main(["groups", "watch", "--cursor-file", str(cursor_file)]) == 0
+    assert cli.main(["rooms", "watch", "--cursor-file", str(cursor_file)]) == 0
 
     assert seen_at_print == ["", "3"]
     assert cursor_file.read_text() == "9\n"
@@ -210,7 +210,7 @@ def test_the_cursor_file_is_replaced_not_truncated(monkeypatch, tmp_path):
     inode_before = cursor_file.stat().st_ino
     _watch(monkeypatch, _Connection(_event(2)))
 
-    cli.main(["groups", "watch", "--cursor-file", str(cursor_file)])
+    cli.main(["rooms", "watch", "--cursor-file", str(cursor_file)])
 
     assert cursor_file.read_text() == "2\n"
     assert cursor_file.stat().st_ino != inode_before
@@ -224,7 +224,7 @@ def test_a_dropped_stream_reconnects_from_the_last_cursor_with_last_event_id(mon
         _Connection(),
     )
 
-    assert cli.main(["groups", "watch", "--json"]) == 0
+    assert cli.main(["rooms", "watch", "--json"]) == 0
 
     assert watch.calls == [
         {"since": 0, "last_event_id": None},
@@ -238,7 +238,7 @@ def test_a_dropped_stream_reconnects_from_the_last_cursor_with_last_event_id(mon
 def test_a_stream_the_server_closed_cleanly_reconnects_too(monkeypatch):
     watch = _watch(monkeypatch, _Connection(_event(3)), _Connection())
 
-    assert cli.main(["groups", "watch"]) == 0
+    assert cli.main(["rooms", "watch"]) == 0
 
     assert [c["last_event_id"] for c in watch.calls] == [None, 3, 3]
 
@@ -253,7 +253,7 @@ def test_reconnects_back_off_and_a_frame_resets_the_backoff(monkeypatch):
         httpx.ConnectError("down"),
     )
 
-    cli.main(["groups", "watch"])
+    cli.main(["rooms", "watch"])
 
     assert watch.sleeps == [1.0, 2.0, 4.0, 1.0, 2.0]
 
@@ -270,7 +270,7 @@ def test_a_heartbeat_only_connection_resets_the_backoff(monkeypatch):
         httpx.ConnectError("down"),
     )
 
-    cli.main(["groups", "watch"])
+    cli.main(["rooms", "watch"])
 
     assert watch.sleeps[:6] == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0]
     assert watch.sleeps[6:] == [1.0, 2.0]
@@ -284,7 +284,7 @@ def test_a_groups_outage_backs_off_instead_of_retrying_every_second(monkeypatch)
     outage = _Connection(connected, _error("groups_unavailable", retry=True))
     watch = _watch(monkeypatch, *[outage] * 5)
 
-    cli.main(["groups", "watch"])
+    cli.main(["rooms", "watch"])
 
     assert watch.sleeps == [1.0, 2.0, 4.0, 8.0, 16.0]
 
@@ -292,7 +292,7 @@ def test_a_groups_outage_backs_off_instead_of_retrying_every_second(monkeypatch)
 def test_the_backoff_is_capped(monkeypatch):
     watch = _watch(monkeypatch, *[httpx.ConnectError("down")] * 8)
 
-    cli.main(["groups", "watch"])
+    cli.main(["rooms", "watch"])
 
     assert max(watch.sleeps) == cli._WATCH_BACKOFF_CAP
     assert watch.sleeps[:6] == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0]
@@ -305,7 +305,7 @@ def test_a_retryable_error_frame_reconnects(monkeypatch):
         _Connection(),
     )
 
-    assert cli.main(["groups", "watch"]) == 0
+    assert cli.main(["rooms", "watch"]) == 0
 
     assert [c["last_event_id"] for c in watch.calls] == [None, 3, 3]
 
@@ -315,7 +315,7 @@ def test_a_non_retryable_error_frame_exits_nonzero(monkeypatch, capsys):
         monkeypatch, _Connection(_error("agent_unavailable", retry=False)), _Connection()
     )
 
-    assert cli.main(["groups", "watch"]) == 1
+    assert cli.main(["rooms", "watch"]) == 1
 
     assert len(watch.calls) == 1
     assert "agent_unavailable" in capsys.readouterr().err
@@ -326,7 +326,7 @@ def test_a_revoked_token_exits_nonzero_without_reconnecting(monkeypatch, capsys)
         monkeypatch, api_client.ApiError(status=401, body="", detail="invalid bearer token")
     )
 
-    assert cli.main(["groups", "watch"]) == 1
+    assert cli.main(["rooms", "watch"]) == 1
 
     assert len(watch.calls) == 1
     assert watch.sleeps == []
@@ -337,7 +337,7 @@ def test_a_revoked_token_exits_nonzero_without_reconnecting(monkeypatch, capsys)
 def test_a_token_that_cannot_watch_exits_nonzero(monkeypatch, status):
     watch = _watch(monkeypatch, api_client.ApiError(status=status, body="", detail="no"))
 
-    assert cli.main(["groups", "watch"]) == 1
+    assert cli.main(["rooms", "watch"]) == 1
 
     assert len(watch.calls) == 1
 
@@ -349,7 +349,7 @@ def test_a_server_error_is_waited_out(monkeypatch):
         _Connection(),
     )
 
-    assert cli.main(["groups", "watch"]) == 0
+    assert cli.main(["rooms", "watch"]) == 0
 
     assert len(watch.calls) == 3
     assert watch.sleeps[0] == 1.0
@@ -358,7 +358,7 @@ def test_a_server_error_is_waited_out(monkeypatch):
 def test_a_negative_since_is_a_usage_error(monkeypatch):
     watch = _watch(monkeypatch)
 
-    assert cli.main(["groups", "watch", "--since", "-1"]) == 2
+    assert cli.main(["rooms", "watch", "--since", "-1"]) == 2
 
     assert watch.calls == []
 
@@ -477,7 +477,7 @@ def test_the_cursor_write_does_not_follow_a_planted_symlink(tmp_path):
 
 
 def test_a_closed_reader_ends_the_watch_quietly(monkeypatch, capsys):
-    """``pepper groups watch | head -1``: the reader going away is not a
+    """``pepper rooms watch | head -1``: the reader going away is not a
     cursor-file failure and is not reported as one."""
     _watch(monkeypatch, _Connection(_event(1), _event(2)))
     printed: list[str] = []
@@ -489,7 +489,7 @@ def test_a_closed_reader_ends_the_watch_quietly(monkeypatch, capsys):
 
     monkeypatch.setattr(cli, "_emit_line", emit)
 
-    assert cli.main(["groups", "watch", "--json"]) == 0
+    assert cli.main(["rooms", "watch", "--json"]) == 0
     assert "cursor file" not in capsys.readouterr().err
 
 
@@ -504,7 +504,7 @@ def test_a_retry_says_why_on_stderr_and_keeps_stdout_clean(monkeypatch, capsys):
         _Connection(_error("groups_unavailable", retry=True)),
     )
 
-    assert cli.main(["groups", "watch", "--json"]) == 0
+    assert cli.main(["rooms", "watch", "--json"]) == 0
 
     out, err = capsys.readouterr()
     assert out == ""
@@ -521,7 +521,7 @@ def test_one_dropped_connection_that_reconnects_prints_nothing_on_stderr(monkeyp
         _Connection(_event(4)),
     )
 
-    assert cli.main(["groups", "watch", "--json"]) == 0
+    assert cli.main(["rooms", "watch", "--json"]) == 0
 
     out, err = capsys.readouterr()
     assert err == ""
@@ -532,7 +532,7 @@ def test_one_dropped_connection_that_reconnects_prints_nothing_on_stderr(monkeyp
 def test_two_failures_in_a_row_are_still_quiet(monkeypatch, capsys):
     _watch(monkeypatch, httpx.ConnectError("down"), httpx.ConnectError("down"), _Connection())
 
-    assert cli.main(["groups", "watch"]) == 0
+    assert cli.main(["rooms", "watch"]) == 0
 
     assert capsys.readouterr().err == ""
 
@@ -541,7 +541,7 @@ def test_consecutive_failures_print_the_notice_from_the_nth_and_keep_printing(mo
     n = cli._WATCH_QUIET_FAILURES
     _watch(monkeypatch, *[httpx.ConnectError("down")] * (n + 2))
 
-    cli.main(["groups", "watch"])
+    cli.main(["rooms", "watch"])
 
     notices = [line for line in capsys.readouterr().err.splitlines() if line]
     assert len(notices) == 3
@@ -557,7 +557,7 @@ def test_a_sign_of_life_restarts_the_quiet_count(monkeypatch, capsys):
     down = httpx.ConnectError("down")
     _watch(monkeypatch, down, down, _Connection(ping, then=down), down, _Connection())
 
-    assert cli.main(["groups", "watch"]) == 0
+    assert cli.main(["rooms", "watch"]) == 0
 
     assert capsys.readouterr().err == ""
 
@@ -567,7 +567,7 @@ def test_a_connection_that_only_says_connected_does_not_restart_the_count(monkey
     down = httpx.ConnectError("down")
     _watch(monkeypatch, down, _Connection(connected, then=down), down)
 
-    cli.main(["groups", "watch"])
+    cli.main(["rooms", "watch"])
 
     assert capsys.readouterr().err.count("Feed unavailable") == 1
 
@@ -579,7 +579,7 @@ def test_a_server_restarting_frame_resumes_quietly_and_at_once_from_the_cursor(m
         _Connection(_event(6), _event(7)),
     )
 
-    assert cli.main(["groups", "watch", "--json"]) == 0
+    assert cli.main(["rooms", "watch", "--json"]) == 0
 
     out, err = capsys.readouterr()
     assert err == ""
@@ -597,7 +597,7 @@ def test_repeated_server_restarting_backs_off_after_the_first_immediate_retry(mo
     restarting = _Connection(_error("server_restarting", retry=True))
     watch = _watch(monkeypatch, *[restarting] * 4)
 
-    cli.main(["groups", "watch"])
+    cli.main(["rooms", "watch"])
 
     assert watch.sleeps == [1.0, 2.0, 4.0]
     assert capsys.readouterr().err.count("Feed unavailable (server_restarting)") == 2
@@ -605,11 +605,11 @@ def test_repeated_server_restarting_backs_off_after_the_first_immediate_retry(mo
 
 def test_a_non_retryable_frame_and_fatal_statuses_still_speak_at_once(monkeypatch, capsys):
     _watch(monkeypatch, _Connection(_error("unauthorized", retry=False)))
-    assert cli.main(["groups", "watch"]) == 1
+    assert cli.main(["rooms", "watch"]) == 1
     assert capsys.readouterr().err.startswith("error: The server closed the stream")
 
     _watch(monkeypatch, api_client.ApiError(status=401, body="", detail="invalid bearer token"))
-    assert cli.main(["groups", "watch"]) == 1
+    assert cli.main(["rooms", "watch"]) == 1
     assert "401" in capsys.readouterr().err
 
 
@@ -636,27 +636,25 @@ def _printed_ids(capsys) -> list[int]:
 
 def test_no_filter_prints_every_kind(monkeypatch, capsys):
     _watch(monkeypatch, _mixed())
-    assert cli.main(["groups", "watch", "--json"]) == 0
+    assert cli.main(["rooms", "watch", "--json"]) == 0
     assert _printed_ids(capsys) == [1, 2, 3, 4, 5]
 
 
 def test_ignore_kinds_skips_only_the_named_kinds(monkeypatch, capsys):
     _watch(monkeypatch, _mixed())
-    assert cli.main(["groups", "watch", "--json", "--ignore-kinds", _CARDS]) == 0
+    assert cli.main(["rooms", "watch", "--json", "--ignore-kinds", _CARDS]) == 0
     assert _printed_ids(capsys) == [1, 3, 5]
 
 
 def test_kinds_is_an_allow_list(monkeypatch, capsys):
     _watch(monkeypatch, _mixed())
-    assert (
-        cli.main(["groups", "watch", "--json", "--kinds", "message.created,mention.created"]) == 0
-    )
+    assert cli.main(["rooms", "watch", "--json", "--kinds", "message.created,mention.created"]) == 0
     assert _printed_ids(capsys) == [1, 3]
 
 
 def test_ignore_kinds_wins_when_combined_with_kinds(monkeypatch, capsys):
     _watch(monkeypatch, _mixed())
-    argv = ["groups", "watch", "--json", "--kinds", f"message.created,{_CARDS}"]
+    argv = ["rooms", "watch", "--json", "--kinds", f"message.created,{_CARDS}"]
     argv += ["--ignore-kinds", _CARDS]
     assert cli.main(argv) == 0
     assert _printed_ids(capsys) == [1]
@@ -664,7 +662,7 @@ def test_ignore_kinds_wins_when_combined_with_kinds(monkeypatch, capsys):
 
 def test_the_filter_applies_to_the_human_output_too(monkeypatch, capsys):
     _watch(monkeypatch, _mixed())
-    assert cli.main(["groups", "watch", "--ignore-kinds", _CARDS]) == 0
+    assert cli.main(["rooms", "watch", "--ignore-kinds", _CARDS]) == 0
     assert [line.split()[:2] for line in _lines(capsys)] == [
         ["#1", "message.created"],
         ["#3", "mention.created"],
@@ -674,11 +672,11 @@ def test_the_filter_applies_to_the_human_output_too(monkeypatch, capsys):
 
 def test_an_unknown_kind_is_accepted_and_matches_what_the_service_sends_later(monkeypatch, capsys):
     _watch(monkeypatch, _Connection(_event(1, "thing.invented_next_year"), _event(2)))
-    assert cli.main(["groups", "watch", "--json", "--kinds", "thing.invented_next_year"]) == 0
+    assert cli.main(["rooms", "watch", "--json", "--kinds", "thing.invented_next_year"]) == 0
     assert _printed_ids(capsys) == [1]
 
     _watch(monkeypatch, _Connection(_event(1, "thing.invented_next_year"), _event(2)))
-    assert cli.main(["groups", "watch", "--json", "--ignore-kinds", "not.a.kind"]) == 0
+    assert cli.main(["rooms", "watch", "--json", "--ignore-kinds", "not.a.kind"]) == 0
     assert _printed_ids(capsys) == [1, 2]
 
 
@@ -686,7 +684,7 @@ def test_a_filtered_event_still_advances_the_cursor_file(monkeypatch, tmp_path, 
     """The last event is a filtered one: a restart must resume after it, not replay it."""
     cursor_file = tmp_path / "cursor"
     _watch(monkeypatch, _Connection(_event(1), _event(2, _CARDS), _event(3, _CARDS)))
-    argv = ["groups", "watch", "--json", "--cursor-file", str(cursor_file)]
+    argv = ["rooms", "watch", "--json", "--cursor-file", str(cursor_file)]
     assert cli.main([*argv, "--ignore-kinds", _CARDS]) == 0
 
     assert _printed_ids(capsys) == [1]
@@ -703,20 +701,20 @@ def test_a_filtered_event_advances_the_cursor_the_reconnect_resumes_from(monkeyp
         _Connection(_event(1), _event(2, _CARDS), then=httpx.ReadError("dropped")),
         _Connection(_event(3)),
     )
-    assert cli.main(["groups", "watch", "--json", "--ignore-kinds", _CARDS]) == 0
+    assert cli.main(["rooms", "watch", "--json", "--ignore-kinds", _CARDS]) == 0
     assert _printed_ids(capsys) == [1, 3]
     assert [c["since"] for c in watch.calls[:2]] == [0, 2]
 
 
 def test_a_filtered_event_prints_nothing_not_even_a_cursor_line(monkeypatch, capsys):
     _watch(monkeypatch, _Connection(_event(2, _CARDS)))
-    assert cli.main(["groups", "watch", "--json", "--ignore-kinds", _CARDS]) == 0
+    assert cli.main(["rooms", "watch", "--json", "--ignore-kinds", _CARDS]) == 0
     assert _lines(capsys) == []
 
 
 def test_cursor_frames_are_not_subject_to_the_kind_filter(monkeypatch, capsys):
     _watch(monkeypatch, _Connection(_event(1), _cursor(20)))
-    assert cli.main(["groups", "watch", "--json", "--kinds", "mention.created"]) == 0
+    assert cli.main(["rooms", "watch", "--json", "--kinds", "mention.created"]) == 0
     assert [json.loads(line) for line in _lines(capsys)] == [{"kind": "cursor", "cursor": 20}]
 
 
@@ -725,6 +723,6 @@ def test_cursor_frames_are_not_subject_to_the_kind_filter(monkeypatch, capsys):
 def test_an_empty_kind_entry_is_a_usage_error(monkeypatch, capsys, flag, value):
     watch = _watch(monkeypatch, _mixed())
     with pytest.raises(SystemExit) as exc:
-        cli.main(["groups", "watch", flag, value])
+        cli.main(["rooms", "watch", flag, value])
     assert exc.value.code == 2
     assert watch.calls == []

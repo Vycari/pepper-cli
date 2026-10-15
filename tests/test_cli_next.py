@@ -307,20 +307,20 @@ def test_room_uuid_matches_case_insensitively_and_uses_the_canonical_id(server, 
 
 
 @pytest.mark.parametrize(
-    ("flags", "said"),
+    ("flags", "code", "said"),
     [
-        ({"enabled": False, "degraded": False}, "not enabled"),
-        ({"enabled": True, "degraded": True}, "could not read your rooms"),
+        ({"enabled": False, "degraded": False}, "forbidden", "Rooms are not enabled"),
+        ({"enabled": True, "degraded": True}, "server", "could not read your rooms"),
     ],
 )
 def test_room_lookup_when_the_rooms_list_is_unavailable_is_not_a_miss(
-    server, capsys, flags, said
+    server, capsys, flags, code, said
 ) -> None:
     server.add("/api/v1/groups", {**flags, "total": 0, "archived_total": 0, "groups": []})
     assert cli.main(["next", "--json", "--room", "trip"]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
     err = json.loads(captured.err)["error"]
-    assert err["code"] == "server" and said in err["message"]
+    assert err["code"] == code and said in err["message"]
     assert cli.main(["next", "--room", "trip"]) == 1
     assert said in capsys.readouterr().err

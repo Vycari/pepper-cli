@@ -17,10 +17,10 @@ rest describes how the commands behave.
 
 - An agent member authenticates with its own token, which starts `pep_agt_`. It is not a Pepper
   user account. It can reach the rooms it has been added to and nothing else, and only through
-  the eight commands listed in section 8. Apart from `login`, every other command that talks to
+  the seven commands listed in section 8. Apart from `login`, every other command that talks to
   the server answers an agent token with a 401 (section 9).
 - Because of that, `pepper --profile <name> whoami` fails with a 401 for an agent token. That is
-  by design, not a broken login. Check a login with `pepper --profile <name> groups list` instead.
+  by design, not a broken login. Check a login with `pepper --profile <name> rooms list` instead.
 - The CLI keeps one login per profile. Give the agent its own profile name; `login` refuses an
   agent token when no `--profile` is given, so it cannot overwrite a person's own login.
 - The person who owns the token logs in, so the token never passes through your transcript. They
@@ -45,7 +45,7 @@ rest describes how the commands behave.
   subcommand is an error (exit 2), never silently ignored.
 - Use a flag, not an environment-variable prefix, so the command text starts with `pepper`. An
   agent harness's permission rules match on the start of the command, and a leading
-  `VAR=value` or `XDG_CONFIG_HOME=...` would defeat a rule like `pepper --profile <name> groups read`.
+  `VAR=value` or `XDG_CONFIG_HOME=...` would defeat a rule like `pepper --profile <name> messages list`.
 - One plain command per call. Do not chain with `&&` or `;`, and do not wrap in `bash -c`: a
   compound line no longer matches a rule written for its first command and will be refused or
   prompt a human. Pipe the output through your own tooling in a separate step if you need to.
@@ -54,49 +54,49 @@ rest describes how the commands behave.
   one command:
 
   ```
-  pepper --profile <name> groups post <group> <topic> - <<'EOF'
+  pepper --profile <name> messages post --room <room> --topic <topic> - <<'EOF'
   The text of the message.
   EOF
   ```
 - A first word that is not a command is sent to Pepper as a chat message instead of erroring. As
   an agent you cannot chat; set `PEPPER_NO_IMPLICIT_CHAT=1` in the environment of the process
   that runs you if you can, so a typo exits 2 instead.
-- `pepper --profile <name> groups --help` and `pepper --profile <name> groups <command> --help`
-  list the exact flags of the binary you have. They list every command, including the ones an
+- `pepper --profile <name> messages --help` and `pepper --profile <name> messages <command> --help`
+  (likewise for `rooms`, `topics` and `attachments`) list the exact flags of the binary you have. They list every command, including the ones an
   agent token cannot use (section 9).
 
 ## 3. Finding rooms, topics and ids
 
 Setting the environment variable `PEPPER_JSON=1` turns on `--json` for every command below that takes it; `--json` on the command line always works too.
 
-- `pepper --profile <name> groups list --json` lists your rooms as one object:
-  `{"enabled": ..., "degraded": ..., "total": ..., "archived_total": ..., "groups": [...]}`. Each
-  entry of `groups` has a `group_id` (also printed in the text form), a `display_name`, and a
+- `pepper --profile <name> rooms list --json` lists your rooms as one object:
+  `{"items": [...], "next_before": null, "enabled": ..., "degraded": ..., "total": ...,
+  "archived_total": ...}`. Every list command's `--json` output has this `items` and `next_before`
+  shape. Each entry of `items` has a `group_id` (also printed in the text form), a `display_name`, and a
   list of topics that holds only the room's most recently active ones. `degraded: true` means the
   server could not ask the groups service, so an empty list then is not "no rooms".
-- `pepper --profile <name> groups topics <group> --json` lists all of a room's topics: `topic_id`,
+- `pepper --profile <name> topics list --room <room> --json` lists all of a room's topics: `topic_id`,
   `name`, `last_activity_at`, `archived_at`, `dedicated_conversation`, and `is_default` (true on
   the room's default topic). Archived topics are hidden unless you add `--archived`, except the
   default topic, which is always shown.
-- `pepper --profile <name> groups roster <group> --json` lists the people and agents you can
-  address: `person_id`, `display_name`, `is_pepper`, `is_agent`, and `agent_profile` (an opaque
-  label for agent members; its meaning is set by the deployment). The `person_id` values are what
-  `--mention` and `--on-behalf-of` take.
-- `<group>` and `<topic>` accept a UUID or a name (case-insensitive, a unique prefix is enough).
+- Person ids (the values `--mention` and `--on-behalf-of` take) come from the messages you read:
+  `author_person_id` and the entries of `mentions`. Listing a room's members is not something
+  this guide covers yet.
+- `<room>` and `<topic>` accept a UUID or a name (case-insensitive, a unique prefix is enough).
   A name costs extra requests and exits 2 if it is ambiguous or unknown. Prefer the UUIDs from
   the two listing commands above.
-- `pepper --profile <name> groups read <group>` with no topic reads the room's most recently
+- `pepper --profile <name> messages list --room <room>` with no topic reads the room's most recently
   active unarchived topic. That is not necessarily the one marked `is_default`, and it can change
   between two calls, so name the topic. Posting always needs one.
 - You do not have a `whoami`. To learn your own `person_id`, read a topic you have posted in and
   take the `author_person_id` of a message whose `is_you` is true. If you have never posted, ask
-  the person who runs you which roster entry is yours. Compare people by `person_id`, never by
+  the person who runs you for your `person_id`. Compare people by `person_id`, never by
   display name.
 
 ## 4. The event stream
 
 ```
-pepper --profile <name> groups watch --json --cursor-file <path>
+pepper --profile <name> rooms watch --json --cursor-file <path>
 ```
 
 - Run it as a long-lived process and read its stdout line by line. It follows your agent's
@@ -116,7 +116,7 @@ pepper --profile <name> groups watch --json --cursor-file <path>
   lines, each of which wakes anything reading your stdout line by line. Skip it at the source:
 
   ```
-  pepper --profile <name> groups watch --json --cursor-file <path> --ignore-kinds message.link_cards_updated
+  pepper --profile <name> rooms watch --json --cursor-file <path> --ignore-kinds message.link_cards_updated
   ```
 
   `--ignore-kinds` takes a comma-separated list and skips only the kinds you name, so a kind the
@@ -155,8 +155,8 @@ pepper --profile <name> groups watch --json --cursor-file <path>
 ### Watching one room, or one topic
 
 ```
-pepper --profile <name> groups watch --room <group> --json --cursor-file <path>
-pepper --profile <name> groups watch --room <group> --topic <topic> --json --cursor-file <path>
+pepper --profile <name> rooms watch --room <room> --json --cursor-file <path>
+pepper --profile <name> rooms watch --room <room> --topic <topic> --json --cursor-file <path>
 ```
 
 - `--room` takes the room's id or name, as reading does; `--topic` names a topic inside
@@ -181,17 +181,17 @@ pepper --profile <name> groups watch --room <group> --topic <topic> --json --cur
   restart with the `--since` it gives you. The cursor file is left where it was.
 - The server ends the stream for good (exit 1) when you are removed from the room, the room is
   deleted, or it is merged into another while you watch. Do not restart in a loop; for a merge,
-  find the surviving room with `pepper --profile <name> groups list` and watch that.
+  find the surviving room with `pepper --profile <name> rooms list` and watch that.
 
 ## 5. Reading, and catching up after a gap
 
 ```
-pepper --profile <name> groups read <group> <topic> --limit 50 --json
-pepper --profile <name> groups read <group> <topic> --since <timestamp> --json
-pepper --profile <name> groups read <group> <topic> --before <cursor> --limit 50 --json
+pepper --profile <name> messages list --room <room> --topic <topic> --limit 50 --json
+pepper --profile <name> messages list --room <room> --topic <topic> --since <timestamp> --json
+pepper --profile <name> messages list --room <room> --topic <topic> --before <cursor> --limit 50 --json
 ```
 
-- Messages come back oldest to newest as `{"messages": [...], "next_before": ...}`.
+- Messages come back oldest to newest as `{"items": [...], "next_before": ...}`.
   `next_before` is the cursor for the page older than this one, or null when there is none.
 - Useful message fields: `id`, `created_at`, `raw_body` (the markdown source), `author_person_id`,
   `is_you`, `is_agent`, `is_pepper`, `mentions` (the person ids structurally mentioned),
@@ -214,13 +214,13 @@ pepper --profile <name> groups read <group> <topic> --before <cursor> --limit 50
 ## 6. Posting
 
 ```
-pepper --profile <name> groups post <group> <topic> - --reply-to <message-id> --idempotency-key <key> <<'EOF'
+pepper --profile <name> messages post --room <room> --topic <topic> - --reply-to <message-id> --idempotency-key <key> <<'EOF'
 The reply text.
 EOF
 ```
 
 - The body is the text argument, or `-` to read stdin. An empty body exits 2.
-- Add `--json`, as in `pepper --profile <name> groups post <group> <topic> - --json`, to get your
+- Add `--json`, as in `pepper --profile <name> messages post --room <room> --topic <topic> - --json`, to get your
   post back as one JSON object instead of `Posted.` and a bare id. It is the same shape a message
   has in a `--json` read (section 5: `id`, `created_at`, `parent_message_id`, `author_person_id`
   and the rest), plus `topic_id`. Take the `id` for your ledger so you can skip your own reply
@@ -236,7 +236,7 @@ EOF
   refuses it, for instance because the parent was written by another agent, post the reply
   without `--on-behalf-of` and keep `--reply-to`.
 - `--mention PERSON_ID` (repeatable) structurally mentions someone, using a `person_id` from
-  the roster. Put their literal `@Display Name` in the body as well; send a mention only for a
+  a message you read (`author_person_id` or `mentions`). Put their literal `@Display Name` in the body as well; send a mention only for a
   name that is still in the text.
 - `--idempotency-key KEY` replaces the random per-run key. The server remembers the key per
   caller: running the same command again returns the original message and its id instead of
@@ -247,9 +247,9 @@ EOF
   server answers 401 and nothing is posted. Agent members post text only.
 - On success the command prints `Posted.` to stderr and the new message's id to stdout, and exits
   0. Exit 1 is an auth, API or network failure and exit 2 is bad input (empty body, unknown or
-  ambiguous room or topic, unreadable attachment).
-- Reactions: `pepper --profile <name> groups react <group> <message-id> <emoji>` adds yours and
-  `pepper --profile <name> groups unreact <group> <message-id> <emoji>` takes it back. A reaction
+  ambiguous room or topic, unreadable attachment) or a 404 (section 10).
+- Reactions: `pepper --profile <name> messages react --room <room> <message-id> <emoji>` adds yours and
+  `pepper --profile <name> messages unreact --room <room> <message-id> <emoji>` takes it back. A reaction
   is a light acknowledgement and is not a reply.
 - A post is final for an agent member: you cannot edit or delete it afterwards (section 9). Check
   the text before you send it, and correct a mistake with a new reply only if you are addressed
@@ -281,23 +281,22 @@ set.
 
 ## 8. What an agent token can run
 
-An agent token is accepted by exactly these eight commands. They are also the prefixes a harness
+An agent token is accepted by exactly these seven commands. They are also the prefixes a harness
 that asks before running commands needs to allow. Each is scoped to one profile name and one
 subcommand, so allowing them does not allow `login`, `logout` or anything in section 9.
 
 ```
-pepper --profile <name> groups list
-pepper --profile <name> groups topics
-pepper --profile <name> groups roster
-pepper --profile <name> groups read
-pepper --profile <name> groups watch
-pepper --profile <name> groups post
-pepper --profile <name> groups react
-pepper --profile <name> groups unreact
+pepper --profile <name> rooms list
+pepper --profile <name> topics list
+pepper --profile <name> messages list
+pepper --profile <name> rooms watch
+pepper --profile <name> messages post
+pepper --profile <name> messages react
+pepper --profile <name> messages unreact
 ```
 
 In Claude Code, for example, each becomes an allow rule such as
-`Bash(pepper --profile <name> groups read:*)`. Log in once by hand (section 1) rather than
+`Bash(pepper --profile <name> messages list:*)`. Log in once by hand (section 1) rather than
 allowing `login`.
 
 ## 9. What an agent token cannot run
@@ -307,34 +306,39 @@ Every other command that talks to the server needs a person's own token, with on
 The server answers an agent token with a 401 on all the rest, whatever the arguments, and nothing
 is changed. That covers:
 
-- `pepper --profile <name> groups edit` and `pepper --profile <name> groups delete-message`: an
+- `pepper --profile <name> messages edit` and `pepper --profile <name> messages delete`: an
   agent member cannot change or remove a message, including its own.
-- `pepper --profile <name> groups show` and `pepper --profile <name> groups download`: room
+- `pepper --profile <name> rooms show` and `pepper --profile <name> attachments download`: room
   details and attachment downloads.
 - Two flags on commands that otherwise work: `--mark` on a read and `--attach` on a post.
-- Every other `groups` subcommand, which are the ones that change a room, its topics, its members
+- Every other `rooms`, `topics`, `messages` or `attachments` command, which are the ones that change a room, its topics, its members
   or its apps, or that read or search across rooms.
-- Every command outside `groups` that talks to the server, `whoami` and chat included, other than
+- Every command outside those four nouns that talks to the server, `whoami` and chat included, other than
   `login`.
 
-Do not try these to see what happens. `pepper --profile <name> groups --help` lists commands the
+Do not try these to see what happens. `pepper --profile <name> rooms --help` lists commands the
 binary has, not commands your token may use.
 
 ## 10. When something fails
 
 - 401: the CLI prints `Authentication failed (401). Run 'pepper login' to refresh your token.`
   Do not follow that advice; it is written for a person. First check the command against
-  sections 8 and 9. A 401 from a command or flag that is not on the list of eight is the expected
+  sections 8 and 9. A 401 from a command or flag that is not on the list of seven is the expected
   refusal of an agent token and says nothing about your login: stop using that command. A 401
-  from one of the eight means the token is unknown, revoked or expired, or its owner's access was
+  from one of the seven means the token is unknown, revoked or expired, or its owner's access was
   removed. Stop and tell your operator.
 - A paused or retired agent keeps a valid token, so it is not a 401. The groups service stops
   acting for it: the stream ends with `agent_unavailable` (section 4), and other commands fail
   with a server error or a degraded, empty room list. The exact status of each was not checked
   for this document. If commands that worked start failing that way, stop and tell your operator.
-- `Groups is not enabled`: the server has no groups service for this login.
+- `Rooms are not enabled`: the server has no groups service for this login.
 - 404: the room, topic or message is not one you can reach, or you were removed from the room.
-  Reactions print `not found, or you are not a member of that room` and exit 2; the other
-  commands print `Server returned 404` with the server's detail and exit 1.
+  Every `rooms`, `topics`, `messages` and `attachments` command prints `not found, or you are not
+  a member of that room` and exits 2. With `--json` (or `PEPPER_JSON=1`) stdout stays empty and
+  stderr carries one line instead: `{"error": {"code": "not_found", "status": 404, "message":
+  "not found, or you are not a member of that room"}}`. A 403 prints `not allowed:` and the
+  server's reason and exits 1 (JSON code `forbidden`). The watch is the exception:
+  `pepper --profile <name> rooms watch` treats a 404 as a server with no stream and exits 1
+  (section 4).
 - An unknown first word is sent to Pepper as a chat message (section 2); check `--help` before
   guessing at a command.

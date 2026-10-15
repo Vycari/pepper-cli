@@ -86,7 +86,7 @@ def test_room_parent_optional_and_required() -> None:
 
 
 def test_topic_yes_and_page_parents() -> None:
-    p = _parser(cli._topic_parent, cli._yes_parent, cli._page_parent)
+    p = _parser(cli._topic_parent(), cli._yes_parent, cli._page_parent)
     empty = p.parse_args([])
     assert (empty.topic, empty.yes, empty.limit, empty.before, empty.since) == (
         None,

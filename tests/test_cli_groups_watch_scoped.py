@@ -1,4 +1,4 @@
-"""``pepper groups watch --room ROOM [--topic TOPIC]`` — the server-scoped stream.
+"""``pepper rooms watch --room ROOM [--topic TOPIC]`` — the server-scoped stream.
 
 These run the real :class:`api_client.ApiClient` over an ``httpx.MockTransport``
 that plays the server, so the routes, query, headers and SSE parsing are the
@@ -231,7 +231,7 @@ def test_a_room_watch_streams_the_room_route_and_prints_json_byte_exact(monkeypa
     server = _Server(_CONNECTED + _scope() + _event(7) + _cursor(9))
     _serve(monkeypatch, server)
 
-    assert cli.main(["groups", "watch", "--room", _ROOM, "--json"]) == 0
+    assert cli.main(["rooms", "watch", "--room", _ROOM, "--json"]) == 0
 
     lines = capsys.readouterr().out.splitlines()
     assert lines[0] == json.dumps({**_event_data(7), "cursor": 7}, separators=(",", ":"))
@@ -250,7 +250,7 @@ def test_a_room_name_resolves_and_a_topic_name_resolves_within_it(monkeypatch, c
     server = _Server(_CONNECTED + _scope(topic=_TOPIC) + _event(7))
     _serve(monkeypatch, server)
 
-    assert cli.main(["groups", "watch", "--room", "kitch", "--topic", "dinner"]) == 0
+    assert cli.main(["rooms", "watch", "--room", "kitch", "--topic", "dinner"]) == 0
 
     assert server.stream_requests()[0].url.path == _TOPIC_PATH
     (line,) = capsys.readouterr().out.splitlines()
@@ -263,7 +263,7 @@ def test_an_upper_case_room_id_is_sent_and_compared_canonically(monkeypatch, cap
     server = _Server(_CONNECTED + _scope() + _event(7))
     _serve(monkeypatch, server)
 
-    assert cli.main(["groups", "watch", "--room", _ROOM.upper(), "--json"]) == 0
+    assert cli.main(["rooms", "watch", "--room", _ROOM.upper(), "--json"]) == 0
 
     assert server.stream_requests()[0].url.path == _ROOM_PATH
     assert len(capsys.readouterr().out.splitlines()) == 1
@@ -274,7 +274,7 @@ def test_kinds_filters_still_apply_to_a_scoped_watch(monkeypatch, capsys, tmp_pa
     _serve(monkeypatch, server)
     cursor_file = tmp_path / "c"
 
-    argv = ["groups", "watch", "--room", _ROOM, "--json", "--kinds", "message.created"]
+    argv = ["rooms", "watch", "--room", _ROOM, "--json", "--kinds", "message.created"]
     assert cli.main([*argv, "--cursor-file", str(cursor_file)]) == 0
 
     (line,) = capsys.readouterr().out.splitlines()
@@ -289,7 +289,7 @@ def test_topic_without_room_is_a_usage_error_before_any_request(monkeypatch, cap
     server = _Server()
     _serve(monkeypatch, server)
 
-    assert cli.main(["groups", "watch", "--topic", _TOPIC]) == 2
+    assert cli.main(["rooms", "watch", "--topic", _TOPIC]) == 2
 
     assert server.requests == []
     assert "--topic needs --room" in capsys.readouterr().err
@@ -299,7 +299,7 @@ def test_a_server_without_the_capability_is_refused_not_widened(monkeypatch, cap
     server = _Server(_CONNECTED + _event(1), features=())
     _serve(monkeypatch, server)
 
-    assert cli.main(["groups", "watch", "--room", _ROOM]) == 1
+    assert cli.main(["rooms", "watch", "--room", _ROOM]) == 1
 
     err = _assert_nothing_leaked(server, capsys)
     assert "does not support a scoped watch" in err
@@ -310,9 +310,9 @@ def test_groups_switched_off_is_reported_and_nothing_streams(monkeypatch, capsys
     server = _Server(enabled=False)
     _serve(monkeypatch, server)
 
-    assert cli.main(["groups", "watch", "--room", _ROOM]) == 1
+    assert cli.main(["rooms", "watch", "--room", _ROOM]) == 1
 
-    assert "Groups is not enabled" in _assert_nothing_leaked(server, capsys)
+    assert "Rooms are not enabled" in _assert_nothing_leaked(server, capsys)
     assert server.stream_requests() == []
 
 
@@ -321,7 +321,7 @@ def test_a_room_that_does_not_resolve_exits_2(monkeypatch, capsys, room):
     server = _Server(_CONNECTED + _scope() + _event(1))
     _serve(monkeypatch, server)
 
-    assert cli.main(["groups", "watch", "--room", room]) == 2
+    assert cli.main(["rooms", "watch", "--room", room]) == 2
 
     _assert_nothing_leaked(server, capsys)
     assert server.stream_requests() == []
@@ -331,7 +331,7 @@ def test_a_topic_that_does_not_resolve_exits_2(monkeypatch, capsys):
     server = _Server()
     _serve(monkeypatch, server)
 
-    assert cli.main(["groups", "watch", "--room", _ROOM, "--topic", "nope"]) == 2
+    assert cli.main(["rooms", "watch", "--room", _ROOM, "--topic", "nope"]) == 2
 
     assert "no topic named" in _assert_nothing_leaked(server, capsys)
     assert server.stream_requests() == []
@@ -342,7 +342,7 @@ def test_a_refused_scope_is_not_retried(monkeypatch, capsys, status):
     server = _Server(status, _CONNECTED + _scope() + _event(1))
     sleeps = _serve(monkeypatch, server)
 
-    code = cli.main(["groups", "watch", "--room", _ROOM])
+    code = cli.main(["rooms", "watch", "--room", _ROOM])
 
     assert code == (2 if status == 404 else 1)
     err = _assert_nothing_leaked(server, capsys)
@@ -356,7 +356,7 @@ def test_a_503_at_connect_is_retried_on_the_scoped_route(monkeypatch, capsys):
     server = _Server(503, _CONNECTED + _scope() + _event(4))
     sleeps = _serve(monkeypatch, server)
 
-    assert cli.main(["groups", "watch", "--room", _ROOM, "--since", "3"]) == 0
+    assert cli.main(["rooms", "watch", "--room", _ROOM, "--since", "3"]) == 0
 
     assert [r.url.path for r in server.stream_requests()] == [_ROOM_PATH] * 3
     assert server.stream_requests()[1].headers["last-event-id"] == "3"
@@ -395,7 +395,7 @@ def test_an_unconfirmed_scope_stops_without_printing(monkeypatch, capsys, tmp_pa
     cursor_file = tmp_path / "c"
     before = _scoped_file(cursor_file, cursor=0)
 
-    argv = ["groups", "watch", "--room", _ROOM, "--json", "--cursor-file", str(cursor_file)]
+    argv = ["rooms", "watch", "--room", _ROOM, "--json", "--cursor-file", str(cursor_file)]
     assert cli.main(argv) == 1
 
     assert "did not confirm the requested scope" in _assert_nothing_leaked(server, capsys)
@@ -407,7 +407,7 @@ def test_a_topic_watch_needs_the_topic_confirmed(monkeypatch, capsys):
     server = _Server(_CONNECTED + _scope(topic=_OTHER_TOPIC) + _event(1, topic=_OTHER_TOPIC))
     _serve(monkeypatch, server)
 
-    assert cli.main(["groups", "watch", "--room", _ROOM, "--topic", _TOPIC]) == 1
+    assert cli.main(["rooms", "watch", "--room", _ROOM, "--topic", _TOPIC]) == 1
 
     _assert_nothing_leaked(server, capsys)
 
@@ -421,7 +421,7 @@ def test_a_merged_room_is_followed_and_said_once(monkeypatch, capsys, tmp_path):
     _serve(monkeypatch, server)
     cursor_file = tmp_path / "c"
 
-    argv = ["groups", "watch", "--room", _ROOM, "--json", "--cursor-file", str(cursor_file)]
+    argv = ["rooms", "watch", "--room", _ROOM, "--json", "--cursor-file", str(cursor_file)]
     assert cli.main(argv) == 0
 
     out, err = capsys.readouterr()
@@ -438,7 +438,7 @@ def test_a_reconnect_that_names_another_scope_stops_the_run(monkeypatch, capsys)
     )
     _serve(monkeypatch, server)
 
-    assert cli.main(["groups", "watch", "--room", _ROOM, "--json"]) == 1
+    assert cli.main(["rooms", "watch", "--room", _ROOM, "--json"]) == 1
 
     out, err = capsys.readouterr()
     assert [json.loads(line)["id"] for line in out.splitlines()] == [1]
@@ -449,7 +449,7 @@ def test_a_second_scope_frame_on_one_connection_is_checked_too(monkeypatch, caps
     server = _Server(_CONNECTED + _scope() + _event(1) + _scope(agent=_OTHER_AGENT) + _event(2))
     _serve(monkeypatch, server)
 
-    assert cli.main(["groups", "watch", "--room", _ROOM, "--json"]) == 1
+    assert cli.main(["rooms", "watch", "--room", _ROOM, "--json"]) == 1
 
     assert [json.loads(x)["id"] for x in capsys.readouterr().out.splitlines()] == [1]
 
@@ -461,7 +461,7 @@ def test_the_scope_frame_does_not_reset_the_backoff(monkeypatch, capsys):
     server = _Server(outage, outage, outage)
     sleeps = _serve(monkeypatch, server)
 
-    assert cli.main(["groups", "watch", "--room", _ROOM]) == 0
+    assert cli.main(["rooms", "watch", "--room", _ROOM]) == 0
 
     assert sleeps == [1.0, 2.0, 4.0]
     assert all(r.url.path == _ROOM_PATH for r in server.stream_requests())
@@ -498,7 +498,7 @@ def test_an_event_outside_the_scope_is_a_hard_stop(
     _serve(monkeypatch, server)
     cursor_file = tmp_path / "c"
 
-    full = ["groups", "watch", "--room", _ROOM, *argv, "--json", "--cursor-file", str(cursor_file)]
+    full = ["rooms", "watch", "--room", _ROOM, *argv, "--json", "--cursor-file", str(cursor_file)]
     assert cli.main(full) == 1
 
     out, err = capsys.readouterr()
@@ -520,22 +520,13 @@ def test_history_expired_exits_3_and_names_the_gap(monkeypatch, capsys, tmp_path
     cursor_file = tmp_path / "c"
     before = _scoped_file(cursor_file, cursor=5, topic=_TOPIC)
 
-    argv = [
-        "groups",
-        "watch",
-        "--room",
-        _ROOM,
-        "--topic",
-        _TOPIC,
-        "--cursor-file",
-        str(cursor_file),
-    ]
+    argv = ["rooms", "watch", "--room", _ROOM, "--topic", _TOPIC, "--cursor-file", str(cursor_file)]
     assert cli.main(argv) == 3
 
     err = " ".join(_assert_nothing_leaked(server, capsys).split())
     assert "before position 40 is no longer available" in err
     assert "between 5 and 40" in err
-    assert f"pepper groups read {_ROOM} {_TOPIC}" in err
+    assert f"pepper messages list --room {_ROOM} --topic {_TOPIC}" in err
     assert "--since 40" in err
     assert cursor_file.read_text() == before
 
@@ -546,10 +537,10 @@ def test_history_expired_on_a_room_watch_points_at_each_topic(monkeypatch, capsy
     )
     _serve(monkeypatch, server)
 
-    assert cli.main(["groups", "watch", "--room", _ROOM]) == 3
+    assert cli.main(["rooms", "watch", "--room", _ROOM]) == 3
 
     err = " ".join(capsys.readouterr().err.split())
-    assert f"pepper groups read {_ROOM} TOPIC' for each topic" in err
+    assert f"pepper messages list --room {_ROOM} --topic TOPIC' for each topic" in err
 
 
 @pytest.mark.parametrize(
@@ -565,7 +556,7 @@ def test_terminal_error_frames_end_the_run(monkeypatch, capsys, slug, words):
     server = _Server(_CONNECTED + _scope() + _event(1) + _error(slug, retry=False))
     sleeps = _serve(monkeypatch, server)
 
-    assert cli.main(["groups", "watch", "--room", _ROOM]) == 1
+    assert cli.main(["rooms", "watch", "--room", _ROOM]) == 1
 
     out, err = capsys.readouterr()
     assert len(out.splitlines()) == 1
@@ -581,7 +572,7 @@ def test_a_retryable_error_reconnects_to_the_same_scope_from_the_cursor(monkeypa
     )
     sleeps = _serve(monkeypatch, server)
 
-    assert cli.main(["groups", "watch", "--room", _ROOM, "--topic", _TOPIC, "--json"]) == 0
+    assert cli.main(["rooms", "watch", "--room", _ROOM, "--topic", _TOPIC, "--json"]) == 0
 
     requests = server.stream_requests()
     assert [r.url.path for r in requests] == [_TOPIC_PATH] * 3
@@ -598,7 +589,7 @@ def test_a_new_cursor_file_starts_at_since_and_records_the_scope(monkeypatch, ca
     _serve(monkeypatch, server)
     cursor_file = tmp_path / "c"
 
-    argv = ["groups", "watch", "--room", _ROOM, "--topic", _TOPIC, "--since", "11"]
+    argv = ["rooms", "watch", "--room", _ROOM, "--topic", _TOPIC, "--since", "11"]
     assert cli.main([*argv, "--cursor-file", str(cursor_file)]) == 0
 
     assert server.stream_requests()[0].url.params["since"] == "11"
@@ -618,7 +609,7 @@ def test_a_matching_cursor_file_resumes_from_its_position(monkeypatch, capsys, t
     cursor_file = tmp_path / "c"
     _scoped_file(cursor_file, cursor=5)
 
-    assert cli.main(["groups", "watch", "--room", _ROOM, "--cursor-file", str(cursor_file)]) == 0
+    assert cli.main(["rooms", "watch", "--room", _ROOM, "--cursor-file", str(cursor_file)]) == 0
 
     assert server.stream_requests()[0].url.params["since"] == "5"
     assert json.loads(cursor_file.read_text())["cursor"] == 6
@@ -630,7 +621,7 @@ def test_since_moves_the_start_of_a_matching_file(monkeypatch, capsys, tmp_path)
     cursor_file = tmp_path / "c"
     _scoped_file(cursor_file, cursor=5)
 
-    argv = ["groups", "watch", "--room", _ROOM, "--since", "8", "--cursor-file", str(cursor_file)]
+    argv = ["rooms", "watch", "--room", _ROOM, "--since", "8", "--cursor-file", str(cursor_file)]
     assert cli.main(argv) == 0
 
     assert server.stream_requests()[0].url.params["since"] == "8"
@@ -648,7 +639,7 @@ def test_a_cursor_file_from_another_scope_is_refused(monkeypatch, capsys, tmp_pa
     cursor_file = tmp_path / "c"
     before = _scoped_file(cursor_file, cursor=5, **kw)
 
-    argv = ["groups", "watch", "--room", _ROOM, "--cursor-file", str(cursor_file)]
+    argv = ["rooms", "watch", "--room", _ROOM, "--cursor-file", str(cursor_file)]
     if since is not None:
         argv += ["--since", since]
     assert cli.main(argv) == 2
@@ -667,7 +658,7 @@ def test_a_cursor_file_for_another_server_is_refused_before_connecting(
     cursor_file = tmp_path / "c"
     before = _scoped_file(cursor_file, server="http://elsewhere.example")
 
-    assert cli.main(["groups", "watch", "--room", _ROOM, "--cursor-file", str(cursor_file)]) == 2
+    assert cli.main(["rooms", "watch", "--room", _ROOM, "--cursor-file", str(cursor_file)]) == 2
 
     assert "another server" in capsys.readouterr().err
     assert server.requests == []
@@ -681,7 +672,7 @@ def test_an_unscoped_cursor_file_is_refused_by_a_scoped_watch(monkeypatch, capsy
     cursor_file = tmp_path / "c"
     cursor_file.write_text("17\n")
 
-    argv = ["groups", "watch", "--room", _ROOM, "--cursor-file", str(cursor_file)]
+    argv = ["rooms", "watch", "--room", _ROOM, "--cursor-file", str(cursor_file)]
     if since is not None:
         argv += ["--since", since]
     assert cli.main(argv) == 2
@@ -702,7 +693,7 @@ def test_a_scoped_cursor_file_is_refused_by_the_unscoped_watch(
     cursor_file = tmp_path / "c"
     before = _scoped_file(cursor_file)
 
-    argv = ["groups", "watch", "--cursor-file", str(cursor_file)]
+    argv = ["rooms", "watch", "--cursor-file", str(cursor_file)]
     if since is not None:
         argv += ["--since", since]
     assert cli.main(argv) == 2
@@ -738,7 +729,7 @@ def test_a_corrupt_cursor_file_is_refused(monkeypatch, capsys, tmp_path, text):
     cursor_file = tmp_path / "c"
     cursor_file.write_text(text)
 
-    assert cli.main(["groups", "watch", "--room", _ROOM, "--cursor-file", str(cursor_file)]) == 2
+    assert cli.main(["rooms", "watch", "--room", _ROOM, "--cursor-file", str(cursor_file)]) == 2
 
     assert server.requests == []
     assert cursor_file.read_text() == text
@@ -757,7 +748,7 @@ def test_a_cursor_file_write_failure_is_reported(monkeypatch, capsys, tmp_path):
     server = _Server(_CONNECTED + _scope() + _event(1))
     _serve(monkeypatch, server)
 
-    argv = ["groups", "watch", "--room", _ROOM, "--cursor-file", str(tmp_path / "no" / "c")]
+    argv = ["rooms", "watch", "--room", _ROOM, "--cursor-file", str(tmp_path / "no" / "c")]
     assert cli.main(argv) == 1
 
     assert "Couldn't write the cursor file" in capsys.readouterr().err
@@ -775,7 +766,7 @@ def test_a_closed_reader_ends_a_scoped_watch_quietly(monkeypatch, capsys):
 
     monkeypatch.setattr(cli, "_emit_line", emit)
 
-    assert cli.main(["groups", "watch", "--room", _ROOM, "--json"]) == 0
+    assert cli.main(["rooms", "watch", "--room", _ROOM, "--json"]) == 0
     assert len(printed) == 1
 
 
@@ -790,7 +781,7 @@ def test_an_unreachable_server_is_reported(monkeypatch, capsys):
         lambda **kw: real(**kw, client=httpx.Client(transport=httpx.MockTransport(down))),
     )
 
-    assert cli.main(["groups", "watch", "--room", _ROOM]) == 1
+    assert cli.main(["rooms", "watch", "--room", _ROOM]) == 1
     assert "Couldn't reach" in capsys.readouterr().err
 
 
@@ -852,7 +843,7 @@ def test_a_negative_since_is_a_usage_error(monkeypatch, capsys):
     server = _Server()
     _serve(monkeypatch, server)
 
-    assert cli.main(["groups", "watch", "--room", _ROOM, "--since", "-1"]) == 2
+    assert cli.main(["rooms", "watch", "--room", _ROOM, "--since", "-1"]) == 2
     assert server.requests == []
 
 
@@ -867,7 +858,7 @@ def test_a_refused_token_on_the_rooms_list_is_reported(monkeypatch, capsys):
         lambda **kw: real(**kw, client=httpx.Client(transport=httpx.MockTransport(refuse))),
     )
 
-    assert cli.main(["groups", "watch", "--room", _ROOM]) == 1
+    assert cli.main(["rooms", "watch", "--room", _ROOM]) == 1
     assert "Authentication failed (401)" in capsys.readouterr().err
 
 
@@ -890,7 +881,7 @@ def test_a_dropped_connection_reconnects_to_the_scope(monkeypatch, capsys):
     )
     monkeypatch.setattr(cli.time, "sleep", lambda _s: None)
 
-    assert cli.main(["groups", "watch", "--room", _ROOM, "--json"]) == 0
+    assert cli.main(["rooms", "watch", "--room", _ROOM, "--json"]) == 0
     assert [json.loads(x)["id"] for x in capsys.readouterr().out.splitlines()] == [1, 2]
 
 
@@ -911,16 +902,16 @@ def test_history_expired_after_a_merge_points_at_the_surviving_room(monkeypatch,
     )
     _serve(monkeypatch, server)
 
-    assert cli.main(["groups", "watch", "--room", _ROOM]) == 3
+    assert cli.main(["rooms", "watch", "--room", _ROOM]) == 3
 
     err = " ".join(capsys.readouterr().err.split())
-    assert f"pepper groups read {_SURVIVOR} TOPIC" in err
+    assert f"pepper messages list --room {_SURVIVOR} --topic TOPIC" in err
 
 
 def test_an_upper_case_room_id_is_canonical_before_the_topic_lookup(monkeypatch, capsys):
     server = _Server(_CONNECTED + _scope(topic=_TOPIC) + _event(1))
     _serve(monkeypatch, server)
 
-    assert cli.main(["groups", "watch", "--room", _ROOM.upper(), "--topic", "dinner"]) == 0
+    assert cli.main(["rooms", "watch", "--room", _ROOM.upper(), "--topic", "dinner"]) == 0
 
     assert f"/api/v1/groups/{_ROOM}/topics" in server.paths()
