@@ -181,7 +181,7 @@ def write_document(text: str) -> None:
     sys.stdout.write(text if not sys.stdout.isatty() else sanitize_text(text))
 
 
-def info(message: str | Text) -> None:
+def info(message: str | Text, *, soft_wrap: bool = False) -> None:
     """Print a status line to stderr. Used for the chrome around
     commands ('Logged in as ...', 'Removed credentials at ...') so the
     primary output channel stays clean for piping.
@@ -189,11 +189,13 @@ def info(message: str | Text) -> None:
     A ``str`` message is printed literally: it is never parsed as rich
     markup, because callers interpolate server text (an error detail, a
     name) into it. Emphasis comes from passing a :func:`styled` ``Text``.
+    ``soft_wrap=True`` is for a line a person copies back as a command
+    (a next-page hint): rich must not fold it into two lines.
     """
     if isinstance(message, Text):
-        _stderr.print(message)
+        _stderr.print(message, soft_wrap=soft_wrap)
     else:
-        _stderr.print(sanitize_text(message), markup=False)
+        _stderr.print(sanitize_text(message), markup=False, soft_wrap=soft_wrap)
 
 
 def error(message: str, *, soft_wrap: bool = False) -> None:

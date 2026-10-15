@@ -1179,11 +1179,46 @@ def test_trajectory_list_room_cursor_hint_keeps_the_room(tmp_home: Path, patch_a
     )
     patch_api(groups=_trip_rooms(), trajectory_list=[entry])
     assert cli.main(["trajectories", "list", "--room", "trip", "--limit", "1"]) == 0
-    assert "pepper trajectories list --room trip --before 1" in capsys.readouterr().err
+    assert f"pepper trajectories list --room {_TRAJ_ROOM} --before 1" in capsys.readouterr().err
     assert cli.main(["trajectories", "list", "--room", "trip", "--limit", "1", "--json"]) == 0
     import json as _json
 
     assert _json.loads(capsys.readouterr().out)["next_before"] == "1"
+
+
+def test_trajectory_list_cursor_hint_survives_a_multi_word_room_name(
+    tmp_home: Path, patch_api, capsys
+) -> None:
+    """The printed next-page command must parse back: a room typed as
+    ``"Summer Trip"`` is echoed as its id, never as two unquoted words."""
+    import shlex
+
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
+    import dataclasses
+
+    trip = _trip_rooms()
+    rooms = dataclasses.replace(
+        trip, groups=[dataclasses.replace(trip.groups[0], display_name="Summer Trip")]
+    )
+    entry = api_client.TrajectoryListEntry(
+        id=_VALID_TRAJ_ID,
+        channel="client_api",
+        created_at="2026-05-31T12:00:00Z",
+        closed_at=None,
+        meta={},
+        event_count=1,
+        first_user_message="hi",
+        group_id=_TRAJ_ROOM,
+        group_name="Summer Trip",
+    )
+    patch_api(groups=rooms, trajectory_list=[entry])
+    assert cli.main(["trajectories", "list", "--room", "Summer Trip", "--limit", "1"]) == 0
+    (line,) = [ln for ln in capsys.readouterr().err.splitlines() if ln.startswith("More: ")]
+    hint = line.removeprefix("More: ")
+    argv = shlex.split(hint)
+    assert argv[:3] == ["pepper", "trajectories", "list"]
+    assert cli.main(argv[1:]) == 0
+    assert _FakeApi.instances[-1].requested_principal == _TRAJ_ROOM
 
 
 def test_trajectory_list_unknown_room_exits_two(tmp_home: Path, patch_api, capsys) -> None:
