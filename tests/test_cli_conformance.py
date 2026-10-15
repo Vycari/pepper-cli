@@ -119,28 +119,6 @@ JSON_PENDING = frozenset(
     {
         "agent-skill",
         "chat",
-        "groups archive",
-        "groups archive-topic",
-        "groups delete-message",
-        "groups download",
-        "groups edit",
-        "groups install-app",
-        "groups invite",
-        "groups leave",
-        "groups mute",
-        "groups new",
-        "groups new-topic",
-        "groups react",
-        "groups remove",
-        "groups rename",
-        "groups rename-topic",
-        "groups role",
-        "groups show",
-        "groups unarchive",
-        "groups unarchive-topic",
-        "groups uninstall-app",
-        "groups unmute",
-        "groups unreact",
         "logout",
         "notes edit",
         "notes new",
@@ -173,6 +151,15 @@ JSON_PENDING = frozenset(
 
 #: Leaves where a room is not a meaningful scope (§6 class N), or is the object itself.
 ROOM_NA = {
+    "rooms list": "a room is the object, not a scope",
+    "rooms show": "a room is the object, not a scope",
+    "rooms create": "a room is the object, not a scope",
+    "rooms edit": "a room is the object, not a scope",
+    "rooms archive": "a room is the object, not a scope",
+    "rooms unarchive": "a room is the object, not a scope",
+    "rooms leave": "a room is the object, not a scope",
+    "rooms mute": "a room is the object, not a scope",
+    "rooms unmute": "a room is the object, not a scope",
     "login": "session command",
     "logout": "session command",
     "whoami": "session command",
@@ -189,37 +176,6 @@ ROOM_NA = {
 ROOM_PENDING = frozenset(
     {
         "calendar",
-        "groups activity",
-        "groups apps",
-        "groups archive",
-        "groups archive-topic",
-        "groups delete-message",
-        "groups download",
-        "groups edit",
-        "groups install-app",
-        "groups invite",
-        "groups leave",
-        "groups list",
-        "groups mute",
-        "groups new",
-        "groups new-topic",
-        "groups post",
-        "groups react",
-        "groups read",
-        "groups remove",
-        "groups rename",
-        "groups rename-topic",
-        "groups role",
-        "groups roster",
-        "groups search",
-        "groups sharing",
-        "groups show",
-        "groups topics",
-        "groups unarchive",
-        "groups unarchive-topic",
-        "groups uninstall-app",
-        "groups unmute",
-        "groups unreact",
         "scheduled-tasks edit",
         "scheduled-tasks runs",
         "scheduled-tasks show",
@@ -232,21 +188,6 @@ ROOM_PENDING = frozenset(
 #: Leaves whose verb is not in §3.1 yet (old spellings; phase 2a-2d renames them).
 VERB_PENDING = frozenset(
     {
-        "groups apps",
-        "groups archive-topic",
-        "groups delete-message",
-        "groups install-app",
-        "groups new",
-        "groups new-topic",
-        "groups read",
-        "groups rename",
-        "groups rename-topic",
-        "groups role",
-        "groups roster",
-        "groups sharing",
-        "groups topics",
-        "groups unarchive-topic",
-        "groups uninstall-app",
         "notes new",
         "notes rm",
         "scheduled-tasks add",
@@ -266,38 +207,7 @@ YES_PENDING = frozenset(
 )
 
 #: Leaves with a positional ``group`` (rule 2: none survives). Phase 2a/2b.
-GROUP_POSITIONAL_PENDING = frozenset(
-    {
-        "groups activity",
-        "groups apps",
-        "groups archive",
-        "groups archive-topic",
-        "groups delete-message",
-        "groups download",
-        "groups edit",
-        "groups install-app",
-        "groups invite",
-        "groups leave",
-        "groups mute",
-        "groups new-topic",
-        "groups post",
-        "groups react",
-        "groups read",
-        "groups remove",
-        "groups rename",
-        "groups rename-topic",
-        "groups role",
-        "groups roster",
-        "groups sharing",
-        "groups show",
-        "groups topics",
-        "groups unarchive",
-        "groups unarchive-topic",
-        "groups uninstall-app",
-        "groups unmute",
-        "groups unreact",
-    }
-)
+GROUP_POSITIONAL_PENDING = frozenset({})
 
 #: Leaves whose help still says "group" or "channel" (§2: the CLI says "room").
 #: Leaves under a ``RENAMED`` noun are not checked; their whole noun goes away.
@@ -345,18 +255,11 @@ ENVELOPE_PENDING = frozenset(
         "skills list",
         "notes list",
         "notes search",
-        "groups list",
-        "groups topics",
-        "groups roster",
-        "groups read",
-        "groups apps",
-        "groups activity",
-        "groups search",
     }
 )
 
-#: Renamed nouns that are still real commands, not yet stubs (phase 2a/2c).
-RENAMED_PENDING = RENAMED
+#: Renamed nouns that are still real commands, not yet stubs (phase 2c).
+RENAMED_PENDING = frozenset({"trajectory", "agent-skill"})
 
 # ---------------------------------------------------------------------------
 # Discovery: from --help text only
@@ -381,11 +284,23 @@ def _help(*argv: str) -> str:
 def _children(text: str) -> list[str]:
     """The subcommand names in a usage line: ``{a,b,c} ...``."""
     match = re.search(r"\{([\w,-]+)\} \.\.\.", " ".join(text.split()))
-    return match.group(1).split(",") if match else []
+    if match:
+        return match.group(1).split(",")
+    # No brace list (the root parser sets a metavar): read the command listing instead.
+    names: list[str] = []
+    section = False
+    for line in text.splitlines():
+        if line.rstrip().endswith(":") and not line.startswith(" "):
+            section = line.startswith("positional arguments")
+        elif (
+            section and (m := re.match(r"^ {4}(\S+)", line)) and not re.match(r"^ {4}COMMAND", line)
+        ):
+            names.append(m.group(1))
+    return names
 
 
 def _discover() -> dict[str, str]:
-    """Every leaf command (``"next"``, ``"groups read"``) mapped to its help text."""
+    """Every leaf command (``"next"``, ``"messages list"``) mapped to its help text."""
     leaves: dict[str, str] = {}
     for noun in _children(_help()):
         text = _help(noun)
@@ -469,7 +384,7 @@ def _ratchet(rule: str, failing: set[str], pending: frozenset[str] | set[str]) -
 def test_discovery_sees_the_commands() -> None:
     # A discovery that quietly found nothing would make every check below vacuous.
     assert len(LEAVES) > 60
-    assert {"next", "groups read", "notes show", "login"} <= set(LEAVES)
+    assert {"next", "messages list", "notes show", "login"} <= set(LEAVES)
 
 
 def test_every_noun_is_known() -> None:
@@ -571,6 +486,7 @@ _M = "00000000-0000-0000-0000-0000000000c1"
 _P = "00000000-0000-0000-0000-0000000000d1"
 _TRAJ = "00000000-0000-0000-0000-0000000000f1"
 _NOTE = "00000000-0000-0000-0000-0000000000e1"
+_A = "00000000-0000-0000-0000-0000000000a9"
 
 _TOPIC = {"topic_id": _T, "name": "General", "last_activity_at": "2026-10-01T12:00:00+00:00"}
 _MESSAGE = {
@@ -649,6 +565,7 @@ ROUTES: dict[str, object] = {
     },
     f"/api/v1/groups/{_G}/topics": {"topics": [_TOPIC]},
     f"/api/v1/groups/{_G}/roster": {"members": [{"person_id": _P, "display_name": "Dana"}]},
+    f"/api/v1/groups/{_G}/attachments/{_A}": {"file": "bytes"},
     f"/api/v1/groups/{_G}/topics/{_T}/messages": {"messages": [_MESSAGE], "next_before": None},
     f"/api/v1/groups/{_G}/apps/launcher": {"tiles": [], "installed_unavailable": False},
     f"/api/v1/groups/{_G}": {"apps": {"catalog": []}},
@@ -670,9 +587,24 @@ ROUTES: dict[str, object] = {
     f"/api/v1/artifacts/{_NOTE}/detail": {**_NOTE_ROW, "shared": False, "body": "hello note"},
 }
 
-#: POST routes: the room post answers ``{"message": {...}}``.
+#: Non-GET routes (POST, DELETE): the room post answers ``{"message": {...}}``.
 POST_ROUTES: dict[str, object] = {
     f"/api/v1/groups/{_G}/topics/{_T}/messages": {"message": {**_MESSAGE, "topic_id": _T}},
+    "/api/v1/groups": {"group_id": _G, "display_name": "Trip planning", "created": True},
+    f"/api/v1/groups/{_G}/rename": {"group_id": _G, "display_name": "Renamed"},
+    f"/api/v1/groups/{_G}/archive": {"group_id": _G},
+    f"/api/v1/groups/{_G}/unarchive": {"group_id": _G},
+    f"/api/v1/groups/{_G}/mute": {"group_id": _G},
+    f"/api/v1/groups/{_G}/unmute": {"group_id": _G},
+    f"/api/v1/groups/{_G}/leave": {"group_id": _G},
+    f"/api/v1/groups/{_G}/topics": {"topic": _TOPIC},
+    f"/api/v1/groups/{_G}/topics/{_T}/rename": _TOPIC,
+    f"/api/v1/groups/{_G}/topics/{_T}/archive": _TOPIC,
+    f"/api/v1/groups/{_G}/topics/{_T}/unarchive": _TOPIC,
+    f"/api/v1/groups/{_G}/messages/{_M}/edit": {**_MESSAGE, "raw_body": "better"},
+    f"/api/v1/groups/{_G}/messages/{_M}": {**_MESSAGE, "is_deleted": True},
+    f"/api/v1/groups/{_G}/messages/{_M}/reactions": {"reactions": []},
+    f"/api/v1/groups/{_G}/messages/{_M}/reactions/clear": {"reactions": []},
 }
 
 
@@ -696,6 +628,7 @@ def _env(tmp_path, monkeypatch) -> _Server:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.delenv("PEPPER_JSON", raising=False)
+    monkeypatch.chdir(tmp_path)
     credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
     server = _Server()
     real = httpx.Client
@@ -708,7 +641,7 @@ def _env(tmp_path, monkeypatch) -> _Server:
 
 
 def _watch_one_event(monkeypatch) -> None:
-    """``groups watch`` streams until interrupted; script one event, then Ctrl-C."""
+    """``rooms watch`` streams until interrupted; script one event, then Ctrl-C."""
 
     def fake_watch(self, *, since=0, last_event_id=None, **_kw):
         yield api_client.FeedFrame(
@@ -734,16 +667,30 @@ JSON_CASES: dict[str, list[str]] = {
     "calendar": ["calendar"],
     "next": ["next"],
     "todos list": ["todos", "list"],
-    "groups list": ["groups", "list"],
-    "groups topics": ["groups", "topics", _G],
-    "groups roster": ["groups", "roster", _G],
-    "groups read": ["groups", "read", _G, _T],
-    "groups post": ["groups", "post", _G, _T, "hi"],
-    "groups watch": ["groups", "watch"],
-    "groups apps": ["groups", "apps", _G],
-    "groups sharing": ["groups", "sharing", _G],
-    "groups activity": ["groups", "activity"],
-    "groups search": ["groups", "search", "q"],
+    "rooms list": ["rooms", "list"],
+    "rooms show": ["rooms", "show", _G],
+    "rooms create": ["rooms", "create", "dana@example.com"],
+    "rooms edit": ["rooms", "edit", _G, "--name", "Renamed"],
+    "rooms archive": ["rooms", "archive", _G],
+    "rooms unarchive": ["rooms", "unarchive", _G],
+    "rooms leave": ["rooms", "leave", _G, "--yes"],
+    "rooms mute": ["rooms", "mute", _G],
+    "rooms unmute": ["rooms", "unmute", _G],
+    "rooms activity": ["rooms", "activity"],
+    "rooms watch": ["rooms", "watch"],
+    "topics list": ["topics", "list", "--room", _G],
+    "topics create": ["topics", "create", "--room", _G, "Plans"],
+    "topics edit": ["topics", "edit", "--room", _G, _T, "--name", "Renamed"],
+    "topics archive": ["topics", "archive", "--room", _G, _T],
+    "topics unarchive": ["topics", "unarchive", "--room", _G, _T],
+    "topics search": ["topics", "search", "q"],
+    "messages list": ["messages", "list", "--room", _G, "--topic", _T],
+    "messages post": ["messages", "post", "--room", _G, "--topic", _T, "hi"],
+    "messages edit": ["messages", "edit", "--room", _G, _M, "better"],
+    "messages delete": ["messages", "delete", "--room", _G, _M, "--yes"],
+    "messages react": ["messages", "react", "--room", _G, _M, "+1"],
+    "messages unreact": ["messages", "unreact", "--room", _G, _M, "+1"],
+    "attachments download": ["attachments", "download", "--room", _G, _A, "--out", "got.bin"],
     "notes list": ["notes", "list"],
     "notes search": ["notes", "search", "run"],
     "notes show": ["notes", "show", _NOTE],
@@ -801,7 +748,7 @@ def test_renamed_nouns_are_stubs(_env, monkeypatch, capsys) -> None:
     # A chat fall-through would reach the fake server (and so fail the check); an empty
     # stdin keeps any interactive path from waiting on the terminal.
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
-    assert {_noun(leaf) for leaf in LEAVES} >= RENAMED
+    assert {_noun(leaf) for leaf in LEAVES} >= RENAMED_PENDING
     failing = {noun for noun in RENAMED if not _is_stub(noun, _env, capsys)}
     _ratchet("renamed stub", failing, RENAMED_PENDING)
 
@@ -814,11 +761,11 @@ def test_stub_check_accepts_a_wired_stub(_env, monkeypatch, capsys) -> None:
     def build():
         parser, names = real_build()
         sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
-        cli._add_renamed_stub(sub, "groups", "see 'pepper rooms --help'")
+        cli._add_renamed_stub(sub, "trajectory", "see 'pepper trajectories --help'")
         return parser, names
 
     monkeypatch.setattr(cli, "_build_parser", build)
-    assert _is_stub("groups", _env, capsys)
+    assert _is_stub("trajectory", _env, capsys)
 
 
 def test_json_cases_cover_every_leaf_that_takes_json() -> None:
@@ -829,7 +776,7 @@ def test_json_cases_cover_every_leaf_that_takes_json() -> None:
 @pytest.mark.parametrize("leaf", sorted(JSON_CASES))
 def test_pepper_json_switches_json_mode(leaf, _env, monkeypatch, capsys) -> None:
     argv = JSON_CASES[leaf]
-    if leaf == "groups watch":
+    if leaf == "rooms watch":
         _watch_one_event(monkeypatch)
 
     # Unset, "0", empty and any other value than exactly "1": the human output.
@@ -884,8 +831,6 @@ def test_list_leaves_emit_the_envelope(monkeypatch, capsys) -> None:
         for leaf in LEAVES
         if (" " in leaf and _verb(leaf) in {"list", "search", "activity"})
         or leaf in {"scheduled-tasks runs", "scheduled-tasks thread"}
-        # old spellings of list leaves, until the renames land
-        or leaf in {"groups topics", "groups roster", "groups read", "groups apps"}
     }
     failing: set[str] = set()
     for leaf in is_list:
@@ -893,7 +838,7 @@ def test_list_leaves_emit_the_envelope(monkeypatch, capsys) -> None:
         if argv is None:  # no --json yet, so it cannot emit the envelope
             failing.add(leaf)
             continue
-        if leaf == "groups watch":
+        if leaf == "rooms watch":
             continue
         rc, out, _err = _run([*argv, "--json"], capsys)
         body = json.loads(out) if rc == 0 and _is_json(out) else None

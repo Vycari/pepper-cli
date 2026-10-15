@@ -136,7 +136,7 @@ stores that login at `$XDG_CONFIG_HOME/pepper/profiles/NAME/credentials.toml`
 
 ```bash
 pepper --profile claude-code login --manual
-pepper --profile claude-code groups post <group> <topic> -
+pepper --profile claude-code messages post --room <room> --topic <topic> -
 pepper --profile claude-code logout
 ```
 
@@ -181,31 +181,26 @@ Commands that take `--json` also switch to JSON output when the environment vari
 | `pepper todos add <title…> [--due D] [--room R]` | Add a todo. With `--room`: title and a `YYYY-MM-DD` due date only. |
 | `pepper todos done\|reopen <id> [--room R]` | Tick a todo as Schedule does (closes it in your or the room's list and releases the rest of its held time), or put it back. |
 | `pepper todos dismiss <id> [--room R]` | Close a todo without completing it. |
-| `pepper groups list [--archived] [--json]` | List your rooms/channels. |
-| `pepper groups show <group>` | One room's info: kind, members + roles, topics, installed apps. |
-| `pepper groups topics <group> [--archived] [--json]` | List a room's topics (folded to unarchived by default, except the default topic, which always stays). `--json` marks the room's default topic with `is_default`. |
-| `pepper groups read <group> [<topic>] [--limit N] [--before C \| --since S] [--json] [--mark]` | Read a topic's messages, oldest to newest. Omit `<topic>` for the room's default one. `--mark` then marks the topic read through its newest message. |
-| `pepper groups post <group> <topic> [MESSAGE \| -] [--attach PATH ...] [--reply-to MESSAGE_ID] [--mention PERSON_ID ...] [--idempotency-key KEY]` | Post a message as yourself; `-` reads the body from stdin. `--reply-to` threads it onto a message, `--mention` structurally mentions a person id from `groups roster`, and `--idempotency-key` makes a re-run of the same command unable to post twice. |
-| `pepper groups roster <group> [--json]` | The room's `@`-mention roster (Pepper first), with the person ids `--mention` takes. `--json` also carries each agent member's `agent_profile` (`null` for people and Pepper). |
-| `pepper groups edit <group> <message> TEXT…` | Edit one of your messages. Message ids come from `groups read --json`. |
-| `pepper groups delete-message <group> <message> [--yes]` | Delete one of your messages. |
-| `pepper groups react\|unreact <group> <message> <emoji>` | Add or take back your reaction. |
-| `pepper groups download <group> <attachment> --out PATH` | Save an attachment (`-` for stdout). |
-| `pepper groups new-topic <group> NAME…` / `rename-topic <group> <topic> NAME…` | Start or rename a topic. |
-| `pepper groups archive-topic\|unarchive-topic <group> <topic>` | Archive or restore a topic. |
-| `pepper groups new [--name N] PERSON…` | Create a room. `PERSON` is an email, a phone, or a Contacts name. Prints the id. |
-| `pepper groups rename <group> NAME…` / `unarchive <group>` | Rename a room; restore an archived one. |
-| `pepper groups archive\|leave <group> [--yes]` | Archive a room (your view only), or leave an open room. |
-| `pepper groups mute\|unmute <group>` | Silence or restore a room's push notifications on your devices. |
-| `pepper groups invite <group> <email-or-phone>` | Invite someone to an open room. |
-| `pepper groups remove <group> <person> [--yes]` | Remove a member. `<person>` is a roster name or person id. |
-| `pepper groups role <group> <person> owner\|member [--yes]` | Grant or revoke ownership. |
-| `pepper groups apps <group> [--json]` | A room's apps, and the keys you can install. |
-| `pepper groups install-app <group> <key>` / `uninstall-app <group> <app> [--yes]` | Install an app, or remove an installed one (by key, title or install id). |
-| `pepper groups sharing <group> [--set CALENDAR=LEVEL …] [--json]` | Which of your calendars the room sees, and at what level; `--set` changes the ones you name. |
-| `pepper groups activity [<group>] [--since TS] [--json]` | The newest message from someone else in each recently active topic (default: last 24 hours). |
-| `pepper groups search <query> [--json]` | Find topics by name across your unarchived rooms. |
-| `pepper groups watch [--room ROOM [--topic TOPIC]] [--since CURSOR] [--cursor-file PATH] [--json]` | Agent members: follow the event stream, one line per event (ids only; fetch bodies with `groups read`). Reconnects by itself and resumes from the cursor file. `--room`/`--topic` have the server narrow the stream to one room or topic, and refuse (never widen) on a server that cannot; use one cursor file per scope. Exit 3 when the server can no longer replay from the cursor without a gap. |
+| `pepper rooms list [--archived] [--json]` | List your rooms. `--json` is `{"items": [...], "next_before": null, "enabled", "degraded", "total", "archived_total"}`. |
+| `pepper rooms show ROOM` | One room's info: kind, members + roles, topics, installed apps. |
+| `pepper rooms create [--name N] PERSON…` | Create a room. `PERSON` is an email, a phone, or a Contacts name. Prints the id. |
+| `pepper rooms edit ROOM --name NAME` | Rename a room. |
+| `pepper rooms archive\|unarchive ROOM` | Hide a room from your list (your view only), or restore it. |
+| `pepper rooms leave ROOM [--yes]` | Leave an open room; asks on a terminal unless `--yes`. |
+| `pepper rooms mute\|unmute ROOM` | Silence or restore a room's push notifications on your devices. |
+| `pepper rooms activity [--room ROOM] [--since TIME]` | The newest message from someone else in each recently active topic (default: last 24 hours). |
+| `pepper rooms watch [--room ROOM [--topic TOPIC]] [--since CURSOR] [--cursor-file PATH] [--json]` | Agent members: follow the event stream, one line per event (ids only; fetch bodies with `messages list`). Reconnects by itself and resumes from the cursor file. `--room`/`--topic` have the server narrow the stream to one room or topic, and refuse (never widen) on a server that cannot; use one cursor file per scope. Exit 3 when the server can no longer replay from the cursor without a gap. |
+| `pepper topics list --room ROOM [--archived] [--json]` | List a room's topics (folded to unarchived by default, except the default topic, which always stays). `--json` marks the room's default topic with `is_default`. |
+| `pepper topics create --room ROOM NAME…` / `topics edit --room ROOM TOPIC --name NAME` | Start or rename a topic. |
+| `pepper topics archive\|unarchive --room ROOM TOPIC` | Archive or restore a topic. |
+| `pepper topics search [--room ROOM] QUERY… [--json]` | Find topics by name across your unarchived rooms, or in one room. |
+| `pepper messages list --room ROOM [--topic TOPIC] [--limit N] [--before C \| --since S] [--mark] [--json]` | Read a topic's messages, oldest to newest. Omit `--topic` for the room's default one. `--mark` then marks the topic read through its newest message. |
+| `pepper messages post --room ROOM --topic TOPIC [MESSAGE \| -] [--attach PATH ...] [--reply-to MESSAGE_ID] [--mention PERSON_ID ...] [--idempotency-key KEY]` | Post a message as yourself; `-` reads the body from stdin. `--reply-to` threads it onto a message, `--mention` structurally mentions a person id, and `--idempotency-key` makes a re-run of the same command unable to post twice. |
+| `pepper messages edit --room ROOM MESSAGE TEXT…` | Edit one of your messages. Message ids come from `messages list --json`. |
+| `pepper messages delete --room ROOM MESSAGE [--yes]` | Delete one of your messages. |
+| `pepper messages react\|unreact --room ROOM MESSAGE EMOJI` | Add or take back your reaction. |
+| `pepper attachments download --room ROOM ATTACHMENT --out PATH` | Save an attachment (`-` for stdout; not with `--json`). |
+| `pepper groups` | Retired: exits 2 and names the commands above. |
 | `pepper agent-skill [--write DIR [--force]]` | Print the agent-usage guide (`SKILL.md`) shipped inside this binary: how an agent member logs in, watches, reads and posts in rooms. `--write DIR` writes `DIR/SKILL.md` and refuses to overwrite without `--force`. Needs no login and no network. |
 | `pepper notes list [--room <group>] [--label L] [--json]` | List your notes, or a room's shared ones with `--room`. |
 | `pepper notes search "<query>" [--room <group>] [--label L] [--json]` | Case-insensitive substring search over note names and bodies. |
@@ -217,8 +212,8 @@ Commands that take `--json` also switch to JSON output when the environment vari
 
 **For agents.** `pepper agent-skill` prints a skill document (frontmatter plus
 body, in the standard `SKILL.md` format) written for an agent that takes part in
-rooms with a `pep_agt_` token: the `--profile` login, the `groups watch` event
-stream, catching up with `groups read`, and posting. It is packaged inside the
+rooms with a `pep_agt_` token: the `--profile` login, the `rooms watch` event
+stream, catching up with `messages list`, and posting. It is packaged inside the
 CLI, so it always matches the installed version; `pepper agent-skill --write
 ~/.claude/skills/pepper-agent` drops it into a skills directory. It covers the
 mechanics only; any house policy for what an agent may do belongs in a separate
@@ -226,7 +221,7 @@ layer on top. Note this is unrelated to `pepper skills`, which manages your
 account's own skills. A test holds the document to the real parser: every command in it
 must be a full `pepper …` invocation whose subcommand and flags exist, every
 `--flag` it mentions anywhere must exist, and outside its "cannot run" section
-it may only show the `groups` commands the server accepts an agent token for.
+it may only show the `rooms`, `topics`, `messages` and `attachments` commands the server accepts an agent token for.
 A renamed flag, a shortened example or a personal-token-only command fails CI
 until the document is updated.
 
@@ -234,16 +229,16 @@ Notes:
 
 - **`<task>` is a name or a UUID.** Names are what you and Pepper call a task
   (`morning-weather`), and `scheduled-tasks list` prints both.
-- **`<group>` and `<topic>` are a name or a UUID too**, matched
-  case-insensitively and by unique prefix (`pepper groups read trip flights`
+- **`ROOM` and `TOPIC` are a name or a UUID too**, matched
+  case-insensitively and by unique prefix (`pepper messages list --room trip --topic flights`
   works if "Trip planning" and "Flights" are unambiguous). An ambiguous or
   unknown name lists the candidates and exits nonzero rather than guessing.
   A room's "kind" — `channel` for a named, persistent room, `room` for one
-  that's exactly its member set — only shows up on `groups show`; the list
+  that's exactly its member set — only shows up on `rooms show`; the list
   endpoint doesn't carry it.
 - **Room commands write as you, to the real room.** The ones that affect
-  other people or can't be undone (`delete-message`, `remove`, `role`,
-  `archive`, `leave`, `uninstall-app`) ask first on a terminal; `--yes` skips
+  other people or can't be undone (`messages delete`, `rooms leave`)
+  ask first on a terminal; `--yes` skips
   the question, and without a terminal and without `--yes` they refuse. A
   room you can't see or aren't in answers "not found, or you are not a member".
 - **`<note>` is a name or a UUID**, same matching rules as `<group>`/`<topic>`.

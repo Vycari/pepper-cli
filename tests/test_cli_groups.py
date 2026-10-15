@@ -1,4 +1,4 @@
-"""End-to-end tests for the ``pepper groups`` subcommands.
+"""End-to-end tests for ``pepper rooms``, ``topics``, ``messages`` (the read/list/post paths).
 
 Same approach as ``test_cli_todos.py`` / ``test_cli_scheduled_tasks.py``:
 invoke ``cli.main([...])`` with a monkeypatched ``api_client.ApiClient`` so
@@ -8,7 +8,7 @@ commands run without the network, and exercise credentials through the real
 Name/id resolution (``_resolve_group`` / ``_resolve_topic``) is exercised
 through the CLI commands rather than unit-tested in isolation, since the
 whole point of a shared resolver is that every command that takes a
-``<group>``/``<topic>`` argument behaves identically — ``show`` stands in for
+``--room``/``--topic`` argument behaves identically — ``rooms show`` stands in for
 all of them for the ambiguous/none/unique cases.
 """
 
@@ -205,10 +205,10 @@ def patch_api(monkeypatch):
 # list
 
 
-def test_groups_list_renders_rows(tmp_home, patch_api, capsys) -> None:
+def test_rooms_list_renders_rows(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(groups=_group_list(_group(display_name="Trip planning")))
-    rc = cli.main(["groups", "list"])
+    rc = cli.main(["rooms", "list"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "Trip planning" in out
@@ -218,43 +218,45 @@ def test_groups_list_renders_rows(tmp_home, patch_api, capsys) -> None:
     assert _FakeGroupsApi.instances[-1].calls == [("list_groups", False)]
 
 
-def test_groups_list_empty(tmp_home, patch_api, capsys) -> None:
+def test_rooms_list_empty(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(groups=_group_list())
-    rc = cli.main(["groups", "list"])
+    rc = cli.main(["rooms", "list"])
     assert rc == 0
     assert "(no rooms)" in capsys.readouterr().out
 
 
-def test_groups_list_passes_archived_flag(tmp_home, patch_api) -> None:
+def test_rooms_list_passes_archived_flag(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api(archived_groups=_group_list(_group(archived=True)))
-    rc = cli.main(["groups", "list", "--archived"])
+    rc = cli.main(["rooms", "list", "--archived"])
     assert rc == 0
     assert _FakeGroupsApi.instances[-1].calls == [("list_groups", True)]
 
 
-def test_groups_list_json_shape(tmp_home, patch_api, capsys) -> None:
+def test_rooms_list_json_shape(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(groups=_group_list(_group()))
-    rc = cli.main(["groups", "list", "--json"])
+    rc = cli.main(["rooms", "list", "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["enabled"] is True
-    assert payload["groups"][0]["group_id"] == _GID_TRIP
-    assert payload["groups"][0]["display_name"] == "Trip planning"
+    assert payload["items"][0]["group_id"] == _GID_TRIP
+    assert payload["items"][0]["display_name"] == "Trip planning"
+    assert payload["next_before"] is None
+    assert (payload["degraded"], payload["total"], payload["archived_total"]) == (False, 1, 0)
 
 
-def test_groups_list_archived_help_says_only_archived(capsys) -> None:
+def test_rooms_list_archived_help_says_only_archived(capsys) -> None:
     """``--archived`` replaces the default listing rather than adding to it —
     the help text should say so plainly rather than reading as if archived
     rooms are folded into the default list."""
     with pytest.raises(SystemExit):
-        cli._build_parser()[0].parse_args(["groups", "list", "--help"])
+        cli._build_parser()[0].parse_args(["rooms", "list", "--help"])
     assert "only archived" in capsys.readouterr().out.lower()
 
 
-def test_groups_list_does_not_wrap_a_long_group_id(tmp_home, patch_api, capsys) -> None:
+def test_rooms_list_does_not_wrap_a_long_group_id(tmp_home, patch_api, capsys) -> None:
     """A room's id is the one thing on this line a person is likely to
     copy-paste; Rich's default wrapping (80 columns in a non-tty capture)
     would otherwise fold it across two lines, breaking the paste. A
@@ -264,29 +266,29 @@ def test_groups_list_does_not_wrap_a_long_group_id(tmp_home, patch_api, capsys) 
     _login(tmp_home)
     long_id = "0" * 100
     patch_api(groups=_group_list(_group(group_id=long_id)))
-    rc = cli.main(["groups", "list"])
+    rc = cli.main(["rooms", "list"])
     assert rc == 0
     assert long_id in capsys.readouterr().out
 
 
-def test_groups_list_capability_off_errors_nonzero(tmp_home, patch_api, capsys) -> None:
+def test_rooms_list_capability_off_errors_nonzero(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(groups=_group_list(enabled=False))
-    rc = cli.main(["groups", "list"])
+    rc = cli.main(["rooms", "list"])
     assert rc == 1
     assert "not enabled" in capsys.readouterr().err
 
 
-def test_groups_list_without_credentials_errors(tmp_home, patch_api) -> None:
+def test_rooms_list_without_credentials_errors(tmp_home, patch_api) -> None:
     patch_api(groups=_group_list())
-    rc = cli.main(["groups", "list"])
+    rc = cli.main(["rooms", "list"])
     assert rc == 1
 
 
-def test_groups_list_degraded_prints_a_note_but_still_renders(tmp_home, patch_api, capsys) -> None:
+def test_rooms_list_degraded_prints_a_note_but_still_renders(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(groups=_group_list(_group(), degraded=True))
-    rc = cli.main(["groups", "list"])
+    rc = cli.main(["rooms", "list"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "degraded" in out
@@ -340,10 +342,10 @@ def _room_detail(**over) -> dict:
     return base
 
 
-def test_groups_show_renders_kind_members_topics_apps(tmp_home, patch_api, capsys) -> None:
+def test_rooms_show_renders_kind_members_topics_apps(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(group_detail=_room_detail())
-    rc = cli.main(["groups", "show", _GID_TRIP])
+    rc = cli.main(["rooms", "show", _GID_TRIP])
     assert rc == 0
     out = capsys.readouterr().out
     assert "Trip planning" in out
@@ -354,7 +356,7 @@ def test_groups_show_renders_kind_members_topics_apps(tmp_home, patch_api, capsy
     assert "To-do" in out
 
 
-def test_groups_show_marks_an_agent_and_its_sponsor(tmp_home, patch_api, capsys) -> None:
+def test_rooms_show_marks_an_agent_and_its_sponsor(tmp_home, patch_api, capsys) -> None:
     detail = _room_detail()
     detail["members"].append(
         {
@@ -370,14 +372,14 @@ def test_groups_show_marks_an_agent_and_its_sponsor(tmp_home, patch_api, capsys)
     )
     _login(tmp_home)
     patch_api(group_detail=detail)
-    rc = cli.main(["groups", "show", _GID_TRIP])
+    rc = cli.main(["rooms", "show", _GID_TRIP])
     assert rc == 0
     out = capsys.readouterr().out
     assert "Watcher (agent, run by Dana)" in out
     assert "Dana  —" in out  # a person's row carries no agent tag
 
 
-def test_groups_read_marks_an_agent_post_and_its_requester(tmp_home, patch_api, capsys) -> None:
+def test_messages_list_marks_an_agent_post_and_its_requester(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(
         messages_page=_page(
@@ -392,7 +394,7 @@ def test_groups_read_marks_an_agent_post_and_its_requester(tmp_home, patch_api, 
             ),
         )
     )
-    rc = cli.main(["groups", "read", _GID_TRIP, _TID_GENERAL])
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP, "--topic", _TID_GENERAL])
     assert rc == 0
     out = capsys.readouterr().out
     assert "Watcher (agent, for Ada)" in out
@@ -401,16 +403,16 @@ def test_groups_read_marks_an_agent_post_and_its_requester(tmp_home, patch_api, 
     assert "Sentinel (agent, for Bea): (message deleted)" in out
 
 
-def test_groups_show_sealed_kind_renders_as_room(tmp_home, patch_api, capsys) -> None:
+def test_rooms_show_sealed_kind_renders_as_room(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(group_detail=_room_detail(kind="sealed"))
-    rc = cli.main(["groups", "show", _GID_TRIP])
+    rc = cli.main(["rooms", "show", _GID_TRIP])
     assert rc == 0
     out = capsys.readouterr().out
     assert "(room)" in out
 
 
-def test_groups_show_resolves_by_unique_prefix(tmp_home, patch_api) -> None:
+def test_rooms_show_resolves_by_unique_prefix(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api(
         groups=_group_list(
@@ -419,12 +421,12 @@ def test_groups_show_resolves_by_unique_prefix(tmp_home, patch_api) -> None:
         ),
         group_detail=_room_detail(),
     )
-    rc = cli.main(["groups", "show", "trip"])
+    rc = cli.main(["rooms", "show", "trip"])
     assert rc == 0
     assert ("get_group", _GID_TRIP) in _FakeGroupsApi.instances[-1].calls
 
 
-def test_groups_show_ambiguous_name_lists_candidates_and_exits_nonzero(
+def test_rooms_show_ambiguous_name_lists_candidates_and_exits_nonzero(
     tmp_home, patch_api, capsys
 ) -> None:
     _login(tmp_home)
@@ -434,7 +436,7 @@ def test_groups_show_ambiguous_name_lists_candidates_and_exits_nonzero(
             _group(group_id=_GID_WORK, display_name="Trip logistics"),
         )
     )
-    rc = cli.main(["groups", "show", "trip"])
+    rc = cli.main(["rooms", "show", "trip"])
     assert rc == 2
     err = capsys.readouterr().err
     assert "more than one room" in err
@@ -444,7 +446,7 @@ def test_groups_show_ambiguous_name_lists_candidates_and_exits_nonzero(
     assert not any(c[0] == "get_group" for c in _FakeGroupsApi.instances[-1].calls)
 
 
-def test_groups_show_ambiguous_name_error_does_not_wrap_ids(tmp_home, patch_api, capsys) -> None:
+def test_rooms_show_ambiguous_name_error_does_not_wrap_ids(tmp_home, patch_api, capsys) -> None:
     """Same shape as the wrapping fixes in ``render.py`` — the candidate
     listing an ambiguous name produces carries an id a person would want to
     copy-paste to disambiguate, and it must not be folded across lines."""
@@ -456,48 +458,47 @@ def test_groups_show_ambiguous_name_error_does_not_wrap_ids(tmp_home, patch_api,
             _group(group_id=_GID_WORK, display_name="Trip logistics"),
         )
     )
-    rc = cli.main(["groups", "show", "trip"])
+    rc = cli.main(["rooms", "show", "trip"])
     assert rc == 2
     assert long_id in capsys.readouterr().err
 
 
-def test_groups_show_unknown_name_errors(tmp_home, patch_api, capsys) -> None:
+def test_rooms_show_unknown_name_errors(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     # The resolver falls back to the archived fold when nothing matches the
     # unarchived one, so a "genuinely no such room" case has to answer empty
     # there too.
     patch_api(groups=_group_list(_group()), archived_groups=_group_list())
-    rc = cli.main(["groups", "show", "nope"])
+    rc = cli.main(["rooms", "show", "nope"])
     assert rc == 2
     assert "no room named" in capsys.readouterr().err
 
 
-def test_groups_show_capability_off_via_name_errors(tmp_home, patch_api, capsys) -> None:
+def test_rooms_show_capability_off_via_name_errors(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(groups=_group_list(enabled=False))
-    rc = cli.main(["groups", "show", "trip"])
+    rc = cli.main(["rooms", "show", "trip"])
     assert rc == 1
     assert "not enabled" in capsys.readouterr().err
 
 
-def test_groups_show_404_renders_a_clean_one_line_error(tmp_home, patch_api, capsys) -> None:
+def test_rooms_show_404_renders_a_clean_one_line_error(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(group_detail=api_client.ApiError(status=404, body="", detail="No such group."))
-    rc = cli.main(["groups", "show", _GID_TRIP])
-    assert rc == 1
+    rc = cli.main(["rooms", "show", _GID_TRIP])
+    assert rc == 2
     err = capsys.readouterr().err
-    assert "404" in err
-    assert "No such group." in err
+    assert "not found" in err
     assert err.count("\n") <= 1
 
 
-def test_groups_show_403_renders_a_clean_one_line_error(tmp_home, patch_api, capsys) -> None:
+def test_rooms_show_403_renders_a_clean_one_line_error(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(group_detail=api_client.ApiError(status=403, body="", detail="Not a member."))
-    rc = cli.main(["groups", "show", _GID_TRIP])
+    rc = cli.main(["rooms", "show", _GID_TRIP])
     assert rc == 1
     err = capsys.readouterr().err
-    assert "403" in err
+    assert "not allowed" in err
     assert "Not a member." in err
 
 
@@ -505,7 +506,7 @@ def test_groups_show_403_renders_a_clean_one_line_error(tmp_home, patch_api, cap
 # topics
 
 
-def test_groups_topics_hides_archived_by_default(tmp_home, patch_api, capsys) -> None:
+def test_topics_list_hides_archived_by_default(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(
         topics=[
@@ -513,14 +514,14 @@ def test_groups_topics_hides_archived_by_default(tmp_home, patch_api, capsys) ->
             _topic(topic_id=_TID_ARCHIVED, name="Old planning", archived_at="2026-01-01T00:00:00Z"),
         ]
     )
-    rc = cli.main(["groups", "topics", _GID_TRIP])
+    rc = cli.main(["topics", "list", "--room", _GID_TRIP])
     assert rc == 0
     out = capsys.readouterr().out
     assert "General" in out
     assert "Old planning" not in out
 
 
-def test_groups_topics_keeps_an_archived_default_identifiable(tmp_home, patch_api, capsys) -> None:
+def test_topics_list_keeps_an_archived_default_identifiable(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(
         topics=[
@@ -534,15 +535,15 @@ def test_groups_topics_keeps_an_archived_default_identifiable(tmp_home, patch_ap
             _topic(topic_id="t-old", name="Old planning", archived_at="2026-01-01T00:00:00Z"),
         ]
     )
-    rc = cli.main(["groups", "topics", _GID_TRIP, "--json"])
+    rc = cli.main(["topics", "list", "--room", _GID_TRIP, "--json"])
     assert rc == 0
-    payload = json.loads(capsys.readouterr().out)
+    payload = json.loads(capsys.readouterr().out)["items"]
     assert [t["topic_id"] for t in payload] == ["t-live", _TID_ARCHIVED]
     assert [t["is_default"] for t in payload] == [False, True]
     assert payload[1]["archived_at"] is not None
 
 
-def test_groups_topics_archived_flag_includes_archived(tmp_home, patch_api, capsys) -> None:
+def test_topics_list_archived_flag_includes_archived(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(
         topics=[
@@ -550,25 +551,25 @@ def test_groups_topics_archived_flag_includes_archived(tmp_home, patch_api, caps
             _topic(topic_id=_TID_ARCHIVED, name="Old planning", archived_at="2026-01-01T00:00:00Z"),
         ]
     )
-    rc = cli.main(["groups", "topics", _GID_TRIP, "--archived"])
+    rc = cli.main(["topics", "list", "--room", _GID_TRIP, "--archived"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "General" in out
     assert "Old planning" in out
 
 
-def test_groups_topics_json_shape(tmp_home, patch_api, capsys) -> None:
+def test_topics_list_json_shape(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(topics=[_topic(topic_id=_TID_GENERAL, name="General")])
-    rc = cli.main(["groups", "topics", _GID_TRIP, "--json"])
+    rc = cli.main(["topics", "list", "--room", _GID_TRIP, "--json"])
     assert rc == 0
-    payload = json.loads(capsys.readouterr().out)
+    payload = json.loads(capsys.readouterr().out)["items"]
     assert payload[0]["topic_id"] == _TID_GENERAL
     assert payload[0]["name"] == "General"
     assert payload[0]["is_default"] is False
 
 
-def test_groups_topics_json_prints_which_topic_is_the_default(tmp_home, patch_api, capsys) -> None:
+def test_topics_list_json_prints_which_topic_is_the_default(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(
         topics=[
@@ -576,25 +577,25 @@ def test_groups_topics_json_prints_which_topic_is_the_default(tmp_home, patch_ap
             _topic(topic_id="t-other", name="Flights"),
         ]
     )
-    rc = cli.main(["groups", "topics", _GID_TRIP, "--json"])
+    rc = cli.main(["topics", "list", "--room", _GID_TRIP, "--json"])
     assert rc == 0
-    payload = json.loads(capsys.readouterr().out)
+    payload = json.loads(capsys.readouterr().out)["items"]
     assert [t["is_default"] for t in payload] == [True, False]
 
 
-def test_groups_topics_empty(tmp_home, patch_api, capsys) -> None:
+def test_topics_list_empty(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(topics=[])
-    rc = cli.main(["groups", "topics", _GID_TRIP])
+    rc = cli.main(["topics", "list", "--room", _GID_TRIP])
     assert rc == 0
     assert "(no topics)" in capsys.readouterr().out
 
 
-def test_groups_topics_does_not_wrap_a_long_topic_id(tmp_home, patch_api, capsys) -> None:
+def test_topics_list_does_not_wrap_a_long_topic_id(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     long_id = "1" * 100
     patch_api(topics=[_topic(topic_id=long_id)])
-    rc = cli.main(["groups", "topics", _GID_TRIP])
+    rc = cli.main(["topics", "list", "--room", _GID_TRIP])
     assert rc == 0
     assert long_id in capsys.readouterr().out
 
@@ -603,14 +604,14 @@ def test_groups_topics_does_not_wrap_a_long_topic_id(tmp_home, patch_api, capsys
 # read
 
 
-def test_groups_read_renders_transcript_oldest_first(tmp_home, patch_api, capsys) -> None:
+def test_messages_list_renders_transcript_oldest_first(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(
         messages_page=_page(
             _message(display_name="Dana", raw_body="hi there", created_at_display="5:30 PM")
         )
     )
-    rc = cli.main(["groups", "read", _GID_TRIP, _TID_GENERAL])
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP, "--topic", _TID_GENERAL])
     assert rc == 0
     out = capsys.readouterr().out
     assert "Dana" in out
@@ -618,7 +619,9 @@ def test_groups_read_renders_transcript_oldest_first(tmp_home, patch_api, capsys
     assert "5:30 PM" in out
 
 
-def test_groups_read_prints_a_day_header_when_the_day_changes(tmp_home, patch_api, capsys) -> None:
+def test_messages_list_prints_a_day_header_when_the_day_changes(
+    tmp_home, patch_api, capsys
+) -> None:
     """A transcript spanning more than one day should say which day each run
     of messages is from, not just a bare clock time — the payload already
     carries ``day_key``/``day_label`` for exactly this."""
@@ -639,7 +642,7 @@ def test_groups_read_prints_a_day_header_when_the_day_changes(tmp_home, patch_ap
             ),
         )
     )
-    rc = cli.main(["groups", "read", _GID_TRIP, _TID_GENERAL])
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP, "--topic", _TID_GENERAL])
     assert rc == 0
     out = capsys.readouterr().out
     assert "Tuesday, September 15" in out
@@ -649,7 +652,7 @@ def test_groups_read_prints_a_day_header_when_the_day_changes(tmp_home, patch_ap
     assert out.index("Wednesday, September 16") < out.index("9:00 AM")
 
 
-def test_groups_read_does_not_repeat_the_day_header_within_one_day(
+def test_messages_list_does_not_repeat_the_day_header_within_one_day(
     tmp_home, patch_api, capsys
 ) -> None:
     _login(tmp_home)
@@ -659,13 +662,13 @@ def test_groups_read_does_not_repeat_the_day_header_within_one_day(
             _message(id="m2", day_key="2026-09-16", day_label="Wednesday, September 16"),
         )
     )
-    rc = cli.main(["groups", "read", _GID_TRIP, _TID_GENERAL])
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP, "--topic", _TID_GENERAL])
     assert rc == 0
     out = capsys.readouterr().out
     assert out.count("Wednesday, September 16") == 1
 
 
-def test_groups_read_placeholder_between_same_day_messages_prints_no_header(
+def test_messages_list_placeholder_between_same_day_messages_prints_no_header(
     tmp_home, patch_api, capsys
 ) -> None:
     """The broken-message placeholder carries an empty ``day_key``/``day_label``
@@ -687,7 +690,7 @@ def test_groups_read_placeholder_between_same_day_messages_prints_no_header(
             _message(id="m3", day_key="2026-09-16", day_label="Wednesday, September 16"),
         )
     )
-    rc = cli.main(["groups", "read", _GID_TRIP, _TID_GENERAL])
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP, "--topic", _TID_GENERAL])
     assert rc == 0
     out = capsys.readouterr().out
     assert out.count("Wednesday, September 16") == 1
@@ -695,7 +698,9 @@ def test_groups_read_placeholder_between_same_day_messages_prints_no_header(
     assert "\n\n" not in out
 
 
-def test_groups_read_placeholder_first_prints_no_blank_header(tmp_home, patch_api, capsys) -> None:
+def test_messages_list_placeholder_first_prints_no_blank_header(
+    tmp_home, patch_api, capsys
+) -> None:
     """A placeholder at the top of the page prints no empty header line, and
     the first real day's header that follows it gets no leading blank line."""
     _login(tmp_home)
@@ -712,7 +717,7 @@ def test_groups_read_placeholder_first_prints_no_blank_header(tmp_home, patch_ap
             _message(id="m2", day_key="2026-09-16", day_label="Wednesday, September 16"),
         )
     )
-    rc = cli.main(["groups", "read", _GID_TRIP, _TID_GENERAL])
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP, "--topic", _TID_GENERAL])
     assert rc == 0
     lines = capsys.readouterr().out.splitlines()
     assert "" not in lines
@@ -720,7 +725,7 @@ def test_groups_read_placeholder_first_prints_no_blank_header(tmp_home, patch_ap
     assert lines.count("Wednesday, September 16") == 1
 
 
-def test_groups_read_renders_a_message_body_with_bracket_markup_literally(
+def test_messages_list_renders_a_message_body_with_bracket_markup_literally(
     tmp_home, patch_api, capsys
 ) -> None:
     """A participant's message body must never be parsed as Rich markup —
@@ -728,23 +733,23 @@ def test_groups_read_renders_a_message_body_with_bracket_markup_literally(
     whole render instead of just printing oddly."""
     _login(tmp_home)
     patch_api(messages_page=_page(_message(raw_body="check this out: [bold red]not a tag[/oops")))
-    rc = cli.main(["groups", "read", _GID_TRIP, _TID_GENERAL])
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP, "--topic", _TID_GENERAL])
     assert rc == 0
     out = capsys.readouterr().out
     assert "[bold red]not a tag[/oops" in out
 
 
-def test_groups_list_escapes_a_bracket_shaped_display_name(tmp_home, patch_api, capsys) -> None:
+def test_rooms_list_escapes_a_bracket_shaped_display_name(tmp_home, patch_api, capsys) -> None:
     """A room name is member-settable (a rename); ``[dim]``-shaped text in it
     must render literally, not as markup or a crash."""
     _login(tmp_home)
     patch_api(groups=_group_list(_group(display_name="[dim]Trip[/dim] planning")))
-    rc = cli.main(["groups", "list"])
+    rc = cli.main(["rooms", "list"])
     assert rc == 0
     assert "[dim]Trip[/dim] planning" in capsys.readouterr().out
 
 
-def test_groups_read_renders_attachments_reactions_edits_and_deletes(
+def test_messages_list_renders_attachments_reactions_edits_and_deletes(
     tmp_home, patch_api, capsys
 ) -> None:
     _login(tmp_home)
@@ -760,7 +765,7 @@ def test_groups_read_renders_attachments_reactions_edits_and_deletes(
             _message(id="m2", is_deleted=True, raw_body=""),
         )
     )
-    rc = cli.main(["groups", "read", _GID_TRIP, _TID_GENERAL])
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP, "--topic", _TID_GENERAL])
     assert rc == 0
     out = capsys.readouterr().out
     assert "notes.txt" in out
@@ -770,7 +775,7 @@ def test_groups_read_renders_attachments_reactions_edits_and_deletes(
     assert "deleted" in out
 
 
-def test_groups_read_resolves_default_topic_when_omitted(tmp_home, patch_api) -> None:
+def test_messages_list_resolves_default_topic_when_omitted(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api(
         topics=[
@@ -779,57 +784,79 @@ def test_groups_read_resolves_default_topic_when_omitted(tmp_home, patch_api) ->
         ],
         messages_page=_page(),
     )
-    rc = cli.main(["groups", "read", _GID_TRIP])
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP])
     assert rc == 0
     calls = _FakeGroupsApi.instances[-1].calls
     assert ("list_group_messages", _GID_TRIP, _TID_GENERAL, None, None, None, None) in calls
 
 
-def test_groups_read_no_topics_errors(tmp_home, patch_api, capsys) -> None:
+def test_messages_list_no_topics_errors(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(topics=[])
-    rc = cli.main(["groups", "read", _GID_TRIP])
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP])
     assert rc == 2
     assert "no topics" in capsys.readouterr().err
 
 
-def test_groups_read_prints_next_cursor_when_there_is_more(tmp_home, patch_api, capsys) -> None:
+def test_messages_list_prints_next_cursor_when_there_is_more(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(messages_page=_page(_message(), next_before="cursor-42"))
-    rc = cli.main(["groups", "read", _GID_TRIP, _TID_GENERAL])
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP, "--topic", _TID_GENERAL])
     assert rc == 0
     out = capsys.readouterr().out
     assert "cursor-42" in out
     assert "--before" in out
 
 
-def test_groups_read_next_cursor_does_not_wrap(tmp_home, patch_api, capsys) -> None:
+def test_messages_list_next_cursor_does_not_wrap(tmp_home, patch_api, capsys) -> None:
     """The ``--before`` cursor in the "more" hint is meant to be pasted into
     the next ``read`` invocation verbatim; it must not be folded across
     lines by Rich's default wrapping."""
     _login(tmp_home)
     long_cursor = "cursor-" + "3" * 100
     patch_api(messages_page=_page(_message(), next_before=long_cursor))
-    rc = cli.main(["groups", "read", _GID_TRIP, _TID_GENERAL])
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP, "--topic", _TID_GENERAL])
     assert rc == 0
     assert long_cursor in capsys.readouterr().out
 
 
-def test_groups_read_passes_before_cursor(tmp_home, patch_api) -> None:
+def test_messages_list_passes_before_cursor(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api(messages_page=_page())
     rc = cli.main(
-        ["groups", "read", _GID_TRIP, _TID_GENERAL, "--before", "cursor-1", "--limit", "5"]
+        [
+            "messages",
+            "list",
+            "--room",
+            _GID_TRIP,
+            "--topic",
+            _TID_GENERAL,
+            "--before",
+            "cursor-1",
+            "--limit",
+            "5",
+        ]
     )
     assert rc == 0
     calls = _FakeGroupsApi.instances[-1].calls
     assert ("list_group_messages", _GID_TRIP, _TID_GENERAL, None, "cursor-1", None, 5) in calls
 
 
-def test_groups_read_passes_since(tmp_home, patch_api) -> None:
+def test_messages_list_passes_since(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api(messages_page=_page())
-    rc = cli.main(["groups", "read", _GID_TRIP, _TID_GENERAL, "--since", "2026-09-16T00:00:00Z"])
+    rc = cli.main(
+        [
+            "messages",
+            "list",
+            "--room",
+            _GID_TRIP,
+            "--topic",
+            _TID_GENERAL,
+            "--since",
+            "2026-09-16T00:00:00Z",
+        ]
+    )
     assert rc == 0
     calls = _FakeGroupsApi.instances[-1].calls
     assert (
@@ -843,31 +870,30 @@ def test_groups_read_passes_since(tmp_home, patch_api) -> None:
     ) in calls
 
 
-def test_groups_read_before_and_since_together_is_a_usage_error(
+def test_messages_list_before_and_since_together_is_a_usage_error(
     tmp_home, patch_api, capsys
 ) -> None:
     _login(tmp_home)
     patch_api(messages_page=_page())
-    # argparse's own mutually-exclusive-group enforcement — exits (code 2)
-    # before ``cmd_groups_read`` ever runs, same as any other argparse usage
-    # error in this CLI.
-    with pytest.raises(SystemExit) as ei:
-        cli.main(["groups", "read", _GID_TRIP, _TID_GENERAL, "--before", "c1", "--since", "c2"])
-    assert ei.value.code == 2
+    argv = ["messages", "list", "--room", _GID_TRIP, "--topic", _TID_GENERAL]
+    assert cli.main([*argv, "--before", "c1", "--since", "c2"]) == 2
+    assert "cannot be used together" in capsys.readouterr().err
+    assert cli.main([*argv, "--before", "c1", "--since", "c2", "--json"]) == 2
+    assert json.loads(capsys.readouterr().err)["error"]["code"] == "usage"
     assert _FakeGroupsApi.instances == []
 
 
-def test_groups_read_json_shape(tmp_home, patch_api, capsys) -> None:
+def test_messages_list_json_shape(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(messages_page=_page(_message(), next_before="cursor-1"))
-    rc = cli.main(["groups", "read", _GID_TRIP, _TID_GENERAL, "--json"])
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP, "--topic", _TID_GENERAL, "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["next_before"] == "cursor-1"
-    assert payload["messages"][0]["display_name"] == "Dana"
+    assert payload["items"][0]["display_name"] == "Dana"
 
 
-def test_groups_read_json_carries_the_row_ids(tmp_home, patch_api, capsys) -> None:
+def test_messages_list_json_carries_the_row_ids(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(
         messages_page=_page(
@@ -880,9 +906,9 @@ def test_groups_read_json_carries_the_row_ids(tmp_home, patch_api, capsys) -> No
             _message(),
         )
     )
-    rc = cli.main(["groups", "read", _GID_TRIP, _TID_GENERAL, "--json"])
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP, "--topic", _TID_GENERAL, "--json"])
     assert rc == 0
-    new, old = json.loads(capsys.readouterr().out)["messages"]
+    new, old = json.loads(capsys.readouterr().out)["items"]
     assert new["author_person_id"] == "p-1"
     assert new["parent_message_id"] == "m-0"
     assert new["mentions"] == ["p-2"]
@@ -891,19 +917,19 @@ def test_groups_read_json_carries_the_row_ids(tmp_home, patch_api, capsys) -> No
     assert old["mentions"] == []
 
 
-def test_groups_read_topic_by_name(tmp_home, patch_api) -> None:
+def test_messages_list_topic_by_name(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api(
         topics=[_topic(topic_id=_TID_FLIGHTS, name="Flights")],
         messages_page=_page(),
     )
-    rc = cli.main(["groups", "read", _GID_TRIP, "flights"])
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP, "--topic", "flights"])
     assert rc == 0
     calls = _FakeGroupsApi.instances[-1].calls
     assert ("list_group_messages", _GID_TRIP, _TID_FLIGHTS, None, None, None, None) in calls
 
 
-def test_groups_read_ambiguous_topic_errors(tmp_home, patch_api, capsys) -> None:
+def test_messages_list_ambiguous_topic_errors(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(
         topics=[
@@ -911,38 +937,40 @@ def test_groups_read_ambiguous_topic_errors(tmp_home, patch_api, capsys) -> None
             _topic(topic_id=_TID_GENERAL, name="Flights west"),
         ]
     )
-    rc = cli.main(["groups", "read", _GID_TRIP, "flights"])
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP, "--topic", "flights"])
     assert rc == 2
     err = capsys.readouterr().err
     assert "more than one topic" in err
 
 
-def test_groups_read_unknown_topic_lists_choices(tmp_home, patch_api, capsys) -> None:
+def test_messages_list_unknown_topic_lists_choices(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(topics=[_topic(topic_id=_TID_FLIGHTS, name="Flights")])
-    rc = cli.main(["groups", "read", _GID_TRIP, "nope"])
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP, "--topic", "nope"])
     assert rc == 2
     err = capsys.readouterr().err
     assert "no topic named" in err
     assert "Flights" in err
 
 
-def test_groups_read_404_renders_clean_error(tmp_home, patch_api, capsys) -> None:
+def test_messages_list_404_renders_clean_error(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(topics=api_client.ApiError(status=404, body="", detail="No such group."))
-    rc = cli.main(["groups", "read", _GID_TRIP])
-    assert rc == 1
-    assert "404" in capsys.readouterr().err
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP])
+    assert rc == 2
+    assert "not found" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
 # post
 
 
-def test_groups_post_joins_message_words(tmp_home, patch_api, capsys) -> None:
+def test_messages_post_joins_message_words(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(posted={"id": _MID})
-    rc = cli.main(["groups", "post", _GID_TRIP, _TID_GENERAL, "hello", "room"])
+    rc = cli.main(
+        ["messages", "post", "--room", _GID_TRIP, "--topic", _TID_GENERAL, "hello", "room"]
+    )
     assert rc == 0
     call = _FakeGroupsApi.instances[-1].calls[-1]
     assert call[0] == "post_group_message"
@@ -957,7 +985,7 @@ def _posted_message(**over) -> dict:
     return {**dataclasses.asdict(_message(**over)), "is_you": True}
 
 
-def test_groups_post_json_prints_the_created_message_as_groups_read_shapes_it(
+def test_messages_post_json_prints_the_created_message_as_groups_read_shapes_it(
     tmp_home, patch_api, capsys
 ) -> None:
     import dataclasses
@@ -967,7 +995,18 @@ def test_groups_post_json_prints_the_created_message_as_groups_read_shapes_it(
     parent = "00000000-0000-0000-0000-0000000000c2"
     patch_api(posted=_posted_message(parent_message_id=parent))
     rc = cli.main(
-        ["groups", "post", _GID_TRIP, _TID_GENERAL, "hello", "--reply-to", parent, "--json"]
+        [
+            "messages",
+            "post",
+            "--room",
+            _GID_TRIP,
+            "--topic",
+            _TID_GENERAL,
+            "hello",
+            "--reply-to",
+            parent,
+            "--json",
+        ]
     )
     assert rc == 0
     captured = capsys.readouterr()
@@ -976,49 +1015,54 @@ def test_groups_post_json_prints_the_created_message_as_groups_read_shapes_it(
     assert out["created_at"] == "2026-09-16T17:30:00+00:00"
     assert out["topic_id"] == _TID_GENERAL
     assert out["parent_message_id"] == parent
-    # Every key a message has in `groups read --json`, plus topic_id and nothing else.
+    # Every key a message has in `messages list --json`, plus topic_id and nothing else.
     read_keys = set(dataclasses.asdict(_message()))
     assert set(out) == read_keys | {"topic_id"}
     assert "Posted." not in captured.out + captured.err
 
 
-def test_groups_post_json_parent_is_null_for_a_top_level_post(tmp_home, patch_api, capsys) -> None:
+def test_messages_post_json_parent_is_null_for_a_top_level_post(
+    tmp_home, patch_api, capsys
+) -> None:
     import json
 
     _login(tmp_home)
     patch_api(posted=_posted_message())
-    assert cli.main(["groups", "post", _GID_TRIP, _TID_GENERAL, "hi", "--json"]) == 0
+    assert (
+        cli.main(["messages", "post", "--room", _GID_TRIP, "--topic", _TID_GENERAL, "hi", "--json"])
+        == 0
+    )
     assert json.loads(capsys.readouterr().out)["parent_message_id"] is None
 
 
-def test_groups_post_without_json_is_unchanged(tmp_home, patch_api, capsys) -> None:
+def test_messages_post_without_json_is_unchanged(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(posted=_posted_message())
-    assert cli.main(["groups", "post", _GID_TRIP, _TID_GENERAL, "hi"]) == 0
+    assert cli.main(["messages", "post", "--room", _GID_TRIP, "--topic", _TID_GENERAL, "hi"]) == 0
     captured = capsys.readouterr()
     assert captured.out == f"{_MID}\n"
     assert "Posted." in captured.err
 
 
-def test_groups_post_reads_stdin_with_dash(tmp_home, patch_api, monkeypatch) -> None:
+def test_messages_post_reads_stdin_with_dash(tmp_home, patch_api, monkeypatch) -> None:
     _login(tmp_home)
     patch_api(posted={"id": _MID})
     monkeypatch.setattr("sys.stdin", __import__("io").StringIO("piped message body\n"))
-    rc = cli.main(["groups", "post", _GID_TRIP, _TID_GENERAL, "-"])
+    rc = cli.main(["messages", "post", "--room", _GID_TRIP, "--topic", _TID_GENERAL, "-"])
     assert rc == 0
     call = _FakeGroupsApi.instances[-1].calls[-1]
     assert call[3] == "piped message body"
 
 
-def test_groups_post_empty_message_errors_without_any_call(tmp_home, patch_api) -> None:
+def test_messages_post_empty_message_errors_without_any_call(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api(posted={"id": _MID})
-    rc = cli.main(["groups", "post", _GID_TRIP, _TID_GENERAL])
+    rc = cli.main(["messages", "post", "--room", _GID_TRIP, "--topic", _TID_GENERAL])
     assert rc == 2
     assert _FakeGroupsApi.instances == []
 
 
-def test_groups_post_uploads_attachments_before_posting(
+def test_messages_post_uploads_attachments_before_posting(
     tmp_home, patch_api, tmp_path, capsys
 ) -> None:
     _login(tmp_home)
@@ -1026,7 +1070,18 @@ def test_groups_post_uploads_attachments_before_posting(
     attachment.write_text("hello attachment")
     patch_api(uploaded={"id": "att-1", "filename": "notes.txt"}, posted={"id": _MID})
     rc = cli.main(
-        ["groups", "post", _GID_TRIP, _TID_GENERAL, "see", "attached", "--attach", str(attachment)]
+        [
+            "messages",
+            "post",
+            "--room",
+            _GID_TRIP,
+            "--topic",
+            _TID_GENERAL,
+            "see",
+            "attached",
+            "--attach",
+            str(attachment),
+        ]
     )
     assert rc == 0
     calls = _FakeGroupsApi.instances[-1].calls
@@ -1037,14 +1092,18 @@ def test_groups_post_uploads_attachments_before_posting(
     assert post_call[4] == ["att-1"]
 
 
-def test_groups_post_missing_attachment_errors_before_any_network_call(tmp_home, patch_api) -> None:
+def test_messages_post_missing_attachment_errors_before_any_network_call(
+    tmp_home, patch_api
+) -> None:
     _login(tmp_home)
     patch_api(posted={"id": _MID})
     rc = cli.main(
         [
-            "groups",
+            "messages",
             "post",
+            "--room",
             _GID_TRIP,
+            "--topic",
             _TID_GENERAL,
             "hi",
             "--attach",
@@ -1058,7 +1117,9 @@ def test_groups_post_missing_attachment_errors_before_any_network_call(tmp_home,
     assert _FakeGroupsApi.instances == []
 
 
-def test_groups_post_a_later_bad_attachment_orphans_nothing(tmp_home, patch_api, tmp_path) -> None:
+def test_messages_post_a_later_bad_attachment_orphans_nothing(
+    tmp_home, patch_api, tmp_path
+) -> None:
     """A regression test for exactly the failure the ordering above guards
     against: with a *valid* first attachment and an unreadable second one,
     nothing gets uploaded — not even the first — because every path is read
@@ -1069,9 +1130,11 @@ def test_groups_post_a_later_bad_attachment_orphans_nothing(tmp_home, patch_api,
     patch_api(uploaded={"id": "att-1", "filename": "notes.txt"}, posted={"id": _MID})
     rc = cli.main(
         [
-            "groups",
+            "messages",
             "post",
+            "--room",
             _GID_TRIP,
+            "--topic",
             _TID_GENERAL,
             "hi",
             "--attach",
@@ -1084,25 +1147,29 @@ def test_groups_post_a_later_bad_attachment_orphans_nothing(tmp_home, patch_api,
     assert _FakeGroupsApi.instances == []
 
 
-def test_groups_post_generates_a_fresh_idempotency_key_per_invocation(tmp_home, patch_api) -> None:
+def test_messages_post_generates_a_fresh_idempotency_key_per_invocation(
+    tmp_home, patch_api
+) -> None:
     _login(tmp_home)
     patch_api(posted={"id": _MID})
-    cli.main(["groups", "post", _GID_TRIP, _TID_GENERAL, "one"])
+    cli.main(["messages", "post", "--room", _GID_TRIP, "--topic", _TID_GENERAL, "one"])
     key1 = _FakeGroupsApi.instances[-1].calls[-1][5]
-    cli.main(["groups", "post", _GID_TRIP, _TID_GENERAL, "two"])
+    cli.main(["messages", "post", "--room", _GID_TRIP, "--topic", _TID_GENERAL, "two"])
     key2 = _FakeGroupsApi.instances[-1].calls[-1][5]
     assert key1 and key2
     assert key1 != key2
 
 
-def test_groups_post_passes_reply_to_mentions_and_idempotency_key(tmp_home, patch_api) -> None:
+def test_messages_post_passes_reply_to_mentions_and_idempotency_key(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api(posted={"id": _MID})
     rc = cli.main(
         [
-            "groups",
+            "messages",
             "post",
+            "--room",
             _GID_TRIP,
+            "--topic",
             _TID_GENERAL,
             "@Sam see above",
             "--reply-to",
@@ -1133,15 +1200,17 @@ def test_groups_post_passes_reply_to_mentions_and_idempotency_key(tmp_home, patc
         ("--on-behalf-of", ""),
     ],
 )
-def test_groups_post_refuses_an_empty_flag_value(tmp_home, patch_api, flag, value) -> None:
+def test_messages_post_refuses_an_empty_flag_value(tmp_home, patch_api, flag, value) -> None:
     _login(tmp_home)
     patch_api(posted={"id": _MID})
-    rc = cli.main(["groups", "post", _GID_TRIP, _TID_GENERAL, "hi", flag, value])
+    rc = cli.main(
+        ["messages", "post", "--room", _GID_TRIP, "--topic", _TID_GENERAL, "hi", flag, value]
+    )
     assert rc == 2
     assert _FakeGroupsApi.instances == []
 
 
-def test_groups_post_rejects_an_empty_key_before_reading_stdin(
+def test_messages_post_rejects_an_empty_key_before_reading_stdin(
     tmp_home, patch_api, monkeypatch
 ) -> None:
     class _NoStdin:
@@ -1151,31 +1220,45 @@ def test_groups_post_rejects_an_empty_key_before_reading_stdin(
     _login(tmp_home)
     patch_api(posted={"id": _MID})
     monkeypatch.setattr("sys.stdin", _NoStdin())
-    rc = cli.main(["groups", "post", _GID_TRIP, _TID_GENERAL, "-", "--idempotency-key", ""])
+    rc = cli.main(
+        [
+            "messages",
+            "post",
+            "--room",
+            _GID_TRIP,
+            "--topic",
+            _TID_GENERAL,
+            "-",
+            "--idempotency-key",
+            "",
+        ]
+    )
     assert rc == 2
     assert _FakeGroupsApi.instances == []
 
 
-def test_groups_post_without_threading_flags_sends_none(tmp_home, patch_api) -> None:
+def test_messages_post_without_threading_flags_sends_none(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api(posted={"id": _MID})
-    cli.main(["groups", "post", _GID_TRIP, _TID_GENERAL, "hi"])
+    cli.main(["messages", "post", "--room", _GID_TRIP, "--topic", _TID_GENERAL, "hi"])
     call = _FakeGroupsApi.instances[-1].calls[-1]
     assert call[6] is None
     assert call[7] is None
     assert call[8] is None
 
 
-def test_groups_post_passes_on_behalf_of(tmp_home, patch_api) -> None:
+def test_messages_post_passes_on_behalf_of(tmp_home, patch_api) -> None:
     """An agent member answering someone names them; the server decides
     whether the caller may (only an agent token can)."""
     _login(tmp_home)
     patch_api(posted={"id": _MID})
     rc = cli.main(
         [
-            "groups",
+            "messages",
             "post",
+            "--room",
             _GID_TRIP,
+            "--topic",
             _TID_GENERAL,
             "done",
             "--reply-to",
@@ -1188,135 +1271,46 @@ def test_groups_post_passes_on_behalf_of(tmp_home, patch_api) -> None:
     assert _FakeGroupsApi.instances[-1].calls[-1][8] == "person-sam"
 
 
-def test_groups_post_refuses_on_behalf_of_without_a_reply(tmp_home, patch_api) -> None:
+def test_messages_post_refuses_on_behalf_of_without_a_reply(tmp_home, patch_api) -> None:
     """The requester must be the author of the parent message, so a
     bare ``--on-behalf-of`` is a post the service must reject — refused
     locally before anything is sent."""
     _login(tmp_home)
     patch_api(posted={"id": _MID})
     rc = cli.main(
-        ["groups", "post", _GID_TRIP, _TID_GENERAL, "done", "--on-behalf-of", "person-sam"]
+        [
+            "messages",
+            "post",
+            "--room",
+            _GID_TRIP,
+            "--topic",
+            _TID_GENERAL,
+            "done",
+            "--on-behalf-of",
+            "person-sam",
+        ]
     )
     assert rc == 2
     assert _FakeGroupsApi.instances == []
 
 
-def test_groups_post_prints_the_created_message_id(tmp_home, patch_api, capsys) -> None:
+def test_messages_post_prints_the_created_message_id(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(posted={"id": _MID})
-    rc = cli.main(["groups", "post", _GID_TRIP, _TID_GENERAL, "hi"])
+    rc = cli.main(["messages", "post", "--room", _GID_TRIP, "--topic", _TID_GENERAL, "hi"])
     assert rc == 0
     assert capsys.readouterr().out.strip() == _MID
 
 
-def test_groups_post_without_credentials_errors(tmp_home, patch_api) -> None:
+def test_messages_post_without_credentials_errors(tmp_home, patch_api) -> None:
     patch_api(posted={"id": _MID})
-    rc = cli.main(["groups", "post", _GID_TRIP, _TID_GENERAL, "hi"])
+    rc = cli.main(["messages", "post", "--room", _GID_TRIP, "--topic", _TID_GENERAL, "hi"])
     assert rc == 1
 
 
-def test_groups_post_unreachable_server(tmp_home, patch_api, capsys) -> None:
+def test_messages_post_unreachable_server(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(posted=httpx.ConnectError("boom"))
-    rc = cli.main(["groups", "post", _GID_TRIP, _TID_GENERAL, "hi"])
+    rc = cli.main(["messages", "post", "--room", _GID_TRIP, "--topic", _TID_GENERAL, "hi"])
     assert rc == 1
     assert "Couldn't reach" in capsys.readouterr().err
-
-
-# ---------------------------------------------------------------------------
-# roster
-
-
-def _roster():
-    return [
-        api_client.GroupRosterMember(person_id="pepper-id", display_name="Pepper", is_pepper=True),
-        api_client.GroupRosterMember(person_id="person-sam", display_name="Sam"),
-    ]
-
-
-def test_groups_roster_renders_names_and_ids(tmp_home, patch_api, capsys) -> None:
-    _login(tmp_home)
-    patch_api(roster=_roster())
-    rc = cli.main(["groups", "roster", _GID_TRIP])
-    assert rc == 0
-    assert ("group_roster", _GID_TRIP) in _FakeGroupsApi.instances[-1].calls
-    out = capsys.readouterr().out
-    assert "Sam" in out
-    assert "person-sam" in out
-    assert "Pepper" in out
-
-
-def test_groups_roster_marks_an_agent(tmp_home, patch_api, capsys) -> None:
-    _login(tmp_home)
-    patch_api(
-        roster=[
-            api_client.GroupRosterMember(person_id="p-agent", display_name="Watcher", is_agent=True)
-        ]
-    )
-    rc = cli.main(["groups", "roster", _GID_TRIP])
-    assert rc == 0
-    assert "Watcher (agent)" in capsys.readouterr().out
-
-
-def test_groups_roster_json(tmp_home, patch_api, capsys) -> None:
-    _login(tmp_home)
-    patch_api(roster=_roster())
-    rc = cli.main(["groups", "roster", _GID_TRIP, "--json"])
-    assert rc == 0
-    body = json.loads(capsys.readouterr().out)
-    assert body[0]["is_pepper"] is True
-    assert body[1] == {
-        "person_id": "person-sam",
-        "display_name": "Sam",
-        "picture_url": None,
-        "is_pepper": False,
-        "is_agent": False,
-        "agent_profile": None,
-    }
-
-
-def test_groups_roster_json_prints_an_agents_profile(tmp_home, patch_api, capsys) -> None:
-    _login(tmp_home)
-    patch_api(
-        roster=[
-            api_client.GroupRosterMember(
-                person_id="p-agent",
-                display_name="Watcher",
-                is_agent=True,
-                agent_profile="investigate",
-            ),
-            api_client.GroupRosterMember(person_id="person-sam", display_name="Sam"),
-        ]
-    )
-    rc = cli.main(["groups", "roster", _GID_TRIP, "--json"])
-    assert rc == 0
-    body = json.loads(capsys.readouterr().out)
-    assert body[0]["agent_profile"] == "investigate"
-    assert body[1]["agent_profile"] is None
-
-
-def test_groups_roster_empty(tmp_home, patch_api, capsys) -> None:
-    _login(tmp_home)
-    patch_api(roster=[])
-    rc = cli.main(["groups", "roster", _GID_TRIP])
-    assert rc == 0
-    assert "(no members)" in capsys.readouterr().out
-
-
-def test_groups_roster_without_credentials_errors(tmp_home, patch_api) -> None:
-    patch_api(roster=_roster())
-    assert cli.main(["groups", "roster", _GID_TRIP]) == 1
-
-
-def test_groups_roster_unreachable_server(tmp_home, patch_api, capsys) -> None:
-    _login(tmp_home)
-    patch_api(roster=httpx.ConnectError("boom"))
-    assert cli.main(["groups", "roster", _GID_TRIP]) == 1
-    assert "Couldn't reach" in capsys.readouterr().err
-
-
-def test_groups_roster_api_error_is_reported(tmp_home, patch_api, capsys) -> None:
-    _login(tmp_home)
-    patch_api(roster=api_client.ApiError(status=403, body="", detail="Not a member."))
-    assert cli.main(["groups", "roster", _GID_TRIP]) != 0
-    assert "Not a member." in capsys.readouterr().err

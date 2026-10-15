@@ -33,21 +33,21 @@ Subcommands:
   ``--room`` to read what a room holds — any member reads and shares, the
   skill's owner or a room owner revokes. A room never owns a skill, so
   ``new``/``edit``/``delete`` refuse ``--room``.
-- ``pepper groups list | show | topics | read | post`` — read and post in
-  your rooms/channels and their topics. ``pepper groups watch [--room ROOM
+- ``pepper rooms list | show | create | edit | archive | unarchive | leave | mute |
+  unmute | activity | watch``, ``pepper topics list | create | edit | archive |
+  unarchive | search``, ``pepper messages list | post | edit | delete | react |
+  unreact`` and ``pepper attachments download`` — read and post in your rooms and
+  their topics. A room that is the container is ``--room ROOM`` (``rooms show ROOM``
+  takes it as the object); a topic is ``--topic``. ``pepper rooms watch [--room ROOM
   [--topic TOPIC]] [--since CURSOR] [--cursor-file PATH] [--json] [--kinds K,...]
-  [--ignore-kinds K,...]`` is the agent-member counterpart of polling ``read``:
-  it consumes the agent's event stream (SSE), one line per event, and
-  reconnects from its cursor; ``--room``/``--topic`` have the server narrow
-  it to one room or topic (exit 3 when the server can no longer replay from
-  the cursor asked for). Also edit /
-  delete-message / react / unreact / download, new-topic / rename-topic / archive-topic /
-  unarchive-topic, new / rename / archive / unarchive / leave / mute /
-  unmute, invite / remove / role, apps / install-app / uninstall-app,
-  sharing, activity and search; the destructive ones confirm unless ``--yes``. Reference client for
-  the groups API — this is the surface a native port
+  [--ignore-kinds K,...]`` is the agent-member counterpart of polling
+  ``messages list``: it consumes the agent's event stream (SSE), one line per
+  event, and reconnects from its cursor; ``--room``/``--topic`` have the server
+  narrow it to one room or topic (exit 3 when the server can no longer replay
+  from the cursor asked for). The destructive ones confirm unless ``--yes``.
+  Reference client for the groups API — this is the surface a native port
   reproduces, so a shape change here mirrors the server contract, not the
-  other way round.
+  other way round. ``groups`` is a retired noun (a stub that exits 2).
 - ``pepper notes list | search | show | new | edit | rm`` — your text
   artifacts: your own, or a room's shared ones with ``--room``. Reference
   client for the artifacts API — ``show`` writes a note's raw
@@ -285,7 +285,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         # A 426 from any request: the server no longer supports this client
         # version. Raised past every per-command ``except ApiError``, so one
         # handler covers all commands (and the REPL) with no traceback.
-        print(exc.message, file=sys.stderr)
+        if hasattr(args, "json") and args.json:
+            _emit_error(args, "upgrade_required", exc.message, status=426)
+        else:
+            print(exc.message, file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         # Ctrl-C inside an interactive prompt or a long-running turn.
@@ -390,7 +393,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
             "Bare ``pepper`` opens the REPL; ``pepper <message>`` is shorthand "
             "for ``pepper chat <message>``. Use a subcommand "
             "(login / whoami / chat / trajectory / todos / scheduled-tasks / "
-            "skills / groups / notes / agent-skill / logout) for everything else."
+            "skills / rooms / topics / messages / attachments / notes / agent-skill / "
+            "logout) for everything else."
         ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -408,7 +412,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
             "(e.g. an agent token). Must come before the subcommand."
         ),
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    # ``metavar`` keeps the retired-noun stubs (no ``help=``) out of the usage brace list.
+    sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     p_login = sub.add_parser("login", help="Store credentials for a Pepper server.")
     p_login.add_argument(
@@ -845,125 +850,98 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
             help="Not available: a room never owns a skill. See ``skills share``.",
         )
 
-    p_groups = sub.add_parser(
+    # --- rooms, topics, messages, attachments (§4) ---------------------------------------
+    # ``groups`` is a retired noun (§7). Every old ``groups`` leaf that has no new home
+    # yet (members, sharing, apps: phase 2b) is unreachable until that phase lands.
+    _add_renamed_stub(
+        sub,
         "groups",
+        "use 'pepper rooms', 'topics', 'messages' or 'attachments' (run 'pepper --help')",
+    )
+
+    p_rooms = sub.add_parser(
+        "rooms",
         help=(
-            "Your rooms/channels. ``list``/``show``/``topics``/``read`` to "
-            "inspect, ``post`` to send a message."
+            "Your rooms. ``list``/``show`` to inspect, ``create``/``edit`` to change, "
+            "``watch`` to follow events."
         ),
     )
-    sub_groups = p_groups.add_subparsers(dest="groups_action", required=True)
+    sub_rooms = p_rooms.add_subparsers(dest="rooms_action", required=True)
 
-    p_groups_list = sub_groups.add_parser("list", help="List your rooms (unarchived by default).")
-    p_groups_list.add_argument(
+    p = sub_rooms.add_parser(
+        "list", parents=[_json_parent], help="List your rooms (unarchived by default)."
+    )
+    p.add_argument(
         "--archived", action="store_true", help="List only archived rooms, instead of the default."
     )
-    p_groups_list.add_argument("--json", action="store_true", help="Emit the raw JSON response.")
-    p_groups_list.set_defaults(handler=cmd_groups_list)
+    p.set_defaults(handler=cmd_rooms_list)
 
-    p_groups_show = sub_groups.add_parser(
-        "show", help="One room's info: kind, members + roles, topics, installed apps."
+    p = sub_rooms.add_parser(
+        "show",
+        parents=[_json_parent],
+        help="One room's info: kind, members + roles, topics, installed apps.",
     )
-    p_groups_show.add_argument("group", help=_GROUP_ARG_HELP)
-    p_groups_show.set_defaults(handler=cmd_groups_show)
+    p.add_argument("room", help=_ROOM_ARG_HELP)
+    p.set_defaults(handler=cmd_rooms_show)
 
-    p_groups_topics = sub_groups.add_parser("topics", help="List a room's topics.")
-    p_groups_topics.add_argument("group", help=_GROUP_ARG_HELP)
-    p_groups_topics.add_argument(
-        "--archived", action="store_true", help="Include archived topics (folded by default)."
+    p = sub_rooms.add_parser(
+        "create",
+        parents=[_json_parent],
+        help="Create a room. With --name it is an open room.",
     )
-    p_groups_topics.add_argument("--json", action="store_true", help="Emit the raw JSON response.")
-    p_groups_topics.set_defaults(handler=cmd_groups_topics)
+    p.add_argument("--name", help="Room name; omit for a conversation of exactly these people.")
+    p.add_argument(
+        "people", nargs="+", help="Email, phone, or a contact's name (looked up in your Contacts)."
+    )
+    p.set_defaults(handler=cmd_rooms_create)
 
-    p_groups_roster = sub_groups.add_parser(
-        "roster",
-        help="A room's addressable members (person ids for --mention), Pepper first.",
-    )
-    p_groups_roster.add_argument("group", help=_GROUP_ARG_HELP)
-    p_groups_roster.add_argument("--json", action="store_true", help="Emit the raw JSON response.")
-    p_groups_roster.set_defaults(handler=cmd_groups_roster)
+    p = sub_rooms.add_parser("edit", parents=[_json_parent], help="Change a room (its name).")
+    p.add_argument("room", help=_ROOM_ARG_HELP)
+    p.add_argument("--name", required=True, help="The new room name.")
+    p.set_defaults(handler=cmd_rooms_edit)
 
-    p_groups_read = sub_groups.add_parser("read", help="Read a topic's messages, oldest to newest.")
-    p_groups_read.add_argument("group", help=_GROUP_ARG_HELP)
-    p_groups_read.add_argument(
-        "topic",
-        nargs="?",
-        help=_TOPIC_ARG_HELP + " Omit for the room's default topic.",
+    p = sub_rooms.add_parser(
+        "archive", parents=[_json_parent], help="Archive a room (your view only)."
     )
-    p_groups_read.add_argument(
-        "--limit", type=int, default=None, help="Max messages to return (server default/cap apply)."
+    p.add_argument("room", help=_ROOM_ARG_HELP)
+    p.add_argument(
+        "--yes", action="store_true", help="Accepted and ignored: archiving asks nothing."
     )
-    p_groups_read_page = p_groups_read.add_mutually_exclusive_group()
-    p_groups_read_page.add_argument(
-        "--before", help="Page cursor: messages older than this (a previous 'more' cursor)."
+    p.set_defaults(handler=cmd_rooms_archive)
+    p = sub_rooms.add_parser("unarchive", parents=[_json_parent], help="Unarchive a room.")
+    p.add_argument("room", help=_ROOM_ARG_HELP)
+    p.set_defaults(handler=cmd_rooms_unarchive)
+    p = sub_rooms.add_parser(
+        "leave", parents=[_json_parent, _yes_parent], help="Leave an open room."
     )
-    p_groups_read_page.add_argument(
-        "--since", help="Only messages newer than this cursor/timestamp."
+    p.add_argument("room", help=_ROOM_ARG_HELP)
+    p.set_defaults(handler=cmd_rooms_leave)
+    p = sub_rooms.add_parser(
+        "mute",
+        parents=[_json_parent],
+        help="Stop push notifications from a room (your devices only).",
     )
-    p_groups_read.add_argument("--json", action="store_true", help="Emit the raw JSON response.")
-    p_groups_read.add_argument(
-        "--mark", action="store_true", help="Then mark the topic read through its newest message."
+    p.add_argument("room", help=_ROOM_ARG_HELP)
+    p.set_defaults(handler=cmd_rooms_mute)
+    p = sub_rooms.add_parser(
+        "unmute", parents=[_json_parent], help="Resume push notifications from a room."
     )
-    p_groups_read.set_defaults(handler=cmd_groups_read)
+    p.add_argument("room", help=_ROOM_ARG_HELP)
+    p.set_defaults(handler=cmd_rooms_unmute)
 
-    p_groups_post = sub_groups.add_parser("post", help="Post a message into a topic, as yourself.")
-    p_groups_post.add_argument("group", help=_GROUP_ARG_HELP)
-    p_groups_post.add_argument("topic", help=_TOPIC_ARG_HELP)
-    p_groups_post.add_argument(
-        "message",
-        nargs="*",
-        help=(
-            "Message text. Multi-word OK without quotes. "
-            "Pass '-' alone to read the body from stdin."
-        ),
+    p = sub_rooms.add_parser(
+        "activity",
+        parents=[_room_parent(omitted="Omit for all your rooms."), _json_parent],
+        help="Newest messages from others in your rooms' topics.",
     )
-    p_groups_post.add_argument(
-        "--attach",
-        action="append",
-        metavar="PATH",
-        help="Attach a file; repeatable. Uploaded before the message is posted.",
+    p.add_argument(
+        "--since",
+        metavar="TIME",
+        help="ISO-8601 time (the route takes a time, not a cursor). Default: 24 hours ago.",
     )
-    p_groups_post.add_argument(
-        "--reply-to",
-        metavar="MESSAGE_ID",
-        help="Thread the post onto this message (its id, from 'groups read --json').",
-    )
-    p_groups_post.add_argument(
-        "--mention",
-        action="append",
-        metavar="PERSON_ID",
-        help=(
-            "Structurally mention this person id (from 'groups roster'); repeatable. "
-            "Keep their '@Display Name' in the message text."
-        ),
-    )
-    p_groups_post.add_argument(
-        "--on-behalf-of",
-        metavar="PERSON_ID",
-        help=(
-            "Agent tokens only: post as answering this person id, so the room shows "
-            "the reply 'for' them. Needs --reply-to naming their message."
-        ),
-    )
-    p_groups_post.add_argument(
-        "--idempotency-key",
-        metavar="KEY",
-        help=(
-            "Send this Idempotency-Key instead of a fresh one, so re-running the same "
-            "command cannot post twice (e.g. the id of the message being answered)."
-        ),
-    )
-    p_groups_post.add_argument(
-        "--json",
-        action="store_true",
-        help=(
-            "Print the created message as one JSON object (the shape 'groups read --json' "
-            "uses for a message, plus topic_id) instead of 'Posted.' and the id."
-        ),
-    )
-    p_groups_post.set_defaults(handler=cmd_groups_post)
+    p.set_defaults(handler=cmd_rooms_activity)
 
-    p_groups_watch = sub_groups.add_parser(
+    p_rooms_watch = sub_rooms.add_parser(
         "watch",
         help="Stream your rooms' events as an agent member (one line per event).",
         description=(
@@ -971,28 +949,28 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
             "(a pep_agt_ token). Prints one line per event, reconnecting from the last "
             "cursor with backoff when the stream drops, and exits non-zero if the "
             "token is revoked. Events carry ids, not message bodies: read a body "
-            "with 'groups read'. --room (and --topic) narrow the stream on the server "
+            "with 'messages list'. --room (and --topic) narrow the stream on the server "
             "to one room, or one topic in it; a server that cannot do that is an "
             "error, never a wider stream. Under --room, a mention of you in another "
             "room is not shown; under --topic, room-wide events (membership, room "
             "renames) are not shown either."
         ),
     )
-    p_groups_watch.add_argument(
+    p_rooms_watch.add_argument(
         "--room",
         default=None,
         metavar="ROOM",
         help="Only this room's events (an id, or a name or unique name prefix). "
         "Exit 2 if it does not resolve or you are not a member.",
     )
-    p_groups_watch.add_argument(
+    p_rooms_watch.add_argument(
         "--topic",
         default=None,
         metavar="TOPIC",
         help="Only this topic's events, within --room (required). Without it, every "
         "topic in the room.",
     )
-    p_groups_watch.add_argument(
+    p_rooms_watch.add_argument(
         "--since",
         type=int,
         default=None,
@@ -1000,7 +978,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         help="Resume after this cursor (an event id, or a cursor frame's value). "
         "Default: the cursor file's, else the beginning.",
     )
-    p_groups_watch.add_argument(
+    p_rooms_watch.add_argument(
         "--cursor-file",
         default=None,
         metavar="PATH",
@@ -1009,13 +987,13 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "watch's file records its room and topic, and a file from another scope is "
         "refused (exit 2).",
     )
-    p_groups_watch.add_argument(
+    p_rooms_watch.add_argument(
         "--json",
         action="store_true",
         help='One JSON object per line: the event\'s fields plus "cursor"; a cursor '
         'frame is {"kind": "cursor", "cursor": N}.',
     )
-    p_groups_watch.add_argument(
+    p_rooms_watch.add_argument(
         "--kinds",
         type=_kind_list,
         default=None,
@@ -1024,7 +1002,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "message.created,mention.created); every other event is skipped but the "
         "cursor still moves past it. Default: all kinds.",
     )
-    p_groups_watch.add_argument(
+    p_rooms_watch.add_argument(
         "--ignore-kinds",
         type=_kind_list,
         default=None,
@@ -1033,130 +1011,169 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "message.link_cards_updated); the cursor still moves past them. Kinds not "
         "listed, including ones added later, still print. Combines with --kinds.",
     )
-    p_groups_watch.set_defaults(handler=cmd_groups_watch)
+    p_rooms_watch.set_defaults(handler=cmd_rooms_watch)
 
-    def groups_cmd(
-        name: str, handler: Callable[[argparse.Namespace], int], text: str, *pos: tuple[str, str]
-    ) -> argparse.ArgumentParser:
-        p = sub_groups.add_parser(name, help=text)
-        p.add_argument("group", help=_GROUP_ARG_HELP)
-        for arg, arg_help in pos:
-            p.add_argument(arg, help=arg_help)
-        p.set_defaults(handler=handler)
-        return p
-
-    def words(p: argparse.ArgumentParser, dest: str, text: str) -> None:
-        p.add_argument(dest, nargs="+", help=text)
-
-    _mid = ("message", "Message id (from 'groups read --json').")
-    _yes = "Skip the confirmation (required when not on a terminal)."
-
-    p = groups_cmd("edit", cmd_groups_edit, "Edit one of your messages.", _mid)
-    words(p, "text", "The new message text.")
-    p = groups_cmd(
-        "delete-message", cmd_groups_delete_message, "Delete one of your messages.", _mid
+    p_topics = sub.add_parser(
+        "topics",
+        help="A room's topics. ``list``/``search`` to find one, ``create``/``edit`` to change.",
     )
-    p.add_argument("--yes", action="store_true", help=_yes)
-    groups_cmd("react", cmd_groups_react, "React to a message.", _mid, ("emoji", "The emoji."))
-    groups_cmd(
-        "unreact", cmd_groups_unreact, "Take your reaction back.", _mid, ("emoji", "The emoji.")
-    )
-    p = groups_cmd(
-        "download",
-        cmd_groups_download,
-        "Download a message attachment.",
-        ("attachment", "Attachment id (from 'groups read --json')."),
+    sub_topics = p_topics.add_subparsers(dest="topics_action", required=True)
+    _topic_arg = "Topic: its UUID, or a case-insensitive unique name prefix."
+
+    p = sub_topics.add_parser(
+        "list", parents=[_room_parent(required=True), _json_parent], help="List a room's topics."
     )
     p.add_argument(
-        "--out", required=True, metavar="PATH", help="Where to write it; '-' for stdout."
+        "--archived", action="store_true", help="Include archived topics (folded by default)."
     )
+    p.set_defaults(handler=cmd_topics_list)
+    p = sub_topics.add_parser(
+        "create",
+        parents=[_room_parent(required=True), _json_parent],
+        help="Start a topic in a room.",
+    )
+    p.add_argument("name", nargs="+", help="The topic name. Multi-word OK without quotes.")
+    p.set_defaults(handler=cmd_topics_create)
+    p = sub_topics.add_parser(
+        "edit",
+        parents=[_room_parent(required=True), _json_parent],
+        help="Change a topic (its name).",
+    )
+    p.add_argument("topic", help=_topic_arg)
+    p.add_argument("--name", required=True, help="The new topic name.")
+    p.set_defaults(handler=cmd_topics_edit)
+    p = sub_topics.add_parser(
+        "archive", parents=[_room_parent(required=True), _json_parent], help="Archive a topic."
+    )
+    p.add_argument("topic", help=_topic_arg)
+    p.set_defaults(handler=cmd_topics_archive)
+    p = sub_topics.add_parser(
+        "unarchive", parents=[_room_parent(required=True), _json_parent], help="Unarchive a topic."
+    )
+    p.add_argument("topic", help=_topic_arg)
+    p.set_defaults(handler=cmd_topics_unarchive)
+    p = sub_topics.add_parser(
+        "search",
+        parents=[_room_parent(omitted="Omit to search all your rooms."), _json_parent],
+        help="Find topics by name (topic names only) across your unarchived rooms.",
+    )
+    p.add_argument("query", nargs="+", help="Search text. Multi-word OK without quotes.")
+    p.set_defaults(handler=cmd_topics_search)
 
-    p = groups_cmd("new-topic", cmd_groups_new_topic, "Start a topic in a room.")
-    words(p, "name", "The topic name.")
-    p = groups_cmd(
-        "rename-topic", cmd_groups_rename_topic, "Rename a topic.", ("topic", _TOPIC_ARG_HELP)
+    p_messages = sub.add_parser(
+        "messages",
+        help="A topic's messages. ``list`` to read, ``post`` to send, ``edit``/``react``.",
     )
-    words(p, "name", "The new name.")
-    groups_cmd(
-        "archive-topic", cmd_groups_archive_topic, "Archive a topic.", ("topic", _TOPIC_ARG_HELP)
-    )
-    groups_cmd(
-        "unarchive-topic",
-        cmd_groups_unarchive_topic,
-        "Unarchive a topic.",
-        ("topic", _TOPIC_ARG_HELP),
-    )
+    sub_messages = p_messages.add_subparsers(dest="messages_action", required=True)
+    _mid = "Message id (from 'messages list --json')."
+    _room_req = _room_parent(required=True)
 
-    p = sub_groups.add_parser("new", help="Create a room. With --name it is an open room.")
-    p.add_argument("--name", help="Room name; omit for a conversation of exactly these people.")
+    p = sub_messages.add_parser(
+        "list",
+        parents=[_room_req, _topic_parent(), _page_parent, _json_parent],
+        help="Read a topic's messages, oldest to newest.",
+    )
     p.add_argument(
-        "people", nargs="+", help="Email, phone, or a contact's name (looked up in your Contacts)."
+        "--mark", action="store_true", help="Then mark the topic read through its newest message."
     )
-    p.set_defaults(handler=cmd_groups_new)
-    p = groups_cmd("rename", cmd_groups_rename, "Rename a room.")
-    words(p, "name", "The new room name.")
-    p = groups_cmd("archive", cmd_groups_archive, "Archive a room (your view only).")
-    p.add_argument("--yes", action="store_true", help=_yes)
-    groups_cmd("unarchive", cmd_groups_unarchive, "Unarchive a room.")
-    p = groups_cmd("leave", cmd_groups_leave, "Leave an open room.")
-    p.add_argument("--yes", action="store_true", help=_yes)
-    groups_cmd("mute", cmd_groups_mute, "Stop push notifications from a room (your devices only).")
-    groups_cmd("unmute", cmd_groups_unmute, "Resume push notifications from a room.")
+    p.set_defaults(handler=cmd_messages_list)
 
-    p = groups_cmd(
-        "invite",
-        cmd_groups_invite,
-        "Invite someone to an open room.",
-        ("handle", "Email or phone."),
+    p = sub_messages.add_parser(
+        "post",
+        parents=[_room_req, _topic_parent(required=True), _json_parent],
+        help="Post a message into a topic, as yourself.",
     )
-    person_help = "A member's name (unique prefix OK) or person id (from 'groups roster')."
-    p = groups_cmd(
-        "remove", cmd_groups_remove, "Remove a member from a room.", ("person", person_help)
-    )
-    p.add_argument("--yes", action="store_true", help=_yes)
-    p = groups_cmd(
-        "role",
-        cmd_groups_role,
-        "Make someone an owner, or a plain member.",
-        ("person", person_help),
-    )
-    p.add_argument("role", choices=("owner", "member"))
-    p.add_argument("--yes", action="store_true", help=_yes)
-
-    p = groups_cmd("apps", cmd_groups_apps, "A room's apps, and the ones you can install.")
-    p.add_argument("--json", action="store_true", help="Emit the launcher tiles as JSON.")
-    groups_cmd(
-        "install-app",
-        cmd_groups_install_app,
-        "Install an app in a room.",
-        ("app_key", "App key (see 'groups apps')."),
-    )
-    p = groups_cmd(
-        "uninstall-app",
-        cmd_groups_uninstall_app,
-        "Uninstall an app from a room.",
-        ("app", "Installed app's key, title or install id."),
-    )
-    p.add_argument("--yes", action="store_true", help=_yes)
-
-    p = groups_cmd("sharing", cmd_groups_sharing, "Which of your calendars this room sees.")
     p.add_argument(
-        "--set",
+        "message",
+        nargs="*",
+        help=(
+            "Message text. Multi-word OK without quotes. "
+            "Pass '-' alone to read the body from stdin."
+        ),
+    )
+    p.add_argument(
+        "--attach",
         action="append",
-        metavar="CALENDAR=LEVEL",
-        help="Set a calendar (name or id) to a level; repeatable. Calendars not named keep theirs.",
+        metavar="PATH",
+        help="Attach a file; repeatable. Uploaded before the message is posted.",
     )
-    p.add_argument("--json", action="store_true", help="Emit the sharing record as JSON.")
+    p.add_argument(
+        "--reply-to",
+        metavar="MESSAGE_ID",
+        help="Thread the post onto this message (its id, from 'messages list --json').",
+    )
+    p.add_argument(
+        "--mention",
+        action="append",
+        metavar="PERSON_ID",
+        help=(
+            "Structurally mention this person id (from 'members list'); repeatable. "
+            "Keep their '@Display Name' in the message text."
+        ),
+    )
+    p.add_argument(
+        "--on-behalf-of",
+        metavar="PERSON_ID",
+        help=(
+            "Agent tokens only: post as answering this person id, so the room shows "
+            "the reply 'for' them. Needs --reply-to naming their message."
+        ),
+    )
+    p.add_argument(
+        "--idempotency-key",
+        metavar="KEY",
+        help=(
+            "Send this Idempotency-Key instead of a fresh one, so re-running the same "
+            "command cannot post twice (e.g. the id of the message being answered)."
+        ),
+    )
+    p.set_defaults(handler=cmd_messages_post)
 
-    p = sub_groups.add_parser("activity", help="Newest messages from others in your rooms' topics.")
-    p.add_argument("group", nargs="?", help=_GROUP_ARG_HELP + " Omit for all your rooms.")
-    p.add_argument("--since", help="ISO timestamp (default: 24 hours ago).")
-    p.add_argument("--json", action="store_true", help="Emit the raw JSON response.")
-    p.set_defaults(handler=cmd_groups_activity)
-    p = sub_groups.add_parser("search", help="Find topics by name across your unarchived rooms.")
-    p.add_argument("query")
-    p.add_argument("--json", action="store_true", help="Emit the raw JSON response.")
-    p.set_defaults(handler=cmd_groups_search)
+    p = sub_messages.add_parser(
+        "edit", parents=[_room_req, _json_parent], help="Edit one of your messages."
+    )
+    p.add_argument("message", help=_mid)
+    p.add_argument(
+        "text",
+        nargs="*",
+        help="The new message text. Multi-word OK without quotes. Pass '-' alone to read stdin.",
+    )
+    p.set_defaults(handler=cmd_messages_edit)
+    p = sub_messages.add_parser(
+        "delete",
+        parents=[_room_req, _json_parent, _yes_parent],
+        help="Delete one of your messages.",
+    )
+    p.add_argument("message", help=_mid)
+    p.set_defaults(handler=cmd_messages_delete)
+    p = sub_messages.add_parser(
+        "react", parents=[_room_req, _json_parent], help="React to a message."
+    )
+    p.add_argument("message", help=_mid)
+    p.add_argument("emoji", help="The emoji.")
+    p.set_defaults(handler=cmd_messages_react)
+    p = sub_messages.add_parser(
+        "unreact", parents=[_room_req, _json_parent], help="Take your reaction back."
+    )
+    p.add_argument("message", help=_mid)
+    p.add_argument("emoji", help="The emoji.")
+    p.set_defaults(handler=cmd_messages_unreact)
+
+    p_attachments = sub.add_parser("attachments", help="A message's attachments. ``download`` one.")
+    sub_attachments = p_attachments.add_subparsers(dest="attachments_action", required=True)
+    p = sub_attachments.add_parser(
+        "download",
+        parents=[_room_parent(required=True), _json_parent],
+        help="Download a message attachment.",
+    )
+    p.add_argument("attachment", help="Attachment id (from 'messages list --json').")
+    p.add_argument(
+        "--out",
+        required=True,
+        metavar="PATH",
+        help="Where to write it; '-' for stdout (not under --json).",
+    )
+    p.set_defaults(handler=cmd_attachments_download)
 
     p_notes = sub.add_parser(
         "notes",
@@ -3107,7 +3124,7 @@ def _print_json(obj: object) -> None:
     ``dataclasses.asdict`` recurses through nested dataclasses (e.g.
     ``GroupSummary.topics``), which covers every ``--json`` call site here
     except one shape it doesn't reach on its own: a *top-level* plain
-    ``list`` of dataclass instances (``groups topics --json`` — the
+    ``list`` of dataclass instances (``topics list --json`` — the
     endpoint has no wrapping dataclass of its own), so that case is
     converted element-wise. ``default=str`` is defensive, not load-bearing
     — every field on these wire shapes is already JSON-safe.
@@ -3151,12 +3168,15 @@ def _build_json_parent() -> argparse.ArgumentParser:
     return parent
 
 
-def _build_topic_parent() -> argparse.ArgumentParser:
+def _topic_parent(*, required: bool = False) -> argparse.ArgumentParser:
+    """``--topic TOPIC`` parent: required where the verb acts on one topic's messages."""
     parent = argparse.ArgumentParser(add_help=False)
     parent.add_argument(
         "--topic",
         metavar="TOPIC",
-        help="Topic: its UUID, or a case-insensitive unique name prefix (needs --room).",
+        required=required,
+        help="Topic: its UUID, or a case-insensitive unique name prefix (needs --room)."
+        + ("" if required else " Omit for the room's default topic."),
     )
     return parent
 
@@ -3185,12 +3205,13 @@ def _build_page_parent() -> argparse.ArgumentParser:
 
 #: Built once, attached with ``parents=[...]`` (each has ``add_help=False``).
 _json_parent = _build_json_parent()
-_topic_parent = _build_topic_parent()
 _yes_parent = _build_yes_parent()
 _page_parent = _build_page_parent()
 
 
-def _room_parent(*, required: bool = False) -> argparse.ArgumentParser:
+def _room_parent(
+    *, required: bool = False, omitted: str = "Omit to act on your own."
+) -> argparse.ArgumentParser:
     """``--room ROOM`` parent: required where the verb acts inside a room (§6)."""
     parent = argparse.ArgumentParser(add_help=False)
     parent.add_argument(
@@ -3198,7 +3219,7 @@ def _room_parent(*, required: bool = False) -> argparse.ArgumentParser:
         metavar="ROOM",
         required=required,
         help="Room: its UUID, or a case-insensitive unique name prefix."
-        + ("" if required else " Omit to act on your own."),
+        + ("" if required else f" {omitted}"),
     )
     return parent
 
@@ -3277,20 +3298,26 @@ def _error_code_for_status(status: int | None) -> str:
 
 
 def _emit_error(
-    args: argparse.Namespace, code: str, message: str, *, status: int | None = None
+    args: argparse.Namespace | None,
+    code: str,
+    message: str,
+    *,
+    status: int | None = None,
+    soft_wrap: bool = False,
 ) -> None:
     """Report an error: one J8 JSON line on stderr in JSON mode, else the usual text line.
 
     stdout is left empty either way. The caller still returns the exit code (J9).
-    ``message`` must never carry a token.
+    ``message`` must never carry a token. ``args=None`` is a caller that has no
+    ``--json`` (another command family sharing a helper): always the text line.
     """
     if code not in _ERROR_CODES:
         raise ValueError(f"unknown error code {code!r}")
-    if _json_mode(args):
+    if args is not None and _json_mode(args):
         line = json.dumps({"error": {"code": code, "status": status, "message": message}})
         sys.stderr.write(line + "\n")
     else:
-        render.error(message)
+        render.error(message, soft_wrap=soft_wrap)
 
 
 class _RenamedStubParser(argparse.ArgumentParser):
@@ -3398,7 +3425,11 @@ def _group_list_or_error(
 
 
 def _resolve_group(
-    api: api_client.ApiClient, value: str, *, rooms: api_client.GroupList | None = None
+    api: api_client.ApiClient,
+    value: str,
+    *,
+    rooms: api_client.GroupList | None = None,
+    args: argparse.Namespace | None = None,
 ) -> str | None:
     """Resolve ``<group>`` to its id.
 
@@ -3422,13 +3453,17 @@ def _resolve_group(
         return match.group_id
     if candidates:
         listing = ", ".join(f"{g.display_name!r} ({g.group_id})" for g in candidates)
-        render.error(f"{value!r} matches more than one room: {listing}", soft_wrap=True)
+        _emit_error(
+            args, "ambiguous", f"{value!r} matches more than one room: {listing}", soft_wrap=True
+        )
     else:
-        render.error(f"no room named {value!r} — run 'pepper groups list'")
+        _emit_error(args, "not_found", f"no room named {value!r} — run 'pepper rooms list'")
     return None
 
 
-def _default_topic_id(api: api_client.ApiClient, group_id: str) -> str | None:
+def _default_topic_id(
+    api: api_client.ApiClient, group_id: str, *, args: argparse.Namespace | None = None
+) -> str | None:
     """The room's default topic, mirroring the web door's own rule
     (``pepper.features.groups.room``: open a room to its most-recently-active
     non-archived topic, or ``topics[0]`` if every topic is archived).
@@ -3442,13 +3477,19 @@ def _default_topic_id(api: api_client.ApiClient, group_id: str) -> str | None:
     """
     topics = api.list_group_topics(group_id)
     if not topics:
-        render.error("this room has no topics")
+        _emit_error(args, "not_found", "this room has no topics")
         return None
     default = next((t for t in topics if t.archived_at is None), topics[0])
     return default.topic_id
 
 
-def _resolve_topic(api: api_client.ApiClient, group_id: str, value: str | None) -> str | None:
+def _resolve_topic(
+    api: api_client.ApiClient,
+    group_id: str,
+    value: str | None,
+    *,
+    args: argparse.Namespace | None = None,
+) -> str | None:
     """Resolve ``<topic>`` to its id, or the room's default when omitted.
 
     Same name-or-UUID contract as :func:`_resolve_group`, scoped to one
@@ -3457,7 +3498,7 @@ def _resolve_topic(api: api_client.ApiClient, group_id: str, value: str | None) 
     caller's own listing).
     """
     if value is None:
-        return _default_topic_id(api, group_id)
+        return _default_topic_id(api, group_id, args=args)
     if _valid_uuid(value):
         return value
     topics = api.list_group_topics(group_id)
@@ -3466,10 +3507,14 @@ def _resolve_topic(api: api_client.ApiClient, group_id: str, value: str | None) 
         return match.topic_id
     if candidates:
         listing = ", ".join(f"{t.name!r} ({t.topic_id})" for t in candidates)
-        render.error(f"{value!r} matches more than one topic: {listing}", soft_wrap=True)
+        _emit_error(
+            args, "ambiguous", f"{value!r} matches more than one topic: {listing}", soft_wrap=True
+        )
     else:
         choices = ", ".join(t.name for t in topics) or "(no topics)"
-        render.error(f"no topic named {value!r} in this room — choices: {choices}")
+        _emit_error(
+            args, "not_found", f"no topic named {value!r} in this room — choices: {choices}"
+        )
     return None
 
 
@@ -3477,34 +3522,51 @@ class _BadInputError(Exception):
     """A name that didn't resolve (already reported); the command exits 2."""
 
 
-def _need_group(api: api_client.ApiClient, value: str) -> str:
-    group_id = _resolve_group(api, value)
+def _need_group(
+    api: api_client.ApiClient, value: str, *, args: argparse.Namespace | None = None
+) -> str:
+    group_id = _resolve_group(api, value, args=args)
     if group_id is None:
         raise _BadInputError
     return group_id
 
 
-def _opt_group(api: api_client.ApiClient, value: str | None) -> str | None:
-    return _need_group(api, value) if value else None
+def _opt_group(
+    api: api_client.ApiClient, value: str | None, *, args: argparse.Namespace | None = None
+) -> str | None:
+    return _need_group(api, value, args=args) if value else None
 
 
-def _need_topic(api: api_client.ApiClient, group_id: str, value: str | None) -> str:
-    topic_id = _resolve_topic(api, group_id, value)
+def _need_topic(
+    api: api_client.ApiClient,
+    group_id: str,
+    value: str | None,
+    *,
+    args: argparse.Namespace | None = None,
+) -> str:
+    topic_id = _resolve_topic(api, group_id, value, args=args)
     if topic_id is None:
         raise _BadInputError
     return topic_id
 
 
-def _report_room_error(exc: api_client.ApiError) -> int:
+def _report_room_error(exc: api_client.ApiError, args: argparse.Namespace | None = None) -> int:
     """One line for the statuses room commands meet: 404 is the server's uniform
     "no such room/topic/message/todo, or you are not a member"; 403 is not allowed."""
     if exc.status == 404:
-        render.error("not found, or you are not a member of that room")
+        _emit_error(
+            args, "not_found", "not found, or you are not a member of that room", status=404
+        )
         return 2
     if exc.status == 403:
-        render.error(f"not allowed: {exc.detail or 'the room does not permit this'}")
+        _emit_error(
+            args,
+            "forbidden",
+            f"not allowed: {exc.detail or 'the room does not permit this'}",
+            status=403,
+        )
         return 1
-    return _report_api_error(exc)
+    return _report_api_error(exc, args)
 
 
 def _with_api(
@@ -3530,15 +3592,41 @@ def _with_api(
         return 1
 
 
-def _confirm(prompt: str, *, yes: bool) -> int | None:
+def _with_room_api(args: argparse.Namespace, run: Callable[[api_client.ApiClient], int]) -> int:
+    """:func:`_with_api` for the ``rooms``/``topics``/``messages``/``attachments`` leaves:
+    every failure goes through :func:`_emit_error`, so ``--json`` gets the J8 line."""
+    creds = _load_or_error(args)
+    if creds is None:
+        return 1
+    try:
+        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
+            return run(api)
+    except _BadInputError:
+        return 2
+    except _GroupsDisabledError:
+        _emit_error(args, "forbidden", "Rooms are not enabled for your account.")
+        return 1
+    except api_client.ApiError as exc:
+        return _report_room_error(exc, args)
+    except httpx.RequestError as exc:
+        _emit_error(args, "network", f"Couldn't reach {creds.server_url}: {exc}")
+        return 1
+
+
+def _confirm(prompt: str, *, yes: bool, args: argparse.Namespace | None = None) -> int | None:
     """Gate a destructive command: ``None`` to go ahead, else the exit code to return.
 
     ``--yes`` skips it; a terminal gets a y/N question; anything else refuses,
-    since a script must say ``--yes`` out loud."""
+    since a script must say ``--yes`` out loud. Under JSON mode a prompt never
+    happens (J2), so it refuses too."""
     if yes:
         return None
-    if not _stdin_is_tty():
-        render.error("this changes the room for everyone; pass --yes to run it without a terminal")
+    if (args is not None and _json_mode(args)) or not _stdin_is_tty():
+        _emit_error(
+            args,
+            "usage",
+            "this changes the room for everyone; pass --yes to run it without a terminal",
+        )
         return 2
     if _prompt(f"{prompt} [y/N] ").lower() not in ("y", "yes"):
         render.info("Aborted.")
@@ -3546,161 +3634,515 @@ def _confirm(prompt: str, *, yes: bool) -> int | None:
     return None
 
 
-def cmd_groups_list(args: argparse.Namespace) -> int:
-    """``pepper groups list [--archived] [--json]``."""
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            result = _group_list_or_error(api, archived=args.archived)
-    except _GroupsDisabledError:
-        render.error("Groups is not enabled for your account.")
-        return 1
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    if args.json:
-        _print_json(result)
+#: Help for a leaf whose positional is the room it acts on (``rooms show ROOM``).
+_ROOM_ARG_HELP = "Room: its UUID, or a case-insensitive unique name prefix."
+
+
+def _mutation_result(result: object, object_id: str) -> object:
+    """J5: the object the server returned, else ``{"ok": true, "id": ...}`` for a 204 route.
+
+    A reaction route answers the list of reactions, which rides under ``reactions``.
+    """
+    if isinstance(result, dict) and result:
+        return result
+    if isinstance(result, list):
+        return {"reactions": result}
+    return {"ok": True, "id": object_id}
+
+
+def _room_act(
+    args: argparse.Namespace,
+    call: Callable[[api_client.ApiClient, str], tuple[object, str]],
+    done: str,
+    *,
+    confirm: str | None = None,
+) -> int:
+    """Confirm if the act is destructive, resolve ``args.room``, run ``call``, say ``done``.
+
+    ``call`` returns the server's answer and the id of the object it acted on. Human
+    mode prints ``done`` on stderr; JSON mode prints the J5 mutation object.
+    """
+    if confirm is not None and (code := _confirm(confirm, yes=args.yes, args=args)) is not None:
+        return code
+
+    def run(api: api_client.ApiClient) -> int:
+        result, object_id = call(api, _need_group(api, args.room, args=args))
+        _emit(_mutation_result(result, object_id), args, lambda: render.info(done))
         return 0
-    render.render_group_list(result)
-    return 0
+
+    return _with_room_api(args, run)
 
 
-def cmd_groups_show(args: argparse.Namespace) -> int:
-    """``pepper groups show <group>``."""
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            group_id = _resolve_group(api, args.group)
-            if group_id is None:
-                return 2
-            detail = api.get_group(group_id)
-    except _GroupsDisabledError:
-        render.error("Groups is not enabled for your account.")
-        return 1
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    render.render_group_detail(detail)
-    return 0
+def cmd_rooms_list(args: argparse.Namespace) -> int:
+    """``pepper rooms list [--archived] [--json]``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        result = _group_list_or_error(api, archived=args.archived)
+        _emit_list(
+            result.groups,
+            args,
+            lambda: render.render_group_list(result),
+            enabled=result.enabled,
+            degraded=result.degraded,
+            total=result.total,
+            archived_total=result.archived_total,
+            features=list(result.features),
+        )
+        return 0
+
+    return _with_room_api(args, run)
 
 
-def cmd_groups_topics(args: argparse.Namespace) -> int:
-    """``pepper groups topics <group> [--archived] [--json]``.
+def cmd_rooms_show(args: argparse.Namespace) -> int:
+    """``pepper rooms show ROOM [--json]``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        detail = api.get_group(_need_group(api, args.room, args=args))
+        _emit(detail, args, lambda: render.render_group_detail(detail))
+        return 0
+
+    return _with_room_api(args, run)
+
+
+def cmd_rooms_create(args: argparse.Namespace) -> int:
+    """``pepper rooms create [--name N] PERSON... [--json]``; prints the room's id."""
+
+    def run(api: api_client.ApiClient) -> int:
+        made = api.create_group(
+            people=[_handle_of(api, p, args=args) for p in args.people], name=args.name
+        )
+
+        def human() -> None:
+            if not made.get("created", True):
+                render.info("That conversation already existed.")
+            print(sanitize_line(str(made["group_id"])))
+
+        _emit(made, args, human)
+        return 0
+
+    return _with_room_api(args, run)
+
+
+def cmd_rooms_edit(args: argparse.Namespace) -> int:
+    """``pepper rooms edit ROOM --name NAME``."""
+    return _room_act(
+        args,
+        lambda api, g: (api.rename_group(g, name=args.name), g),
+        f"Renamed to {args.name!r}.",
+    )
+
+
+def cmd_rooms_archive(args: argparse.Namespace) -> int:
+    """``pepper rooms archive ROOM``: hides the room from your list only (not destructive)."""
+    return _room_act(
+        args, lambda api, g: (api.set_group_archived(g, archived=True), g), "Archived."
+    )
+
+
+def cmd_rooms_unarchive(args: argparse.Namespace) -> int:
+    """``pepper rooms unarchive ROOM``."""
+    return _room_act(
+        args, lambda api, g: (api.set_group_archived(g, archived=False), g), "Unarchived."
+    )
+
+
+def cmd_rooms_leave(args: argparse.Namespace) -> int:
+    """``pepper rooms leave ROOM [--yes]`` (open rooms only)."""
+    return _room_act(
+        args,
+        lambda api, g: (api.leave_group(g), g),
+        "Left the room.",
+        confirm=f"Leave {args.room!r}? You'll need an invite to come back.",
+    )
+
+
+def cmd_rooms_mute(args: argparse.Namespace) -> int:
+    """``pepper rooms mute ROOM``."""
+    return _room_act(args, lambda api, g: (api.set_group_muted(g, muted=True), g), "Muted.")
+
+
+def cmd_rooms_unmute(args: argparse.Namespace) -> int:
+    """``pepper rooms unmute ROOM``."""
+    return _room_act(args, lambda api, g: (api.set_group_muted(g, muted=False), g), "Unmuted.")
+
+
+def cmd_rooms_activity(args: argparse.Namespace) -> int:
+    """``pepper rooms activity [--room R] [--since TIME] [--json]``.
+
+    The feed needs its candidate topics named, so this names the 50 most
+    recently active unarchived topics of the room (or of all your rooms).
+    """
+    from datetime import UTC, datetime, timedelta
+
+    since = args.since or (datetime.now(UTC) - timedelta(hours=24)).isoformat()
+
+    def run(api: api_client.ApiClient) -> int:
+        if args.room:
+            room_ids = [_need_group(api, args.room, args=args)]
+        else:
+            room_ids = [r.group_id for r in _group_list_or_error(api).groups]
+        topics = sorted(
+            (t for gid in room_ids for t in api.list_group_topics(gid) if t.archived_at is None),
+            key=lambda t: t.last_activity_at,
+            reverse=True,
+        )
+        rows = api.group_activity(since=since, topic_ids=[t.topic_id for t in topics[:50]])
+
+        def human() -> None:
+            for r in rows:
+                line = f"{r['group_label']} / {r['topic_label']}  {r['author']}: {r['excerpt']}"
+                render.info(sanitize_line(line))
+
+        _emit_list(rows, args, human)
+        return 0
+
+    return _with_room_api(args, run)
+
+
+def cmd_topics_list(args: argparse.Namespace) -> int:
+    """``pepper topics list --room R [--archived] [--json]``.
 
     ``list_group_topics`` always answers every topic, archived included
     (the contract's own fold: "hiding them is the client's fold over one
     full answer"). Default view here is the folded one; ``--archived``
     unfolds it.
     """
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            group_id = _resolve_group(api, args.group)
-            if group_id is None:
-                return 2
-            topics = api.list_group_topics(group_id)
-    except _GroupsDisabledError:
-        render.error("Groups is not enabled for your account.")
-        return 1
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    if not args.archived:
-        # The room's default topic stays even when archived, so ``--json``
-        # always lets a caller identify it (``is_default``); the archived tag
-        # still shows in the text view.
-        topics = [t for t in topics if t.archived_at is None or t.is_default]
-    if args.json:
-        _print_json(topics)
+
+    def run(api: api_client.ApiClient) -> int:
+        topics = api.list_group_topics(_need_group(api, args.room, args=args))
+        if not args.archived:
+            # The room's default topic stays even when archived, so ``--json``
+            # always lets a caller identify it (``is_default``); the archived tag
+            # still shows in the text view.
+            topics = [t for t in topics if t.archived_at is None or t.is_default]
+        _emit_list(topics, args, lambda: render.render_group_topics(topics))
         return 0
-    render.render_group_topics(topics)
-    return 0
+
+    return _with_room_api(args, run)
 
 
-def cmd_groups_roster(args: argparse.Namespace) -> int:
-    """``pepper groups roster <group> [--json]``.
+def cmd_topics_create(args: argparse.Namespace) -> int:
+    """``pepper topics create --room R NAME...``; prints the new topic's id."""
 
-    The room's ``@``-mention roster, Pepper first (``GET .../roster``) — the
-    one place a script can learn the person ids ``groups post --mention``
-    takes, since ``groups show`` renders members by name only.
+    def run(api: api_client.ApiClient) -> int:
+        topic = api.create_group_topic(
+            _need_group(api, args.room, args=args), name=" ".join(args.name)
+        )
+        _emit(
+            topic, args, lambda: print(sanitize_line(str(topic.get("topic_id") or topic.get("id"))))
+        )
+        return 0
+
+    return _with_room_api(args, run)
+
+
+def cmd_topics_edit(args: argparse.Namespace) -> int:
+    """``pepper topics edit --room R TOPIC --name NAME``."""
+
+    def call(api: api_client.ApiClient, g: str) -> tuple[object, str]:
+        topic_id = _need_topic(api, g, args.topic, args=args)
+        return api.rename_group_topic(g, topic_id, name=args.name), topic_id
+
+    return _room_act(args, call, f"Renamed to {args.name!r}.")
+
+
+def _topic_archive(args: argparse.Namespace, *, archived: bool) -> int:
+    def call(api: api_client.ApiClient, g: str) -> tuple[object, str]:
+        topic_id = _need_topic(api, g, args.topic, args=args)
+        return api.set_group_topic_archived(g, topic_id, archived=archived), topic_id
+
+    return _room_act(args, call, "Archived." if archived else "Unarchived.")
+
+
+def cmd_topics_archive(args: argparse.Namespace) -> int:
+    """``pepper topics archive --room R TOPIC``."""
+    return _topic_archive(args, archived=True)
+
+
+def cmd_topics_unarchive(args: argparse.Namespace) -> int:
+    """``pepper topics unarchive --room R TOPIC``."""
+    return _topic_archive(args, archived=False)
+
+
+def cmd_topics_search(args: argparse.Namespace) -> int:
+    """``pepper topics search [--room R] QUERY...``: topics by name across your rooms.
+
+    The server route has no room filter and its rows name the room by display name
+    only, so ``--room`` filters client-side on that name (two rooms sharing a name
+    both match).
     """
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            group_id = _resolve_group(api, args.group)
-            if group_id is None:
-                return 2
-            roster = api.group_roster(group_id)
-    except _GroupsDisabledError:
-        render.error("Groups is not enabled for your account.")
-        return 1
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    if args.json:
-        _print_json(roster)
+
+    def run(api: api_client.ApiClient) -> int:
+        rows = api.search_group_topics(" ".join(args.query))
+        if args.room:
+            room_id = _need_group(api, args.room, args=args)
+            names = {
+                g.display_name
+                for g in _group_list_or_error(api).groups
+                if _same_id(g.group_id, room_id)
+            }
+            rows = [r for r in rows if r.get("group_name") in names]
+
+        def human() -> None:
+            for r in rows:
+                print(sanitize_line(f"{r['group_name']} / {r['name']}  {r['topic_id']}"))
+
+        _emit_list(rows, args, human)
         return 0
-    render.render_group_roster(roster)
-    return 0
+
+    return _with_room_api(args, run)
 
 
-def cmd_groups_read(args: argparse.Namespace) -> int:
-    """``pepper groups read <group> [<topic>] [--limit N] [--before C|--since S]
-    [--json] [--mark]``."""
-    creds = _load_or_error()
-    if creds is None:
-        return 1
+def cmd_messages_list(args: argparse.Namespace) -> int:
+    """``pepper messages list --room R [--topic T] [--limit N] [--before C | --since S]
+    [--mark] [--json]``."""
+    if args.before is not None and args.since is not None:
+        _emit_error(args, "usage", "--before and --since cannot be used together")
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        group_id = _need_group(api, args.room, args=args)
+        topic_id = _need_topic(api, group_id, args.topic, args=args)
+        page = api.list_group_messages(
+            group_id, topic_id, since=args.since, before=args.before, limit=args.limit
+        )
+        # Mark before printing: a failed mark exits non-zero with nothing on stdout.
+        if args.mark and page.messages:
+            newest = max(m.created_at for m in page.messages)
+            api.set_group_read_mark(group_id, topic_id, read_through=newest)
+        _emit_list(
+            page.messages,
+            args,
+            lambda: render.render_group_messages(page),
+            next_before=page.next_before,
+        )
+        return 0
+
+    return _with_room_api(args, run)
+
+
+def _read_attachment(
+    path: str, args: argparse.Namespace | None = None
+) -> tuple[bytes, str, str] | None:
+    """Read a local file for ``messages post --attach``.
+
+    Returns ``(content, filename, content_type)``, or ``None`` after
+    printing the error (missing file, permissions) so the caller can bail
+    with exit code 2 before any network call — same shape as the other
+    local-validation-before-any-call checks in this module.
+    """
+    from pathlib import Path
+
+    p = Path(path)
     try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            group_id = _resolve_group(api, args.group)
-            if group_id is None:
-                return 2
-            topic_id = _resolve_topic(api, group_id, args.topic)
-            if topic_id is None:
-                return 2
-            page = api.list_group_messages(
-                group_id,
-                topic_id,
-                since=args.since,
-                before=args.before,
-                limit=args.limit,
+        content = p.read_bytes()
+    except OSError as exc:
+        _emit_error(args, "usage", f"couldn't read attachment {path!r}: {exc}")
+        return None
+    content_type, _ = mimetypes.guess_type(p.name)
+    return content, p.name, content_type or "application/octet-stream"
+
+
+def cmd_messages_post(args: argparse.Namespace) -> int:
+    """``pepper messages post --room R --topic T [MESSAGE | -] [--attach PATH ...]
+    [--reply-to MESSAGE_ID] [--mention PERSON_ID ...] [--on-behalf-of PERSON_ID]
+    [--idempotency-key KEY] [--json]``.
+
+    ``--json`` prints the created message as one JSON object instead of
+    ``Posted.`` and the bare id: the same fields ``messages list --json`` gives
+    a message, plus ``topic_id``, so an agent gets the id and ``created_at``
+    of its own post without a second read.
+
+    Attachments upload first (``upload_group_attachment``), in the order
+    given, and their ids ride the message create — so a message never posts
+    without the attachments it referenced. A fresh idempotency key is
+    minted per invocation (not per retry): a retried command is a new
+    process, so this alone doesn't prevent a double-post from re-running
+    the command by hand, but it does mean the server's own retry/transport
+    layer can't double it — see ``post_group_message``'s ``Idempotency-Key``.
+    ``--idempotency-key`` replaces the fresh key with the caller's own, for a
+    script that must not double-post when it re-runs the same command after
+    a crash (the agent-member watcher keys it on the message it answers).
+
+    ``--reply-to`` and ``--mention`` pass straight through as the post's
+    ``parent_message_id`` and ``mentions`` (bare person ids, from
+    ``members list``). Neither is validated here: the service owns both
+    checks, and a bad id is its 4xx, reported like any other.
+    ``--on-behalf-of`` likewise passes through as ``on_behalf_of_person_id``;
+    the server accepts it only from an agent token.
+
+    Exit codes: 0 ok · 1 auth/API/transport · 2 bad input (empty message,
+    ambiguous/unknown room or topic, unreadable attachment).
+    """
+    # A flag given with an empty value is a caller bug (typically an unset
+    # shell variable), not a request for the default. For --idempotency-key
+    # the default is a fresh key, which would silently drop the caller's
+    # retry safety — so refuse rather than fall through. Checked before the
+    # body, so a bad flag never blocks on reading a '-' stdin body.
+    for flag, value in (
+        ("--idempotency-key", args.idempotency_key),
+        ("--reply-to", args.reply_to),
+        ("--on-behalf-of", args.on_behalf_of),
+        *(("--mention", m) for m in args.mention or []),
+    ):
+        if value is not None and not value.strip():
+            _emit_error(args, "usage", f"{flag} cannot be empty")
+            return 2
+    # The service accepts a requester only on a reply whose parent the
+    # requester wrote, so a bare --on-behalf-of is a
+    # post it must reject — refuse it here, before any upload.
+    if args.on_behalf_of is not None and args.reply_to is None:
+        _emit_error(args, "usage", "--on-behalf-of needs --reply-to (the requester's message)")
+        return 2
+
+    message_parts = args.message or []
+    text = sys.stdin.read().strip() if message_parts == ["-"] else " ".join(message_parts).strip()
+    if not text:
+        _emit_error(
+            args,
+            "usage",
+            "message body cannot be empty (pass text, or '-' to read it from stdin)",
+        )
+        return 2
+
+    # Read every --attach path up front, before any upload starts. Reading
+    # them one at a time interleaved with uploads would let an unreadable
+    # *later* path abort the command after earlier attachments had already
+    # landed in the groups service with nothing ever referencing them —
+    # orphaned uploads the command's own failure gave no sign of.
+    attachments: list[tuple[bytes, str, str]] = []
+    for path in args.attach or []:
+        read = _read_attachment(path, args)
+        if read is None:
+            return 2
+        attachments.append(read)
+
+    def run(api: api_client.ApiClient) -> int:
+        group_id = _need_group(api, args.room, args=args)
+        topic_id = _need_topic(api, group_id, args.topic, args=args)
+        attachment_ids: list[str] = []
+        for content, filename, content_type in attachments:
+            uploaded = api.upload_group_attachment(
+                group_id, filename=filename, content=content, content_type=content_type
             )
-            # Mark before printing: a failed mark exits non-zero with nothing on stdout.
-            if args.mark and page.messages:
-                newest = max(m.created_at for m in page.messages)
-                api.set_group_read_mark(group_id, topic_id, read_through=newest)
-            if args.json:
-                _print_json(page)
-            else:
-                render.render_group_messages(page)
-    except _GroupsDisabledError:
-        render.error("Groups is not enabled for your account.")
-        return 1
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    return 0
+            attachment_ids.append(uploaded["id"])
+        created = api.post_group_message(
+            group_id,
+            topic_id,
+            message=text,
+            attachment_ids=attachment_ids or None,
+            mentions=args.mention or None,
+            parent_message_id=args.reply_to,
+            idempotency_key=args.idempotency_key or str(uuid.uuid4()),
+            on_behalf_of_person_id=args.on_behalf_of,
+        )
+
+        def human() -> None:
+            render.info("Posted.")
+            print(sanitize_line(str(created["id"])))
+
+        if _json_mode(args):
+            import dataclasses
+
+            message = api_client.group_message_from_dict(created)
+            _print_json({**dataclasses.asdict(message), "topic_id": topic_id})
+        else:
+            human()
+        return 0
+
+    return _with_room_api(args, run)
 
 
-#: First reconnect delay for ``groups watch``, doubling to the cap. Reset by a
+def cmd_messages_edit(args: argparse.Namespace) -> int:
+    """``pepper messages edit --room R MESSAGE [TEXT... | -]`` (your own messages only).
+
+    The text is required for now: there is no single-message read to open in
+    ``$EDITOR`` (design §3.3), so a bare ``messages edit`` is a usage error.
+    """
+    parts = args.text or []
+    body = sys.stdin.read().strip() if parts == ["-"] else " ".join(parts).strip()
+    if not body:
+        _emit_error(
+            args,
+            "usage",
+            "the new message text cannot be empty (pass text, or '-' to read it from stdin)",
+        )
+        return 2
+    return _room_act(
+        args,
+        lambda api, g: (api.edit_group_message(g, args.message, body=body), args.message),
+        "Edited.",
+    )
+
+
+def cmd_messages_delete(args: argparse.Namespace) -> int:
+    """``pepper messages delete --room R MESSAGE [--yes]``."""
+    return _room_act(
+        args,
+        lambda api, g: (api.delete_group_message(g, args.message), args.message),
+        "Deleted.",
+        confirm=f"Delete message {args.message} for everyone in the room?",
+    )
+
+
+def cmd_messages_react(args: argparse.Namespace) -> int:
+    """``pepper messages react --room R MESSAGE EMOJI``."""
+    return _room_act(
+        args,
+        lambda api, g: (
+            api.react_to_group_message(g, args.message, emoji=args.emoji),
+            args.message,
+        ),
+        "Reacted.",
+    )
+
+
+def cmd_messages_unreact(args: argparse.Namespace) -> int:
+    """``pepper messages unreact --room R MESSAGE EMOJI``."""
+    return _room_act(
+        args,
+        lambda api, g: (
+            api.clear_group_reaction(g, args.message, emoji=args.emoji),
+            args.message,
+        ),
+        "Done.",
+    )
+
+
+def cmd_attachments_download(args: argparse.Namespace) -> int:
+    """``pepper attachments download --room R ATTACHMENT --out PATH`` (``-`` for stdout).
+
+    ``--json`` emits ``{"path", "bytes"}``; it cannot share stdout with the file bytes,
+    so ``--out -`` is a usage error under it.
+    """
+    from pathlib import Path
+
+    if args.out == "-" and _json_mode(args):
+        _emit_error(args, "usage", "--out - writes the file to stdout; use a path with --json")
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        content = api.get_group_attachment(_need_group(api, args.room, args=args), args.attachment)
+        if args.out == "-":
+            sys.stdout.buffer.write(content)
+            render.info("Done.")
+            return 0
+        try:
+            Path(args.out).write_bytes(content)
+        except OSError as exc:
+            _emit_error(args, "usage", f"couldn't write {args.out!r}: {exc.strerror or exc}")
+            return 2
+        _emit(
+            {"path": args.out, "bytes": len(content)},
+            args,
+            lambda: render.info(f"Saved to {args.out}."),
+        )
+        return 0
+
+    return _with_room_api(args, run)
+
+
+#: First reconnect delay for ``rooms watch``, doubling to the cap. Reset by a
 #: frame that shows the stream is healthy (an event, a cursor, a heartbeat), so
 #: a healthy stream that drops once an hour reconnects at once rather than at
 #: the cap. Not by ``: connected`` or an error frame: during a groups outage
@@ -3709,7 +4151,7 @@ def cmd_groups_read(args: argparse.Namespace) -> int:
 _WATCH_BACKOFF_START = 1.0
 _WATCH_BACKOFF_CAP = 30.0
 
-#: Consecutive failed attempts before ``groups watch`` says anything. One
+#: Consecutive failed attempts before ``rooms watch`` says anything. One
 #: dropped connection that reconnects is routine (a deploy ends every open
 #: stream) and loses nothing, since the cursor resumes the feed, so the first
 #: ``_WATCH_QUIET_FAILURES - 1`` failures of a run are silent. Three tolerates
@@ -3889,8 +4331,8 @@ def _watch_event_line(event: dict[str, Any], *, as_json: bool, cursor: int) -> s
     return sanitize_line(" ".join(parts))
 
 
-def cmd_groups_watch(args: argparse.Namespace) -> int:
-    """``pepper groups watch [--since CURSOR] [--cursor-file PATH] [--json]
+def cmd_rooms_watch(args: argparse.Namespace) -> int:
+    """``pepper rooms watch [--since CURSOR] [--cursor-file PATH] [--json]
     [--kinds K,...] [--ignore-kinds K,...]``.
 
     Follows the agent event stream until interrupted. Each event is printed
@@ -3915,16 +4357,16 @@ def cmd_groups_watch(args: argparse.Namespace) -> int:
     on stderr starts at the third consecutive failure and ends when the
     stream next shows a sign of life.
 
-    ``--room`` (and ``--topic``) hand the run to :func:`_cmd_groups_watch_scoped`.
+    ``--room`` (and ``--topic``) hand the run to :func:`_cmd_rooms_watch_scoped`.
     """
     if args.room is not None or args.topic is not None:
-        return _cmd_groups_watch_scoped(args)
-    creds = _load_or_error()
+        return _cmd_rooms_watch_scoped(args)
+    creds = _load_or_error(args)
     if creds is None:
         return 1
     cursor = args.since
     if cursor is not None and cursor < 0:
-        render.error("--since must be a non-negative cursor.")
+        _emit_error(args, "usage", "--since must be a non-negative cursor.")
         return 2
     if args.cursor_file:
         try:
@@ -3933,11 +4375,13 @@ def cmd_groups_watch(args: argparse.Namespace) -> int:
             # With --since the file is only being checked, as before.
             stored = None
             if cursor is None:
-                render.error(str(exc))
+                _emit_error(args, "usage", str(exc))
                 return 2
         if isinstance(stored, _ScopedCursor):
             # Even with --since: the run would overwrite another watch's position.
-            render.error(
+            _emit_error(
+                args,
+                "usage",
                 f"The cursor file {args.cursor_file} belongs to a scoped watch (room "
                 f"{stored.room_id}, topic {stored.topic_id or 'any'}), not the "
                 "unscoped one requested. Nothing was streamed. Use a separate "
@@ -3967,9 +4411,11 @@ def cmd_groups_watch(args: argparse.Namespace) -> int:
                             failures = 0
                         if frame.kind == "error":
                             if frame.payload.get("retry") is False:
-                                render.error(
+                                _emit_error(
+                                    args,
+                                    "server",
                                     "The server closed the stream and will not resume it: "
-                                    f"{frame.payload.get('error', 'error')}."
+                                    f"{frame.payload.get('error', 'error')}.",
                                 )
                                 return 1
                             problem = str(frame.payload.get("error", "error"))
@@ -3998,7 +4444,7 @@ def cmd_groups_watch(args: argparse.Namespace) -> int:
                             _write_cursor_file(args.cursor_file, cursor)
                 except api_client.ApiError as exc:
                     if exc.status in _WATCH_FATAL_STATUSES:
-                        return _report_api_error(exc)
+                        return _report_api_error(exc, args)
                     problem = f"HTTP {exc.status}"
                 except httpx.RequestError as exc:
                     problem = type(exc).__name__
@@ -4023,7 +4469,7 @@ def cmd_groups_watch(args: argparse.Namespace) -> int:
     except BrokenPipeError:
         return _watch_reader_gone()
     except OSError as exc:
-        render.error(f"Couldn't write the cursor file: {exc}")
+        _emit_error(args, "server", f"Couldn't write the cursor file: {exc}")
         return 1
 
 
@@ -4055,7 +4501,7 @@ _WATCH_SCOPED_ENDINGS = {
     "access_revoked": "you are no longer a member of this room",
     "room_deleted": "the room was deleted",
     "room_superseded": (
-        "the room was merged into another room; run 'pepper groups list' to find "
+        "the room was merged into another room; run 'pepper rooms list' to find "
         "it and watch that room instead"
     ),
 }
@@ -4093,7 +4539,7 @@ def _scope_words(room_id: str, topic_id: str | None, agent: str | None = None) -
 
 
 def _scoped_watch_target(
-    api: api_client.ApiClient, room: str, topic: str | None
+    api: api_client.ApiClient, room: str, topic: str | None, args: argparse.Namespace
 ) -> tuple[str, str | None]:
     """Check the server can scope a watch, then resolve ``--room``/``--topic``.
 
@@ -4104,17 +4550,19 @@ def _scoped_watch_target(
     """
     listing = _group_list_or_error(api)
     if _WATCH_SCOPE_FEATURE not in listing.features:
-        render.error(
-            "This server does not support a scoped watch (--room/--topic). Nothing was streamed."
+        _emit_error(
+            args,
+            "server",
+            "This server does not support a scoped watch (--room/--topic). Nothing was streamed.",
         )
         raise _WatchStopError(1)
-    room_id = _resolve_group(api, room, rooms=listing)
+    room_id = _resolve_group(api, room, rooms=listing, args=args)
     if room_id is None:
         raise _BadInputError
     room_id = _canonical_id(room_id)
     topic_id = None
     if topic is not None:
-        topic_id = _resolve_topic(api, room_id, topic)
+        topic_id = _resolve_topic(api, room_id, topic, args=args)
         if topic_id is None:
             raise _BadInputError
         topic_id = _canonical_id(topic_id)
@@ -4122,7 +4570,7 @@ def _scoped_watch_target(
 
 
 def _confirm_scope(
-    frame: api_client.FeedFrame, room_id: str, topic_id: str | None
+    frame: api_client.FeedFrame, room_id: str, topic_id: str | None, args: argparse.Namespace
 ) -> api_client.WatchScope:
     """The scope a connection's first frame names, if it is the one asked for.
 
@@ -4136,7 +4584,9 @@ def _confirm_scope(
         or not _same_id(scope.requested_room_id, room_id)
         or not _same_id(scope.topic_id, topic_id)
     ):
-        render.error(
+        _emit_error(
+            args,
+            "server",
             "The server did not confirm the requested scope "
             f"({_scope_words(room_id, topic_id)}); stopping. Nothing from this "
             "connection was printed.",
@@ -4155,7 +4605,10 @@ def _same_watch(scope: api_client.WatchScope, other: api_client.WatchScope) -> b
 
 
 def _check_cursor_binding(
-    path: str | None, stored: _ScopedCursor | None, scope: api_client.WatchScope
+    path: str | None,
+    stored: _ScopedCursor | None,
+    scope: api_client.WatchScope,
+    args: argparse.Namespace,
 ) -> None:
     """Refuse a cursor file another scope wrote. Its position is in the agent's
     whole feed, so using it here would skip this scope's events silently."""
@@ -4169,7 +4622,9 @@ def _check_cursor_binding(
         return
     theirs = _scope_words(stored.room_id, stored.topic_id, stored.agent_person_id)
     ours = _scope_words(scope.room_id, scope.topic_id, scope.agent_person_id)
-    render.error(
+    _emit_error(
+        args,
+        "usage",
         f"The cursor file {path} belongs to a different watch ({theirs}) than the one "
         f"requested ({ours}). Nothing was streamed. Use a separate --cursor-file for each "
         f"scope; to carry the position over, pass --since {stored.cursor} with a new file.",
@@ -4193,7 +4648,9 @@ def _event_in_scope(event: dict[str, Any], scope: api_client.WatchScope) -> bool
     return scope.topic_id is None or _same_id(payload.get("topic_id"), scope.topic_id)
 
 
-def _scoped_watch_problem(frame: api_client.FeedFrame, room_id: str, topic_id: str | None) -> str:
+def _scoped_watch_problem(
+    frame: api_client.FeedFrame, room_id: str, topic_id: str | None, args: argparse.Namespace
+) -> str:
     """The retryable problem an ``error`` frame reports, or end the run.
 
     ``history_expired`` exits 3 and says where the gap is; the cursor file is
@@ -4205,8 +4662,10 @@ def _scoped_watch_problem(frame: api_client.FeedFrame, room_id: str, topic_id: s
     slug = str(payload.get("error", "error"))
     if slug == _WATCH_HISTORY_EXPIRED:
         floor, since = payload.get("floor"), payload.get("since")
-        read = f"pepper groups read {room_id} {topic_id or 'TOPIC'}"
-        render.error(
+        read = f"pepper messages list --room {room_id} --topic {topic_id or 'TOPIC'}"
+        _emit_error(
+            args,
+            "gap",
             f"Replay history before position {floor} is no longer available; events "
             f"between {since} and {floor} in this scope were not delivered. Read the gap "
             f"with '{read}'{'' if topic_id else ' for each topic'}, then restart with "
@@ -4216,16 +4675,17 @@ def _scoped_watch_problem(frame: api_client.FeedFrame, room_id: str, topic_id: s
         raise _WatchStopError(3)
     if payload.get("retry") is False:
         ending = _WATCH_SCOPED_ENDINGS.get(slug)
+        code = {"access_revoked": "forbidden", "room_deleted": "not_found"}.get(slug, "server")
         if ending is not None:
-            render.error(f"The server ended the stream: {ending}.")
+            _emit_error(args, code, f"The server ended the stream: {ending}.")
         else:
-            render.error(f"The server closed the stream and will not resume it: {slug}.")
+            _emit_error(args, code, f"The server closed the stream and will not resume it: {slug}.")
         raise _WatchStopError(1)
     return slug
 
 
-def _cmd_groups_watch_scoped(args: argparse.Namespace) -> int:
-    """``pepper groups watch --room ROOM [--topic TOPIC] ...``: the stream
+def _cmd_rooms_watch_scoped(args: argparse.Namespace) -> int:
+    """``pepper rooms watch --room ROOM [--topic TOPIC] ...``: the stream
     narrowed by the server to one room, or one topic in it.
 
     Fails closed throughout. A server without the capability, a connection
@@ -4246,23 +4706,25 @@ def _cmd_groups_watch_scoped(args: argparse.Namespace) -> int:
     from the position asked for (``history_expired``).
     """
     if args.room is None:
-        render.error("--topic needs --room: a topic is named within one room.")
+        _emit_error(args, "usage", "--topic needs --room: a topic is named within one room.")
         return 2
-    creds = _load_or_error()
+    creds = _load_or_error(args)
     if creds is None:
         return 1
     if args.since is not None and args.since < 0:
-        render.error("--since must be a non-negative cursor.")
+        _emit_error(args, "usage", "--since must be a non-negative cursor.")
         return 2
     stored: _ScopedCursor | None = None
     if args.cursor_file:
         try:
             state = _read_cursor_state(args.cursor_file)
         except (ValueError, OSError) as exc:
-            render.error(str(exc))
+            _emit_error(args, "usage", str(exc))
             return 2
         if isinstance(state, int):
-            render.error(
+            _emit_error(
+                args,
+                "usage",
                 f"The cursor file {args.cursor_file} holds the unscoped watch's cursor, not a "
                 "scoped one. Nothing was streamed. Use a separate --cursor-file for each "
                 f"scope; to carry the position over, pass --since {state} with a new file.",
@@ -4270,7 +4732,9 @@ def _cmd_groups_watch_scoped(args: argparse.Namespace) -> int:
             )
             return 2
         if state is not None and state.server != creds.server_url:
-            render.error(
+            _emit_error(
+                args,
+                "usage",
                 f"The cursor file {args.cursor_file} belongs to a watch on another server "
                 f"({state.server}). Nothing was streamed. Use a separate --cursor-file for "
                 "each server.",
@@ -4284,7 +4748,7 @@ def _cmd_groups_watch_scoped(args: argparse.Namespace) -> int:
         cursor = args.since
     try:
         with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            room_id, topic_id = _scoped_watch_target(api, args.room, args.topic)
+            room_id, topic_id = _scoped_watch_target(api, args.room, args.topic, args)
             return _follow_scoped_watch(
                 api,
                 args,
@@ -4299,19 +4763,19 @@ def _cmd_groups_watch_scoped(args: argparse.Namespace) -> int:
     except _BadInputError:
         return 2
     except _GroupsDisabledError:
-        render.error("Groups is not enabled for your account.")
+        _emit_error(args, "forbidden", "Rooms are not enabled for your account.")
         return 1
     except api_client.ApiError as exc:
-        return _report_room_error(exc)
+        return _report_room_error(exc, args)
     except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
+        _emit_error(args, "network", f"Couldn't reach {creds.server_url}: {exc}")
         return 1
     except KeyboardInterrupt:
         return 0
     except BrokenPipeError:
         return _watch_reader_gone()
     except OSError as exc:
-        render.error(f"Couldn't write the cursor file: {exc}")
+        _emit_error(args, "server", f"Couldn't write the cursor file: {exc}")
         return 1
 
 
@@ -4326,7 +4790,7 @@ def _follow_scoped_watch(
     cursor: int,
 ) -> int:
     """The scoped watch's connect / read / reconnect loop. Same output, cursor
-    and backoff rules as the unscoped loop in :func:`cmd_groups_watch`; it
+    and backoff rules as the unscoped loop in :func:`cmd_rooms_watch`; it
     returns only by raising (Ctrl-C, or :class:`_WatchStopError`) or with the
     exit code of a status reconnecting cannot fix."""
     allowed: frozenset[str] | None = args.kinds
@@ -4352,14 +4816,14 @@ def _follow_scoped_watch(
                         failures = 0
                     if frame.kind == "error":
                         served = scope.room_id if scope is not None else room_id
-                        problem = _scoped_watch_problem(frame, served, topic_id)
+                        problem = _scoped_watch_problem(frame, served, topic_id, args)
                         break
                     if frame.kind == "comment":
                         continue
                     if scope is None or frame.kind == "scope":
-                        seen = _confirm_scope(frame, room_id, topic_id)
+                        seen = _confirm_scope(frame, room_id, topic_id, args)
                         if bound is None:
-                            _check_cursor_binding(args.cursor_file, stored, seen)
+                            _check_cursor_binding(args.cursor_file, stored, seen, args)
                             bound = seen
                             if not _same_id(seen.room_id, seen.requested_room_id):
                                 render.info(
@@ -4367,7 +4831,9 @@ def _follow_scoped_watch(
                                     f"{seen.room_id}; following {seen.room_id}."
                                 )
                         elif not _same_watch(seen, bound):
-                            render.error(
+                            _emit_error(
+                                args,
+                                "server",
                                 "The server is now serving another scope "
                                 f"({_scope_words(seen.room_id, seen.topic_id)}) than this "
                                 f"run started with ({_scope_words(bound.room_id, bound.topic_id)})"
@@ -4388,7 +4854,9 @@ def _follow_scoped_watch(
                             _emit_line(_watch_cursor_line(new_cursor))
                     else:
                         if not _event_in_scope(frame.payload, scope):
-                            render.error(
+                            _emit_error(
+                                args,
+                                "server",
                                 f"The server sent event {new_cursor} ({frame.kind}) from "
                                 "outside the requested scope "
                                 f"({_scope_words(scope.room_id, scope.topic_id)}); stopping. "
@@ -4418,7 +4886,7 @@ def _follow_scoped_watch(
                         )
         except api_client.ApiError as exc:
             if exc.status in _WATCH_FATAL_STATUSES:
-                return _report_room_error(exc)
+                return _report_room_error(exc, args)
             problem = f"HTTP {exc.status}"
         except httpx.RequestError as exc:
             problem = type(exc).__name__
@@ -4448,270 +4916,9 @@ def _emit_line(line: str) -> None:
     sys.stdout.flush()
 
 
-def _read_attachment(path: str) -> tuple[bytes, str, str] | None:
-    """Read a local file for ``groups post --attach``.
-
-    Returns ``(content, filename, content_type)``, or ``None`` after
-    printing the error (missing file, permissions) so the caller can bail
-    with exit code 2 before any network call — same shape as the other
-    local-validation-before-any-call checks in this module.
-    """
-    from pathlib import Path
-
-    p = Path(path)
-    try:
-        content = p.read_bytes()
-    except OSError as exc:
-        render.error(f"couldn't read attachment {path!r}: {exc}")
-        return None
-    content_type, _ = mimetypes.guess_type(p.name)
-    return content, p.name, content_type or "application/octet-stream"
-
-
-def cmd_groups_post(args: argparse.Namespace) -> int:
-    """``pepper groups post <group> <topic> [MESSAGE | -] [--attach PATH ...]
-    [--reply-to MESSAGE_ID] [--mention PERSON_ID ...] [--on-behalf-of PERSON_ID]
-    [--idempotency-key KEY] [--json]``.
-
-    ``--json`` prints the created message as one JSON object instead of
-    ``Posted.`` and the bare id: the same fields ``groups read --json`` gives
-    a message, plus ``topic_id``, so an agent gets the id and ``created_at``
-    of its own post without a second read.
-
-    Attachments upload first (``upload_group_attachment``), in the order
-    given, and their ids ride the message create — so a message never posts
-    without the attachments it referenced. A fresh idempotency key is
-    minted per invocation (not per retry): a retried command is a new
-    process, so this alone doesn't prevent a double-post from re-running
-    the command by hand, but it does mean the server's own retry/transport
-    layer can't double it — see ``post_group_message``'s ``Idempotency-Key``.
-    ``--idempotency-key`` replaces the fresh key with the caller's own, for a
-    script that must not double-post when it re-runs the same command after
-    a crash (the agent-member watcher keys it on the message it answers).
-
-    ``--reply-to`` and ``--mention`` pass straight through as the post's
-    ``parent_message_id`` and ``mentions`` (bare person ids, from
-    ``groups roster``). Neither is validated here: the service owns both
-    checks, and a bad id is its 4xx, reported like any other.
-    ``--on-behalf-of`` likewise passes through as ``on_behalf_of_person_id``;
-    the server accepts it only from an agent token.
-
-    Exit codes: 0 ok · 1 auth/API/transport · 2 bad input (empty message,
-    ambiguous/unknown group or topic, unreadable attachment).
-    """
-    # A flag given with an empty value is a caller bug (typically an unset
-    # shell variable), not a request for the default. For --idempotency-key
-    # the default is a fresh key, which would silently drop the caller's
-    # retry safety — so refuse rather than fall through. Checked before the
-    # body, so a bad flag never blocks on reading a '-' stdin body.
-    for flag, value in (
-        ("--idempotency-key", args.idempotency_key),
-        ("--reply-to", args.reply_to),
-        ("--on-behalf-of", args.on_behalf_of),
-        *(("--mention", m) for m in args.mention or []),
-    ):
-        if value is not None and not value.strip():
-            render.error(f"{flag} cannot be empty")
-            return 2
-    # The service accepts a requester only on a reply whose parent the
-    # requester wrote, so a bare --on-behalf-of is a
-    # post it must reject — refuse it here, before any upload.
-    if args.on_behalf_of is not None and args.reply_to is None:
-        render.error("--on-behalf-of needs --reply-to (the requester's message)")
-        return 2
-
-    message_parts = args.message or []
-    text = sys.stdin.read().strip() if message_parts == ["-"] else " ".join(message_parts).strip()
-    if not text:
-        render.error("message body cannot be empty (pass text, or '-' to read it from stdin)")
-        return 2
-
-    # Read every --attach path up front, before any upload starts. Reading
-    # them one at a time interleaved with uploads would let an unreadable
-    # *later* path abort the command after earlier attachments had already
-    # landed in the groups service with nothing ever referencing them —
-    # orphaned uploads the command's own failure gave no sign of.
-    attachments: list[tuple[bytes, str, str]] = []
-    for path in args.attach or []:
-        read = _read_attachment(path)
-        if read is None:
-            return 2
-        attachments.append(read)
-
-    creds = _load_or_error()
-    if creds is None:
-        return 1
-    try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            group_id = _resolve_group(api, args.group)
-            if group_id is None:
-                return 2
-            topic_id = _resolve_topic(api, group_id, args.topic)
-            if topic_id is None:
-                return 2
-            attachment_ids: list[str] = []
-            for content, filename, content_type in attachments:
-                uploaded = api.upload_group_attachment(
-                    group_id, filename=filename, content=content, content_type=content_type
-                )
-                attachment_ids.append(uploaded["id"])
-            created = api.post_group_message(
-                group_id,
-                topic_id,
-                message=text,
-                attachment_ids=attachment_ids or None,
-                mentions=args.mention or None,
-                parent_message_id=args.reply_to,
-                idempotency_key=args.idempotency_key or str(uuid.uuid4()),
-                on_behalf_of_person_id=args.on_behalf_of,
-            )
-    except _GroupsDisabledError:
-        render.error("Groups is not enabled for your account.")
-        return 1
-    except api_client.ApiError as exc:
-        return _report_api_error(exc)
-    except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {creds.server_url}: {exc}")
-        return 1
-    if args.json:
-        import dataclasses
-
-        message = api_client.group_message_from_dict(created)
-        _print_json({**dataclasses.asdict(message), "topic_id": topic_id})
-        return 0
-    render.info("Posted.")
-    print(sanitize_line(str(created["id"])))
-    return 0
-
-
-def _need_person(api: api_client.ApiClient, group_id: str, value: str) -> str:
-    """A member's person id from a name (roster match) or the id itself."""
-    if _valid_uuid(value):
-        return value
-    roster = api.group_roster(group_id)
-    match, found = _match_by_name(value, roster, name_of=lambda m: m.display_name)
-    if match is not None:
-        return match.person_id
-    names = ", ".join(f"{m.display_name!r} ({m.person_id})" for m in found)
-    render.error(f"{value!r} matches {names or 'no member'} — run 'pepper groups roster'")
-    raise _BadInputError
-
-
-def _group_act(
-    args: argparse.Namespace,
-    call: Callable[[api_client.ApiClient, str], object],
-    done: str,
-    *,
-    confirm: str | None = None,
-) -> int:
-    """Resolve ``args.group``, confirm if the act is destructive, run it, say ``done``."""
-    if confirm is not None and (code := _confirm(confirm, yes=args.yes)) is not None:
-        return code
-
-    def run(api: api_client.ApiClient) -> int:
-        call(api, _need_group(api, args.group))
-        render.info(done)
-        return 0
-
-    return _with_api(run)
-
-
-def cmd_groups_edit(args: argparse.Namespace) -> int:
-    """``pepper groups edit <group> <message> TEXT...`` (your own messages only)."""
-    body = " ".join(args.text).strip()
-    return _group_act(
-        args, lambda api, g: api.edit_group_message(g, args.message, body=body), "Edited."
-    )
-
-
-def cmd_groups_delete_message(args: argparse.Namespace) -> int:
-    """``pepper groups delete-message <group> <message> [--yes]``."""
-    return _group_act(
-        args,
-        lambda api, g: api.delete_group_message(g, args.message),
-        "Deleted.",
-        confirm=f"Delete message {args.message} for everyone in the room?",
-    )
-
-
-def cmd_groups_react(args: argparse.Namespace) -> int:
-    """``pepper groups react <group> <message> <emoji>``."""
-    return _group_act(
-        args,
-        lambda api, g: api.react_to_group_message(g, args.message, emoji=args.emoji),
-        "Reacted.",
-    )
-
-
-def cmd_groups_unreact(args: argparse.Namespace) -> int:
-    """``pepper groups unreact <group> <message> <emoji>``."""
-    return _group_act(
-        args, lambda api, g: api.clear_group_reaction(g, args.message, emoji=args.emoji), "Done."
-    )
-
-
-def cmd_groups_download(args: argparse.Namespace) -> int:
-    """``pepper groups download <group> <attachment> --out PATH`` (``-`` for stdout)."""
-    from pathlib import Path
-
-    def save(api: api_client.ApiClient, group_id: str) -> None:
-        content = api.get_group_attachment(group_id, args.attachment)
-        if args.out == "-":
-            sys.stdout.buffer.write(content)
-        else:
-            try:
-                Path(args.out).write_bytes(content)
-            except OSError as exc:
-                render.error(f"couldn't write {args.out!r}: {exc.strerror or exc}")
-                raise _BadInputError from exc
-
-    return _group_act(args, save, f"Saved to {args.out}." if args.out != "-" else "Done.")
-
-
-def cmd_groups_new_topic(args: argparse.Namespace) -> int:
-    """``pepper groups new-topic <group> NAME...``; prints the new topic's id."""
-
-    def run(api: api_client.ApiClient) -> int:
-        topic = api.create_group_topic(_need_group(api, args.group), name=" ".join(args.name))
-        print(sanitize_line(str(topic.get("topic_id") or topic.get("id"))))
-        return 0
-
-    return _with_api(run)
-
-
-def cmd_groups_rename_topic(args: argparse.Namespace) -> int:
-    """``pepper groups rename-topic <group> <topic> NAME...``."""
-    name = " ".join(args.name)
-    return _group_act(
-        args,
-        lambda api, g: api.rename_group_topic(g, _need_topic(api, g, args.topic), name=name),
-        f"Renamed to {name!r}.",
-    )
-
-
-def cmd_groups_archive_topic(args: argparse.Namespace) -> int:
-    """``pepper groups archive-topic <group> <topic>``."""
-    return _group_act(
-        args,
-        lambda api, g: api.set_group_topic_archived(
-            g, _need_topic(api, g, args.topic), archived=True
-        ),
-        "Archived.",
-    )
-
-
-def cmd_groups_unarchive_topic(args: argparse.Namespace) -> int:
-    """``pepper groups unarchive-topic <group> <topic>``."""
-    return _group_act(
-        args,
-        lambda api, g: api.set_group_topic_archived(
-            g, _need_topic(api, g, args.topic), archived=False
-        ),
-        "Unarchived.",
-    )
-
-
-def _handle_of(api: api_client.ApiClient, person: str) -> str:
+def _handle_of(
+    api: api_client.ApiClient, person: str, *, args: argparse.Namespace | None = None
+) -> str:
     """An email or phone as given, else the single Contacts match's handle."""
     if "@" in person or re.fullmatch(r"\+?[\d\s().-]{7,}", person):
         return person
@@ -4719,232 +4926,13 @@ def _handle_of(api: api_client.ApiClient, person: str) -> str:
     match, found = _match_by_name(person, matches, name_of=lambda c: c.get("name") or "")
     if match is None:
         listing = ", ".join(f"{c.get('name')} <{c['handle']}>" for c in found)
-        render.error(f"{person!r} matches {listing or 'no contact'} — give an email or phone")
+        _emit_error(
+            args,
+            "ambiguous" if found else "not_found",
+            f"{person!r} matches {listing or 'no contact'} — give an email or phone",
+        )
         raise _BadInputError
     return match["handle"]
-
-
-def cmd_groups_new(args: argparse.Namespace) -> int:
-    """``pepper groups new [--name N] PERSON...``; prints the room's id."""
-
-    def run(api: api_client.ApiClient) -> int:
-        made = api.create_group(people=[_handle_of(api, p) for p in args.people], name=args.name)
-        if not made.get("created", True):
-            render.info("That conversation already existed.")
-        print(sanitize_line(str(made["group_id"])))
-        return 0
-
-    return _with_api(run)
-
-
-def cmd_groups_rename(args: argparse.Namespace) -> int:
-    """``pepper groups rename <group> NAME...``."""
-    name = " ".join(args.name)
-    return _group_act(args, lambda api, g: api.rename_group(g, name=name), f"Renamed to {name!r}.")
-
-
-def cmd_groups_archive(args: argparse.Namespace) -> int:
-    """``pepper groups archive <group> [--yes]``; hides the room from your list only."""
-    return _group_act(
-        args,
-        lambda api, g: api.set_group_archived(g, archived=True),
-        "Archived.",
-        confirm=f"Archive {args.group!r}?",
-    )
-
-
-def cmd_groups_unarchive(args: argparse.Namespace) -> int:
-    """``pepper groups unarchive <group>``."""
-    return _group_act(args, lambda api, g: api.set_group_archived(g, archived=False), "Unarchived.")
-
-
-def cmd_groups_leave(args: argparse.Namespace) -> int:
-    """``pepper groups leave <group> [--yes]`` (open rooms only)."""
-    return _group_act(
-        args,
-        lambda api, g: api.leave_group(g),
-        "Left the room.",
-        confirm=f"Leave {args.group!r}? You'll need an invite to come back.",
-    )
-
-
-def cmd_groups_mute(args: argparse.Namespace) -> int:
-    """``pepper groups mute <group>``."""
-    return _group_act(args, lambda api, g: api.set_group_muted(g, muted=True), "Muted.")
-
-
-def cmd_groups_unmute(args: argparse.Namespace) -> int:
-    """``pepper groups unmute <group>``."""
-    return _group_act(args, lambda api, g: api.set_group_muted(g, muted=False), "Unmuted.")
-
-
-def cmd_groups_invite(args: argparse.Namespace) -> int:
-    """``pepper groups invite <group> <handle>`` (open rooms only)."""
-    return _group_act(args, lambda api, g: api.invite_to_group(g, handle=args.handle), "Invited.")
-
-
-def cmd_groups_remove(args: argparse.Namespace) -> int:
-    """``pepper groups remove <group> <person> [--yes]``."""
-    return _group_act(
-        args,
-        lambda api, g: api.remove_group_member(g, _need_person(api, g, args.person)),
-        "Removed.",
-        confirm=f"Remove {args.person!r} from {args.group!r}?",
-    )
-
-
-def cmd_groups_role(args: argparse.Namespace) -> int:
-    """``pepper groups role <group> <person> owner|member [--yes]``."""
-    return _group_act(
-        args,
-        lambda api, g: api.set_group_member_role(
-            g, _need_person(api, g, args.person), role=args.role
-        ),
-        f"Now {args.role}.",
-        confirm=f"Make {args.person!r} {args.role} of {args.group!r}?",
-    )
-
-
-def cmd_groups_apps(args: argparse.Namespace) -> int:
-    """``pepper groups apps <group> [--json]``: the launcher tiles, and what is installable."""
-
-    def run(api: api_client.ApiClient) -> int:
-        gid = _need_group(api, args.group)
-        tiles, unavailable = api.group_app_launcher(gid)
-        if args.json:
-            _print_json(tiles)
-            return 0
-        for t in tiles:
-            print(sanitize_line(f"{t.title}  {t.app_key}"))
-        if unavailable:
-            render.info("(installed apps unavailable right now)")
-        elif not tiles:
-            print("(no apps installed)")
-        catalog = (api.get_group(gid).get("apps") or {}).get("catalog") or []
-        if catalog:
-            render.info("installable: " + ", ".join(sanitize_line(a["app_key"]) for a in catalog))
-        return 0
-
-    return _with_api(run)
-
-
-def cmd_groups_install_app(args: argparse.Namespace) -> int:
-    """``pepper groups install-app <group> <app_key>``."""
-    return _group_act(
-        args, lambda api, g: api.install_group_app(g, app_key=args.app_key), "Installed."
-    )
-
-
-def cmd_groups_uninstall_app(args: argparse.Namespace) -> int:
-    """``pepper groups uninstall-app <group> <app> [--yes]`` (``app``: key, title or install id)."""
-
-    def uninstall(api: api_client.ApiClient, group_id: str) -> None:
-        installed = (api.get_group(group_id).get("apps") or {}).get("installed") or []
-        want = args.app.lower()
-        hits = [a for a in installed if want in (a["install_id"], a["app_key"], a["title"].lower())]
-        if len(hits) != 1:
-            render.error(f"{args.app!r} isn't one installed app here — run 'pepper groups apps'")
-            raise _BadInputError
-        api.uninstall_group_app(group_id, hits[0]["install_id"])
-
-    return _group_act(
-        args, uninstall, "Uninstalled.", confirm=f"Uninstall {args.app!r} from {args.group!r}?"
-    )
-
-
-def cmd_groups_sharing(args: argparse.Namespace) -> int:
-    """``pepper groups sharing <group> [--set CALENDAR=LEVEL ...] [--json]``.
-
-    Shows which of your calendars the room sees and at what level. ``--set``
-    changes the named calendars and re-sends the rest as they are, because the
-    server replaces the whole record.
-    """
-
-    def run(api: api_client.ApiClient) -> int:
-        gid = _need_group(api, args.group)
-        info = api.get_group_sharing(gid)
-        cals = info.get("available_calendars") or []
-        levels = info.get("available_levels") or []
-        chosen = dict((info.get("calendar") or {}).get("calendars") or {})
-        for item in args.set or []:
-            name, _, level = item.rpartition("=")
-            exact = [c for c in cals if c["calendar_id"] == name]
-            match = exact[0] if exact else _match_by_name(name, cals, name_of=_cal_name)[0]
-            if match is not None and level == "default":
-                chosen.pop(match["calendar_id"], None)
-                continue
-            if match is None or level not in levels:
-                render.error(
-                    f"can't set {item!r}: levels are default, {', '.join(levels)}; "
-                    f"calendars are {', '.join(_cal_name(c) for c in cals)}"
-                )
-                raise _BadInputError
-            chosen[match["calendar_id"]] = level
-        if args.set:
-            info = api.set_group_sharing(gid, calendars=chosen)
-            chosen = (info.get("calendar") or {}).get("calendars") or {}
-        if args.json:
-            _print_json(info)
-            return 0
-        defaults = info.get("default_levels") or {}
-        for c in cals:
-            level = (
-                chosen.get(c["calendar_id"])
-                or f"{defaults.get(c['calendar_id'], 'none')} (default)"
-            )
-            print(sanitize_line(f"{_cal_name(c)}  {level}"))
-        return 0
-
-    return _with_api(run)
-
-
-def _cal_name(calendar: dict[str, Any]) -> str:
-    return calendar.get("summary") or calendar["calendar_id"]
-
-
-def cmd_groups_activity(args: argparse.Namespace) -> int:
-    """``pepper groups activity [<group>] [--since TS] [--json]``.
-
-    The feed needs its candidate topics named, so this names the 50 most
-    recently active unarchived topics of the room (or of all your rooms).
-    """
-    from datetime import UTC, datetime, timedelta
-
-    since = args.since or (datetime.now(UTC) - timedelta(hours=24)).isoformat()
-
-    def run(api: api_client.ApiClient) -> int:
-        if args.group:
-            room_ids = [_need_group(api, args.group)]
-        else:
-            room_ids = [r.group_id for r in _group_list_or_error(api).groups]
-        topics = sorted(
-            (t for gid in room_ids for t in api.list_group_topics(gid) if t.archived_at is None),
-            key=lambda t: t.last_activity_at,
-            reverse=True,
-        )
-        rows = api.group_activity(since=since, topic_ids=[t.topic_id for t in topics[:50]])
-        if args.json:
-            _print_json(rows)
-        for r in [] if args.json else rows:
-            line = f"{r['group_label']} / {r['topic_label']}  {r['author']}: {r['excerpt']}"
-            render.info(sanitize_line(line))
-        return 0
-
-    return _with_api(run)
-
-
-def cmd_groups_search(args: argparse.Namespace) -> int:
-    """``pepper groups search <query> [--json]``: topics by name across your rooms."""
-
-    def run(api: api_client.ApiClient) -> int:
-        rows = api.search_group_topics(args.query)
-        if args.json:
-            _print_json(rows)
-        for r in [] if args.json else rows:
-            print(sanitize_line(f"{r['group_name']} / {r['name']}  {r['topic_id']}"))
-        return 0
-
-    return _with_api(run)
 
 
 def _report_notes_api_error(exc: api_client.ApiError) -> int:
@@ -5285,7 +5273,7 @@ def cmd_notes_new(args: argparse.Namespace) -> int:
 
     Body comes from ``$EDITOR`` by default, or from ``--file`` (a path, or
     ``-`` for stdin) read up front, before any network call — same shape as
-    ``groups post --attach``. ``--room`` is resolved before the editor
+    ``messages post --attach``. ``--room`` is resolved before the editor
     opens, so a bad room name fails before the user writes anything.
 
     Exit codes: 0 ok · 1 auth/API/transport/membership-seam-down · 2 bad
@@ -5652,7 +5640,7 @@ def _parse_due(raw: str, *, flag: str = "--due") -> tuple[str | None, str | None
     return parsed.isoformat(), None
 
 
-def _load_or_error() -> credentials.Credentials | None:
+def _load_or_error(args: argparse.Namespace | None = None) -> credentials.Credentials | None:
     """Load credentials or print the error and return ``None``.
 
     Pulled out so every command shares the "not logged in" message
@@ -5662,11 +5650,11 @@ def _load_or_error() -> credentials.Credentials | None:
     try:
         return credentials.load()
     except credentials.CredentialsError as exc:
-        render.error(str(exc))
+        _emit_error(args, "auth", str(exc))
         return None
 
 
-def _report_api_error(exc: api_client.ApiError) -> int:
+def _report_api_error(exc: api_client.ApiError, args: argparse.Namespace | None = None) -> int:
     """Map an :class:`ApiError` to a CLI exit code + error message.
 
     401 gets the bespoke "log in again" hint because that's the
@@ -5674,13 +5662,19 @@ def _report_api_error(exc: api_client.ApiError) -> int:
     typo on login). Other statuses get the server's ``detail`` if
     it provided one, else the bare HTTP status.
     """
+    code = _error_code_for_status(exc.status)
     if exc.status == 401:
-        render.error("Authentication failed (401). Run 'pepper login' to refresh your token.")
+        _emit_error(
+            args,
+            code,
+            "Authentication failed (401). Run 'pepper login' to refresh your token.",
+            status=401,
+        )
         return 1
     if exc.detail:
-        render.error(f"Server returned {exc.status}: {exc.detail}")
+        _emit_error(args, code, f"Server returned {exc.status}: {exc.detail}", status=exc.status)
     else:
-        render.error(f"Server returned {exc.status}.")
+        _emit_error(args, code, f"Server returned {exc.status}.", status=exc.status)
     return 1
 
 
