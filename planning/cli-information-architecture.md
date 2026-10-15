@@ -1,7 +1,7 @@
 # CLI information architecture — one grammar, rooms everywhere, `--json` everywhere
 
-**Status:** Proposed. Awaiting the maintainer's calls on §10 (A–F). The `groups` → `rooms` rename
-is decided and is not an open question.
+**Status:** Accepted 2026-10-14. The maintainer decided §10 A–F; the `groups` → `rooms` rename was
+decided earlier. Lands as one coordinated breaking release, **0.2.0** (§7).
 **Author:** drafted with Claude Code for the maintainer
 **Last updated:** 2026-10-14
 **Tracked by:** #20
@@ -101,9 +101,9 @@ they need `--yes` or exit 2. `archive` is not destructive (your view only) and k
 
 ### 3.2 Create
 
-`create` everywhere. `add` (todos, scheduled-tasks) and `new` (skills, notes, rooms, topics) become
-hidden aliases (§7). The product's own buttons are split ("Start conversation", "New topic", "Add a
-todo"), so there is no product verb to defer to; see §10 B.
+`create` everywhere (§10 B). `add` (todos, scheduled-tasks) and `new` (skills, notes, rooms, topics)
+are removed, not aliased (§7). The product's own buttons are split ("Start conversation", "New
+topic", "Add a todo"), so there was no product verb to defer to.
 
 ### 3.3 Edit
 
@@ -121,103 +121,106 @@ search does not exist on the server and is not proposed here.
 
 ## 4. Old → new
 
-`(A)` = hidden alias kept until removal (§7). `#17`/`#18` = the open pepper-cli issue that lands
-there. Every new leaf gets `--json` (§5).
+Every left-hand spelling stops working in 0.2.0; there are no aliases (§7). `#17`/`#18` = the open
+pepper-cli issue that lands there. Every leaf gets `--json` (§5).
 
-| 0.1.0 | New | Notes |
+| 0.1.0 | 0.2.0 | Notes |
 |---|---|---|
-| `groups list [--archived]` | `rooms list [--archived]` (A) | |
-| `groups show GROUP` | `rooms show ROOM` (A) | room is the object |
-| `groups new --name PEOPLE` | `rooms create [--name N] PEOPLE…` (A) | |
-| `groups rename GROUP NAME` | `rooms edit ROOM --name NAME` (A) | |
-| `groups archive/unarchive GROUP` | `rooms archive/unarchive ROOM` (A) | |
-| `groups leave GROUP --yes` | `rooms leave ROOM --yes` (A) | |
-| `groups mute/unmute GROUP` | `rooms mute/unmute ROOM` (A) | |
-| `groups watch --room --topic` | `rooms watch [--room R]… [--topic T]` (A) | already flag-scoped |
-| `groups activity [GROUP] --since` | `rooms activity [--room R] [--since]` (A) | |
-| `groups topics GROUP` | `topics list --room R [--archived]` (A) | |
-| `groups new-topic GROUP NAME` | `topics create --room R NAME` (A) | |
-| `groups rename-topic GROUP TOPIC NAME` | `topics edit --room R TOPIC --name NAME` (A) | |
-| `groups archive-topic/unarchive-topic GROUP TOPIC` | `topics archive/unarchive --room R TOPIC` (A) | |
-| `groups search QUERY` | `topics search [--room R] QUERY` (A) | §3.4 |
-| `groups read GROUP [TOPIC]` | `messages list --room R [--topic T] [--limit --before --since --mark]` (A) | `--topic` optional as today (default topic) |
-| `groups post GROUP TOPIC [MSG\|-]` | `messages post --room R --topic T [MSG\|-]` (A) | heredoc form: `pepper messages post --room R --topic T - <<'EOF'` |
-| `groups edit GROUP MESSAGE TEXT` | `messages edit --room R MESSAGE [TEXT\|-]` (A) | |
-| `groups delete-message GROUP MESSAGE` | `messages delete --room R MESSAGE --yes` (A) | |
-| `groups react/unreact GROUP MESSAGE EMOJI` | `messages react/unreact --room R MESSAGE EMOJI` (A) | |
-| `groups download GROUP ATTACHMENT` | `attachments download --room R ATTACHMENT [--out]` (A) | |
-| `groups roster GROUP` | `members list --room R` (A) | |
-| `groups invite GROUP HANDLE` | `members invite --room R HANDLE` (A) | |
-| `groups remove GROUP PERSON` | `members remove --room R PERSON --yes` (A) | association, not delete |
-| `groups role GROUP PERSON ROLE` | `members edit --room R PERSON --role owner\|member --yes` (A) | |
-| `groups apps GROUP` | `apps list --room R` (A) | #18: `apps list` without `--room` = your apps |
-| `groups install-app GROUP KEY` | `apps install --room R KEY` (A) | |
-| `groups uninstall-app GROUP APP` | `apps uninstall --room R APP --yes` (A) | |
+| `groups list [--archived]` | `rooms list [--archived]` | |
+| `groups show GROUP` | `rooms show ROOM` | room is the object |
+| `groups new --name PEOPLE` | `rooms create [--name N] PEOPLE…` | |
+| `groups rename GROUP NAME` | `rooms edit ROOM --name NAME` | |
+| `groups archive/unarchive GROUP` | `rooms archive/unarchive ROOM` | |
+| `groups leave GROUP --yes` | `rooms leave ROOM --yes` | |
+| `groups mute/unmute GROUP` | `rooms mute/unmute ROOM` | |
+| `groups watch --room --topic` | `rooms watch [--room R]… [--topic T]` | already flag-scoped |
+| `groups activity [GROUP] --since` | `rooms activity [--room R] [--since]` | |
+| `groups topics GROUP` | `topics list --room R [--archived]` | |
+| `groups new-topic GROUP NAME` | `topics create --room R NAME` | |
+| `groups rename-topic GROUP TOPIC NAME` | `topics edit --room R TOPIC --name NAME` | |
+| `groups archive-topic/unarchive-topic GROUP TOPIC` | `topics archive/unarchive --room R TOPIC` | |
+| `groups search QUERY` | `topics search [--room R] QUERY` | §3.4 |
+| `groups read GROUP [TOPIC]` | `messages list --room R [--topic T] [--limit --before --since --mark]` | `--topic` optional as today (default topic) |
+| `groups post GROUP TOPIC [MSG\|-]` | `messages post --room R --topic T [MSG\|-]` | heredoc form: `pepper messages post --room R --topic T - <<'EOF'` |
+| `groups edit GROUP MESSAGE TEXT` | `messages edit --room R MESSAGE [TEXT\|-]` | |
+| `groups delete-message GROUP MESSAGE` | `messages delete --room R MESSAGE --yes` | |
+| `groups react/unreact GROUP MESSAGE EMOJI` | `messages react/unreact --room R MESSAGE EMOJI` | |
+| `groups download GROUP ATTACHMENT` | `attachments download --room R ATTACHMENT [--out]` | |
+| `groups roster GROUP` | `members list --room R` | |
+| `groups invite GROUP HANDLE` | `members invite --room R HANDLE` | |
+| `groups remove GROUP PERSON` | `members remove --room R PERSON --yes` | association, not delete |
+| `groups role GROUP PERSON ROLE` | `members edit --room R PERSON --role owner\|member --yes` | |
+| `groups apps GROUP` | `apps list --room R` | #18: `apps list` without `--room` = your apps |
+| `groups install-app GROUP KEY` | `apps install --room R KEY` | |
+| `groups uninstall-app GROUP APP` | `apps uninstall --room R APP --yes` | |
 | — | `apps show SLUG [--room R]` | #18 "data", `GET /apps/{slug}/data?principal=` |
 | — | `apps run SLUG [ACTION] [--room R] [--param k=v]…` | #18 "action"; no ACTION lists declared actions |
-| `groups sharing GROUP` | `sharing show --room R` (A) | splits #9 |
-| `groups sharing GROUP --set CAL=LEVEL` | `sharing edit --room R --set CAL=LEVEL…` (A) | |
-| `trajectory show ID` | `trajectories show ID` (A) | |
-| `trajectory list --limit --offset` | `trajectories list --limit --before` (A); `--offset` hidden | §5.3 |
-| `todos add TITLE` | `todos create TITLE` (A) | |
+| `groups sharing GROUP` | `sharing show --room R` | splits #9 |
+| `groups sharing GROUP --set CAL=LEVEL` | `sharing edit --room R --set CAL=LEVEL…` | |
+| `trajectory show ID` | `trajectories show ID` | |
+| `trajectory list --limit --offset` | `trajectories list --limit --before` | `--offset` removed; §5.3 |
+| `todos add TITLE` | `todos create TITLE` | |
 | `todos list/done/dismiss/reopen` | unchanged | |
-| `scheduled-tasks add NAME` | `scheduled-tasks create NAME` (A) | |
-| `scheduled-tasks add/destinations --topic NAME` | `--deliver-topic NAME` (`--topic` hidden on this noun) | #13: `--topic` is reserved for scope |
-| `scheduled-tasks destinations TASK` | `scheduled-tasks edit TASK --to/--default/--silent` (A) | |
+| `scheduled-tasks add NAME` | `scheduled-tasks create NAME` | |
+| `scheduled-tasks add/destinations --topic NAME` | `--deliver-topic NAME` (`--topic` removed on this noun) | #13: `--topic` is reserved for scope |
+| `scheduled-tasks destinations TASK` | `scheduled-tasks edit TASK --to/--default/--silent` | |
 | `scheduled-tasks list/show/runs/thread/edit/pause/resume` | unchanged names; `--room` per §6 | |
 | — | `scheduled-tasks renew TASK [--room R]` | #17; prints the 422 refusal text on refusal |
-| `skills new NAME` | `skills create NAME [--file]` (A) | |
+| — | `scheduled-tasks delete TASK [--room R] --yes` | decided (§10 E); after the server endpoint (§6.1 #3) |
+| `skills new NAME` | `skills create NAME [--file]` | |
 | `skills list/show/edit/delete/share/revoke` | unchanged; `edit` gains `--file` | |
-| `notes new NAME` | `notes create NAME` (A) | |
-| `notes rm NOTE` | `notes delete NOTE --yes` (A) | |
-| `notes list/search/show/edit` | unchanged; `edit --rename` → `--name` (A) | |
-| `agent-skill [--write DIR]` | `agents guide [--write DIR]` (A) | #10 |
-| `next --room PREFIX` | `next [--room R] [--source PREFIX]` | `--room` resolves strictly like everywhere else; prefix filtering moves to `--source`. Behavior change on an existing flag: release-noted |
+| `notes new NAME` | `notes create NAME` | |
+| `notes rm NOTE` | `notes delete NOTE --yes` | |
+| `notes list/search/show/edit` | unchanged; `edit --rename` → `--name` | |
+| `agent-skill [--write DIR]` | `agents guide [--write DIR]` | #10 |
+| `next --room PREFIX` | `next [--room R] [--source PREFIX]` | `--room` resolves strictly like everywhere else; prefix filtering moves to `--source`. Behavior change on an existing flag, in the 0.2.0 notes |
 | `calendar`, `chat`, `login`, `logout`, `whoami`, `takeout` | unchanged | views/session (§3 rule 4) |
 
 ## 5. The `--json` contract
 
 This is the section implementations are tested against. Invariant 4 (`.claude/guidelines/
-invariants.md`) makes stdout and exit codes an interface; this contract adds to it and changes
-none of the shapes already shipped.
+invariants.md`) makes stdout and exit codes an interface, so every shape change below is a
+deliberate break, made once, in 0.2.0, alongside the renames (§10 D).
 
 ### 5.1 Rules
 
 | # | Rule |
 |---|---|
-| J1 | Every leaf except `chat` with no message (the REPL) and `login` accepts `--json`. `logout` emits `{"ok": true}`; `agents guide` without `--write` emits `{"markdown": "..."}`. |
-| J2 | Under `--json`, stdout carries exactly one JSON document (or JSON lines for a stream, J6) and nothing else: no colour, no prose, no progress. Prompts never happen (destructive verbs need `--yes`, else exit 2). |
-| J3 | **Shapes shipped in 0.1.0 are frozen.** `rooms list` emits the `groups list` object `{enabled, degraded, total, archived_total, groups}` — the key stays `groups`. `messages list` emits `{messages, next_before}`. `messages post` emits the message plus `topic_id`. `notes list/search` emit `{items, truncated}`. `todos list`, `topics list`, `members list`, `apps list --room`, `rooms activity`, `topics search` emit bare arrays. An alias and its new spelling emit byte-identical stdout. Normalizing these is a 1.0 question (§10 D), never a quiet change. |
-| J4 | **New list leaves** (no `--json` in 0.1.0): unpaged lists emit a bare array of objects (matching the 0.1 majority); paged lists emit `{"<noun>": [...], "next_before": str\|null}` (matching `messages list`). Keys: `trajectories list` → `trajectories`; `scheduled-tasks runs` → `runs`; `scheduled-tasks thread` → `messages`. |
+| J1 | Every leaf except `chat` with no message (the REPL) and `login` accepts `--json` and honours `PEPPER_JSON` (J10). `logout` emits `{"ok": true}`; `agents guide` without `--write` emits `{"markdown": "..."}`. |
+| J2 | In JSON mode (`--json` or `PEPPER_JSON=1`), stdout carries exactly one JSON document (or JSON lines for a stream, J6) and nothing else: no colour, no prose, no progress. Prompts never happen (destructive verbs need `--yes`, else exit 2). |
+| J3 | **One list envelope, everywhere.** Every `list`, `search` and `activity` leaf, plus `scheduled-tasks runs/thread`, emits `{"items": [...], "next_before": str\|null}`. `next_before` is always present: `null` on the last page and on unpaged lists. List-level metadata the server returns sits beside them as extra top-level keys, never instead of them: `rooms list` adds `enabled`, `degraded`, `total`, `archived_total`; `notes list/search` add `truncated`. This replaces every 0.1.0 list shape: `groups list` (`groups` key), `groups read` (`messages` key), and the bare arrays of `todos list`, `groups topics/roster/apps/activity/search`. |
+| J4 | Views are not lists: `next` and `calendar` emit objects shaped as in 0.1.0 (`calendar --planning` keeps `{"range", "planning"}`). |
 | J5 | `show` emits the object. Mutations emit the resulting object as the server returns it; for a 204 route, `{"ok": true, "id": "<id acted on>"}`. `takeout` emits `{"path", "bytes"}`. `agents guide --write` emits `{"path"}`. |
 | J6 | Streams emit JSON lines: `rooms watch` (unchanged, incl. `{"kind":"cursor","cursor":N}` frames) and one-shot `chat MESSAGE --json` (one line per streamed event, final line the reply). |
 | J7 | Field names are the server's, passed through. Unknown server fields are kept, not dropped (the CLI already tolerates them). |
-| J8 | **Errors** under `--json` write one line to **stderr**: `{"error": {"code": "...", "status": <http int or null>, "message": "..."}}`. `code` ∈ `auth`, `forbidden`, `not_found`, `conflict`, `validation`, `ambiguous`, `usage`, `upgrade_required`, `server`, `network`, `gap`. stdout stays empty. Without `--json`, errors stay `pepper: …` text. |
-| J9 | Exit codes unchanged: 0 ok, 1 auth/API/network (incl. 426), 2 usage/resolution/refused-without-`--yes`, 3 watch replay gap, 130 interrupt. |
+| J8 | **Errors** in JSON mode write one line to **stderr**: `{"error": {"code": "...", "status": <http int or null>, "message": "..."}}`. `code` ∈ `auth`, `forbidden`, `not_found`, `conflict`, `validation`, `ambiguous`, `usage`, `upgrade_required`, `server`, `network`, `gap`. stdout stays empty. Outside JSON mode, errors stay `pepper: …` text. |
+| J9 | Exit codes unchanged: 0 ok, 1 auth/API/network (incl. 426), 2 usage/resolution/refused-without-`--yes`/renamed noun (§7), 3 watch replay gap, 130 interrupt. |
+| J10 | **`PEPPER_JSON=1`** turns JSON mode on for every leaf that accepts `--json`. Precedence: `--json` on the command line → on; else `PEPPER_JSON` exactly `1` → on; any other value, or unset → off. There is no `--no-json`; `PEPPER_JSON= pepper …` switches it off for one command. The J1 exemptions ignore it (the REPL and `login` stay interactive). There is no root `pepper --json` (§10 F). |
 
 ### 5.2 Mechanism
 
-argparse does not propagate a root optional into subparsers, so `pepper --json rooms list` and
-`pepper rooms list --json` are different parsers. Per-leaf it is: one shared parent parser per
-common flag, built once with `add_help=False` and attached with `parents=[...]` to every leaf.
+The CLI stays on argparse. Each common flag lives in one shared parent parser, built once with
+`add_help=False` and attached with `parents=[...]` to every leaf. `--json` is per-leaf only; there
+is no root `pepper --json` (§10 F). A later move to Click, Typer or cyclopts is out of scope here
+and tracked in pepper-cli#21; nothing in this contract depends on argparse.
 
 | Parent | Adds | Attached to |
 |---|---|---|
-| `_json_parent` | `--json` | every leaf except J1's two |
+| `_json_parent` | `--json`; JSON mode resolved once by `_json_mode(args)` = `args.json or os.environ.get("PEPPER_JSON") == "1"` (J10) | every leaf except J1's two |
 | `_room_parent(required)` | `--room ROOM` (UUID or case-insensitive unique name prefix, resolved by `_resolve_group`) | per §6 |
 | `_topic_parent` | `--topic TOPIC` | `messages list/post`, `rooms watch` |
 | `_yes_parent` | `--yes` | destructive verbs (§3.1) |
 | `_page_parent` | `--limit N`, `--before CURSOR`, `--since CURSOR` | paged lists |
 
 Output goes through one `_emit(obj, args)` that writes JSON or calls the existing `render.py`
-human formatter, and one error path that honours J8. Bare `print` stays confined to `cli.py`.
+human formatter, one `_emit_list(items, args, next_before=None, **meta)` that builds the J3
+envelope, and one error path that honours J8. Nothing else reads `args.json`. Bare `print` stays confined to `cli.py`.
 
 ### 5.3 Pagination and `--since`
 
 `--limit N`; `--before CURSOR` for older; `--since CURSOR` for newer. A cursor is whatever the same
 command printed as `next_before` (or `cursor`, for `watch`) and is opaque. `trajectories` is
-offset-paged on the server: the CLI encodes the offset as the cursor and keeps `--offset` as a
-hidden alias. `rooms activity --since` also accepts an ISO-8601 time, because that is what its
+offset-paged on the server: the CLI encodes the offset as the cursor; `--offset` is removed. `rooms activity --since` also accepts an ISO-8601 time, because that is what its
 route takes; help says so.
 
 | Command | Paged by | `--before` | `--since` |
@@ -228,13 +231,13 @@ route takes; help says so.
 | `rooms watch` | event cursor | no | yes (+ `--cursor-file`) |
 | `rooms activity` | time | no | yes (time) |
 
-### 5.4 Fill list (`--json` missing in 0.1.0)
+### 5.4 Fill list (`--json` missing in 0.1.0; all client-only)
 
 `whoami`, `chat MESSAGE`, `trajectories list`, `todos create/done/dismiss/reopen`, all of
 `scheduled-tasks`, all of `skills`, `rooms show/create/edit/archive/unarchive/leave/mute/unmute`,
 `topics create/edit/archive/unarchive`, `messages edit/delete/react/unreact`, `attachments
 download`, `members invite/remove/edit`, `apps install/uninstall/show/run`, `notes create/edit/
-delete`, `takeout`, `logout`, `agents guide`. All client-only.
+delete`, `takeout`, `logout`, `agents guide`.
 
 ## 6. Rooms everywhere
 
@@ -258,7 +261,7 @@ today); **S** needs a server change (or verification first); **N** a room is not
 | `scheduled-tasks edit --prompt/--cron/--at/--timezone/--description`, `renew` | optional | S | `RoomTaskUpdateRequest` is `{active, delivery}` only; no room renew |
 | `scheduled-tasks create --room --at` | optional | S | `RoomTaskCreateRequest` has no one-off `at` |
 | `scheduled-tasks create --room --skill` | optional | S | pepper#4557 |
-| `scheduled-tasks delete` | optional | S | no endpoint, personal or room (§10 E) |
+| `scheduled-tasks delete` | optional | S | decided (§10 E); no endpoint yet, personal or room |
 | `skills list/show/share/revoke` | optional / optional / required / required | R | `/groups/{gid}/skills…` |
 | `skills create/edit/delete` | — | N | a room holds a grant of someone's skill, not a skill; `share` is the room verb |
 | `notes *` | optional | R | `/artifacts…?principal=`, `/notes/{id}…?principal=` |
@@ -274,43 +277,50 @@ today); **S** needs a server change (or verification first); **N** a room is not
 |---|---|---|
 | 1 | Room task detail: `GET /groups/{gid}/scheduled-tasks/{id}`, `/runs`, `/thread` — **verify personal routes first** | pepper#4311 (slice 1 shipped; this is beyond it) |
 | 2 | Room task full edit (`prompt`, `cron`, `timezone`, `description`), one-off `at` on create, and `renew` | new |
-| 3 | Scheduled-task delete, personal and room — product decision first | new |
+| 3 | Scheduled-task delete, personal and room (`DELETE /scheduled-tasks/{id}`, `DELETE /groups/{gid}/scheduled-tasks/{id}`) — decided 2026-10-14 | new |
 | 4 | `GET /trajectories?principal=` and `/{id}` — **verify** room-shared listing first | new |
 | 5 | `GET /calendars/range?principal=` | new (or defer to #18) |
 | 6 | Room todo `details`/`priority` — **verify** honoured | new if not |
 | 7 | Skill-backed room task | pepper#4557 |
 | 8 | Join links (would land as `rooms links …`, spelled when the route exists) | pepper#4311 |
-| 9 | Typed response models for groups routes — lets J3/J4 shapes be checked against the contract | pepper#4673 |
+| 9 | Typed response models for groups routes — lets the J3 `items` be checked against the contract | pepper#4673 |
 | 10 | `whoami` returns 401 for agent tokens, so `whoami --json` cannot be the agent login check | note only |
 
 Order per `CLAUDE.md`: server lands → weekly snapshot refresh of `contracts/api-v1.openapi.json`
 (never hand-edited) → CLI.
 
-## 7. Compatibility
+## 7. Compatibility: a hard break in 0.2.0
+
+No aliases (§10 C). The CLI is pre-1.0 and its main users are agents driven by skills, so the
+skills move with the CLI instead of the CLI carrying old spellings.
 
 | Item | Rule |
 |---|---|
-| Aliases | Every 0.1.0 spelling in §4 marked (A) stays registered as a hidden subparser with its **old signature**, mapping positional `GROUP` onto `--room`, and dispatches to the new handler. Stdout is byte-identical to the new spelling (J3). |
-| Implicit chat | Old and new nouns are all in the set `_build_parser()` returns, so `groups`, `trajectory`, `agent-skill` never fall through to chat, during or after the window. After removal they exit 2 with "renamed to …", not chat. |
-| Notice | One stderr line per invocation: `pepper: 'groups read' is deprecated; use 'pepper messages list --room …' (removed in 1.0.0)`. Never on stdout, never inside `--json`. `PEPPER_NO_DEPRECATION=1` silences it. |
-| Window | Through 0.x; removed in **1.0.0**, and not before three minor releases have shipped with the new spellings (§10 C). The real blast radius is harness allow rules like `Bash(pepper --profile X groups post <id>:*)`, which stop matching the moment an alias goes. |
-| Lockstep | The renaming PR updates, together: bundled `src/pepper_cli/data/agent-skill/SKILL.md` (§2–§10, incl. §8's eight agent commands → `rooms list`, `topics list`, `members list`, `messages list`, `rooms watch`, `messages post`, `messages react`, `messages unreact`, and §10 listing the deprecation line as expected stderr); `README.md`. Same day, separate repos: workspace `plugins/vycari-ops/skills/{access-trajectory,pepper-groups,room-agent}/SKILL.md` (incl. room-agent allow rules lines 96–102, rewritten to `messages post --room <room-id>:*` etc.), and server `src/pepper/features/help/skills/pepper-guide/reference/cli.md`. |
+| Release | All renames, the J3 envelope and the `--json` fill ship together as **0.2.0** (minor bump from 0.1.0). Once the first breaking PR (phase 2a) merges, no release is tagged until 0.2.0 is cut; `main` may be half-renamed in between and nothing ships from it. |
+| Old verbs and flags | Under a noun that survives (`todos add`, `notes rm`, `skills new`, `scheduled-tasks destinations`, `--offset`, `--rename`, scheduled-task `--topic`): argparse's normal `invalid choice` / `unrecognized arguments`, exit 2. The `invalid choice` line already lists the new verbs. |
+| Old nouns | `groups`, `trajectory` and `agent-skill` stay registered as hidden stubs. Without them the implicit-chat fallback would send `pepper groups read …` to Pepper as a chat message. A stub runs nothing: it prints one line, e.g. `pepper: 'groups' was renamed in 0.2.0 — see 'pepper rooms\|topics\|messages --help'`, and exits 2. They stay registered permanently (cheap; a stale agent must never chat by accident). |
+| Lockstep | 0.2.0 is cut the same day these merge: (1) in this repo, bundled `src/pepper_cli/data/agent-skill/SKILL.md` and `README.md`, in the phase PRs that change each command; (2) a vycari workspace PR for `plugins/vycari-ops/skills/{access-trajectory,pepper-groups,room-agent}/SKILL.md`, including room-agent's allow rules (lines 96–102, rewritten to `messages post --room <room-id>:*` etc.); (3) a pepper server PR for `src/pepper/features/help/skills/pepper-guide/reference/cli.md`. (2) and (3) are opened as drafts during phases 2a–2d and merged at release. SKILL.md §8's eight agent commands become `rooms list`, `topics list`, `members list`, `messages list`, `rooms watch`, `messages post`, `messages react`, `messages unreact`; §3–§6's documented JSON shapes move to J3. |
+| Running agents | Saved harness allow rules match on prefixes such as `Bash(pepper --profile X groups post <id>:*)` and `groups watch:*`; after an upgrade they match nothing, and the agent stops or prompts. Before 0.2.0 is published, list the deployed agents (the ops-01 "Claude" agent; anything running `pepper groups watch`) and have each one's settings rewritten the same day, or pin `vycari-pepper<0.2` until it is. The release notes carry the full §4 table. |
 
 ## 8. Conformance test and how to add a command
 
-`tests/test_cli_conformance.py` builds the real parser and walks every subparser recursively
-(`parser._subparsers._group_actions[*].choices`, then each leaf's `_option_string_actions`).
+`tests/test_cli_conformance.py` tests behaviour, not argparse internals, so it survives a parser
+library switch (pepper-cli#21). It enumerates commands from `pepper --help` and `pepper <noun>
+--help`, checks each leaf's flags from `pepper <noun> <verb> --help`, and checks parsing and
+output by running `main([...])` with a faked API client and captured stdout/stderr. Nothing reads
+argparse private attributes.
 
 | Check | Assertion |
 |---|---|
-| Noun | top-level name ∈ §2 nouns ∪ views/session set ∪ `ALIASES` |
+| Noun | top-level name ∈ §2 nouns ∪ views/session set ∪ `RENAMED` (the three §7 stubs) |
 | Verb | leaf name ∈ §3.1 verbs |
 | `--json` | present, unless in `JSON_EXEMPT` (`chat` REPL path, `login`) |
+| `PEPPER_JSON` | for every non-exempt leaf, stdout is JSON with `PEPPER_JSON=1` and no flag, human text with `PEPPER_JSON=0` or unset, JSON with `--json` regardless of the variable; exempt leaves are unaffected by it |
+| Envelope | for every list leaf (J3), stdout under a faked client parses to an object with `items` (array) and `next_before` keys |
 | `--room` | present, unless in `ROOM_NA` (reason string) or `ROOM_PENDING` (server issue link) |
 | `--yes` | present on every destructive verb |
-| No `GROUP` | no positional dest/metavar `group`; no help string containing "group" or "channel" outside `ALIASES`. `--to` help lists `room`; the wire value `groups_service` is an accepted hidden choice and allowlisted |
-| Aliases | every 0.1.0 path still parses, prints the notice on stderr, and dispatches to the same handler as its new spelling |
-| Byte identity | for each alias with `--json`, stdout under a faked client equals the new spelling's |
+| No `GROUP` | no positional dest/metavar `group`; no help string containing "group" or "channel" outside `RENAMED`. `--to` help lists `room`; the wire value `groups_service` is an accepted hidden choice and allowlisted |
+| Renamed | each `RENAMED` stub exits 2 with one stderr line, empty stdout, and never reaches chat or the API |
 
 `JSON_EXEMPT` and `ROOM_NA` are fixed lists with reasons. `ROOM_PENDING` and a temporary
 `JSON_PENDING` start full and shrink each phase; a phase is done when its rows are gone.
@@ -322,7 +332,7 @@ Order per `CLAUDE.md`: server lands → weekly snapshot refresh of `contracts/ap
 3. Build the leaf with `parents=[_json_parent, …]`; add `_room_parent` (§6 class), `_yes_parent`
    if destructive, `_page_parent` if paged.
 4. Room is a flag unless the room is the object. Canonical order in help/examples: `--room` first.
-5. Output through `_emit`; pick the shape from J3–J5. A new shape for an existing command is a
+5. Output through `_emit` / `_emit_list`; the shape follows J3–J5. Changing a shipped shape is a
    breaking change (invariant 4) — separate PR, release note.
 6. If the route is new: server PR first, wait for the snapshot refresh, then the CLI.
 7. Update `SKILL.md` and `README.md` in the same PR (invariant 5). Run `uv run pytest`; the
@@ -330,25 +340,26 @@ Order per `CLAUDE.md`: server lands → weekly snapshot refresh of `contracts/ap
 
 ## 9. Phases
 
-One PR each. Phases 2a/2b/3 are file-disjoint enough to run in parallel after phase 1.
+One PR each. 2a–2d are breaking and file-disjoint enough to run in parallel after phase 1; no
+release is tagged between the first of them merging and phase 3.
 
 | Phase | PR | Contents | Depends on |
 |---|---|---|---|
-| 1 | Scaffolding | shared parent parsers, `_emit` + J8 error line, alias registry + notice, conformance test with full pending lists. No user-visible rename | — |
-| 2a | Agent surface | `rooms`, `topics`, `messages`, `attachments` + aliases; SKILL.md, README; then workspace skills and server `cli.md` PRs | 1 |
-| 2b | Room admin | `members`, `sharing`, `apps list/install/uninstall` (#18 part 1) + aliases | 1 |
-| 3 | Personal nouns | `trajectories`, `create`/`delete` aliases, skills `--file`, `scheduled-tasks edit` absorbs `destinations`, `--deliver-topic`, `--to room`, `agents guide`, `next --room/--source`, `renew` (#17) | 1 |
-| 4 | `--json` fill | §5.4 list, §5.3 pagination flags, `apps show/run` (#18 part 2), `calendar --planning --room` | 2a, 2b, 3 |
-| 5 | Server-dependent rooms | one PR per §6.1 row as each server change and snapshot refresh lands | server |
-| 6 | 1.0.0 | remove aliases; §10 D outcome | ≥3 minors after 2a |
+| 1 | Scaffolding | shared parent parsers, `_json_mode` + `PEPPER_JSON`, `_emit`/`_emit_list`, J8 error line, renamed-noun stub helper, conformance test with full pending lists. No user-visible change beyond `PEPPER_JSON` on today's `--json` leaves; releasable as 0.1.x | — |
+| 2a | Agent surface | `rooms`, `topics`, `messages`, `attachments`; `groups` stub; J3 envelope on their lists; SKILL.md + README for them | 1 |
+| 2b | Room admin | `members`, `sharing`, `apps list/install/uninstall` (#18 part 1), with envelope | 1 |
+| 2c | Personal nouns | `trajectories` (+ `trajectory` stub), `create`/`delete` everywhere, skills `--file`, `scheduled-tasks edit` absorbs `destinations`, `--deliver-topic`, `--to room`, `agents guide` (+ `agent-skill` stub), `next --room/--source`, `renew` (#17) | 1 |
+| 2d | `--json` fill | §5.4 list, envelope on `todos`/`notes`/`runs`/`thread`, §5.3 pagination, `apps show/run` (#18 part 2), `calendar --planning --room` | 1 (rebases after 2a–2c) |
+| 3 | Release 0.2.0 | version bump, release notes with the §4 table; `JSON_PENDING` empty. Same day: merge the workspace skills PR and server `cli.md` PR, update running agents (§7) | 2a–2d |
+| 4 | Server-dependent rooms | `scheduled-tasks delete` and one PR per other §6.1 row, as each server change and snapshot refresh lands; additive 0.2.x/0.3.x | server |
 
-## 10. Open questions
+## 10. Decisions (2026-10-14, by Allen)
 
-| | Question | Recommendation |
+| | Question | Decision |
 |---|---|---|
-| A | Flat nouns with `--room` (`topics list --room R`) or nested under rooms (`rooms topics list R`)? | **Flat.** One room rule across every family; six of seven families already scope with `--room`; nesting keeps a positional room and two rules. |
-| B | `create` everywhere, or keep `add`/`new` where they are? | **`create`**, with `add`/`new` as aliases to 1.0. The product's buttons are split (Start/New/Add), so there is nothing to match; one verb is what Chris can apply without asking. |
-| C | Alias removal: when? | **1.0.0, and no sooner than three minor releases after phase 2a**, and only once the workspace skills and server `cli.md` ship the new spellings. |
-| D | At 1.0, normalize every list to one envelope (`{"items": [...], "next_before": …}`), or freeze J3/J4 forever? | **Normalize at 1.0**, in the same release as alias removal, so agents pay one breaking change, not two. |
-| E | Should scheduled tasks be deletable (today only pausable; "cancel" = pause)? | **Yes**, `scheduled-tasks delete TASK --yes`, after a server endpoint (§6.1 #3). Product call first. |
-| F | Accept `--json` at the root too (`pepper --json …`) or via `PEPPER_JSON=1`? | **No, per-leaf only** for now. Root acceptance needs a pre-parse like `--profile`; revisit if agents ask. |
+| A | Flat nouns with `--room` (`topics list --room R`) or nested under rooms (`rooms topics list R`)? | **Flat.** One room rule across every family. |
+| B | `create` everywhere, or keep `add`/`new`? | **`create` everywhere**, with no `add`/`new` aliases (see C). |
+| C | How long do old spellings live? | **No aliases at all.** "We haven't hit 1.0 and the main user of the CLI is agents so as long as we update the skill we should be fine." Hard break in 0.2.0 with the skills in lockstep (§7). |
+| D | Normalize list output to one envelope, and when? | **Now, in 0.2.0**, with the renames: `{"items": [...], "next_before": …}` for every list (J3). |
+| E | Should scheduled tasks be deletable? | **Yes**: `scheduled-tasks delete TASK --yes`, once the server endpoint exists (§6.1 #3). |
+| F | `--json` at the root, or via an environment variable? | **Per-leaf `--json` everywhere plus `PEPPER_JSON=1`** (J10). No root `pepper --json`. |
