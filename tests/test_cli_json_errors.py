@@ -139,3 +139,56 @@ def test_saved_flags_tolerates_a_field_without_a_flag_name() -> None:
     # A future edit field must not raise inside the partial-save error path (#26).
     assert cli._saved_flags({"future_field": 1}) == "future_field"
     assert cli._saved_flags({"description": None}) == "--clear-description"
+
+
+def test_repl_startup_errors_stay_text_under_pepper_json(server, capsys, monkeypatch) -> None:
+    """J1: the REPL never emits JSON, even when ``PEPPER_JSON=1`` is exported."""
+    monkeypatch.setenv("PEPPER_JSON", "1")
+    credentials.delete()
+    assert cli.main(["chat"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.strip()
+    assert not captured.err.lstrip().startswith("{")
+
+
+def test_repl_bad_root_stays_text_under_pepper_json(server, capsys, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("PEPPER_JSON", "1")
+    assert cli.main(["chat", "--root", str(tmp_path / "missing")]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "--root" in captured.err
+    assert not captured.err.lstrip().startswith("{")
+
+
+def test_json_chat_reports_a_failed_tool_result_post_as_a_j8_line(
+    server, capsys, monkeypatch
+) -> None:
+    """A 404 on the tool-result post is a J8 line on stderr, never a text note,
+    and the turn still completes (exit 0) with every stdout line JSON."""
+
+    def frame(event: str, data: dict) -> str:
+        return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+    server.routes[("POST", "/api/v1/chat/send")] = httpx.Response(
+        200,
+        text=frame(
+            "client_tool_call",
+            {"call_id": "abc", "name": "fs_read", "arguments": {}, "deadline_ms": 20000},
+        )
+        + frame("reply", {"reply": "done", "steps": []}),
+        headers={"content-type": "text/event-stream"},
+    )
+    server.routes[("POST", "/api/v1/chat/tool-result")] = httpx.Response(
+        404, json={"detail": "unknown call_id"}
+    )
+    assert cli.main(["chat", "hello", "--json"]) == 0
+    captured = capsys.readouterr()
+    kinds = [json.loads(line)["kind"] for line in captured.out.splitlines()]
+    assert kinds == ["client_tool_call", "reply"]
+    lines = [ln for ln in captured.err.splitlines() if ln.strip()]
+    assert len(lines) == 1
+    error = json.loads(lines[0])["error"]
+    assert error["code"] == "not_found"
+    assert error["status"] == 404
+    assert "fs_read" in error["message"]

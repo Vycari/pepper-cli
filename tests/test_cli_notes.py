@@ -1103,6 +1103,64 @@ def test_notes_edit_conflict_copy_write_failure_falls_back_and_keeps_the_flow(
     assert "Aborted." in err
 
 
+def _refuse_every_conflict_copy(monkeypatch, tmp_path) -> None:
+    """Neither the working directory nor the temp dir accepts the ``.mine`` copy."""
+    import os
+    import tempfile
+
+    fallback = tmp_path / "tmpdir"
+    fallback.mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fallback))
+    real_open = os.open
+
+    def refuse_copies(path, flags, mode=0o777, **kwargs):
+        if ".mine" in os.fspath(path):
+            raise PermissionError("read-only")
+        return real_open(path, flags, mode, **kwargs)
+
+    monkeypatch.setattr(os, "open", refuse_copies)
+
+
+def test_notes_edit_json_conflict_with_no_writable_copy_is_one_j8_line(
+    tmp_home, patch_api, capsys, monkeypatch, tmp_path
+) -> None:
+    """J8: the save failure folds into the single ``conflict`` line — no text line before it."""
+    monkeypatch.delenv("PEPPER_JSON", raising=False)
+    body_path = tmp_path / "body.md"
+    body_path.write_text("mine text\n", encoding="utf-8")
+    _login(tmp_home)
+    patch_api(detail=_detail(name="Packing list", body="old\n", etag="stale1"), edit=_conflict())
+    _refuse_every_conflict_copy(monkeypatch, tmp_path)
+    rc = cli.main(["notes", "edit", _NID_PACKING, "--file", str(body_path), "--json"])
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    lines = [ln for ln in captured.err.splitlines() if ln.strip()]
+    assert len(lines) == 1
+    error = json.loads(lines[0])["error"]
+    assert error["code"] == "conflict"
+    assert error["status"] == 412
+    assert "couldn't save your text to a file" in error["message"]
+
+
+def test_notes_edit_conflict_with_no_writable_copy_still_says_why_in_text(
+    tmp_home, patch_api, capsys, monkeypatch, tmp_path
+) -> None:
+    """The human path keeps its own ``couldn't save`` line and the diff."""
+    _login(tmp_home)
+    patch_api(detail=_detail(name="Packing list", body="old\n", etag="stale1"), edit=_conflict())
+    monkeypatch.setattr(cli, "_open_in_editor", lambda initial: "mine text\n")
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+    _refuse_every_conflict_copy(monkeypatch, tmp_path)
+    rc = cli.main(["notes", "edit", _NID_PACKING])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "couldn't save your text to a file" in err
+    assert "+mine text" in err
+    assert "your text is in the diff above" in err
+
+
 def test_notes_edit_conflict_copy_is_owner_only_whatever_the_umask(
     tmp_home, patch_api, monkeypatch, tmp_path
 ) -> None:

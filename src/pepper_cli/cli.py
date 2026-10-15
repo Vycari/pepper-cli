@@ -1756,16 +1756,20 @@ def cmd_chat(args: argparse.Namespace) -> int:
     message string for one-shot dispatch.
     """
     message_parts = args.message or []
+    # The REPL is exempt from JSON mode (J1): it never emits JSON, errors included.
+    # Clearing ``args.json`` keeps ``main``'s 426 handler on text; the startup error
+    # paths get ``None`` because ``_emit_error`` re-reads ``PEPPER_JSON`` from ``args``.
+    error_args: argparse.Namespace | None = args
     if not message_parts:
-        # The REPL is exempt from JSON mode (J1): it never emits JSON, errors included.
         args.json = False
-    creds = _load_or_error(args)
+        error_args = None
+    creds = _load_or_error(error_args)
     if creds is None:
         return 1
     try:
         provider = _build_provider(getattr(args, "root", None))
     except provider_fs.PathRefused as exc:
-        _emit_error(args, "usage", f"--root: {exc}")
+        _emit_error(error_args, "usage", f"--root: {exc}")
         return 2
     if not message_parts:
         return _run_repl(creds, provider=provider)
@@ -2101,7 +2105,9 @@ def _stream_one_turn(
             )
             sys.stdout.flush()
             if event.kind == "client_tool_call":
-                _serve_client_tool_call(api, event.payload, provider=provider, trace=False)
+                _serve_client_tool_call(
+                    api, event.payload, provider=provider, trace=False, json_args=json_args
+                )
             elif event.kind == "reply":
                 return True
             elif event.kind == "error":
@@ -2185,6 +2191,7 @@ def _serve_client_tool_call(
     *,
     provider: provider_fs.FilesystemProvider | None,
     trace: bool,
+    json_args: argparse.Namespace | None = None,
 ) -> None:
     """Run one tool locally and post the answer back.
 
@@ -2196,7 +2203,9 @@ def _serve_client_tool_call(
     Every failure to *post* is swallowed with a note, deliberately. The
     result route's 404 means the call is already gone — timed out, or the
     turn moved on — and there is nothing to recover; raising here would
-    abort a stream whose reply is still coming.
+    abort a stream whose reply is still coming. With ``json_args`` (a JSON-mode
+    ``chat``) the note is a J8 line on stderr instead of text, so stderr stays
+    parseable; the turn's exit code still says whether the command succeeded.
     """
     call_id = str(payload.get("call_id") or "")
     name = str(payload.get("name") or "")
@@ -2216,6 +2225,15 @@ def _serve_client_tool_call(
             is_error=is_error,
         )
     except (api_client.ApiError, httpx.RequestError) as exc:
+        if json_args is not None:
+            if isinstance(exc, api_client.ApiError):
+                code, status = _error_code_for_status(exc.status), exc.status
+            else:
+                code, status = "network", None
+            _emit_error(
+                json_args, code, f"couldn't return {name!r} to the server ({exc}).", status=status
+            )
+            return
         render.info(
             render.styled(
                 ("note:", "yellow"),
@@ -6015,9 +6033,9 @@ def _note_slug(name: str) -> str:
     return slug or "note"
 
 
-def _save_conflict_copy(name: str, etag: str | None, text: str) -> str | None:
+def _save_conflict_copy(name: str, etag: str | None, text: str) -> tuple[str | None, str | None]:
     """Write ``text`` to ``./<note-slug>.<short-etag>.mine.md``
-    and return the path. ``etag`` is the server's *current* one as of the
+    and return ``(path, None)``. ``etag`` is the server's *current* one as of the
     conflict, not the stale one the CLI sent.
 
     Never overwrites: two attempts against the same server version (a
@@ -6026,9 +6044,11 @@ def _save_conflict_copy(name: str, etag: str | None, text: str) -> str | None:
     existing one bumps a counter (``.mine.1.md``, ``.mine.2.md``, …). If
     the working directory can't be written at all, the copy goes to the
     system temp directory instead — likewise if the file opens but the
-    write fails (a full disk). Returns ``None`` (having printed why)
-    only when neither can be written; the caller's diff still shows the
-    user's lines on stderr in that case.
+    write fails (a full disk). Returns ``(None, why)`` only when neither
+    can be written, and prints nothing: the caller reports ``why`` in its
+    own output shape (a text line, or folded into the one J8 line under
+    ``--json``). The human caller's diff still shows the user's lines on
+    stderr in that case.
 
     Created owner-only (``0o600``) whatever the umask, since a note — a
     room's especially — is private text and the fallback directory is
@@ -6068,9 +6088,8 @@ def _save_conflict_copy(name: str, etag: str | None, text: str) -> str | None:
                 with contextlib.suppress(OSError):
                     path.unlink()
                 break
-            return str(path)
-    render.error(f"couldn't save your text to a file: {last_error}")
-    return None
+            return str(path), None
+    return None, f"couldn't save your text to a file: {last_error}"
 
 
 def _print_note_diff(current_body: str, mine: str) -> None:
@@ -6156,8 +6175,13 @@ def _edit_conflict_json(
     No diff and no prompt (J2); the user's text is still saved beside the cwd and the
     path named, so a script can recover it.
     """
-    saved = _save_conflict_copy(name, etag, text) if text is not None else None
-    suffix = f" — your text is saved at {saved}" if saved else ""
+    saved, save_error = _save_conflict_copy(name, etag, text) if text is not None else (None, None)
+    if saved:
+        suffix = f" — your text is saved at {saved}"
+    elif save_error:
+        suffix = f" — {save_error}"
+    else:
+        suffix = ""
     _emit_error(args, "conflict", f"that note has changed since you read it{suffix}", status=412)
     return 1
 
@@ -6271,7 +6295,11 @@ def cmd_notes_edit(args: argparse.Namespace) -> int:
                         continue
                     render.info("Aborted.")
                     return 1
-                saved_path = _save_conflict_copy(current.name, exc.current_etag, new_body)
+                saved_path, save_error = _save_conflict_copy(
+                    current.name, exc.current_etag, new_body
+                )
+                if save_error is not None:
+                    render.error(save_error)
                 _print_note_diff(exc.current_body or "", new_body)
                 if saved_path is not None:
                     render.error(
