@@ -26,6 +26,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
 import pytest
@@ -110,41 +111,12 @@ DESTRUCTIVE = frozenset({"delete", "remove", "revoke", "uninstall", "leave"})
 # Exemptions (permanent) and pending lists (shrink to empty by phase 3)
 
 #: J1: leaves that do not take ``--json`` at all. ``chat`` is not here: one-shot
-#: ``chat MESSAGE`` gets the flag (§5.4, in JSON_PENDING); only its REPL path (no
-#: message) ignores ``--json`` and ``PEPPER_JSON``, which ``test_the_repl_...`` pins.
+#: ``chat MESSAGE`` takes the flag (§5.4); only its REPL path (no message) ignores
+#: ``--json`` and ``PEPPER_JSON``, which ``test_the_repl_...`` pins.
 JSON_EXEMPT = frozenset({"login"})
 
-#: §5.4 fill list and every leaf that has no ``--json`` today. Phase 2a-2d.
-JSON_PENDING = frozenset(
-    {
-        "chat",
-        "logout",
-        "notes create",
-        "notes delete",
-        "notes edit",
-        "scheduled-tasks create",
-        "scheduled-tasks edit",
-        "scheduled-tasks list",
-        "scheduled-tasks pause",
-        "scheduled-tasks resume",
-        "scheduled-tasks runs",
-        "scheduled-tasks show",
-        "scheduled-tasks thread",
-        "skills delete",
-        "skills edit",
-        "skills list",
-        "skills create",
-        "skills revoke",
-        "skills share",
-        "skills show",
-        "takeout",
-        "todos create",
-        "todos dismiss",
-        "todos done",
-        "todos reopen",
-        "whoami",
-    }
-)
+#: §5.4 fill list and every leaf that has no ``--json`` today (empty since phase 2d).
+JSON_PENDING: frozenset[str] = frozenset()
 
 #: Leaves where a room is not a meaningful scope (§6 class N), or is the object itself.
 ROOM_NA = {
@@ -172,7 +144,6 @@ ROOM_NA = {
 #: the ``groups`` leaves take the room as a positional until phase 2a/2b.
 ROOM_PENDING = frozenset(
     {
-        "calendar",
         "scheduled-tasks renew",  # server: no room renew route yet
         "scheduled-tasks runs",
         "scheduled-tasks show",
@@ -225,18 +196,8 @@ WORDING_PENDING = frozenset(
 #: ``--to`` must list ``room`` as a choice (empty since phase 2c).
 TO_ROOM_PENDING: frozenset[str] = frozenset()
 
-#: §8: list leaves (J3) that do not emit the envelope yet. Phase 2a-2d.
-ENVELOPE_PENDING = frozenset(
-    {
-        "todos list",
-        "scheduled-tasks list",
-        "scheduled-tasks runs",
-        "scheduled-tasks thread",
-        "skills list",
-        "notes list",
-        "notes search",
-    }
-)
+#: §8: list leaves (J3) that do not emit the envelope yet (empty since phase 2d).
+ENVELOPE_PENDING: frozenset[str] = frozenset()
 
 #: Renamed nouns that are still real commands, not yet stubs (empty since phases 2a/2c).
 RENAMED_PENDING: frozenset[str] = frozenset()
@@ -510,6 +471,37 @@ _GROUP_ROW = {
     "archived": False,
     "topics": [_TOPIC],
 }
+_TASK_ROW = {
+    "id": _TASK,
+    "name": "morning-weather",
+    "description": None,
+    "cron": "0 8 * * 1-5",
+    "timezone": "UTC",
+    "destinations": None,
+    "active": True,
+    "one_shot": False,
+    "last_run_at": None,
+    "next_run_at": "2026-10-02T08:00:00+00:00",
+}
+
+_TODO = "00000000-0000-0000-0000-0000000000a7"
+_GRANT = "00000000-0000-0000-0000-0000000000a6"
+_TODO_ROW = {
+    "id": _TODO,
+    "title": "Buy milk",
+    "status": "open",
+    "source": "cli",
+    "created_at": "2026-10-01T12:00:00+00:00",
+}
+_SKILL = {"name": "triage", "description": "Sort the inbox", "builtin": False}
+_SKILL_FULL = {**_SKILL, "body": "Do the thing.", "toolsets": []}
+_GRANT_ROW = {
+    **_SKILL,
+    "id": _GRANT,
+    "granted_by": "Dana",
+    "owner_is_you": True,
+    "can_revoke": True,
+}
 _DAY = {"date": "2026-10-02", "label": "Today", "date_label": "Fri, Oct 2"}
 
 #: path -> body for every GET the leaves below make (query strings are ignored).
@@ -539,7 +531,30 @@ ROUTES: dict[str, object] = {
     },
     "/api/v1/calendars/planning": {"cards": []},
     "/api/v1/trajectories": [],
-    "/api/v1/todos": [],
+    "/api/v1/todos": [_TODO_ROW],
+    "/api/v1/skills": [_SKILL],
+    "/api/v1/skills/triage": _SKILL_FULL,
+    f"/api/v1/groups/{_G}/skills": [_GRANT_ROW],
+    f"/api/v1/groups/{_G}/skills/{_GRANT}": {**_GRANT_ROW, "skill": _SKILL_FULL},
+    "/api/v1/scheduled-tasks": [_TASK_ROW],
+    f"/api/v1/scheduled-tasks/{_TASK}": {**_TASK_ROW, "latest_run": None},
+    f"/api/v1/scheduled-tasks/{_TASK}/runs": [
+        {"id": "r1", "fired_at": "2026-10-01T08:00:00+00:00", "status": "ok"}
+    ],
+    f"/api/v1/scheduled-tasks/{_TASK}/thread": [
+        {
+            "id": "m1",
+            "role": "assistant",
+            "text": "Sunny",
+            "channel": "web",
+            "created_at": "2026-10-01T08:00:05+00:00",
+        }
+    ],
+    "/api/v1/takeout": {"archive": "bytes"},
+    "/api/v1/apps": [
+        {"slug": "notes", "title": "Notes", "description": "", "owner_scoped_actions": ["delete"]}
+    ],
+    "/api/v1/apps/notes/data": {"rev": 2, "data": {"k": "v"}},
     "/api/v1/groups": {
         "enabled": True,
         "degraded": False,
@@ -576,23 +591,29 @@ ROUTES: dict[str, object] = {
     f"/api/v1/artifacts/{_NOTE}/detail": {**_NOTE_ROW, "shared": False, "body": "hello note"},
 }
 
-_TASK_ROW = {
-    "id": _TASK,
-    "name": "morning-weather",
-    "description": None,
-    "cron": "0 8 * * 1-5",
-    "timezone": "UTC",
-    "destinations": None,
-    "active": True,
-    "one_shot": False,
-    "last_run_at": None,
-    "next_run_at": "2026-10-02T08:00:00+00:00",
-}
-
 #: Non-GET routes (POST, DELETE): the room post answers ``{"message": {...}}``.
 POST_ROUTES: dict[str, object] = {
     f"/api/v1/groups/{_G}/topics/{_T}/messages": {"message": {**_MESSAGE, "topic_id": _T}},
     f"/api/v1/scheduled-tasks/{_TASK}/renew": _TASK_ROW,
+    f"/api/v1/scheduled-tasks/{_TASK}": _TASK_ROW,
+    f"/api/v1/scheduled-tasks/{_TASK}/cancel": {**_TASK_ROW, "active": False},
+    f"/api/v1/scheduled-tasks/{_TASK}/resume": _TASK_ROW,
+    "/api/v1/scheduled-tasks": _TASK_ROW,
+    "/api/v1/todos": _TODO_ROW,
+    f"/api/v1/todos/{_TODO}/done": {**_TODO_ROW, "status": "done"},
+    f"/api/v1/todos/{_TODO}/dismiss": {**_TODO_ROW, "status": "dismissed"},
+    f"/api/v1/todos/{_TODO}/reopen": _TODO_ROW,
+    "/api/v1/chat/send": {"reply": "hi back"},
+    "/api/v1/artifacts/new": {"id": _NOTE, "name": "Runbook", "etag": "e1"},
+    f"/api/v1/artifacts/{_NOTE}/edit": {
+        "artifact": {**_NOTE_ROW, "shared": False, "body": "changed"}
+    },
+    "/api/v1/apps/notes/actions/delete": {"result": {"name": "Runbook"}},
+    "/api/v1/apps/notes/actions/archive": {"result": {"ok": True}},
+    "/api/v1/skills": _SKILL_FULL,
+    "/api/v1/skills/triage": _SKILL_FULL,
+    f"/api/v1/groups/{_G}/skills": _GRANT_ROW,
+    f"/api/v1/groups/{_G}/skills/{_GRANT}": {},
     "/api/v1/groups": {"group_id": _G, "display_name": "Trip planning", "created": True},
     f"/api/v1/groups/{_G}/rename": {"group_id": _G, "display_name": "Renamed"},
     f"/api/v1/groups/{_G}/archive": {"group_id": _G},
@@ -720,6 +741,42 @@ JSON_CASES: dict[str, list[str]] = {
     "notes list": ["notes", "list"],
     "notes search": ["notes", "search", "run"],
     "notes show": ["notes", "show", _NOTE],
+    "notes create": ["notes", "create", "Runbook", "--file", "body.md"],
+    "notes edit": ["notes", "edit", _NOTE, "--file", "body.md"],
+    "notes delete": ["notes", "delete", _NOTE, "--yes"],
+    "todos create": ["todos", "create", "Buy milk"],
+    "todos done": ["todos", "done", _TODO],
+    "todos dismiss": ["todos", "dismiss", _TODO],
+    "todos reopen": ["todos", "reopen", _TODO],
+    "scheduled-tasks list": ["scheduled-tasks", "list"],
+    "scheduled-tasks show": ["scheduled-tasks", "show", _TASK],
+    "scheduled-tasks runs": ["scheduled-tasks", "runs", _TASK],
+    "scheduled-tasks thread": ["scheduled-tasks", "thread", _TASK],
+    "scheduled-tasks create": [
+        "scheduled-tasks",
+        "create",
+        "Brief",
+        "--prompt",
+        "p",
+        "--cron",
+        "0 8 * * *",
+    ],
+    "scheduled-tasks edit": ["scheduled-tasks", "edit", _TASK, "--prompt", "q"],
+    "scheduled-tasks pause": ["scheduled-tasks", "pause", _TASK],
+    "scheduled-tasks resume": ["scheduled-tasks", "resume", _TASK],
+    "skills list": ["skills", "list"],
+    "skills show": ["skills", "show", "triage"],
+    "skills create": ["skills", "create", "triage", "--file", "triage.md"],
+    "skills edit": ["skills", "edit", "triage", "--file", "triage.md"],
+    "skills delete": ["skills", "delete", "triage", "--yes"],
+    "skills share": ["skills", "share", "--room", _G, "triage"],
+    "skills revoke": ["skills", "revoke", "--room", _G, _GRANT, "--yes"],
+    "apps show": ["apps", "show", "notes"],
+    "apps run": ["apps", "run", "notes", "archive"],
+    "chat": ["chat", "hello"],
+    "whoami": ["whoami"],
+    "logout": ["logout"],
+    "takeout": ["takeout", "--out", "t.zip"],
 }
 
 
@@ -799,9 +856,19 @@ def test_json_cases_cover_every_leaf_that_takes_json() -> None:
     assert with_json == set(JSON_CASES)
 
 
+def _run_fresh(argv: list[str], capsys) -> tuple[int, str, str]:
+    """``_run`` with the credentials restored first (``logout`` deletes them)."""
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
+    return _run(argv, capsys)
+
+
 @pytest.mark.parametrize("leaf", sorted(JSON_CASES))
 def test_pepper_json_switches_json_mode(leaf, _env, monkeypatch, capsys) -> None:
     argv = JSON_CASES[leaf]
+    Path("body.md").write_text("hello\n")
+    Path("triage.md").write_text(
+        "---\nname: triage\ndescription: Sort the inbox\n---\nDo the thing.\n"
+    )
     if leaf == "rooms watch":
         _watch_one_event(monkeypatch)
 
@@ -811,24 +878,24 @@ def test_pepper_json_switches_json_mode(leaf, _env, monkeypatch, capsys) -> None
             monkeypatch.delenv("PEPPER_JSON", raising=False)
         else:
             monkeypatch.setenv("PEPPER_JSON", value)
-        rc, out, err = _run(argv, capsys)
+        rc, out, err = _run_fresh(argv, capsys)
         assert rc == 0, (leaf, value, err)
         assert (out + err).strip(), (leaf, value)
         assert not _is_json(out), (leaf, value, out)
 
     # PEPPER_JSON=1 with no flag: JSON.
     monkeypatch.setenv("PEPPER_JSON", "1")
-    rc, out, err = _run(argv, capsys)
+    rc, out, err = _run_fresh(argv, capsys)
     assert rc == 0, (leaf, err)
     assert _is_json(out), (leaf, out)
 
     # --json wins over any value of the variable.
     for value in ("0", "", "1"):
         monkeypatch.setenv("PEPPER_JSON", value)
-        rc, out_flag, err = _run([*argv, "--json"], capsys)
+        rc, out_flag, err = _run_fresh([*argv, "--json"], capsys)
         assert rc == 0, (leaf, err)
         assert _is_json(out_flag), (leaf, value, out_flag)
-    assert not _env.unrouted
+    assert not _env.unrouted, _env.unrouted
 
 
 def test_login_ignores_pepper_json(monkeypatch, capsys) -> None:

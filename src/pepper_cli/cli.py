@@ -4847,7 +4847,12 @@ def cmd_apps_show(args: argparse.Namespace) -> int:
         if isinstance(principal, int):
             return principal
         doc = api.get_app_data(args.slug, principal=principal)
-        _emit(doc, args, lambda: _print_pretty_json(doc))
+
+        def human() -> None:
+            print(f"App {args.slug!r} data (rev {doc.get('rev')}):")
+            _print_pretty_json(doc.get("data"))
+
+        _emit(doc, args, human)
         return 0
 
     return _run_personal(args, run)
@@ -4910,7 +4915,12 @@ def cmd_apps_run(args: argparse.Namespace) -> int:
         if principal is not None and not _json_mode(args):
             render.info(f"Running {args.action!r} writes to the room's {args.slug!r} data.")
         result = api.run_app_action(args.slug, args.action, params, principal=principal)
-        _emit(result, args, lambda: _print_pretty_json(result.get("result", result)))
+
+        def human() -> None:
+            print(f"Ran {args.action!r} on {args.slug!r}.")
+            _print_pretty_json(result.get("result", result))
+
+        _emit(result, args, human)
         return 0
 
     return _run_personal(args, run)

@@ -286,7 +286,9 @@ def test_cmd_chat_with_a_root_streams_instead(monkeypatch, notes: Path) -> None:
     monkeypatch.setattr(
         cli,
         "_stream_one_turn",
-        lambda api, message, *, provider, trace, json_args=None: streamed.append((message, trace)) or True,
+        lambda api, message, *, provider, trace, json_args=None: (
+            streamed.append((message, trace)) or True
+        ),
     )
     args = cli._build_parser()[0].parse_args(["chat", "--root", str(notes), "hello"])
     assert cli.cmd_chat(args) == 0
