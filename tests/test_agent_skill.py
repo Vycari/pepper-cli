@@ -45,7 +45,7 @@ _SHELL_END = re.compile(r"^(\||&&|;|\d*>|<<?-?)")
 _PLACEHOLDER = re.compile(r"^<[^<>\s]*>$")
 # Commands the document always shows under a profile; ``agent-skill`` and ``--version``
 # need no login, so the document may show them bare.
-_API_NOUNS = frozenset({"rooms", "topics", "messages", "attachments"})
+_API_NOUNS = frozenset({"rooms", "topics", "messages", "attachments", "members", "sharing", "apps"})
 _NEEDS_PROFILE = _API_NOUNS | {"login", "logout", "whoami"}
 _HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
 
@@ -61,8 +61,7 @@ _CANNOT_RUN = "cannot run"
 # the server's allowlist of routes an agent token may reach: ``rooms watch``
 # is the events stream, ``messages react``/``unreact`` the two reactions routes, ``--mark``
 # the read-mark route and ``--attach`` the upload route (both personal-token only).
-# ``members list`` (the old ``groups roster``) joins this set when the members
-# commands land (phase 2b of the CLI information architecture).
+# ``members list`` (the old ``groups roster``) is the room roster.
 _AGENT_COMMANDS = frozenset(
     {
         "rooms list",
@@ -72,6 +71,7 @@ _AGENT_COMMANDS = frozenset(
         "messages post",
         "messages react",
         "messages unreact",
+        "members list",
     }
 )
 _AGENT_REFUSED_FLAGS = frozenset({"--mark", "--attach"})

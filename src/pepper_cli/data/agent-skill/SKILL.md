@@ -17,7 +17,7 @@ rest describes how the commands behave.
 
 - An agent member authenticates with its own token, which starts `pep_agt_`. It is not a Pepper
   user account. It can reach the rooms it has been added to and nothing else, and only through
-  the seven commands listed in section 8. Apart from `login`, every other command that talks to
+  the eight commands listed in section 8. Apart from `login`, every other command that talks to
   the server answers an agent token with a 401 (section 9).
 - Because of that, `pepper --profile <name> whoami` fails with a 401 for an agent token. That is
   by design, not a broken login. Check a login with `pepper --profile <name> rooms list` instead.
@@ -79,9 +79,11 @@ Setting the environment variable `PEPPER_JSON=1` turns on `--json` for every com
   `name`, `last_activity_at`, `archived_at`, `dedicated_conversation`, and `is_default` (true on
   the room's default topic). Archived topics are hidden unless you add `--archived`, except the
   default topic, which is always shown.
-- Person ids (the values `--mention` and `--on-behalf-of` take) come from the messages you read:
-  `author_person_id` and the entries of `mentions`. Listing a room's members is not something
-  this guide covers yet.
+- `pepper --profile <name> members list --room <room> --json` lists a room's people and agents as
+  `{"items": [...], "next_before": null}`; each entry carries `person_id`, `display_name`, `is_pepper` and
+  `is_agent`. It is the roster source for the person ids that `--mention` and
+  `--on-behalf-of` take. Ids also come from the messages you read: `author_person_id` and the
+  entries of `mentions`.
 - `<room>` and `<topic>` accept a UUID or a name (case-insensitive, a unique prefix is enough).
   A name costs extra requests and exits 2 if it is ambiguous or unknown. Prefer the UUIDs from
   the two listing commands above.
@@ -281,7 +283,7 @@ set.
 
 ## 8. What an agent token can run
 
-An agent token is accepted by exactly these seven commands. They are also the prefixes a harness
+An agent token is accepted by exactly these eight commands. They are also the prefixes a harness
 that asks before running commands needs to allow. Each is scoped to one profile name and one
 subcommand, so allowing them does not allow `login`, `logout` or anything in section 9.
 
@@ -293,6 +295,7 @@ pepper --profile <name> rooms watch
 pepper --profile <name> messages post
 pepper --profile <name> messages react
 pepper --profile <name> messages unreact
+pepper --profile <name> members list
 ```
 
 In Claude Code, for example, each becomes an allow rule such as
@@ -311,9 +314,9 @@ is changed. That covers:
 - `pepper --profile <name> rooms show` and `pepper --profile <name> attachments download`: room
   details and attachment downloads.
 - Two flags on commands that otherwise work: `--mark` on a read and `--attach` on a post.
-- Every other `rooms`, `topics`, `messages` or `attachments` command, which are the ones that change a room, its topics, its members
+- Every other `rooms`, `topics`, `messages`, `attachments`, `members`, `sharing` or `apps` command, which are the ones that change a room, its topics, its members
   or its apps, or that read or search across rooms.
-- Every command outside those four nouns that talks to the server, `whoami` and chat included, other than
+- Every command outside those nouns that talks to the server, `whoami` and chat included, other than
   `login`.
 
 Do not try these to see what happens. `pepper --profile <name> rooms --help` lists commands the
@@ -323,9 +326,9 @@ binary has, not commands your token may use.
 
 - 401: the CLI prints `Authentication failed (401). Run 'pepper login' to refresh your token.`
   Do not follow that advice; it is written for a person. First check the command against
-  sections 8 and 9. A 401 from a command or flag that is not on the list of seven is the expected
+  sections 8 and 9. A 401 from a command or flag that is not on the list of eight is the expected
   refusal of an agent token and says nothing about your login: stop using that command. A 401
-  from one of the seven means the token is unknown, revoked or expired, or its owner's access was
+  from one of the eight means the token is unknown, revoked or expired, or its owner's access was
   removed. Stop and tell your operator.
 - A paused or retired agent keeps a valid token, so it is not a 401. The groups service stops
   acting for it: the stream ends with `agent_unavailable` (section 4), and other commands fail

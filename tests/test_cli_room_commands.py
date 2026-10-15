@@ -94,6 +94,14 @@ def api(tmp_path, monkeypatch):
         (["rooms", "unarchive", "Trip"], ("set_group_archived", GID, {"archived": False})),
         (["rooms", "mute", "Trip"], ("set_group_muted", GID, {"muted": True})),
         (["rooms", "unmute", "Trip"], ("set_group_muted", GID, {"muted": False})),
+        (
+            ["members", "invite", "--room", "Trip", "a@b.co"],
+            ("invite_to_group", GID, {"handle": "a@b.co"}),
+        ),
+        (
+            ["apps", "install", "--room", "Trip", "notes"],
+            ("install_group_app", GID, {"app_key": "notes"}),
+        ),
     ],
 )
 def test_command_reaches_its_api_method(api, argv, expected) -> None:
@@ -109,6 +117,14 @@ def test_command_reaches_its_api_method(api, argv, expected) -> None:
             ("delete_group_message", GID, MID, {}),
         ),
         (["rooms", "leave", "Trip"], ("leave_group", GID, {})),
+        (
+            ["members", "remove", "--room", "Trip", "dana"],
+            ("remove_group_member", GID, PID, {}),
+        ),
+        (
+            ["members", "edit", "--room", "Trip", PID, "--role", "owner"],
+            ("set_group_member_role", GID, PID, {"role": "owner"}),
+        ),
     ],
 )
 def test_destructive_commands_need_yes_off_a_terminal(api, argv, expected) -> None:
@@ -274,3 +290,137 @@ def test_messages_edit_without_text_is_a_usage_error(api, capsys) -> None:
     assert cli.main(["messages", "edit", "--room", "Trip", MID]) == 2
     assert api.calls == []
     assert capsys.readouterr().err.strip()
+
+
+def _installed_notes(api) -> None:
+    api.canned["get_group"] = {
+        "apps": {"installed": [{"install_id": "i1", "app_key": "k", "title": "Notes"}]}
+    }
+
+
+def test_uninstall_resolves_the_installed_app_by_title(api, capsys) -> None:
+    _installed_notes(api)
+    argv = ["apps", "uninstall", "--room", "Trip", "notes"]
+    assert cli.main(argv) == 2
+    assert not any(call[0] == "uninstall_group_app" for call in api.calls)
+    assert cli.main([*argv, "--yes"]) == 0
+    assert api.calls[-1] == ("uninstall_group_app", GID, "i1", {})
+
+
+def test_uninstall_json_reports_the_install_id(api, capsys) -> None:
+    _installed_notes(api)
+    assert cli.main(["apps", "uninstall", "--room", "Trip", "k", "--yes", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"ok": True, "id": "i1"}
+
+
+def test_uninstall_of_an_unknown_app_is_a_json_error(api, capsys) -> None:
+    _installed_notes(api)
+    assert cli.main(["apps", "uninstall", "--room", "Trip", "nope", "--yes", "--json"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err)["error"]["code"] == "not_found"
+
+
+def test_remove_by_name_reports_the_person_id_under_json(api, capsys) -> None:
+    api.canned["remove_group_member"] = {}
+    assert cli.main(["members", "remove", "--room", "Trip", "dana", "--yes", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"ok": True, "id": PID}
+
+
+def test_remove_of_an_unknown_member_is_a_json_error(api, capsys) -> None:
+    assert cli.main(["members", "remove", "--room", "Trip", "zed", "--yes", "--json"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    error = json.loads(captured.err)["error"]
+    assert error["code"] == "not_found"
+    assert "members list" in error["message"]
+
+
+def test_members_list_json_is_the_envelope(api, capsys) -> None:
+    assert cli.main(["members", "list", "--room", "Trip", "--json"]) == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["next_before"] is None
+    assert [m["person_id"] for m in body["items"]] == [PID]
+
+
+def test_members_edit_needs_a_role(api, capsys) -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["members", "edit", "--room", "Trip", PID, "--yes"])
+    assert exc.value.code == 2
+    assert api.calls == []
+
+
+_SHARING = {
+    "available_calendars": [
+        {"calendar_id": "c1", "summary": "Work"},
+        {"calendar_id": "c2", "summary": "Home"},
+    ],
+    "available_levels": ["none", "busy", "details"],
+    "calendar": {"calendars": {"c1": "busy"}},
+}
+
+
+def test_sharing_show_lists_each_calendar_and_its_level(api, capsys) -> None:
+    api.canned["get_group_sharing"] = {**_SHARING, "default_levels": {"c2": "busy"}}
+    assert cli.main(["sharing", "show", "--room", "Trip"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["Work  busy", "Home  busy (default)"]
+    assert [c[0] for c in api.calls] == ["get_group_sharing"]
+
+
+def test_sharing_edit_keeps_the_calendars_it_was_not_asked_to_change(api) -> None:
+    api.canned["get_group_sharing"] = _SHARING
+    assert cli.main(["sharing", "edit", "--room", "Trip", "--set", "home=details"]) == 0
+    assert api.calls[-1] == (
+        "set_group_sharing",
+        GID,
+        {"calendars": {"c1": "busy", "c2": "details"}},
+    )
+
+
+def test_sharing_default_drops_the_explicit_choice(api) -> None:
+    api.canned["get_group_sharing"] = _SHARING
+    assert cli.main(["sharing", "edit", "--room", "Trip", "--set", "Work=default"]) == 0
+    assert api.calls[-1] == ("set_group_sharing", GID, {"calendars": {}})
+
+
+def test_sharing_edit_json_prints_the_saved_record(api, capsys) -> None:
+    api.canned["get_group_sharing"] = _SHARING
+    api.canned["set_group_sharing"] = {**_SHARING, "calendar": {"calendars": {"c2": "busy"}}}
+    assert cli.main(["sharing", "edit", "--room", "Trip", "--set", "Home=busy", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["calendar"] == {"calendars": {"c2": "busy"}}
+
+
+@pytest.mark.parametrize("item", ["Nowhere=busy", "Work=bogus"])
+def test_sharing_edit_rejects_an_unknown_calendar_or_level(api, capsys, item) -> None:
+    api.canned["get_group_sharing"] = _SHARING
+    assert cli.main(["sharing", "edit", "--room", "Trip", "--set", item, "--json"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err)["error"]["code"] == "usage"
+    assert not any(call[0] == "set_group_sharing" for call in api.calls)
+
+
+def test_apps_list_json_is_the_envelope_with_the_catalog(api, capsys) -> None:
+    api.canned["group_app_launcher"] = (
+        [api_client.GroupAppTile("notes", "notes", "Notes", GID)],
+        False,
+    )
+    api.canned["get_group"] = {"apps": {"catalog": [{"app_key": "shopping"}]}}
+    assert cli.main(["apps", "list", "--room", "Trip", "--json"]) == 0
+    body = json.loads(capsys.readouterr().out)
+    assert [t["app_key"] for t in body["items"]] == ["notes"]
+    assert body["next_before"] is None
+    assert body["installed_unavailable"] is False
+    assert body["catalog"] == [{"app_key": "shopping"}]
+
+
+def test_apps_list_text_says_when_nothing_is_installed(api, capsys) -> None:
+    api.canned["group_app_launcher"] = ([], False)
+    api.canned["get_group"] = {"apps": {"catalog": [{"app_key": "shopping"}]}}
+    assert cli.main(["apps", "list", "--room", "Trip"]) == 0
+    captured = capsys.readouterr()
+    assert "(no apps installed)" in captured.out
+    assert "installable: shopping" in captured.err
+    api.canned["group_app_launcher"] = ([], True)
+    assert cli.main(["apps", "list", "--room", "Trip"]) == 0
+    assert "unavailable right now" in capsys.readouterr().err

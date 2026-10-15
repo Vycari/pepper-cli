@@ -1314,3 +1314,99 @@ def test_messages_post_unreachable_server(tmp_home, patch_api, capsys) -> None:
     rc = cli.main(["messages", "post", "--room", _GID_TRIP, "--topic", _TID_GENERAL, "hi"])
     assert rc == 1
     assert "Couldn't reach" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# members list
+
+
+def _roster():
+    return [
+        api_client.GroupRosterMember(person_id="pepper-id", display_name="Pepper", is_pepper=True),
+        api_client.GroupRosterMember(person_id="person-sam", display_name="Sam"),
+    ]
+
+
+def test_members_list_renders_names_and_ids(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(roster=_roster())
+    rc = cli.main(["members", "list", "--room", _GID_TRIP])
+    assert rc == 0
+    assert ("group_roster", _GID_TRIP) in _FakeGroupsApi.instances[-1].calls
+    out = capsys.readouterr().out
+    assert "Sam" in out
+    assert "person-sam" in out
+    assert "Pepper" in out
+
+
+def test_members_list_marks_an_agent(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(
+        roster=[
+            api_client.GroupRosterMember(person_id="p-agent", display_name="Watcher", is_agent=True)
+        ]
+    )
+    assert cli.main(["members", "list", "--room", _GID_TRIP]) == 0
+    assert "Watcher (agent)" in capsys.readouterr().out
+
+
+def test_members_list_json_is_the_envelope(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(roster=_roster())
+    assert cli.main(["members", "list", "--room", _GID_TRIP, "--json"]) == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["next_before"] is None
+    assert body["items"][0]["is_pepper"] is True
+    assert body["items"][1] == {
+        "person_id": "person-sam",
+        "display_name": "Sam",
+        "picture_url": None,
+        "is_pepper": False,
+        "is_agent": False,
+        "agent_profile": None,
+    }
+
+
+def test_members_list_json_prints_an_agents_profile(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(
+        roster=[
+            api_client.GroupRosterMember(
+                person_id="p-agent",
+                display_name="Watcher",
+                is_agent=True,
+                agent_profile="investigate",
+            ),
+            api_client.GroupRosterMember(person_id="person-sam", display_name="Sam"),
+        ]
+    )
+    assert cli.main(["members", "list", "--room", _GID_TRIP, "--json"]) == 0
+    items = json.loads(capsys.readouterr().out)["items"]
+    assert items[0]["agent_profile"] == "investigate"
+    assert items[1]["agent_profile"] is None
+
+
+def test_members_list_empty(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(roster=[])
+    assert cli.main(["members", "list", "--room", _GID_TRIP]) == 0
+    assert "(no members)" in capsys.readouterr().out
+
+
+def test_members_list_without_credentials_errors(tmp_home, patch_api) -> None:
+    patch_api(roster=_roster())
+    assert cli.main(["members", "list", "--room", _GID_TRIP]) == 1
+
+
+def test_members_list_unreachable_server(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(roster=httpx.ConnectError("boom"))
+    assert cli.main(["members", "list", "--room", _GID_TRIP]) == 1
+    assert "Couldn't reach" in capsys.readouterr().err
+
+
+def test_members_list_api_error_is_reported(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(roster=api_client.ApiError(status=403, body="", detail="Not a member."))
+    assert cli.main(["members", "list", "--room", _GID_TRIP]) != 0
+    assert capsys.readouterr().err.strip()

@@ -200,6 +200,15 @@ Commands that take `--json` also switch to JSON output when the environment vari
 | `pepper messages delete --room ROOM MESSAGE [--yes]` | Delete one of your messages. |
 | `pepper messages react\|unreact --room ROOM MESSAGE EMOJI` | Add or take back your reaction. |
 | `pepper attachments download --room ROOM ATTACHMENT --out PATH` | Save an attachment (`-` for stdout; not with `--json`). |
+| `pepper members list --room ROOM [--json]` | List a room's people and agents (agent members can run this; it is the roster source for `messages post --mention`). |
+| `pepper members invite --room ROOM HANDLE` | Invite a person by email or phone. |
+| `pepper members remove --room ROOM PERSON [--yes]` | Remove a member (`PERSON` is a person id or a name). |
+| `pepper members edit --room ROOM PERSON --role owner\|member [--yes]` | Change a member's role. |
+| `pepper sharing show --room ROOM [--json]` | Show which calendars the room sees and at what level. |
+| `pepper sharing edit --room ROOM --set CALENDAR=LEVEL …` | Change calendar sharing (`LEVEL` `default` drops the explicit choice). |
+| `pepper apps list --room ROOM [--json]` | List the room's installed apps and the apps you can install. |
+| `pepper apps install --room ROOM APP_KEY` | Install an app in the room. |
+| `pepper apps uninstall --room ROOM APP [--yes]` | Uninstall an app (`APP` is an install id, app key or title). |
 | `pepper groups` | Retired: exits 2 and names the commands above. |
 | `pepper agent-skill [--write DIR [--force]]` | Print the agent-usage guide (`SKILL.md`) shipped inside this binary: how an agent member logs in, watches, reads and posts in rooms. `--write DIR` writes `DIR/SKILL.md` and refuses to overwrite without `--force`. Needs no login and no network. |
 | `pepper notes list [--room <group>] [--label L] [--json]` | List your notes, or a room's shared ones with `--room`. |
@@ -221,7 +230,7 @@ layer on top. Note this is unrelated to `pepper skills`, which manages your
 account's own skills. A test holds the document to the real parser: every command in it
 must be a full `pepper …` invocation whose subcommand and flags exist, every
 `--flag` it mentions anywhere must exist, and outside its "cannot run" section
-it may only show the `rooms`, `topics`, `messages` and `attachments` commands the server accepts an agent token for.
+it may only show the `rooms`, `topics`, `messages`, `attachments` and `members list` commands the server accepts an agent token for.
 A renamed flag, a shortened example or a personal-token-only command fails CI
 until the document is updated.
 

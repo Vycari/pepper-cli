@@ -851,12 +851,13 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         )
 
     # --- rooms, topics, messages, attachments (§4) ---------------------------------------
-    # ``groups`` is a retired noun (§7). Every old ``groups`` leaf that has no new home
-    # yet (members, sharing, apps: phase 2b) is unreachable until that phase lands.
+    # ``groups`` is a retired noun (§7); its leaves live under the nouns below and
+    # ``members``, ``sharing`` and ``apps``.
     _add_renamed_stub(
         sub,
         "groups",
-        "use 'pepper rooms', 'topics', 'messages' or 'attachments' (run 'pepper --help')",
+        "use 'pepper rooms', 'topics', 'messages', 'attachments', 'members', 'sharing' "
+        "or 'apps' (run 'pepper --help')",
     )
 
     p_rooms = sub.add_parser(
@@ -1174,6 +1175,95 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         help="Where to write it; '-' for stdout (not under --json).",
     )
     p.set_defaults(handler=cmd_attachments_download)
+
+    # --- members, sharing, apps (§4) -------------------------------------------------------
+    p_members = sub.add_parser(
+        "members",
+        help="A room's people. ``list`` who is in it, ``invite``/``remove`` them, ``edit --role``.",
+    )
+    sub_members = p_members.add_subparsers(dest="members_action", required=True)
+    _person_arg = "A member's name (unique prefix OK) or person id (from 'members list')."
+
+    p = sub_members.add_parser(
+        "list",
+        parents=[_room_parent(required=True), _json_parent],
+        help="List a room's members, Pepper first, with the person id a --mention takes.",
+    )
+    p.set_defaults(handler=cmd_members_list)
+    p = sub_members.add_parser(
+        "invite",
+        parents=[_room_parent(required=True), _json_parent],
+        help="Invite someone to an open room.",
+    )
+    p.add_argument("handle", help="Email or phone.")
+    p.set_defaults(handler=cmd_members_invite)
+    p = sub_members.add_parser(
+        "remove",
+        parents=[_room_parent(required=True), _json_parent, _yes_parent],
+        help="Remove a member from a room.",
+    )
+    p.add_argument("person", help=_person_arg)
+    p.set_defaults(handler=cmd_members_remove)
+    p = sub_members.add_parser(
+        "edit",
+        parents=[_room_parent(required=True), _json_parent, _yes_parent],
+        help="Change a member (their role: owner or plain member).",
+    )
+    p.add_argument("person", help=_person_arg)
+    p.add_argument("--role", required=True, choices=("owner", "member"), help="The new role.")
+    p.set_defaults(handler=cmd_members_edit)
+
+    p_sharing = sub.add_parser(
+        "sharing",
+        help="Which of your calendars a room sees. ``show`` the levels, ``edit`` them.",
+    )
+    sub_sharing = p_sharing.add_subparsers(dest="sharing_action", required=True)
+    p = sub_sharing.add_parser(
+        "show",
+        parents=[_room_parent(required=True), _json_parent],
+        help="Which of your calendars this room sees, and at what level.",
+    )
+    p.set_defaults(handler=cmd_sharing_show)
+    p = sub_sharing.add_parser(
+        "edit",
+        parents=[_room_parent(required=True), _json_parent],
+        help="Set the level at which this room sees a calendar of yours.",
+    )
+    p.add_argument(
+        "--set",
+        action="append",
+        required=True,
+        metavar="CALENDAR=LEVEL",
+        help="Set a calendar (name or id) to a level, or 'default'; repeatable. "
+        "Calendars not named keep theirs.",
+    )
+    p.set_defaults(handler=cmd_sharing_edit)
+
+    p_apps = sub.add_parser(
+        "apps",
+        help="A room's apps. ``list`` them and the installable ones, ``install``/``uninstall``.",
+    )
+    sub_apps = p_apps.add_subparsers(dest="apps_action", required=True)
+    p = sub_apps.add_parser(
+        "list",
+        parents=[_room_parent(required=True), _json_parent],
+        help="A room's installed apps (launcher tiles), and the ones you can install.",
+    )
+    p.set_defaults(handler=cmd_apps_list)
+    p = sub_apps.add_parser(
+        "install",
+        parents=[_room_parent(required=True), _json_parent],
+        help="Install an app in a room.",
+    )
+    p.add_argument("app_key", help="App key (see 'apps list').")
+    p.set_defaults(handler=cmd_apps_install)
+    p = sub_apps.add_parser(
+        "uninstall",
+        parents=[_room_parent(required=True), _json_parent, _yes_parent],
+        help="Uninstall an app from a room.",
+    )
+    p.add_argument("app", help="Installed app's key, title or install id.")
+    p.set_defaults(handler=cmd_apps_uninstall)
 
     p_notes = sub.add_parser(
         "notes",
@@ -4106,6 +4196,190 @@ def cmd_messages_unreact(args: argparse.Namespace) -> int:
             args.message,
         ),
         "Done.",
+    )
+
+
+def _need_person(
+    api: api_client.ApiClient, group_id: str, value: str, *, args: argparse.Namespace
+) -> str:
+    """A member's person id from a name (roster match) or the id itself."""
+    if _valid_uuid(value):
+        return value
+    roster = api.group_roster(group_id)
+    match, found = _match_by_name(value, roster, name_of=lambda m: m.display_name)
+    if match is not None:
+        return match.person_id
+    names = ", ".join(f"{m.display_name!r} ({m.person_id})" for m in found)
+    _emit_error(
+        args,
+        "ambiguous" if found else "not_found",
+        f"{value!r} matches {names or 'no member'} — run 'pepper members list'",
+        soft_wrap=True,
+    )
+    raise _BadInputError
+
+
+def cmd_members_list(args: argparse.Namespace) -> int:
+    """``pepper members list --room R [--json]``: the ``@``-mention roster, Pepper first."""
+
+    def run(api: api_client.ApiClient) -> int:
+        roster = api.group_roster(_need_group(api, args.room, args=args))
+        _emit_list(roster, args, lambda: render.render_group_roster(roster))
+        return 0
+
+    return _with_room_api(args, run)
+
+
+def cmd_members_invite(args: argparse.Namespace) -> int:
+    """``pepper members invite --room R HANDLE`` (open rooms only)."""
+
+    def call(api: api_client.ApiClient, g: str) -> tuple[object, str]:
+        return api.invite_to_group(g, handle=args.handle), g
+
+    return _room_act(args, call, "Invited.")
+
+
+def cmd_members_remove(args: argparse.Namespace) -> int:
+    """``pepper members remove --room R PERSON [--yes]``."""
+
+    def call(api: api_client.ApiClient, g: str) -> tuple[object, str]:
+        person_id = _need_person(api, g, args.person, args=args)
+        return api.remove_group_member(g, person_id), person_id
+
+    return _room_act(args, call, "Removed.", confirm=f"Remove {args.person!r} from {args.room!r}?")
+
+
+def cmd_members_edit(args: argparse.Namespace) -> int:
+    """``pepper members edit --room R PERSON --role owner|member [--yes]``."""
+
+    def call(api: api_client.ApiClient, g: str) -> tuple[object, str]:
+        person_id = _need_person(api, g, args.person, args=args)
+        return api.set_group_member_role(g, person_id, role=args.role), person_id
+
+    return _room_act(
+        args,
+        call,
+        f"Now {args.role}.",
+        confirm=f"Make {args.person!r} {args.role} of {args.room!r}?",
+    )
+
+
+def _cal_name(calendar: dict[str, Any]) -> str:
+    return calendar.get("summary") or calendar.get("name") or calendar["calendar_id"]
+
+
+def _render_sharing(info: dict[str, Any]) -> None:
+    """One line per calendar: its name and the level the room sees it at."""
+    chosen = (info.get("calendar") or {}).get("calendars") or {}
+    defaults = info.get("default_levels") or {}
+    for c in info.get("available_calendars") or []:
+        level = (
+            chosen.get(c["calendar_id"]) or f"{defaults.get(c['calendar_id'], 'none')} (default)"
+        )
+        print(sanitize_line(f"{_cal_name(c)}  {level}"))
+
+
+def cmd_sharing_show(args: argparse.Namespace) -> int:
+    """``pepper sharing show --room R [--json]``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        info = api.get_group_sharing(_need_group(api, args.room, args=args))
+        _emit(info, args, lambda: _render_sharing(info))
+        return 0
+
+    return _with_room_api(args, run)
+
+
+def cmd_sharing_edit(args: argparse.Namespace) -> int:
+    """``pepper sharing edit --room R --set CALENDAR=LEVEL ... [--json]``.
+
+    Changes the named calendars and re-sends the rest as they are, because the
+    server replaces the whole record. ``LEVEL`` ``default`` drops the explicit choice.
+    """
+
+    def run(api: api_client.ApiClient) -> int:
+        gid = _need_group(api, args.room, args=args)
+        info = api.get_group_sharing(gid)
+        cals = info.get("available_calendars") or []
+        levels = info.get("available_levels") or []
+        chosen = dict((info.get("calendar") or {}).get("calendars") or {})
+        for item in args.set:
+            name, _, level = item.rpartition("=")
+            exact = [c for c in cals if c["calendar_id"] == name]
+            match = exact[0] if exact else _match_by_name(name, cals, name_of=_cal_name)[0]
+            if match is not None and level == "default":
+                chosen.pop(match["calendar_id"], None)
+                continue
+            if match is None or level not in levels:
+                _emit_error(
+                    args,
+                    "usage",
+                    f"can't set {item!r}: levels are default, {', '.join(levels)}; "
+                    f"calendars are {', '.join(_cal_name(c) for c in cals)}",
+                    soft_wrap=True,
+                )
+                raise _BadInputError
+            chosen[match["calendar_id"]] = level
+        info = api.set_group_sharing(gid, calendars=chosen)
+        _emit(info, args, lambda: _render_sharing(info))
+        return 0
+
+    return _with_room_api(args, run)
+
+
+def cmd_apps_list(args: argparse.Namespace) -> int:
+    """``pepper apps list --room R [--json]``: the launcher tiles, and what is installable."""
+
+    def run(api: api_client.ApiClient) -> int:
+        gid = _need_group(api, args.room, args=args)
+        tiles, unavailable = api.group_app_launcher(gid)
+        catalog = (api.get_group(gid).get("apps") or {}).get("catalog") or []
+
+        def human() -> None:
+            for t in tiles:
+                print(sanitize_line(f"{t.title}  {t.app_key}"))
+            if unavailable:
+                render.info("(installed apps unavailable right now)")
+            elif not tiles:
+                print("(no apps installed)")
+            if catalog:
+                keys = ", ".join(sanitize_line(a["app_key"]) for a in catalog)
+                render.info("installable: " + keys)
+
+        _emit_list(tiles, args, human, installed_unavailable=unavailable, catalog=catalog)
+        return 0
+
+    return _with_room_api(args, run)
+
+
+def cmd_apps_install(args: argparse.Namespace) -> int:
+    """``pepper apps install --room R APP_KEY``."""
+
+    def call(api: api_client.ApiClient, g: str) -> tuple[object, str]:
+        return api.install_group_app(g, app_key=args.app_key), args.app_key
+
+    return _room_act(args, call, "Installed.")
+
+
+def cmd_apps_uninstall(args: argparse.Namespace) -> int:
+    """``pepper apps uninstall --room R APP [--yes]`` (``APP``: key, title or install id)."""
+
+    def call(api: api_client.ApiClient, g: str) -> tuple[object, str]:
+        installed = (api.get_group(g).get("apps") or {}).get("installed") or []
+        want = args.app.lower()
+        hits = [a for a in installed if want in (a["install_id"], a["app_key"], a["title"].lower())]
+        if len(hits) != 1:
+            _emit_error(
+                args,
+                "ambiguous" if hits else "not_found",
+                f"{args.app!r} isn't one installed app here — run 'pepper apps list'",
+            )
+            raise _BadInputError
+        install_id = hits[0]["install_id"]
+        return api.uninstall_group_app(g, install_id), install_id
+
+    return _room_act(
+        args, call, "Uninstalled.", confirm=f"Uninstall {args.app!r} from {args.room!r}?"
     )
 
 
