@@ -1009,14 +1009,13 @@ def test_notes_edit_conflict_copy_falls_back_to_the_temp_dir(
 ) -> None:
     """An unwritable working directory must not lose the user's text."""
     import os
-    import tempfile
 
     cwd = tmp_path / "readonly"
     cwd.mkdir()
     fallback = tmp_path / "tmpdir"
     fallback.mkdir()
     monkeypatch.chdir(cwd)
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fallback))
+    monkeypatch.setattr(cli, "_conflict_fallback_dir", lambda: str(fallback))
     real_open = os.open
 
     def refuse_cwd(path, flags, mode=0o777, **kwargs):
@@ -1042,14 +1041,13 @@ def test_notes_edit_conflict_copy_write_failure_falls_back_and_keeps_the_flow(
     """Opened but not writable (disk full): the partial file goes, the temp
     dir gets the copy, and the diff and prompt still run."""
     import os
-    import tempfile
 
     cwd = tmp_path / "full"
     cwd.mkdir()
     fallback = tmp_path / "tmpdir"
     fallback.mkdir()
     monkeypatch.chdir(cwd)
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fallback))
+    monkeypatch.setattr(cli, "_conflict_fallback_dir", lambda: str(fallback))
     real_fdopen = os.fdopen
     cwd_fds: set[int] = set()
     real_open = os.open
@@ -1099,12 +1097,11 @@ def test_notes_edit_conflict_copy_write_failure_falls_back_and_keeps_the_flow(
 def _refuse_every_conflict_copy(monkeypatch, tmp_path) -> None:
     """Neither the working directory nor the temp dir accepts the ``.mine`` copy."""
     import os
-    import tempfile
 
     fallback = tmp_path / "tmpdir"
     fallback.mkdir()
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fallback))
+    monkeypatch.setattr(cli, "_conflict_fallback_dir", lambda: str(fallback))
     real_open = os.open
 
     def refuse_copies(path, flags, mode=0o777, **kwargs):
@@ -1155,7 +1152,7 @@ def test_notes_edit_conflict_with_no_writable_copy_still_says_why_in_text(
 
 
 @pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX mode bits; Windows owner-only copies need ACLs (#45)"
+    sys.platform == "win32", reason="POSIX mode bits; the Windows model is tested below (#45)"
 )
 def test_notes_edit_conflict_copy_is_owner_only_whatever_the_umask(
     tmp_home, patch_api, monkeypatch, tmp_path
@@ -1178,6 +1175,77 @@ def test_notes_edit_conflict_copy_is_owner_only_whatever_the_umask(
     assert rc == 1
     saved = tmp_path / "packing-list.newetag1.mine.md"
     assert saved.stat().st_mode & 0o777 == 0o600
+
+
+def test_conflict_fallback_dir_is_the_temp_dir_on_posix(monkeypatch) -> None:
+    import tempfile
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: "/shared/tmp")
+    assert cli._conflict_fallback_dir() == "/shared/tmp"
+
+
+def test_conflict_fallback_dir_on_windows_is_per_user_not_temp(monkeypatch, tmp_path) -> None:
+    """Windows ignores mode bits, so the folder is the protection: never %TEMP%."""
+    import tempfile
+
+    local = tmp_path / "Local"
+    shared = tmp_path / "SharedTemp"
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(shared))
+    assert cli._conflict_fallback_dir() == str(local / "pepper")
+    assert (local / "pepper").is_dir()
+    assert not shared.exists()
+
+
+def test_conflict_fallback_dir_on_windows_without_localappdata_uses_the_profile(
+    monkeypatch, tmp_home
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    assert cli._conflict_fallback_dir() == str(tmp_home / "AppData" / "Local" / "pepper")
+
+
+def test_conflict_fallback_dir_on_windows_ignores_a_relative_localappdata(
+    monkeypatch, tmp_home
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", "relative\\dir")
+    assert cli._conflict_fallback_dir() == str(tmp_home / "AppData" / "Local" / "pepper")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: real %LOCALAPPDATA% fallback")
+def test_notes_edit_conflict_copy_on_windows_lands_in_cwd_or_the_per_user_folder(
+    tmp_home, patch_api, capsys, monkeypatch, tmp_path
+) -> None:
+    """No ACL is set; the protection is where the copy lands (#45)."""
+    import os
+
+    local = tmp_path / "Local"
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.chdir(cwd)
+    real_open = os.open
+
+    def refuse_cwd(path, flags, mode=0o777, **kwargs):
+        if os.path.dirname(os.fspath(path)) == "":
+            raise PermissionError("read-only")
+        return real_open(path, flags, mode, **kwargs)
+
+    monkeypatch.setattr(os, "open", refuse_cwd)
+    _login(tmp_home)
+    patch_api(detail=_detail(name="Packing list", body="old\n", etag="stale1"), edit=_conflict())
+    monkeypatch.setattr(cli, "_open_in_editor", lambda initial: "mine text\n")
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+    rc = cli.main(["notes", "edit", _NID_PACKING])
+    assert rc == 1
+    saved = local / "pepper" / "packing-list.newetag1.mine.md"
+    assert saved.read_text(encoding="utf-8") == "mine text\n"
+    assert not saved.is_symlink()
+    assert list(cwd.iterdir()) == []
+    assert str(saved) in capsys.readouterr().err
 
 
 def test_notes_edit_conflict_copy_never_writes_through_a_planted_symlink(

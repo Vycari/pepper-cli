@@ -6158,6 +6158,30 @@ def _note_slug(name: str) -> str:
     return slug or "note"
 
 
+def _conflict_fallback_dir() -> str:
+    r"""Where a conflict copy goes when the working directory won't take it.
+
+    POSIX: the system temp directory; the ``0o600`` mode on the file is what
+    keeps it private there. Windows: a ``pepper`` folder under
+    ``%LOCALAPPDATA%`` (or ``~\AppData\Local`` when that is unset or not
+    absolute), created on demand, never ``%TEMP%``, which can be pointed at a
+    shared folder such as ``C:\Temp``. Windows ignores the mode bits, so the
+    file's protection is the folder's inherited ACL; the profile's default
+    ACL limits access to the user, SYSTEM and Administrators. No ACL is set
+    here, so a profile whose ACLs were loosened is not compensated for.
+    """
+    import tempfile
+    from pathlib import Path
+
+    if sys.platform != "win32":
+        return tempfile.gettempdir()
+    local = os.environ.get("LOCALAPPDATA", "")
+    base = Path(local) if local and Path(local).is_absolute() else Path.home() / "AppData" / "Local"
+    directory = base / "pepper"
+    directory.mkdir(parents=True, exist_ok=True)
+    return str(directory)
+
+
 def _save_conflict_copy(name: str, etag: str | None, text: str) -> tuple[str | None, str | None]:
     """Write ``text`` to ``./<note-slug>.<short-etag>.mine.md``
     and return ``(path, None)``. ``etag`` is the server's *current* one as of the
@@ -6167,31 +6191,41 @@ def _save_conflict_copy(name: str, etag: str | None, text: str) -> tuple[str | N
     retry in this run, or a second ``pepper notes edit`` later) can hold
     different unsaved text, so the file is created exclusively and an
     existing one bumps a counter (``.mine.1.md``, ``.mine.2.md``, …). If
-    the working directory can't be written at all, the copy goes to the
-    system temp directory instead — likewise if the file opens but the
-    write fails (a full disk). Returns ``(None, why)`` only when neither
+    the working directory can't be written at all, the copy goes to
+    :func:`_conflict_fallback_dir` (the system temp directory on POSIX, a
+    per-user folder under ``%LOCALAPPDATA%`` on Windows) instead — likewise
+    if the file opens but the write fails (a full disk). Returns ``(None, why)`` only when neither
     can be written, and prints nothing: the caller reports ``why`` in its
     own output shape (a text line, or folded into the one J8 line under
     ``--json``). The human caller's diff still shows the user's lines on
     stderr in that case.
 
-    Created owner-only (``0o600``) whatever the umask, since a note — a
-    room's especially — is private text and the fallback directory is
-    shared with every local user. ``O_EXCL`` refuses an existing path,
+    Created owner-only (``0o600``) whatever the umask on POSIX, since a
+    note — a room's especially — is private text and the temp directory is
+    shared with every local user. On Windows the mode only toggles the
+    read-only bit and no ACL is set: the copy is as private as the folder
+    it lands in. The working directory is the user's own choice and the
+    fallback is a per-user folder under the profile (see
+    :func:`_conflict_fallback_dir`), both of which inherit their ACL from
+    the user's profile or the directory; a cwd on a shared folder is
+    therefore as readable as that folder. ``O_EXCL`` refuses an existing path,
     symlinks included, so a planted link in the temp directory can't
     redirect the write; ``O_NOFOLLOW`` says so twice where the platform
     has it.
     """
     import itertools
-    import os
-    import tempfile
     from pathlib import Path
 
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
 
     stem = f"{_note_slug(name)}.{(etag or 'unknown')[:8]}.mine"
     last_error: OSError | None = None
-    for directory in (Path(), Path(tempfile.gettempdir())):
+    for fallback in (False, True):
+        try:
+            directory = Path(_conflict_fallback_dir()) if fallback else Path()
+        except OSError as exc:
+            last_error = exc
+            continue
         for n in itertools.count():
             path = directory / (f"{stem}.md" if n == 0 else f"{stem}.{n}.md")
             try:
