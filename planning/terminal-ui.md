@@ -92,13 +92,12 @@ scope, so the Messages section described here is stable.
 │                            ││ Message Family › Trip                                     │
 │ 4 people · active 2m ago   ││                                                           │
 └────────────────────────────┘└───────────────────────────────────────────────────────────┘
- ^N next unread  ^K jump  Tab focus  Enter send  Alt+Enter newline  r reply  ^Q quit   ● 2
+ ^N next unread  ^K jump  Tab focus  Enter send  Alt+Enter newline  r reply  ^Q quit
 ```
 
 The sidebar is 28–32 columns wide and can be hidden with `Ctrl+B` so that narrow terminals (< 80
-cols) can use the thread pane full-width. The footer shows the key hints, plus a `●` count of
-unread *conversations*. That number counts rows, not messages, so it does not break the
-dot-not-count rule. If it reads as a count anyway, drop it.
+cols) can use the thread pane full-width. The footer shows key hints only. There is no unread
+count anywhere, following the web's dot-not-count rule; `Ctrl+N` goes to the next unread.
 
 ## 5. Keybindings
 
@@ -132,7 +131,7 @@ needed. The spike in §8 checked this pattern.
 ### 6.1 Initial load
 
 1. Load credentials and the profile exactly as the REPL does (a 401 shows the login hint and exits
-   2).
+   1, as `_report_api_error` does today).
 2. `GET /api/v1/groups` (`list_groups`). If `enabled=false`, the sidebar is **Pepper only**, with no
    rooms section and no error. If `degraded=true`, a one-line notice says rooms may be stale. Keep
    the ETag.
@@ -218,7 +217,7 @@ retrying`. On recovery:
   edits;
 - read marks owed from a failed PUT are republished on the next non-empty poll, as in pepper#4829.
 
-A 401 at any point stops the pollers, shows the login hint, and exits 2 after a keypress. That
+A 401 at any point stops the pollers, shows the login hint, and exits 1 after a keypress. That
 matches the REPL bailing out on a 401.
 
 ## 7. Rendering parity
@@ -304,7 +303,8 @@ src/pepper_cli/tui/
 | Every other command | — | unchanged |
 
 Invariants: exit codes and stdout of every non-interactive invocation are byte-for-byte unchanged.
-The TUI exits 0 on a normal quit, 2 on auth failure, and 1 on an unexpected error, after restoring
+The TUI exits 0 on a normal quit, 1 on auth failure (as the REPL does) or an unexpected error, and 2 on
+usage errors such as no TTY, after restoring
 the terminal and printing the traceback hint to stderr.
 
 ## 11. Testing
