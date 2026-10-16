@@ -6243,7 +6243,7 @@ def _save_conflict_copy(name: str, etag: str | None, text: str) -> tuple[str | N
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
 
     stem = f"{_note_slug(name)}.{(etag or 'unknown')[:8]}.mine"
-    last_error: OSError | None = None
+    last_error: OSError | RuntimeError | None = None
     for fallback in (False, True):
         try:
             if fallback:
@@ -6253,7 +6253,9 @@ def _save_conflict_copy(name: str, etag: str | None, text: str) -> tuple[str | N
                 directory.mkdir(parents=True, exist_ok=True)
             else:
                 directory = Path()
-        except OSError as exc:
+        except (OSError, RuntimeError) as exc:
+            # RuntimeError: ``expanduser`` on a ``~user`` that doesn't
+            # exist. Either way the override is unusable; try the fallback.
             last_error = exc
             continue
         for n in itertools.count():

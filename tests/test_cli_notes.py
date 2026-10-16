@@ -1511,3 +1511,23 @@ def test_notes_edit_conflict_dir_env_uncreatable_falls_back_to_the_temp_dir(
     assert cli.main(["notes", "edit", _NID_PACKING]) == 1
     saved = fallback / "packing-list.newetag1.mine.md"
     assert saved.read_text(encoding="utf-8") == "mine text\n"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: Windows expands ~user to a guessed sibling profile dir instead of raising",
+)
+def test_notes_edit_conflict_dir_env_unknown_user_falls_back_to_the_temp_dir(
+    tmp_home, patch_api, monkeypatch, tmp_path
+) -> None:
+    fallback = tmp_path / "tmpdir"
+    fallback.mkdir()
+    monkeypatch.setenv("PEPPER_CONFLICT_DIR", "~pepper-no-such-user-xyzzy/copies")
+    monkeypatch.setattr(cli, "_conflict_fallback_dir", lambda: str(fallback))
+    _login(tmp_home)
+    patch_api(detail=_detail(name="Packing list", body="old\n", etag="stale1"), edit=_conflict())
+    monkeypatch.setattr(cli, "_open_in_editor", lambda initial: "mine text\n")
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+    assert cli.main(["notes", "edit", _NID_PACKING]) == 1
+    saved = fallback / "packing-list.newetag1.mine.md"
+    assert saved.read_text(encoding="utf-8") == "mine text\n"
