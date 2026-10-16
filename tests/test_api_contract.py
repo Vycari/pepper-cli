@@ -177,7 +177,7 @@ class Mirror:
 
 
 def _load_snapshot() -> dict:
-    return json.loads(SNAPSHOT.read_text())
+    return json.loads(SNAPSHOT.read_text(encoding="utf-8"))
 
 
 def _load_schemas() -> dict[str, dict]:
@@ -242,7 +242,7 @@ def malformed_markers(lines: list[str]) -> list[int]:
 def discover_mirrors() -> list[Mirror]:
     found = []
     for py in sorted(SRC.rglob("*.py")):
-        text = py.read_text()
+        text = py.read_text(encoding="utf-8")
         lines = text.splitlines()
         tree = ast.parse(text)
         for i, line in enumerate(lines, 1):
@@ -302,7 +302,7 @@ def test_every_marker_parses():
     problems = [
         f"{py.relative_to(SRC)}:{n}: mentions MIRROR but is not ``# MIRROR: <path>.py[::Model]``"
         for py in sorted(SRC.rglob("*.py"))
-        for n in malformed_markers(py.read_text().splitlines())
+        for n in malformed_markers(py.read_text(encoding="utf-8").splitlines())
     ]
     assert not problems, "\n".join(problems)
 
