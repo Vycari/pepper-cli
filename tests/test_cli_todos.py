@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import time
 from pathlib import Path
 
@@ -33,6 +34,9 @@ def machine_zone(monkeypatch):
     conversion that happens to land on the same UTC offset" — which is
     exactly the gap this fixture closes.
     """
+
+    if sys.platform == "win32":
+        pytest.skip("time.tzset does not exist on Windows (#46)")
 
     def install(name: str) -> None:
         monkeypatch.setenv("TZ", name)

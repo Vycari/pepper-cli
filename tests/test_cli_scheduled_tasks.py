@@ -15,6 +15,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+import sys
 import time
 from pathlib import Path
 
@@ -225,6 +226,9 @@ def machine_zone(monkeypatch):
     zone, so the teardown ``tzset`` is what keeps this from leaking into
     every test that renders a timestamp after it.
     """
+
+    if sys.platform == "win32":
+        pytest.skip("time.tzset does not exist on Windows (#46)")
 
     def install(name: str) -> None:
         monkeypatch.setenv("TZ", name)

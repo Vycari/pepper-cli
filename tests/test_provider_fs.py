@@ -11,6 +11,7 @@ an absolute path, and a root-prefix confusion like ``/notes`` versus
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -171,6 +172,7 @@ def test_a_directory_is_not_a_readable_file(notes: Path) -> None:
     assert "file" in text.lower()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo does not exist on Windows (#46)")
 def test_a_fifo_is_refused_rather_than_opened(notes: Path) -> None:
     import os
 

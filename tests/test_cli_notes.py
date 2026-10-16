@@ -1154,6 +1154,9 @@ def test_notes_edit_conflict_with_no_writable_copy_still_says_why_in_text(
     assert "your text is in the diff above" in err
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX mode bits; Windows owner-only copies need ACLs (#45)"
+)
 def test_notes_edit_conflict_copy_is_owner_only_whatever_the_umask(
     tmp_home, patch_api, monkeypatch, tmp_path
 ) -> None:

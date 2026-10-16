@@ -72,7 +72,7 @@ def _client(server: _FakeServer) -> api_client.ApiClient:
 def notes(tmp_path: Path) -> Path:
     root = tmp_path / "notes"
     root.mkdir()
-    (root / "plan.md").write_text("Ship phase one.\n")
+    (root / "plan.md").write_bytes(b"Ship phase one.\n")  # bytes: no CRLF translation on Windows
     return root
 
 
