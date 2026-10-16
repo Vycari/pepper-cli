@@ -3,7 +3,7 @@
 **Status:** Proposed. The maintainer has decided the items in §14. The lettered questions in §15 are still open.
 **Author:** drafted with Claude Code for the maintainer
 **Last updated:** 2026-10-16
-**Tracked by:** (tracking issue, set once it is opened)
+**Tracked by:** #54
 **Related:** `planning/cli-information-architecture.md` (nouns and `--json`); pepper
 `planning/nav-consolidation.md` (pepper#4807, left nav), pepper#4829 (poll-cursor race fix);
 server paths below are relative to `src/pepper/` in Vycari/pepper.
