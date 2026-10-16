@@ -87,8 +87,8 @@ jobs:
         run: .claude/maintainerd/coverage-check.sh
 
   # Test-only job on Windows (#33: the suite once overwrote real credentials through
-  # $USERPROFILE). GitHub-hosted because the repo is public, so it is free (Blacksmith Windows is paid and beta). Format, lint, ty
-  # and coverage stay on Linux in `ci`: ty fails on Windows on the `setproctitle` import,
+  # $USERPROFILE). GitHub-hosted because the repo is public, so it is free
+  # (Blacksmith Windows is paid and beta). Format, lint, ty and coverage stay on Linux in `ci`: ty fails on Windows on the `setproctitle` import,
   # which pyproject.toml deliberately does not install there. Not a required check yet; the
   # job key `windows` is the check-run name branch protection would list.
   windows:

@@ -226,7 +226,6 @@ def machine_zone(monkeypatch):
     zone, so the teardown ``tzset`` is what keeps this from leaking into
     every test that renders a timestamp after it.
     """
-
     if sys.platform == "win32":
         pytest.skip("time.tzset does not exist on Windows (#46)")
 

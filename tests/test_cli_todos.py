@@ -34,7 +34,6 @@ def machine_zone(monkeypatch):
     conversion that happens to land on the same UTC offset" — which is
     exactly the gap this fixture closes.
     """
-
     if sys.platform == "win32":
         pytest.skip("time.tzset does not exist on Windows (#46)")
 
