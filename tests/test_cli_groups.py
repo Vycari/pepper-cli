@@ -396,13 +396,14 @@ def test_messages_list_marks_an_agent_post_and_its_requester(tmp_home, patch_api
     assert "Sentinel (agent, for Bea): (message deleted)" in out
 
 
-def test_rooms_show_sealed_kind_renders_as_room(tmp_home, patch_api, capsys) -> None:
+def test_rooms_show_sealed_kind_renders_as_email_text_thread(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(group_detail=_room_detail(kind="sealed"))
     rc = cli.main(["rooms", "show", _GID_TRIP])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "(room)" in out
+    assert "(email/text thread)" in out
+    assert "sealed" not in out
 
 
 def test_rooms_show_resolves_by_unique_prefix(tmp_home, patch_api) -> None:

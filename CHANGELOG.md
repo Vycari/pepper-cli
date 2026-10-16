@@ -4,6 +4,21 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (while 0.x, a minor bump may change flags or output).
 
+## Unreleased
+
+Part of the groups simplification (vycari/groups#249, phase 5).
+
+### Changed
+
+- `pepper rooms create` now requires `--name`. Without one (or with a blank one) it fails locally,
+  exit 2, with a message saying so, and sends nothing. The service answers an unnamed create with
+  422 once groups phase 3 lands; this reports it first.
+- `pepper rooms show` labels a room whose wire `kind` is `sealed` as `email/text thread`
+  (it was `room`). The CLI still parses `sealed`; only the wording changed. The apps list these under
+  "Other conversations".
+- Help and README no longer describe an email or text thread as a "sealed room"; no flag or JSON
+  field changed.
+
 ## 0.2.0 — 2026-10-15
 
 One grammar for the whole CLI: `pepper <noun> <verb> [--room ROOM [--topic TOPIC]]`. Commands are

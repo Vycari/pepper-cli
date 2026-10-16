@@ -193,10 +193,16 @@ _ROOM_TASK_OWNER_ONLY = "only a room owner can change its scheduled tasks."
 
 #: The one sentence anyone else gets for a refused ``skills revoke --room``.
 _ROOM_SKILL_REVOKE_FORBIDDEN = "only the skill's owner or a room owner can revoke it."
-#: A sealed room (a group text, an email thread) takes no shared skill today.
+#: An email or text thread (wire ``kind: "sealed"``) takes no shared skill.
 _ROOM_SKILL_SEALED = (
     "sharing a skill into this kind of room isn't allowed yet — "
     "a skill can only be shared into a named channel."
+)
+
+#: ``rooms create`` without a name, refused before any request is sent.
+_ROOM_CREATE_NAME_REQUIRED = (
+    "a room needs a name: pass --name NAME. "
+    "Email and text threads are created by the system, not by you."
 )
 #: ``skills create|edit|delete --room``: there is no such thing to do.
 _ROOM_OWNS_NO_SKILL = (
@@ -1015,9 +1021,12 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p = sub_rooms.add_parser(
         "create",
         parents=[_json_parent],
-        help="Create a room. With --name it is an open room.",
+        help="Create a named room with these people (--name is required).",
     )
-    p.add_argument("--name", help="Room name; omit for a conversation of exactly these people.")
+    p.add_argument(
+        "--name",
+        help="Room name. Required: email and text threads are created by the system, not here.",
+    )
     p.add_argument(
         "people", nargs="+", help="Email, phone, or a contact's name (looked up in your Contacts)."
     )
@@ -3273,7 +3282,7 @@ def _resolve_room_skill(
 def _report_room_skill_share_error(
     exc: api_client.ApiError, args: argparse.Namespace | None = None
 ) -> int:
-    """``skills share --room``: 409 is the sealed-room refusal, said in one
+    """``skills share --room``: 409 is the email/text-thread refusal, said in one
     fixed sentence; everything else carries the server's own ``detail`` (no
     such skill of yours, a toolset a room can't run, the room unavailable),
     which is written to be read."""
@@ -4392,7 +4401,14 @@ def cmd_rooms_show(args: argparse.Namespace) -> int:
 
 
 def cmd_rooms_create(args: argparse.Namespace) -> int:
-    """``pepper rooms create [--name N] PERSON... [--json]``; prints the room's id."""
+    """``pepper rooms create [--name N] PERSON... [--json]``; prints the room's id.
+
+    A name is required. The check is local, so an unnamed create never reaches the service
+    (which answers 422 for it).
+    """
+    if not (args.name or "").strip():
+        _emit_error(args, "usage", _ROOM_CREATE_NAME_REQUIRED)
+        return 2
 
     def run(api: api_client.ApiClient) -> int:
         made = api.create_group(

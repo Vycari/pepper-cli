@@ -698,7 +698,7 @@ JSON_CASES: dict[str, list[str]] = {
     "todos list": ["todos", "list"],
     "rooms list": ["rooms", "list"],
     "rooms show": ["rooms", "show", _G],
-    "rooms create": ["rooms", "create", "dana@example.com"],
+    "rooms create": ["rooms", "create", "--name", "Plans", "dana@example.com"],
     "rooms edit": ["rooms", "edit", _G, "--name", "Renamed"],
     "rooms archive": ["rooms", "archive", _G],
     "rooms unarchive": ["rooms", "unarchive", _G],

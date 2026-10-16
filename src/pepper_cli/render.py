@@ -718,8 +718,9 @@ def render_scheduled_task_thread(rows: list[ScheduledTaskMessage]) -> None:
 #: Server-recognized ``kind`` values (mirrors
 #: ``pepper.features.groups.contract`` / ``CreateGroupRequest``'s docstring)
 #: mapped to the label a person recognizes: a named, persistent room is a
-#: "channel"; an unnamed room that is exactly its member set is a "room".
-_KIND_LABELS = {"open": "channel", "sealed": "room"}
+#: "channel"; the wire value ``sealed`` is an email or text thread, which the
+#: apps list under "Other conversations". The wire value is unchanged.
+_KIND_LABELS = {"open": "channel", "sealed": "email/text thread"}
 
 
 def render_group_list(gl: GroupList) -> None:

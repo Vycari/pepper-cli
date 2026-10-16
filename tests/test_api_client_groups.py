@@ -541,7 +541,7 @@ def test_create_group_sends_people_as_a_list() -> None:
     assert created["group_id"] == _GID
 
 
-def test_create_group_without_a_name_makes_a_sealed_room() -> None:
+def test_create_group_without_a_name_omits_the_name_field() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert api_client._json.loads(request.content) == {"people": ["dana@example.com"]}
         return httpx.Response(201, json={"group_id": _GID, "display_name": "Dana"})

@@ -192,7 +192,7 @@ Every command except `login` and the interactive REPL takes `--json`, and also s
 | `pepper todos dismiss <id> [--room R]` | Close a todo without completing it. |
 | `pepper rooms list [--archived] [--json]` | List your rooms. `--json` is `{"items": [...], "next_before": null, "enabled", "degraded", "total", "archived_total"}`. |
 | `pepper rooms show ROOM` | One room's info: kind, members + roles, topics, installed apps. |
-| `pepper rooms create [--name N] PERSON…` | Create a room. `PERSON` is an email, a phone, or a Contacts name. Prints the id. |
+| `pepper rooms create [--name N] PERSON…` | Create a named room. `--name` is required (an unnamed create fails locally, before any request). `PERSON` is an email, a phone, or a Contacts name. Prints the id. |
 | `pepper rooms edit ROOM --name NAME` | Rename a room. |
 | `pepper rooms archive\|unarchive ROOM` | Hide a room from your list (your view only), or restore it. |
 | `pepper rooms leave ROOM [--yes]` | Leave an open room; asks on a terminal unless `--yes`. |
@@ -251,9 +251,11 @@ Notes:
   case-insensitively and by unique prefix (`pepper messages list --room trip --topic flights`
   works if "Trip planning" and "Flights" are unambiguous). An ambiguous or
   unknown name lists the candidates and exits nonzero rather than guessing.
-  A room's "kind" — `channel` for a named, persistent room, `room` for one
-  that's exactly its member set — only shows up on `rooms show`; the list
-  endpoint doesn't carry it.
+  A room's "kind" — `channel` for a named room, `email/text thread` for an
+  email or text conversation (the apps list these under "Other conversations";
+  the API's wire value for them is `sealed`) — only shows up on `rooms show`;
+  the list endpoint doesn't carry it. Email and text threads are created by
+  the system, not by you, so there is no command to create, grow or fork one.
 - **Room commands write as you, to the real room.** The ones that affect
   other people or can't be undone (`messages delete`, `rooms leave`)
   ask first on a terminal; `--yes` skips

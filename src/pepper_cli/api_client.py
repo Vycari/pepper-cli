@@ -2330,7 +2330,7 @@ class ApiClient:
 
     def leave_group(self, group_id: str) -> dict[str, Any]:
         """``POST /api/v1/groups/{gid}/leave`` — **open rooms only**; the
-        service refuses this on a sealed one with a 403."""
+        service refuses this on an email/text thread (wire ``kind: "sealed"``) with a 403."""
         return self._request("POST", f"/api/v1/groups/{group_id}/leave").json()
 
     def set_group_archived(self, group_id: str, *, archived: bool) -> dict[str, Any]:
@@ -2342,7 +2342,7 @@ class ApiClient:
 
     def invite_to_group(self, group_id: str, *, handle: str) -> dict[str, Any]:
         """``POST /api/v1/groups/{gid}/members`` — an email or a phone number.
-        403 on a sealed room (service-enforced), 422 on an unparseable
+        403 on an email/text thread (service-enforced), 422 on an unparseable
         handle."""
         return self._request(
             "POST", f"/api/v1/groups/{group_id}/members", json={"handle": handle}
@@ -2411,14 +2411,14 @@ class ApiClient:
 
         ``people`` is a **list** of handles, where the web form takes one
         comma-joined string. The caller never names themself; the service adds
-        them. Passing ``name`` makes an **open** room (it persists and can be
-        added to); omitting it makes a **sealed** one, which is exactly the
-        people in it.
+        them. ``name`` is required for a person: the service answers 422 to an
+        unnamed create (email and text threads are made by the system, never
+        by a person). ``name=None`` is still accepted here so the response
+        shapes of older servers parse, but the CLI refuses an unnamed create
+        before calling this.
 
         Answers ``{group_id, display_name, created}``. ``created`` is ``False``
-        when find-or-create on a sealed room's member set handed back a room
-        that already existed — the caller is in a conversation with history
-        rather than an empty one, which is worth telling them.
+        when the service handed back a room that already existed.
         """
         payload: dict[str, Any] = {"people": people}
         if name:

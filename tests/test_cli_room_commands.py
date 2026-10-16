@@ -182,6 +182,25 @@ def test_create_resolves_a_contact_name_to_its_handle(api, capsys) -> None:
     assert capsys.readouterr().out.strip() == GID
 
 
+@pytest.mark.parametrize("name_args", [[], ["--name", ""], ["--name", "   "]])
+def test_create_without_a_name_fails_locally_before_any_request(api, capsys, name_args) -> None:
+    before = len(api.calls)
+    assert cli.main(["rooms", "create", *name_args, "dana@x.co"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "a room needs a name" in captured.err
+    assert "--name" in captured.err
+    assert len(api.calls) == before
+    assert not any(call[0] in {"create_group", "search_contacts"} for call in api.calls)
+
+
+def test_create_without_a_name_json_error_is_a_usage_error(api, capsys) -> None:
+    assert cli.main(["rooms", "create", "--json", "dana@x.co"]) == 2
+    err = json.loads(capsys.readouterr().err)
+    assert err["error"]["code"] == "usage"
+    assert not any(call[0] == "create_group" for call in api.calls)
+
+
 def test_list_mark_marks_through_the_newest_message(api) -> None:
     api.canned["list_group_messages"] = api_client.GroupMessagePage(
         [
