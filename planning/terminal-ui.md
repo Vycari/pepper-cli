@@ -363,8 +363,9 @@ One PR each. P1 is releasable on its own.
 | 7 | Mentions: web parity through P3; P4 adds `@` on a sidebar row whose unread activity mentions you (§15 C). |
 | 8 | The Pepper row gets a session-local unread dot when a poll finds an unseen assistant message (§15 D). |
 | 9 | No server additions for now; ship on polling and revisit `chat/history?since` after P1 is in daily use (§15 E). |
+| 10 | The open room shows its 5 most recent topics plus "Show more", as on the web (§15 F). |
 
-## 15. Open questions
+## 15. Questions (all decided 2026-10-16)
 
 **A. How does Textual ship? (Coupled with B.)**
 
@@ -426,5 +427,5 @@ server change.
 - (a) The web's 5 most recent, plus "Show more".
 - (b) All of them.
 
-**Recommend (a).** It is web parity, and it keeps the sidebar usable in a 24-row terminal. `Ctrl+K`
-reaches any topic by name.
+**Decided (a), 2026-10-16.** It is web parity, and it keeps the sidebar usable in a 24-row terminal.
+`Ctrl+K` reaches any topic by name.
