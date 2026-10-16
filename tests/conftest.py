@@ -25,6 +25,7 @@ def _no_pepper_json(monkeypatch: pytest.MonkeyPatch):
     """``PEPPER_JSON=1`` in the developer's shell would flip every ``--json``-capable
     command to JSON; tests that want it set it themselves."""
     monkeypatch.delenv("PEPPER_JSON", raising=False)
+    monkeypatch.delenv("PEPPER_CONFLICT_DIR", raising=False)
 
 
 @pytest.fixture(autouse=True)

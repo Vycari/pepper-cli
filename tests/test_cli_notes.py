@@ -1442,3 +1442,72 @@ def test_notes_delete_other_api_errors_keep_the_generic_handling(tmp_home, patch
     patch_api(detail=_detail(), delete=api_client.ApiError(status=500, body="", detail="boom"))
     rc = cli.main(["notes", "delete", _NID_PACKING, "--yes"])
     assert rc == 1
+
+
+def test_notes_edit_conflict_dir_env_redirects_and_creates_the_copy(
+    tmp_home, patch_api, capsys, monkeypatch, tmp_path
+) -> None:
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    target = tmp_path / "scratch" / "nested"
+    monkeypatch.setenv("PEPPER_CONFLICT_DIR", str(target))
+    _login(tmp_home)
+    patch_api(detail=_detail(name="Packing list", body="old\n", etag="stale1"), edit=_conflict())
+    monkeypatch.setattr(cli, "_open_in_editor", lambda initial: "mine text\n")
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+    rc = cli.main(["notes", "edit", _NID_PACKING])
+    assert rc == 1
+    saved = target / "packing-list.newetag1.mine.md"
+    assert saved.read_text(encoding="utf-8") == "mine text\n"
+    assert list(cwd.iterdir()) == []
+    assert str(saved) in capsys.readouterr().err
+
+
+def test_notes_edit_conflict_dir_env_relative_is_reported_absolute_in_json(
+    tmp_home, patch_api, capsys, monkeypatch, tmp_path
+) -> None:
+    monkeypatch.delenv("PEPPER_JSON", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PEPPER_CONFLICT_DIR", "rel-dir")
+    body_path = tmp_path / "body.md"
+    body_path.write_text("mine text\n", encoding="utf-8")
+    _login(tmp_home)
+    patch_api(detail=_detail(name="Packing list", body="old\n", etag="stale1"), edit=_conflict())
+    rc = cli.main(["notes", "edit", _NID_PACKING, "--file", str(body_path), "--json"])
+    assert rc == 1
+    error = json.loads(capsys.readouterr().err.strip().splitlines()[-1])["error"]
+    saved = (tmp_path / "rel-dir" / "packing-list.newetag1.mine.md").resolve()
+    assert saved.exists()
+    assert str(tmp_path / "rel-dir" / "packing-list.newetag1.mine.md") in error["message"]
+
+
+def test_notes_edit_conflict_dir_env_blank_keeps_the_cwd(
+    tmp_home, patch_api, monkeypatch, tmp_path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PEPPER_CONFLICT_DIR", "  ")
+    _login(tmp_home)
+    patch_api(detail=_detail(name="Packing list", body="old\n", etag="stale1"), edit=_conflict())
+    monkeypatch.setattr(cli, "_open_in_editor", lambda initial: "mine text\n")
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+    assert cli.main(["notes", "edit", _NID_PACKING]) == 1
+    assert (tmp_path / "packing-list.newetag1.mine.md").exists()
+
+
+def test_notes_edit_conflict_dir_env_uncreatable_falls_back_to_the_temp_dir(
+    tmp_home, patch_api, capsys, monkeypatch, tmp_path
+) -> None:
+    blocker = tmp_path / "file"
+    blocker.write_text("x", encoding="utf-8")
+    fallback = tmp_path / "tmpdir"
+    fallback.mkdir()
+    monkeypatch.setenv("PEPPER_CONFLICT_DIR", str(blocker / "sub"))
+    monkeypatch.setattr(cli, "_conflict_fallback_dir", lambda: str(fallback))
+    _login(tmp_home)
+    patch_api(detail=_detail(name="Packing list", body="old\n", etag="stale1"), edit=_conflict())
+    monkeypatch.setattr(cli, "_open_in_editor", lambda initial: "mine text\n")
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+    assert cli.main(["notes", "edit", _NID_PACKING]) == 1
+    saved = fallback / "packing-list.newetag1.mine.md"
+    assert saved.read_text(encoding="utf-8") == "mine text\n"

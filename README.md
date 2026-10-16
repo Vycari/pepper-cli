@@ -278,7 +278,9 @@ Notes:
   sends none. A stale `If-Match` saves your text to
   `./<note-slug>.<short-etag>.mine.md` (never overwriting an earlier copy:
   a counter is added instead, and the system temp directory is used if the
-  current one isn't writable), prints a diff from the server's current body
+  current one isn't writable). Set `PEPPER_CONFLICT_DIR` to put the copy in
+  another directory instead (created if missing, and the absolute path is
+  what gets reported); unset or empty keeps the current directory, prints a diff from the server's current body
   to yours, and — on a TTY — offers to re-open the editor, overwrite, or
   quit; off a TTY it exits 1 with the saved path already printed. A
   rename-only edit that conflicts offers only overwrite (the rename alone,
