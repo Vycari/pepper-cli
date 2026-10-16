@@ -362,6 +362,7 @@ One PR each. P1 is releasable on its own.
 | 6 | Bare `pepper` on a TTY opens the TUI from P4, not earlier (§15 B). |
 | 7 | Mentions: web parity through P3; P4 adds `@` on a sidebar row whose unread activity mentions you (§15 C). |
 | 8 | The Pepper row gets a session-local unread dot when a poll finds an unseen assistant message (§15 D). |
+| 9 | No server additions for now; ship on polling and revisit `chat/history?since` after P1 is in daily use (§15 E). |
 
 ## 15. Open questions
 
@@ -416,9 +417,9 @@ nothing can drift.
 - (b) File `chat/history?since` now. Leave the stream for later.
 - (c) File both now.
 
-**Recommend (a) now, and revisit (b) after P1 is in daily use.** The full-day history is small, the
-poll interval matches the web's, and the request has to be measured before it is worth a server
-change.
+**Decided (a) for now, 2026-10-16; revisit (b) after P1 is in daily use.** The full-day history is
+small, the poll interval matches the web's, and the request has to be measured before it is worth a
+server change.
 
 **F. How many topics show under the open room?**
 
