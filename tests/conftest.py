@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 
-from pepper_cli import credentials
+from pepper_cli import credentials, render
 
 
 @pytest.fixture(autouse=True)
@@ -58,3 +59,21 @@ def _patch_prompt_session_io(monkeypatch: pytest.MonkeyPatch):
         orig_init(self, *args, **kwargs)
 
     monkeypatch.setattr(PromptSession, "__init__", init_with_dummy_io)
+
+
+@pytest.fixture
+def machine_zone(monkeypatch: pytest.MonkeyPatch):
+    """Pin the zone timestamps render in, without touching the process ``TZ``.
+
+    Patches ``render._local_tz`` (the one place the local zone is learned) to
+    a ``zoneinfo.ZoneInfo``, so it works on Windows, where ``time.tzset`` does
+    not exist (it needs the ``tzdata`` package there, a win32 runtime
+    dependency). A UTC test machine can't tell "no zone conversion" from "a
+    conversion that lands on the same offset"; a non-UTC zone can.
+    """
+
+    def install(name: str) -> None:
+        zone = ZoneInfo(name)
+        monkeypatch.setattr(render, "_local_tz", lambda: zone)
+
+    return install

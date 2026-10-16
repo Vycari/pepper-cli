@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from typing import TYPE_CHECKING, Any
 
 from rich.console import Console, ConsoleOptions, ConsoleRenderable, RenderHook, RenderResult
@@ -958,6 +958,17 @@ def render_group_messages(page: GroupMessagePage) -> None:
         _stdout.print(f"[dim](more — pass --before {_s(page.next_before)})[/dim]", soft_wrap=True)
 
 
+def _local_tz() -> tzinfo | None:
+    """The zone stamps are rendered in; ``None`` means the machine's own.
+
+    ``astimezone(None)`` is exactly the no-argument ``astimezone()``, so this
+    changes nothing at runtime. It exists as the one place the local zone is
+    learned, so tests can pin a ``zoneinfo.ZoneInfo`` here instead of setting
+    the process ``TZ`` (``time.tzset`` does not exist on Windows).
+    """
+    return None
+
+
 def _format_stamp(iso: str) -> str:
     """Render a UTC ISO-8601 timestamp in the machine's local zone, labelled.
 
@@ -980,7 +991,7 @@ def _format_stamp(iso: str) -> str:
     import datetime as dt
 
     try:
-        parsed = dt.datetime.fromisoformat(iso).astimezone()
+        parsed = dt.datetime.fromisoformat(iso).astimezone(_local_tz())
     except ValueError:
         return iso
     rendered = parsed.strftime("%Y-%m-%d %H:%M")
@@ -1011,7 +1022,7 @@ def _format_due(iso: str, date_only: bool | None = None) -> str:
         return iso
     if date_only:
         return parsed_utc.strftime("%Y-%m-%d")
-    parsed = parsed_utc.astimezone()
+    parsed = parsed_utc.astimezone(_local_tz())
     if (parsed.hour, parsed.minute) == (0, 0):
         return parsed.strftime("%Y-%m-%d")
     return parsed.strftime("%Y-%m-%d %H:%M")

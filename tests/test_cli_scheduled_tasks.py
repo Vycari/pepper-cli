@@ -15,8 +15,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
-import sys
-import time
 from pathlib import Path
 
 import httpx
@@ -216,26 +214,6 @@ def test_show_renders_the_latest_run(tmp_home, patch_api, capsys) -> None:
     assert "morning-weather" in out
     assert "Weekday weather" in out
     assert "succeeded" in out
-
-
-@pytest.fixture
-def machine_zone(monkeypatch):
-    """Pin the process's local zone, and put it back afterwards.
-
-    ``monkeypatch.setenv`` restores the variable but not libc's cached
-    zone, so the teardown ``tzset`` is what keeps this from leaking into
-    every test that renders a timestamp after it.
-    """
-    if sys.platform == "win32":
-        pytest.skip("time.tzset does not exist on Windows (#46)")
-
-    def install(name: str) -> None:
-        monkeypatch.setenv("TZ", name)
-        time.tzset()
-
-    yield install
-    monkeypatch.undo()
-    time.tzset()
 
 
 def test_show_labels_the_zone_its_stamps_are_in(tmp_home, patch_api, capsys, machine_zone) -> None:

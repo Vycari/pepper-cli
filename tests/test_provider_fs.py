@@ -172,7 +172,11 @@ def test_a_directory_is_not_a_readable_file(notes: Path) -> None:
     assert "file" in text.lower()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo does not exist on Windows (#46)")
+# POSIX-only on purpose (#46): ``os.mkfifo`` has no Windows equivalent, and no
+# other non-regular file can be created from a test there without elevated
+# rights or reserved device names. The ``is_file()`` refusal this exercises is
+# platform-neutral and runs on Windows via the directory case above.
+@pytest.mark.skipif(sys.platform == "win32", reason="intentionally POSIX-only: no Windows FIFO")
 def test_a_fifo_is_refused_rather_than_opened(notes: Path) -> None:
     import os
 

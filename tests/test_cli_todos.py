@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import json
 import re
-import sys
-import time
 from pathlib import Path
 
 import httpx
@@ -21,30 +19,6 @@ import pytest
 from pepper_cli import api_client, cli, credentials
 from pepper_cli.render import _format_due
 from pepper_cli.secret import SecretStr
-
-
-@pytest.fixture
-def machine_zone(monkeypatch):
-    """Pin the process's local zone, and put it back afterwards.
-
-    Same fixture as ``test_cli_scheduled_tasks.py``'s: ``monkeypatch.setenv``
-    restores the variable but not libc's cached zone, so the teardown
-    ``tzset`` is what keeps this from leaking into a later test. Needed here
-    because a UTC test machine can't tell "no zone conversion" from "zone
-    conversion that happens to land on the same UTC offset" — which is
-    exactly the gap this fixture closes.
-    """
-    if sys.platform == "win32":
-        pytest.skip("time.tzset does not exist on Windows (#46)")
-
-    def install(name: str) -> None:
-        monkeypatch.setenv("TZ", name)
-        time.tzset()
-
-    yield install
-    monkeypatch.undo()
-    time.tzset()
-
 
 _ROOM = "00000000-0000-0000-0000-0000000000a1"
 
