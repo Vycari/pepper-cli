@@ -361,6 +361,7 @@ One PR each. P1 is releasable on its own.
 | 5 | Textual is a core dependency from P1, not an optional extra (§15 A). |
 | 6 | Bare `pepper` on a TTY opens the TUI from P4, not earlier (§15 B). |
 | 7 | Mentions: web parity through P3; P4 adds `@` on a sidebar row whose unread activity mentions you (§15 C). |
+| 8 | The Pepper row gets a session-local unread dot when a poll finds an unseen assistant message (§15 D). |
 
 ## 15. Open questions
 
@@ -405,9 +406,9 @@ opt-in only.
 - (b) Yes, when a history poll finds an assistant row newer than the last one shown. That covers
   scheduled-task announcements and phone replies.
 
-**Recommend (b), TUI-only and session-local.** Without it, proactive messages (morning brief,
-scheduled tasks) go unnoticed in the terminal. There is no server mark to agree with, so nothing can
-drift.
+**Decided (b), TUI-only and session-local, 2026-10-16.** Without it, proactive messages (morning
+brief, scheduled tasks) go unnoticed in the terminal. There is no server mark to agree with, so
+nothing can drift.
 
 **E. Ask the server for `chat/history?since` or a person event stream now?**
 
