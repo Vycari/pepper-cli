@@ -317,8 +317,9 @@ is changed. That covers:
 - Two flags on commands that otherwise work: `--mark` on a read and `--attach` on a post.
 - Every other `rooms`, `topics`, `messages`, `attachments`, `members`, `sharing` or `apps` command, which are the ones that change a room, its topics, its members
   or its apps, or that read or search across rooms.
-- Every command outside those nouns that talks to the server, `whoami` and chat included, other than
-  `login`.
+- Every command outside those nouns that talks to the server, `whoami`, chat and `tui` included
+  (`tui` is a full-screen app for a person at a terminal and refuses to start without one), other
+  than `login`.
 
 Do not try these to see what happens. `pepper --profile <name> rooms --help` lists commands the
 binary has, not commands your token may use.

@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from pepper_cli.api_client import (
         ArtifactListResponse,
         GroupList,
+        GroupMessage,
         GroupMessagePage,
         GroupRosterMember,
         GroupTopicSummary,
@@ -874,6 +875,17 @@ def render_note_list(result: ArtifactListResponse) -> None:
         _stdout.print("[dim](more notes than shown — narrow with --label or --room)[/dim]")
 
 
+def group_message_tags(m: GroupMessage) -> tuple[str, str]:
+    """The plain ``(via X)`` and ``(agent, for X)`` tags of a room message; ``""`` for each
+    that does not apply. Shared by this module and the terminal UI so both say it the same
+    way. The strings carry participant text: escape or sanitize before styling them."""
+    via = f"(via {m.via_display_name})" if m.via_display_name else ""
+    if not m.is_agent:
+        return via, ""
+    agent = f"(agent, for {m.for_display_name})" if m.for_display_name else "(agent)"
+    return via, agent
+
+
 def render_group_messages(page: GroupMessagePage) -> None:
     """Pretty-print one page of a topic's messages to stdout, oldest first.
 
@@ -914,20 +926,15 @@ def render_group_messages(page: GroupMessagePage) -> None:
         display_name = _s(m.display_name)
         # "*agent* · for *requester*" — on a deleted
         # post too, as the web's badge is: who wrote it doesn't change.
-        agent_tag = ""
-        if m.is_agent:
-            agent_tag = (
-                f" [dim](agent, for {_s(m.for_display_name)})[/dim]"
-                if m.for_display_name
-                else " [dim](agent)[/dim]"
-            )
+        via_tag, agent_tag = group_message_tags(m)
+        agent_tag = f" [dim]{_s(agent_tag)}[/dim]" if agent_tag else ""
         if m.is_deleted:
             _stdout.print(
                 f"[dim]{_s(m.created_at_display)}[/dim] [bold]{display_name}[/bold]{agent_tag}: "
                 "[dim](message deleted)[/dim]"
             )
             continue
-        via = f" [dim](via {_s(m.via_display_name)})[/dim]" if m.via_display_name else ""
+        via = f" [dim]{_s(via_tag)}[/dim]" if via_tag else ""
         via += agent_tag
         edited = " [dim](edited)[/dim]" if m.is_edited else ""
         _stdout.print(
@@ -968,6 +975,18 @@ def _local_tz() -> tzinfo | None:
     the process ``TZ`` (``time.tzset`` does not exist on Windows).
     """
     return None
+
+
+def local_clock(moment: datetime, *, hour24: bool = False) -> str:
+    """``moment`` as a short clock time (``9:41 AM`` or ``09:41``) in the zone stamps render in.
+
+    Spelled by hand, not with ``%-I``: that directive does not exist on Windows.
+    """
+    local = moment.astimezone(_local_tz())
+    if hour24:
+        return f"{local.hour:02d}:{local.minute:02d}"
+    hour = local.hour % 12 or 12
+    return f"{hour}:{local.minute:02d} {'AM' if local.hour < 12 else 'PM'}"
 
 
 def _format_stamp(iso: str) -> str:

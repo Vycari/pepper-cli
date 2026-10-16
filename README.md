@@ -165,6 +165,7 @@ Every command except `login` and the interactive REPL takes `--json`, and also s
 | `pepper chat ["msg"]` | One-shot with a message, or the REPL with none. |
 | `pepper chat --root PATH ["msg"]` | Same, but let this session read files under `PATH` (repeatable). |
 | `pepper whoami [--json]` | Print the user behind the current credentials. |
+| `pepper tui` | Full-screen terminal UI: your Pepper chat and rooms, read-only for now. Needs a terminal; see [`pepper tui`](#pepper-tui). |
 | `pepper chat "msg" --json` | One-shot chat; prints one JSON line per event, `{"kind", "payload"}`. The REPL ignores `--json`. |
 | `pepper calendar [WINDOW] [--planning] [--room R] [--json]` | Your calendar, or a room's with `--room` (any window except `schedule`; the room view has no weather, drive or schedule-plan layers). |
 | `pepper apps show SLUG [--room R] [--json]` | An app's data document, `{"rev", "data"}`, yours or the room's. |
@@ -367,6 +368,28 @@ Notes:
 
 - **`trajectory` is PAT-scoped** — you can read trajectories you own (or that
   are shared with you via a group). Someone else's trajectory returns `404`.
+
+## `pepper tui`
+
+A full-screen, read-only view of your messages: Pepper first, then your rooms by recency with
+their topics nested under the open room. Unread dots come from the server's read marks, and a
+topic you open is marked read. Posting is not in this version; use `pepper messages post` or
+`pepper chat` alongside it.
+
+| Key | Does |
+| --- | --- |
+| Up / Down, Enter | Move in the sidebar; open a conversation or expand a room. |
+| Right / Left | Expand or collapse a room. |
+| Tab / Shift+Tab | Move focus between the sidebar and the thread. |
+| Ctrl+N / Ctrl+P | Jump to the next / previous unread conversation. |
+| PgUp / PgDn | Scroll the thread. |
+| Ctrl+B | Hide or show the sidebar. |
+| Ctrl+Q | Quit. |
+
+It needs an interactive terminal on both stdin and stdout: otherwise it prints one line to
+stderr and exits 2. A revoked token shows the login hint and exits 1 after a keypress. It polls
+every 3 to 15 seconds depending on activity and pauses while the terminal is unfocused, so it
+works over a flaky connection (it shows "offline, retrying" and backs off).
 
 ## `pepper next`
 

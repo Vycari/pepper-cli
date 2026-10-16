@@ -60,6 +60,7 @@ NOUNS = frozenset(
         "logout",
         "whoami",
         "takeout",
+        "tui",
     }
 )
 
@@ -113,7 +114,8 @@ DESTRUCTIVE = frozenset({"delete", "remove", "revoke", "uninstall", "leave"})
 #: J1: leaves that do not take ``--json`` at all. ``chat`` is not here: one-shot
 #: ``chat MESSAGE`` takes the flag (§5.4); only its REPL path (no message) ignores
 #: ``--json`` and ``PEPPER_JSON``, which ``test_the_repl_...`` pins.
-JSON_EXEMPT = frozenset({"login"})
+#: ``tui`` is a full-screen interactive app with no data output to put in JSON.
+JSON_EXEMPT = frozenset({"login", "tui"})
 
 #: §5.4 fill list and every leaf that has no ``--json`` today (empty since phase 2d).
 JSON_PENDING: frozenset[str] = frozenset()
@@ -132,6 +134,7 @@ ROOM_NA = {
     "login": "session command",
     "logout": "session command",
     "whoami": "session command",
+    "tui": "opens the whole app; rooms are chosen inside it",
     "chat": "talking to Pepper in a room is `messages post --mention`",
     "takeout": "exports the account, not a room",
     "agents guide": "prints the bundled guide; nothing about it is per room",

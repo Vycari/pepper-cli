@@ -465,6 +465,26 @@ class TrajectoryListEntry:
     group_name: str | None
 
 
+# MIRROR: src/pepper/api/router.py::ChatHistoryEntry
+@dataclass(frozen=True)
+class ChatHistoryEntry:
+    """One row of ``GET /api/v1/chat/history`` — today's live Pepper thread.
+
+    Only the fields the terminal UI reads. ``role`` is ``"user"`` or
+    ``"assistant"``; ``created_at`` is raw UTC ISO-8601 (``Z`` suffix), so a
+    client localizes it itself. The mail, brief, draft and schedule-proposal
+    cards the server also sends are not mirrored: the UI shows ``text`` only.
+    """
+
+    id: str
+    role: str
+    text: str
+    channel: str
+    created_at: str
+    attachments: list[dict[str, Any]] = field(default_factory=list)
+    reactions: list[dict[str, Any]] = field(default_factory=list)
+
+
 # MIRROR: src/pepper/gateway/channels/client_api/adapter.py::ChatSendResponse
 # Same dual-definition rule as the other ``/api/v1`` payload shapes.
 @dataclass(frozen=True)
@@ -1063,6 +1083,17 @@ def group_message_from_dict(row: dict[str, Any]) -> GroupMessage:
         is_agent=bool(row.get("is_agent", False)),
         for_display_name=row.get("for_display_name"),
         parent_message_id=row.get("parent_message_id"),
+    )
+
+
+def _group_list_from_dict(body: dict[str, Any]) -> GroupList:
+    return GroupList(
+        enabled=body["enabled"],
+        degraded=body["degraded"],
+        total=body["total"],
+        archived_total=body["archived_total"],
+        groups=[_group_summary_from_dict(g) for g in body.get("groups") or []],
+        features=tuple(f for f in body.get("features") or () if isinstance(f, str)),
     )
 
 
@@ -1894,6 +1925,26 @@ class ApiClient:
             for row in body
         ]
 
+    def chat_history(self) -> list[ChatHistoryEntry]:
+        """``GET /api/v1/chat/history`` — today's live Pepper thread, oldest first.
+
+        No pagination and no ``since``: the whole day comes back each time.
+        """
+        rows = self._request("GET", "/api/v1/chat/history").json()
+        return [
+            ChatHistoryEntry(
+                id=str(r["id"]),
+                role=r["role"],
+                text=r.get("text") or "",
+                channel=r.get("channel") or "",
+                created_at=r["created_at"],
+                attachments=list(r.get("attachments") or []),
+                reactions=list(r.get("reactions") or []),
+            )
+            for r in rows
+            if isinstance(r, dict)
+        ]
+
     def post_tool_result(
         self, *, call_id: str, content: list[dict[str, Any]], is_error: bool = False
     ) -> None:
@@ -2126,15 +2177,7 @@ class ApiClient:
         """``GET /api/v1/groups`` — the caller's rooms, and the surface's
         capability signal. See :class:`GroupList`."""
         resp = self._request("GET", "/api/v1/groups", params={"archived": int(archived)})
-        body = resp.json()
-        return GroupList(
-            enabled=body["enabled"],
-            degraded=body["degraded"],
-            total=body["total"],
-            archived_total=body["archived_total"],
-            groups=[_group_summary_from_dict(g) for g in body.get("groups") or []],
-            features=tuple(f for f in body.get("features") or () if isinstance(f, str)),
-        )
+        return _group_list_from_dict(resp.json())
 
     def get_group(self, group_id: str) -> dict[str, Any]:
         """``GET /api/v1/groups/{gid}`` — room info: kind, members, topics,
@@ -2378,6 +2421,33 @@ class ApiClient:
             f"/api/v1/groups/{group_id}/topics/{topic_id}/read",
             json={"read_through": read_through},
         ).json()
+
+    def get_group_read_marks(self, group_id: str) -> dict[str, str]:
+        """``GET /api/v1/groups/{gid}/read`` — ``{topic_id: read_through}`` for every
+        topic the caller has a mark on. A topic with no mark is absent, not null."""
+        # MIRROR: src/pepper/api/groups.py::read_marks
+        # (route handler; the response is an untyped dict, so no snapshot schema)
+        body = self._request("GET", f"/api/v1/groups/{group_id}/read").json()
+        return {
+            m["topic_id"]: m["read_through"]
+            for m in body.get("marks") or []
+            if isinstance(m.get("topic_id"), str) and isinstance(m.get("read_through"), str)
+        }
+
+    def list_groups_conditional(
+        self, *, if_none_match: str | None = None
+    ) -> tuple[GroupList | None, str | None]:
+        """``GET /api/v1/groups`` with ``If-None-Match``: ``(None, etag)`` on a bodyless 304.
+
+        The rail poll's form of :meth:`list_groups` (the server makes the list
+        ETag-conditional for a client that polls it every 15 seconds). Returns the
+        ``ETag`` the server sent, or ``if_none_match`` back on a 304.
+        """
+        headers = {"If-None-Match": if_none_match} if if_none_match else None
+        resp = self._request("GET", "/api/v1/groups", params={"archived": 0}, extra_headers=headers)
+        if resp.status_code == 304:
+            return None, if_none_match
+        return _group_list_from_dict(resp.json()), resp.headers.get("etag")
 
     def get_group_sharing(self, group_id: str) -> dict[str, Any]:
         """``GET /api/v1/groups/{gid}/sharing`` — which of your calendars this room sees."""

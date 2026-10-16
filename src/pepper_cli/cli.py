@@ -481,6 +481,12 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     )
     p_whoami.set_defaults(handler=cmd_whoami)
 
+    p_tui = sub.add_parser(
+        "tui",
+        help="Open the full-screen terminal UI for your rooms and Pepper chat (needs a terminal).",
+    )
+    p_tui.set_defaults(handler=cmd_tui)
+
     p_chat = sub.add_parser(
         "chat",
         help="Send one message (one-shot) or open the interactive REPL when no message is given.",
@@ -1793,6 +1799,29 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         return 0
 
     return _run_personal(args, run)
+
+
+def cmd_tui(args: argparse.Namespace) -> int:
+    """``pepper tui``: the full-screen terminal UI (read-only in this phase).
+
+    Exit codes (``planning/terminal-ui.md`` §10): 0 on a normal quit, 1 for an auth or
+    unexpected error, 2 when it was not started on a terminal. The terminal check comes
+    first, before credentials or Textual are touched, so a script gets one line and a 2.
+    """
+    if not (sys.stdout.isatty() and _stdin_is_tty()):
+        _emit_error(None, "usage", "pepper tui needs an interactive terminal (stdin and stdout)")
+        return 2
+    creds = _load_or_error(None)
+    if creds is None:
+        return 1
+    # Imported here so no other command pays for Textual (a test pins that).
+    from pepper_cli import tui
+
+    try:
+        return tui.run(server_url=creds.server_url, token=creds.token)
+    except httpx.RequestError as exc:
+        _emit_error(None, "network", f"Couldn't reach {creds.server_url}: {exc}")
+        return 1
 
 
 def cmd_chat(args: argparse.Namespace) -> int:

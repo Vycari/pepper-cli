@@ -1,0 +1,62 @@
+Screen {
+    layout: horizontal;
+}
+
+#left {
+    width: 32;
+    border-right: tall $primary-darken-2;
+}
+
+#left.hidden {
+    display: none;
+}
+
+#sidebar {
+    height: 1fr;
+    background: transparent;
+}
+
+#subline {
+    height: 1;
+    padding: 0 1;
+    color: $text-muted;
+}
+
+#right {
+    width: 1fr;
+}
+
+#header {
+    height: 1;
+    padding: 0 1;
+    text-style: bold;
+    background: $boost;
+}
+
+#notice {
+    height: auto;
+    padding: 0 1;
+    color: $warning;
+}
+
+#notice.empty {
+    display: none;
+}
+
+#thread {
+    height: 1fr;
+}
+
+#thread-scroll {
+    height: 1fr;
+    padding: 0 1;
+}
+
+#thread-new {
+    height: 1;
+    padding: 0 1;
+    text-style: bold;
+    color: $text;
+    background: $accent;
+    display: none;
+}

@@ -96,6 +96,12 @@ NOT_CHECKABLE: dict[tuple[str, str], NotCheckable] = {
         f"Route handler behind GroupRosterMember. {_UNTYPED}",
         route=("GET", "/api/v1/groups/{group_id}/roster"),
     ),
+    ("api_client.py", "src/pepper/api/groups.py::read_marks"): NotCheckable(
+        "Route handler behind ``get_group_read_marks`` "
+        "(``{marks: [{topic_id, read_through}]}``). "
+        f"{_UNTYPED}",
+        route=("GET", "/api/v1/groups/{group_id}/read"),
+    ),
     ("api_client.py", "src/pepper/api/groups.py::app_launcher"): NotCheckable(
         f"Route handler behind GroupAppTile. {_UNTYPED}",
         route=("GET", "/api/v1/groups/{group_id}/apps/launcher"),
