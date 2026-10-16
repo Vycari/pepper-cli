@@ -360,6 +360,7 @@ One PR each. P1 is releasable on its own.
 | 4 | Design doc first, with phases. One tracking issue, and one issue per phase as each is picked up. |
 | 5 | Textual is a core dependency from P1, not an optional extra (§15 A). |
 | 6 | Bare `pepper` on a TTY opens the TUI from P4, not earlier (§15 B). |
+| 7 | Mentions: web parity through P3; P4 adds `@` on a sidebar row whose unread activity mentions you (§15 C). |
 
 ## 15. Open questions
 
@@ -393,9 +394,10 @@ CLI release, released users see the TUI default arrive with the TUI itself. `PEP
   costs one message fetch per newly-unread topic.
 - (c) As in (b), plus the terminal bell when a mention arrives.
 
-**Recommend (a) for P1–P3, and (b) in P4.** A terminal user can't see a phone notification in the
-corner of the screen the way a web user can. The extra fetch is bounded: a topic is fetched only
-when it flips to unread, so it costs at most one per new activity. The bell is opt-in only.
+**Decided (a) for P1–P3, and (b) in P4, 2026-10-16.** A terminal user can't see a phone
+notification in the corner of the screen the way a web user can. The extra fetch is bounded: a topic
+is fetched only when it flips to unread, so it costs at most one per new activity. The bell (c) is
+opt-in only.
 
 **D. Does the Pepper row get an unread dot?**
 
