@@ -262,12 +262,14 @@ def test_share_says_when_the_room_cannot_run_what_it_now_holds(api, capsys) -> N
     )
 
 
-def test_share_into_a_sealed_room_says_that_kind_of_room_is_not_allowed_yet(api, capsys) -> None:
+def test_share_into_a_sealed_room_says_sharing_is_not_allowed(api, capsys) -> None:
     api.shared = _err(409, "the server's own wording")
     assert cli.main(["skills", "share", "meal-plan", "--room", _ROOM]) == 1
     err = _flat(capsys.readouterr().err)
-    assert "sharing a skill into this kind of room isn't allowed yet" in err
-    assert "named channel" in err
+    assert (
+        "Sharing a skill into this room isn't allowed. "
+        "A skill can only be shared into a named channel."
+    ) in err
 
 
 @pytest.mark.parametrize(

@@ -193,10 +193,9 @@ _ROOM_TASK_OWNER_ONLY = "only a room owner can change its scheduled tasks."
 
 #: The one sentence anyone else gets for a refused ``skills revoke --room``.
 _ROOM_SKILL_REVOKE_FORBIDDEN = "only the skill's owner or a room owner can revoke it."
-#: An email or text thread (wire ``kind: "sealed"``) takes no shared skill.
+#: An email or text thread (wire ``kind: "sealed"``) takes no shared skill, by design.
 _ROOM_SKILL_SEALED = (
-    "sharing a skill into this kind of room isn't allowed yet — "
-    "a skill can only be shared into a named channel."
+    "Sharing a skill into this room isn't allowed. A skill can only be shared into a named channel."
 )
 
 #: ``rooms create`` without a name, refused before any request is sent.

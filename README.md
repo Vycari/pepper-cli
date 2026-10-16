@@ -304,7 +304,7 @@ Notes:
   is ambiguous `show` and `revoke` refuse and list the ids, and either takes a
   grant id in place of the name. Only a skill you wrote, with no toolset a
   room can't run, can be shared, and only into a named channel: sharing into
-  a group text or an email thread isn't allowed yet.
+  a group text or an email thread isn't allowed.
 - **`scheduled-tasks --room <room>` works on a room's tasks instead of yours**
   (`list`, `show`, `runs`, `thread`, `create`, `edit`, `pause`, `resume`, `renew`, `delete`). Any member can read them. Changing them takes
   the owner role in an open room: anyone else is told "only a room owner can
