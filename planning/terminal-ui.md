@@ -359,6 +359,7 @@ One PR each. P1 is releasable on its own.
 | 3 | Follow the web UI as closely as a terminal allows: layout, naming, ordering, unread/mention treatment, rendering and composer behaviour. Departures are listed in §3 and §7, each with its reason. |
 | 4 | Design doc first, with phases. One tracking issue, and one issue per phase as each is picked up. |
 | 5 | Textual is a core dependency from P1, not an optional extra (§15 A). |
+| 6 | Bare `pepper` on a TTY opens the TUI from P4, not earlier (§15 B). |
 
 ## 15. Open questions
 
@@ -380,9 +381,10 @@ The lazy import (§8) still keeps the ~180 ms off every non-TUI command.
 - (b) Already in P2, once you can post.
 - (c) Never: the TUI is only ever `pepper tui`.
 
-**Recommend (a).** Until P3, the REPL does things the TUI can't yet, such as long DM sessions with
-`/skill` commands, so switching the default earlier would be a regression for daily users.
-`PEPPER_NO_TUI=1` and `pepper chat` remain the way out.
+**Decided (a), 2026-10-16.** Until P3, the REPL does things the TUI can't yet, such as long DM
+sessions with `/skill` commands. P4 flips the default; since the TUI ships complete before the next
+CLI release, released users see the TUI default arrive with the TUI itself. `PEPPER_NO_TUI=1` and
+`pepper chat` remain the way out.
 
 **C. Should mentions get more than the web's treatment?**
 
