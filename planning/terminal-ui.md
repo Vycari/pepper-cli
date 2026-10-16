@@ -295,7 +295,7 @@ src/pepper_cli/tui/
 
 | Invocation | Today | After P4 |
 |---|---|---|
-| `pepper` on a TTY | REPL | **TUI** (when installed, §15 A/B) |
+| `pepper` on a TTY | REPL | **TUI** (§15 B) |
 | `pepper` with stdin or stdout not a TTY, or `TERM=dumb`, or `PEPPER_NO_TUI=1` | REPL | REPL, unchanged |
 | `pepper chat` | REPL | REPL, unchanged. This is the explicit fallback |
 | `pepper <words>` (implicit chat) | one turn, printed | unchanged |
@@ -358,6 +358,7 @@ One PR each. P1 is releasable on its own.
 | 2 | Topics nest under their room. As on the web, the selected room auto-expands and the others stay collapsed. `→`/`←` expand or collapse any room by hand. |
 | 3 | Follow the web UI as closely as a terminal allows: layout, naming, ordering, unread/mention treatment, rendering and composer behaviour. Departures are listed in §3 and §7, each with its reason. |
 | 4 | Design doc first, with phases. One tracking issue, and one issue per phase as each is picked up. |
+| 5 | Textual is a core dependency from P1, not an optional extra (§15 A). |
 
 ## 15. Open questions
 
@@ -369,10 +370,9 @@ One PR each. P1 is releasable on its own.
 - (c) Optional forever. Bare `pepper` falls back to the REPL with a one-line "install
   `vycari-pepper[tui]` for the full-screen view" hint.
 
-**Recommend (b).** Through P1–P3 the main users of the CLI are agents (IA doc §10 C), and they
-shouldn't pay ~4 MB plus a raised Rich floor for a view they never open. Once bare `pepper` defaults
-to the TUI, a default that depends on install flags is a trap, so it becomes core then. That PR
-states the reason, as the dependency guideline asks.
+**Decided (a), 2026-10-16.** Textual is a core dependency from P1. The TUI will be complete before
+the next CLI release, so no released version would carry an extra that only half the feature uses.
+The lazy import (§8) still keeps the ~180 ms off every non-TUI command.
 
 **B. When does bare `pepper` open the TUI?**
 
