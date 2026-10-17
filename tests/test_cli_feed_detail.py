@@ -167,6 +167,7 @@ def server(monkeypatch, tmp_path):
         lambda **kw: real(client=httpx.Client(transport=httpx.MockTransport(handler)), **kw),
     )
     monkeypatch.setattr(article_reader, "_transport", httpx.MockTransport(web))
+    monkeypatch.setattr(article_reader, "_resolve", lambda host: ["93.184.215.14"])
     return type(
         "Server", (), {"routes": routes, "seen": seen, "web": web_seen, "web_routes": web_routes}
     )

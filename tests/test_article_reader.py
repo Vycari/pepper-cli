@@ -51,7 +51,14 @@ def web(monkeypatch):
         return state["handler"](request)
 
     monkeypatch.setattr(article_reader, "_transport", httpx.MockTransport(handle))
-    return type("Web", (), {"seen": seen, "state": state})
+    # Test hosts resolve to a public documentation address unless a test says otherwise.
+    resolved: dict[str, list[str]] = {}
+    monkeypatch.setattr(
+        article_reader,
+        "_resolve",
+        lambda host: resolved.get(host) or article_reader._literal(host) or ["93.184.215.14"],
+    )
+    return type("Web", (), {"seen": seen, "state": state, "resolved": resolved})
 
 
 def test_reads_title_meta_author_date_and_article_body(web) -> None:
@@ -176,6 +183,56 @@ def test_as_json_limits_paragraphs_but_counts_all() -> None:
     data = art.as_json(limit=2)
     assert data["paragraphs"] == ["a", "b"] and data["paragraph_count"] == 3
     assert json.loads(json.dumps(art.as_json()))["paragraphs"] == ["a", "b", "c"]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1/admin",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://10.0.0.1/",
+        "http://[::1]/",
+        "http://[::ffff:127.0.0.1]/",
+        "http://100.100.100.100/",
+    ],
+)
+def test_a_link_to_a_non_public_address_is_refused_before_any_request(web, url) -> None:
+    art = article_reader.fetch(url)
+    assert art.error and "not a public web address" in art.error
+    assert web.seen == []
+
+
+def test_a_host_resolving_to_a_private_address_is_refused(web) -> None:
+    web.resolved["router.example"] = ["93.184.215.14", "192.168.1.1"]
+    art = article_reader.fetch("https://router.example/")
+    assert art.error and "router.example" in art.error and web.seen == []
+
+
+def test_a_redirect_to_a_private_address_is_refused(web) -> None:
+    web.state["handler"] = lambda req: httpx.Response(
+        302, headers={"location": "http://127.0.0.1:8080/secret"}
+    )
+    art = article_reader.fetch("https://news.example/go")
+    assert art.error and "127.0.0.1" in art.error
+    assert [str(r.url) for r in web.seen] == ["https://news.example/go"]
+
+
+def test_an_unresolvable_host_is_a_fetch_failure(web, monkeypatch) -> None:
+    def gone(host: str) -> list[str]:
+        raise OSError("no such host")
+
+    monkeypatch.setattr(article_reader, "_resolve", gone)
+    assert "could not fetch" in (article_reader.fetch("https://gone.example/").error or "")
+
+
+def test_resolve_reads_literals_and_dns(monkeypatch) -> None:
+    assert article_reader._resolve("10.1.2.3") == ["10.1.2.3"]
+    monkeypatch.setattr(
+        article_reader.socket,
+        "getaddrinfo",
+        lambda host, port, **kw: [(2, 1, 6, "", ("93.184.215.14", 0))],
+    )
+    assert article_reader._resolve("news.example") == ["93.184.215.14"]
 
 
 def test_a_page_that_trickles_past_the_deadline_is_cut_off(web, monkeypatch) -> None:

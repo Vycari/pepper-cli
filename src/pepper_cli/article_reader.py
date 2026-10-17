@@ -2,18 +2,22 @@
 
 Pepper keeps only a feed item's title and url, so the CLI fetches the page itself. This is a
 plain third-party GET: a browser-like ``User-Agent``, a per-read timeout and an overall
-deadline, a redirect cap and a byte cap, and never the Pepper token, cookies or any other
-credential (the client is built here, apart from the API client). Parsing is the stdlib
-``html.parser``: no new dependency, and no attempt at JavaScript or paywalls; a page that
-will not read degrades to :attr:`Article.error`, one line.
+deadline, a redirect cap and a byte cap, only to public internet addresses (a feed item's link
+is third-party text, so a link or redirect to loopback, a private network or a link-local
+metadata address is refused before anything is sent), and never the Pepper token, cookies or
+any other credential (the client is built here, apart from the API client). Parsing is the
+stdlib ``html.parser``: no new dependency, and no attempt at JavaScript or paywalls; a page
+that will not read degrades to :attr:`Article.error`, one line.
 """
 
 from __future__ import annotations
 
 import contextlib
 import dataclasses
+import ipaddress
 import json
 import re
+import socket
 import time
 from html.parser import HTMLParser
 from typing import Any
@@ -36,8 +40,49 @@ USER_AGENT = (
 _transport: httpx.BaseTransport | None = None
 
 
+class _NotPublic(Exception):
+    """The link (or a redirect) names a host that is not on the public internet."""
+
+    def __init__(self, host: str) -> None:
+        super().__init__(host)
+        self.host = host
+
+
 class _TooSlow(Exception):
     """The page took longer than :data:`DEADLINE_SECONDS` to arrive."""
+
+
+def _literal(host: str) -> list[str] | None:
+    """``[host]`` when ``host`` is an IP address literal, else ``None``."""
+    try:
+        return [str(ipaddress.ip_address(host))]
+    except ValueError:
+        return None
+
+
+def _resolve(host: str) -> list[str]:
+    """Every address ``host`` resolves to (an address literal is itself). Tests replace this."""
+    return _literal(host) or [
+        str(info[4][0]) for info in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    ]
+
+
+def _is_public(address: str) -> bool:
+    ip = ipaddress.ip_address(address.split("%", 1)[0])
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_global and not ip.is_multicast
+
+
+def _refuse_non_public(request: httpx.Request) -> None:
+    """``httpx`` request hook, run for the first request and for every redirect."""
+    host = request.url.host
+    try:
+        addresses = _resolve(host)
+    except (OSError, UnicodeError) as exc:
+        raise httpx.ConnectError(f"could not resolve {host}", request=request) from exc
+    if not addresses or not all(_is_public(a) for a in addresses):
+        raise _NotPublic(host)
 
 
 _SKIP = frozenset(
@@ -242,6 +287,7 @@ def fetch(url: str) -> Article:
                 timeout=TIMEOUT_SECONDS,
                 headers={"User-Agent": USER_AGENT, "Accept": "text/html,*/*;q=0.5"},
                 transport=_transport,
+                event_hooks={"request": [_refuse_non_public]},
             ) as client,
             client.stream("GET", url) as resp,
         ):
@@ -261,6 +307,9 @@ def fetch(url: str) -> Article:
                     break
                 if time.monotonic() > deadline:
                     raise _TooSlow
+    except _NotPublic as exc:
+        art.error = f"the link points at {exc.host}, which is not a public web address"
+        return art
     except _TooSlow:
         art.error = f"the site took longer than {DEADLINE_SECONDS:.0f} seconds to send the page"
         return art
