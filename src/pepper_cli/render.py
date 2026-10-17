@@ -1060,82 +1060,72 @@ def _short(value: Any) -> str:
     return s
 
 
-def _next_item_line(n: int | None, item: dict[str, Any]) -> str:
-    """One Do next / Due soon / Later row from an item's own fields (plan item or todo row)."""
-    due = item.get("due") or {}
-    due_label = due.get("label") or (
-        _format_due(item["due_date"], item.get("due_is_date_only"))
-        if item.get("due_date")
-        else None
-    )
-    if due_label == "No due date":
-        due_label = None
-    elif due_label and not due_label.lower().startswith("due"):
-        due_label = f"due {due_label}"
-    bits = [
-        item.get("estimate_label"),
-        due_label,
-        item.get("source_label") or item.get("room"),
-        f"room {item['principal']}" if item.get("principal") else None,
-    ]
-    meta = f"  [dim]({_s(', '.join(b for b in bits if b))})[/dim]" if any(bits) else ""
-    head = f"{n:>2}. " if n else "  - "
-    line = f"{head}{_s(item.get('title') or '(untitled)')}{meta}"
-    if item.get("reason"):
-        line += f"\n      [dim]{_s(item['reason'])}[/dim]"
-    return line
+def _countdown(minutes: int) -> str:
+    hours, mins = divmod(minutes, 60)
+    return f"{hours}h {mins}m" if hours and mins else f"{hours}h" if hours else f"{mins}m"
+
+
+def _deadline_word(row: dict[str, Any]) -> str:
+    """The word before a deadline row's title: due or remind; nothing for an event."""
+    if row.get("kind") != "deadline":
+        return ""
+    return "remind: " if row.get("source_time") == "remind" else "due: "
+
+
+def _event_when(row: dict[str, Any]) -> str:
+    return f"{row.get('start_label') or ''}-{row.get('end_label') or ''}".strip("-")
 
 
 def render_next(result: dict[str, Any]) -> None:
-    """Print a ``pepper next`` result: Now, a numbered Do next, Due soon, Later."""
+    """Print a ``pepper next`` result: Now, today's calendar, and the ranked todos."""
 
     def out(text: str = "") -> None:
         _stdout.print(text, soft_wrap=not _stdout.is_terminal)
 
+    now, nxt = result.get("now"), result.get("next_commitment")
     out("[bold]Now[/bold]")
-    for ev in result["now"]:
-        if "countdown" in ev:  # schedule-plan's next_up
-            when = f"{ev.get('start_label')}-{ev.get('end_label')}"
-            title, countdown = _s(ev.get("title") or ""), _s(ev["countdown"])
-            out(f"  {title}  [dim]{_s(when)}, {countdown}[/dim]")
-            if ev.get("leave"):
-                out(f"  [dim]leave by {_s(str(ev['leave']))}[/dim]")
-        else:
-            out(_calendar_event_line(ev))
-    if not result["now"]:
-        out("  [dim](nothing on the calendar)[/dim]")
-    do_next = result["do_next"]
-    out("\n[bold]Do next[/bold]")
-    info = result.get("plan")
-    if info and info.get("name"):
-        mark = ", Pepper's choice today" if info["chosen_by_pepper"] else ""
-        sub = _s(info.get("subtitle") or "")
-        out(f"  [bold]{_s(info['name'])}[/bold]{mark}  [dim]{sub}[/dim]")
-        diff = [o for o in info["others"] if o["differs"]]
-        if diff:
-            parts = []
-            for o in diff:
-                n = o["blocks"]
-                fits = f"fits {n} block{'' if n == 1 else 's'}"
-                head = f"starts with {o['first_block']} and " if o["first_block"] else ""
-                parts.append(f"{o['name']} {head}{fits}")
-            out(f"  [dim]{_s('; '.join(parts))}[/dim]")
-        elif info.get("agree_note"):
-            out(f"  [dim]{_s(info['agree_note'])}[/dim]")
-    if do_next["note"]:
-        out(f"  [dim]{_s(do_next['note'])}[/dim]")
-    for n, item in enumerate(do_next["items"], 1):
-        out(_next_item_line(n, item))
-    if not do_next["items"]:
-        out("  [dim](nothing)[/dim]")
-    if result["due_soon"]:
-        out("\n[bold]Due soon[/bold] [dim](next 48 hours)[/dim]")
-        for item in result["due_soon"]:
-            out(_next_item_line(None, item))
-    later = result["later"]
-    if later["count"]:
-        out(f"\n[bold]Later[/bold] [dim]({later['count']})[/dim]")
-        for item in later["items"]:
-            out(_next_item_line(None, {"title": item.get("title")}))
-        if later["count"] > len(later["items"]):
-            out(f"  [dim]... {later['count'] - len(later['items'])} more (--all)[/dim]")
+    if now:
+        left = _countdown(now["minutes_left"])
+        out(f"  {_s(now.get('title') or '')}  [dim]{_s(_event_when(now))}, {left} left[/dim]")
+        if now.get("detail"):
+            out(f"  [dim]@ {_s(now['detail'])}[/dim]")
+    else:
+        out("  [dim](no event right now)[/dim]")
+    if nxt:
+        out(
+            f"  [dim]next: {_deadline_word(nxt)}"
+            f"{_s(nxt['title'])} at {_s(nxt['start_label'] or '')}, "
+            f"in {_countdown(nxt['in_minutes'])}[/dim]"
+        )
+    elif now:
+        out("  [dim]nothing else on the calendar today[/dim]")
+    cal, due_today = result["calendar"], result.get("due_today") or []
+    if cal or due_today:
+        out("\n[bold]Today's calendar[/bold]")
+    if due_today:
+        out(f"  due today: {_s('; '.join(r['title'] or '' for r in due_today))}")
+    for row in cal:
+        if row.get("kind") == "deadline":
+            if row.get("passed"):
+                label = _s(row["start_label"] or "")
+                out(f"  [dim]{label:<16} {_deadline_word(row)}{_s(row['title'] or '')}[/dim]")
+            else:
+                when = f"[yellow]{_s(row['start_label'] or ''):<16}[/yellow]"
+                out(f"  {when} {_deadline_word(row)}{_s(row['title'] or '')}")
+            continue
+        meta = f"  [dim]@ {_s(row['detail'])}[/dim]" if row.get("detail") else ""
+        out(f"  {_s(_event_when(row)):<16} {_s(row.get('title') or '')}{meta}")
+    todos = result["todos"]
+    out(f"\n[bold]Todos, prioritized[/bold] [dim]({todos['count']})[/dim]")
+    if result.get("note"):
+        out(f"  [dim]{_s(result['note'])}[/dim]")
+    for n, item in enumerate(todos["items"], 1):
+        source = item.get("source")
+        meta = f"  [dim]({_s(source)})[/dim]" if source and source != "user" else ""
+        out(f"{n:>2}. {_s(item.get('title') or '(untitled)')}{meta}")
+        if item.get("reasons"):
+            out(f"      [dim]{_s(', '.join(item['reasons']))}[/dim]")
+    if not todos["items"]:
+        out("  [dim](nothing open)[/dim]")
+    if todos["count"] > len(todos["items"]):
+        out(f"  [dim]... {todos['count'] - len(todos['items'])} more (--all)[/dim]")

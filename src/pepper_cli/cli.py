@@ -19,8 +19,8 @@ Subcommands:
 - ``pepper trajectories show <id> | list`` — inspect saved turns; ``--room`` scopes
   to one room's.
 - ``pepper calendar [today|week|schedule] [--planning]`` — read-only agenda.
-- ``pepper next [--room R] [--source PREFIX] [--first K] [--all] [--json]`` — Now / Do next /
-  Due soon / Later.
+- ``pepper next [--room R] [--source PREFIX] [--all] [--json]`` — Now / today's calendar /
+  todos, prioritized.
 - ``pepper todos list | create | done | dismiss | reopen`` — manage tracked
   action items; ``--room`` acts on a room's todos instead of yours.
 - ``pepper scheduled-tasks list | show | runs | thread | create | edit |
@@ -595,28 +595,25 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
 
     p_next = sub.add_parser(
         "next",
-        help="What to do next: Now, Do next, Due soon, Later (read-only).",
+        help="What to do next: Now, today's calendar, your todos prioritized (read-only).",
         description=(
-            "Assemble Pepper's Schedule plan, due dates and Planning's email deadlines into one "
-            "list. Reads only; the order is Pepper's, not re-ranked here."
+            "Now (the live event and the next commitment), today's calendar with todo "
+            "deadlines and reminders, and your open todos ranked by overdue, due today, priority "
+            "and due date. Reads only; no time slots are assigned."
         ),
     )
     p_next.add_argument(
         "--room",
         metavar="ROOM",
-        help="Only this room's items: its UUID, or a case-insensitive unique name prefix.",
+        help="Only this room's todos: its UUID, or a case-insensitive unique name prefix.",
     )
     p_next.add_argument(
         "--source",
         metavar="PREFIX",
-        help="Only items whose source or room name starts with this (case-insensitive).",
+        help="Only todos whose source (user, or a producer name) starts with this "
+        "(case-insensitive).",
     )
-    p_next.add_argument(
-        "--first",
-        choices=["urgent", "important", "fast"],
-        help="Show Do next from this Pepper plan instead of Pepper's choice (read-only).",
-    )
-    p_next.add_argument("--all", action="store_true", help="List every Later item.")
+    p_next.add_argument("--all", action="store_true", help="List every todo, not just the top 10.")
     p_next.add_argument("--json", action="store_true", help="Emit the assembled result as JSON.")
     p_next.set_defaults(handler=cmd_next)
 
@@ -2523,7 +2520,7 @@ def _resolve_room_strict(
 
 
 def cmd_next(args: argparse.Namespace) -> int:
-    """``pepper next [--room R] [--source PREFIX] [--first K] [--all] [--json]``."""
+    """``pepper next [--room R] [--source PREFIX] [--all] [--json]``."""
 
     def run(api: api_client.ApiClient) -> int:
         room_id = None
@@ -2533,11 +2530,7 @@ def cmd_next(args: argparse.Namespace) -> int:
                 return room
             room_id = room
         scope = next_view.Scope(room_id=room_id, source=args.source)
-        result = next_view.assemble(api, scope=scope, show_all=args.all, first=args.first)
-        if args.first and result["source"] == "fallback":
-            render.info(
-                "Pepper's plans aren't available on this server yet; showing the todos list."
-            )
+        result = next_view.assemble(api, scope=scope, show_all=args.all)
         if args.json:
             _print_json(result)
         else:

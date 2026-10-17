@@ -8,6 +8,29 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 
 Part of the groups simplification (vycari/groups#249, phase 5).
 
+### Breaking
+
+`pepper next` is rebuilt from the todo list (Vycari/pepper-cli#50). Since pepper#4820 the schedule
+plan's `plans` come back empty, so `next` showed an empty Do next, only email deadlines under Due
+soon, a Later of 0, and ignored `--first`. Scripts that parse `pepper next --json` must be updated.
+
+- `--first urgent|important|fast` is removed; argparse rejects it with exit 2. There are no plans to
+  choose between any more.
+- The sections changed: Now, Do next, Due soon and Later are now Now, Today's calendar, and Todos,
+  prioritized. Todos are ranked in one list with a reason on each line and no time slots; the top
+  10 show, and `--all` lists every todo (it used to list every Later item). Email-deadline cards
+  from Planning are no longer shown.
+- `--room` and `--source` narrow the todos only. `--room` now reads that room's own todo list, and
+  `--source` matches the todo's `source` (`user` or a producer name), not a source label or room
+  name.
+- The `--json` shape is replaced. It was `{generated_at, source, now: [item], plan, do_next,
+  due_soon, later}`. It is now `{generated_at, source: "todos", note, now, next_commitment,
+  calendar: [row], due_today: [{id, title}], todos: {count, items: [todo]}}`. `now` is one event
+  object or null (it was a list), `plan`, `do_next`, `due_soon` and `later` are gone, and `source`
+  is always `"todos"` (it was `"schedule-plan"` or `"fallback"`). Each todo item is `{id, title,
+  due, remind_at, source, high_priority, score, reasons, passed, source_time}`; the exact fields
+  are in the README.
+
 ### Changed
 
 - `pepper rooms create` now requires `--name`. Without one (or with a blank one) it fails locally,
