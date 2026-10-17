@@ -4,7 +4,21 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (while 0.x, a minor bump may change flags or output).
 
-## Unreleased
+## 0.3.0 - 2026-10-17
+
+Todo assignees (streams-to-pepper-room P2b, Vycari/vycari#143): a room todo can be asked of a member.
+
+### Added
+
+- `pepper todos create --room R --assignee PERSON` asks a room member. The name resolves through the
+  room roster, the same matcher as `--mention`.
+- `pepper todos list --mine` (what was asked of you) and `--asked` (what you asked, needs `--room`).
+  Rows show who asked, who was asked and the ask's state.
+- `pepper todos edit <id>` changes title, details, due, priority or assignee; `--clear` removes a
+  field. A todo has no version token, so there is no `--if-match`; the server's 409 is shown with a
+  pointer to `todos list`.
+- `pepper todos dismiss --reason TEXT`, sent as given. The server decides when a reason is required.
+- The vendored `/api/v1` contract is refreshed to pepper f48317b.
 
 Part of the groups simplification (vycari/groups#249, phase 5).
 

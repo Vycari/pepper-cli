@@ -409,8 +409,29 @@ def render_todo_list(rows: list[TodoEntry]) -> None:
             line += f"  due {_s(_format_due(row.due_date, row.due_is_date_only))}"
         if row.priority:
             line += f"  ({_s(row.priority)})"
+        line += _ask_suffix(row)
         line += f"  [dim]{_s(row.id)}[/dim]"
         _stdout.print(line)
+
+
+def _ask_suffix(row: TodoEntry) -> str:
+    """``from Allen``, ``→ Chris`` and an ask's state, for a todo that was asked of someone.
+
+    Names, the state and a decline's reason are server text: shown, never parsed. The
+    state comes from the copy's ``source_ref`` and is left out while it is ``pending``
+    (or absent), so a plain todo and a fresh ask read the same as before."""
+    parts: list[str] = []
+    if row.requested_by is not None:
+        parts.append(f"from {_s(row.requested_by.label)}")
+    if row.assignee is not None:
+        parts.append(f"→ {_s(row.assignee.label)}")
+    ref = row.source_ref if isinstance(row.source_ref, dict) else {}
+    state = ref.get("state")
+    if isinstance(state, str) and state and state != "pending" and parts:
+        reason = ref.get("reason")
+        shown = f"{state}: {reason}" if isinstance(reason, str) and reason else state
+        parts.append(f"({_s(shown)})")
+    return f"  [dim]{' '.join(parts)}[/dim]" if parts else ""
 
 
 _IMPUTED = {"followed": "followed", "email": "suggested - from email"}

@@ -207,6 +207,7 @@ WORDING_PENDING = frozenset(
         "todos create",
         "todos dismiss",
         "todos done",
+        "todos edit",
         "todos list",
         "todos reopen",
     }
@@ -706,6 +707,7 @@ POST_ROUTES: dict[str, object] = {
     f"/api/v1/scheduled-tasks/{_TASK}/resume": _TASK_ROW,
     "/api/v1/scheduled-tasks": _TASK_ROW,
     "/api/v1/todos": _TODO_ROW,
+    f"/api/v1/todos/{_TODO}": _TODO_ROW,
     f"/api/v1/todos/{_TODO}/done": {**_TODO_ROW, "status": "done"},
     f"/api/v1/todos/{_TODO}/dismiss": {**_TODO_ROW, "status": "dismissed"},
     f"/api/v1/todos/{_TODO}/reopen": _TODO_ROW,
@@ -911,6 +913,7 @@ JSON_CASES: dict[str, list[str]] = {
     "preferences edit": ["preferences", "edit", "--timezone", "America/Chicago"],
     "todos create": ["todos", "create", "Buy milk"],
     "todos done": ["todos", "done", _TODO],
+    "todos edit": ["todos", "edit", _TODO, "--title", "Buy oat milk"],
     "todos dismiss": ["todos", "dismiss", _TODO],
     "todos reopen": ["todos", "reopen", _TODO],
     "scheduled-tasks list": ["scheduled-tasks", "list"],

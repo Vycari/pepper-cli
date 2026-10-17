@@ -21,6 +21,8 @@ from pepper_cli.render import _format_due
 from pepper_cli.secret import SecretStr
 
 _ROOM = "00000000-0000-0000-0000-0000000000a1"
+_BOB = "00000000-0000-0000-0000-0000000000b2"
+_TID = "00000000-0000-0000-0000-000000000010"
 
 
 def _todo(**over) -> api_client.TodoEntry:
@@ -51,6 +53,10 @@ class _FakeTodoApi:
         self.token = token
         self._canned = canned
         self.calls: list[tuple] = []
+        self.scope: list[tuple[bool, bool]] = []
+        self.created_with: list[dict] = []
+        self.edits: list[tuple[str, dict, str | None]] = []
+        self.dismiss_reasons: list[str | None] = []
         _FakeTodoApi.instances.append(self)
 
     def __enter__(self):
@@ -67,13 +73,23 @@ class _FakeTodoApi:
             raise AssertionError(f"test forgot to set {key}")
         return value
 
-    def list_todos(self, *, status="open", group_id=None):
+    def list_todos(self, *, status="open", group_id=None, mine=False, asked=False):
         self.calls.append(("list", status, group_id))
+        self.scope.append((mine, asked))
         return self._result("todo_list")
 
     def create_todo(
-        self, *, title, details=None, priority=None, due_date=None, due=None, group_id=None
+        self,
+        *,
+        title,
+        details=None,
+        priority=None,
+        due_date=None,
+        due=None,
+        group_id=None,
+        assignee_person_id=None,
     ):
+        self.created_with.append({"assignee_person_id": assignee_person_id})
         self.calls.append(("create", title, details, priority, due_date, due, group_id))
         return self._result("todo_created")
 
@@ -103,9 +119,17 @@ class _FakeTodoApi:
             ],
         )
 
-    def dismiss_todo(self, todo_id, *, group_id=None):
+    def dismiss_todo(self, todo_id, *, group_id=None, reason=None):
         self.calls.append(("dismiss", todo_id, group_id))
+        self.dismiss_reasons.append(reason)
         return self._result("todo_dismissed")
+
+    def edit_todo(self, todo_id, fields, *, group_id=None):
+        self.edits.append((todo_id, fields, group_id))
+        return self._result("todo_edited")
+
+    def group_roster(self, group_id):
+        return [api_client.GroupRosterMember(person_id=_BOB, display_name="Bob Stone")]
 
 
 @pytest.fixture
@@ -330,3 +354,130 @@ def test_todos_done_handles_unreachable_server(tmp_home, patch_api, capsys) -> N
     rc = cli.main(["todos", "done", tid])
     assert rc == 1
     assert "Couldn't reach" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# assignees: list --mine/--asked, create --assignee, edit, dismiss --reason
+
+
+def test_list_mine_and_asked_pass_the_scope(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(todo_list=[])
+    assert cli.main(["todos", "list", "--mine"]) == 0
+    assert cli.main(["todos", "list", "--asked", "--room", _ROOM]) == 0
+    assert [i.scope for i in _FakeTodoApi.instances] == [[(True, False)], [(False, True)]]
+
+
+def test_list_asked_needs_a_room_and_mine_excludes_asked(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(todo_list=[])
+    assert cli.main(["todos", "list", "--asked"]) == 2
+    assert "--asked needs --room" in capsys.readouterr().err
+    assert _FakeTodoApi.instances == []
+    with pytest.raises(SystemExit):
+        cli.main(["todos", "list", "--mine", "--asked", "--room", _ROOM])
+
+
+def test_list_shows_who_asked_whom_and_the_state(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    row = _todo(
+        title="Book the venue",
+        requested_by=api_client.TodoPerson(user_id="u1", label="Ann"),
+        assignee=api_client.TodoPerson(user_id="u2", label="Bob"),
+        source_ref={"state": "declined", "reason": "out of town"},
+    )
+    patch_api(todo_list=[row])
+    assert cli.main(["todos", "list", "--room", _ROOM]) == 0
+    out = capsys.readouterr().out
+    assert "from Ann" in out
+    assert "Bob" in out
+    assert "declined: out of town" in out
+
+
+def test_create_assignee_resolves_the_name_through_the_roster(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(todo_created=_todo(assignee=api_client.TodoPerson(user_id="u2", label="Bob Stone")))
+    rc = cli.main(["todos", "create", "Book it", "--room", _ROOM, "--assignee", "bob"])
+    assert rc == 0
+    assert _FakeTodoApi.instances[-1].created_with == [{"assignee_person_id": _BOB}]
+    assert "Asked Bob Stone" in capsys.readouterr().err
+
+
+def test_create_assignee_without_a_room_or_unknown_person_is_a_usage_error(
+    tmp_home, patch_api, capsys
+) -> None:
+    _login(tmp_home)
+    patch_api(todo_created=_todo())
+    assert cli.main(["todos", "create", "x", "--assignee", "bob"]) == 2
+    assert "--assignee needs --room" in capsys.readouterr().err
+    assert cli.main(["todos", "create", "x", "--room", _ROOM, "--assignee", "zed"]) == 2
+    assert _FakeTodoApi.instances[-1].calls == []
+
+
+def test_dismiss_sends_the_reason_only_when_given(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(todo_dismissed=_todo(status="dismissed"))
+    assert cli.main(["todos", "dismiss", _TID]) == 0
+    assert cli.main(["todos", "dismiss", _TID, "--reason", "no time"]) == 0
+    assert [i.dismiss_reasons for i in _FakeTodoApi.instances] == [[None], ["no time"]]
+
+
+def test_dismiss_surfaces_a_server_refusal_as_it_came(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(
+        todo_dismissed=api_client.ApiError(status=422, body="", detail="a reason is required")
+    )
+    assert cli.main(["todos", "dismiss", _TID, "--room", _ROOM]) == 1
+    assert "a reason is required" in capsys.readouterr().err
+
+
+def test_edit_sends_only_what_was_given(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(todo_edited=_todo(title="New"))
+    rc = cli.main(
+        ["todos", "edit", _TID, "--title", " New ", "--clear", "details", "--clear", "priority"]
+    )
+    assert rc == 0
+    assert _FakeTodoApi.instances[-1].edits == [
+        (_TID, {"title": "New", "details": None, "priority": None}, None)
+    ]
+    assert "Updated todo" in capsys.readouterr().err
+
+
+def test_edit_room_due_and_assignee(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(todo_edited=_todo())
+    rc = cli.main(
+        ["todos", "edit", _TID, "--room", _ROOM, "--due", "2026-11-02", "--assignee", "Bob"]
+    )
+    assert rc == 0
+    assert _FakeTodoApi.instances[-1].edits == [
+        (_TID, {"due": "2026-11-02", "assignee_person_id": _BOB}, _ROOM)
+    ]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["edit", _TID],
+        ["edit", "nope", "--title", "x"],
+        ["edit", _TID, "--title", "  "],
+        ["edit", _TID, "--details", "x", "--clear", "details"],
+        ["edit", _TID, "--assignee", "bob"],
+        ["edit", _TID, "--room", _ROOM, "--due", "tomorrow"],
+    ],
+)
+def test_edit_bad_input_never_reaches_the_api(tmp_home, patch_api, argv) -> None:
+    _login(tmp_home)
+    patch_api(todo_edited=_todo())
+    assert cli.main(["todos", *argv]) == 2
+    assert _FakeTodoApi.instances == []
+
+
+def test_edit_conflict_prints_the_server_text_and_a_next_step(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(todo_edited=api_client.ApiError(status=409, body="", detail="the ask has changed"))
+    assert cli.main(["todos", "edit", _TID, "--title", "x"]) == 1
+    err = capsys.readouterr().err
+    assert "Server returned 409: the ask has changed" in err
+    assert "pepper todos list" in err

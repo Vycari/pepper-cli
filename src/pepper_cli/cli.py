@@ -21,8 +21,9 @@ Subcommands:
 - ``pepper calendar [today|week|schedule] [--planning]`` — read-only agenda.
 - ``pepper next [--room R] [--source PREFIX] [--all] [--json]`` — Now / today's calendar /
   todos, prioritized.
-- ``pepper todos list | create | done | dismiss | reopen`` — manage tracked
-  action items; ``--room`` acts on a room's todos instead of yours.
+- ``pepper todos list | create | edit | done | dismiss | reopen`` — manage tracked
+  action items; ``--room`` acts on a room's todos instead of yours, and ``--assignee``
+  asks a room member to do one.
 - ``pepper scheduled-tasks list | show | runs | thread | create | edit |
   pause | resume | renew | delete`` — manage recurring and one-off
   scheduled prompts; ``--room`` acts on a room's
@@ -923,6 +924,17 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         help="Which todos to show (default: open).",
     )
     p_todos_list.add_argument("--json", action="store_true", help="Emit the raw JSON response.")
+    list_scope = p_todos_list.add_mutually_exclusive_group()
+    list_scope.add_argument(
+        "--mine",
+        action="store_true",
+        help="Only what someone asked of you (any room; with --room, that room's).",
+    )
+    list_scope.add_argument(
+        "--asked",
+        action="store_true",
+        help="Only what you asked of someone else (needs --room).",
+    )
     p_todos_list.set_defaults(handler=cmd_todo_list)
 
     p_todos_add = sub_todos.add_parser("create", help="Create a todo.", parents=[_json_parent])
@@ -936,7 +948,41 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "with --room, 'YYYY-MM-DD' only).",
     )
     p_todos_add.add_argument("--priority", help="Free-form priority label, e.g. high.")
+    p_todos_add.add_argument(
+        "--assignee",
+        metavar="PERSON",
+        help="Ask this room member to do it (needs --room): a name or unique name prefix, "
+        "or a person id from 'pepper members list'.",
+    )
     p_todos_add.set_defaults(handler=cmd_todo_create)
+
+    p_todos_edit = sub_todos.add_parser(
+        "edit",
+        help="Change a todo's title, details, due date, priority or assignee.",
+        parents=[_json_parent],
+    )
+    p_todos_edit.add_argument("todo_id", help="Todo UUID (from ``todos list``).")
+    p_todos_edit.add_argument("--title", help="New title.")
+    p_todos_edit.add_argument("--details", help="New details.")
+    p_todos_edit.add_argument(
+        "--due",
+        help="New soft deadline: 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM' (your local time; "
+        "with --room, 'YYYY-MM-DD' only).",
+    )
+    p_todos_edit.add_argument("--priority", help="New priority label.")
+    p_todos_edit.add_argument(
+        "--assignee",
+        metavar="PERSON",
+        help="Ask this room member to do it, or hand an ask to them (needs --room).",
+    )
+    p_todos_edit.add_argument(
+        "--clear",
+        action="append",
+        choices=("details", "priority", "due"),
+        default=[],
+        help="Remove that field. Repeat to remove several.",
+    )
+    p_todos_edit.set_defaults(handler=cmd_todo_edit)
 
     for name, handler, text in (
         ("done", cmd_todo_done, "Mark a todo done, as ticking it on Schedule does."),
@@ -946,7 +992,11 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         p_todo = sub_todos.add_parser(name, help=text, parents=[_json_parent])
         p_todo.add_argument("todo_id", help="Todo UUID (from ``todos list`` or ``next --json``).")
         p_todo.set_defaults(handler=handler)
-    for name in ("list", "create", "done", "dismiss", "reopen"):
+    sub_todos.choices["dismiss"].add_argument(
+        "--reason",
+        help="Why. On an ask made of you, declining may need one: the server says so.",
+    )
+    for name in ("list", "create", "edit", "done", "dismiss", "reopen"):
         sub_todos.choices[name].add_argument(
             "--room", help=_GROUP_ARG_HELP + " Acts on the room's todos instead of yours."
         )
@@ -2881,10 +2931,23 @@ def cmd_next(args: argparse.Namespace) -> int:
 
 
 def cmd_todo_list(args: argparse.Namespace) -> int:
-    """``pepper todos list [--status open|done|dismissed|all] [--room ROOM] [--json]``."""
+    """``pepper todos list [--status S] [--room ROOM] [--mine | --asked] [--json]``.
+
+    ``--mine`` is what was asked of you (every room, or with ``--room`` that room's);
+    ``--asked`` is what you asked of others, so it needs a room. The server filters."""
+    if args.asked and not args.room:
+        _emit_error(args, "usage", "--asked needs --room: say which room's asks to list")
+        return 2
 
     def run(api: api_client.ApiClient) -> int:
-        rows = api.list_todos(status=args.status, group_id=_opt_group(api, args.room, args=args))
+        extra: dict[str, bool] = {}
+        if args.mine:
+            extra["mine"] = True
+        if args.asked:
+            extra["asked"] = True
+        rows = api.list_todos(
+            status=args.status, group_id=_opt_group(api, args.room, args=args), **extra
+        )
         _emit_list(rows, args, lambda: render.render_todo_list(rows))
         return 0
 
@@ -2892,41 +2955,47 @@ def cmd_todo_list(args: argparse.Namespace) -> int:
 
 
 def cmd_todo_create(args: argparse.Namespace) -> int:
-    """``pepper todos create <title...> [--details D] [--due DATE] [--priority P] [--room ROOM]``.
+    """``pepper todos create <title...> [--details D] [--due DATE] [--priority P] [--room ROOM
+    [--assignee PERSON]]``.
 
     A room's todo takes the same fields, but its ``--due`` is a ``YYYY-MM-DD`` day only.
-    Exit codes: 0 ok · 1 auth/API/transport · 2 bad input (blank title / unparseable
-    ``--due``).
+    ``--assignee`` asks a member of that room: the CLI resolves the name to a roster person
+    id (the matcher ``--mention`` uses) and the server checks everything else. Exit codes:
+    0 ok · 1 auth/API/transport · 2 bad input (blank title / unparseable ``--due`` /
+    ``--assignee`` without ``--room`` / an unknown or ambiguous person).
     """
     title = " ".join(args.title).strip()
     if not title:
         _emit_error(args, "usage", "todo title cannot be empty")
         return 2
-    due_iso: str | None = None
-    due_day: str | None = None
-    if args.due and args.room:
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", args.due):
-            _emit_error(args, "usage", "with --room, --due must be 'YYYY-MM-DD'")
-            return 2
-        due_day = args.due
-    elif args.due:
-        due_iso, err = _parse_due(args.due)
-        if err is not None:
-            _emit_error(args, "usage", err)
-            return 2
+    if args.assignee and not args.room:
+        _emit_error(args, "usage", "--assignee needs --room: asks are made in a room")
+        return 2
+    due_iso, due_day, bad_due = _todo_due_args(args)
+    if bad_due:
+        return 2
 
     def run(api: api_client.ApiClient) -> int:
+        group_id = _opt_group(api, args.room, args=args)
+        assignee_id = (
+            _need_person(api, group_id, args.assignee, args=args)
+            if args.assignee and group_id
+            else None
+        )
         todo = api.create_todo(
             title=title,
             details=args.details,
             priority=args.priority,
             due_date=due_iso,
             due=due_day,
-            group_id=_opt_group(api, args.room, args=args),
+            group_id=group_id,
+            **({"assignee_person_id": assignee_id} if assignee_id else {}),
         )
 
         def human() -> None:
             render.info(f"Added todo {todo.id}")
+            if todo.assignee is not None:
+                render.info(f"Asked {todo.assignee.label}.")
             if not args.room:
                 render.render_todo_list([todo])
 
@@ -2968,17 +3037,127 @@ def _tick_todo(args: argparse.Namespace, *, reopen: bool) -> int:
 
 
 def cmd_todo_dismiss(args: argparse.Namespace) -> int:
-    """``pepper todos dismiss <id> [--room ROOM]``."""
+    """``pepper todos dismiss <id> [--room ROOM] [--reason TEXT]``.
+
+    On an ask, the person asked dismissing it is declining and the person who asked is
+    withdrawing. ``--reason`` is sent when given; whether a decline needs one is the
+    server's call, and its refusal text is shown as it came."""
     if not _valid_uuid(args.todo_id):
         _emit_error(args, "usage", f"todo id must be a UUID (got: {args.todo_id})")
         return 2
 
     def run(api: api_client.ApiClient) -> int:
-        todo = api.dismiss_todo(args.todo_id, group_id=_opt_group(api, args.room, args=args))
+        extra = {"reason": args.reason} if args.reason is not None else {}
+        todo = api.dismiss_todo(
+            args.todo_id, group_id=_opt_group(api, args.room, args=args), **extra
+        )
         _emit(todo, args, lambda: render.info(f"Dismissed: {todo.title}"))
         return 0
 
-    return _with_api(run, _report_api_error, args)
+    return _with_api(run, _report_todo_error, args)
+
+
+def _todo_due_args(args: argparse.Namespace) -> tuple[str | None, str | None, bool]:
+    """``(due_date ISO, due day, bad)`` from ``--due``: a room's takes a bare day only.
+
+    ``bad`` is True once the error has been printed (exit 2)."""
+    if not args.due:
+        return None, None, False
+    if args.room:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", args.due):
+            _emit_error(args, "usage", "with --room, --due must be 'YYYY-MM-DD'")
+            return None, None, True
+        return None, args.due, False
+    due_iso, err = _parse_due(args.due)
+    if err is not None:
+        _emit_error(args, "usage", err)
+        return None, None, True
+    return due_iso, None, False
+
+
+def cmd_todo_edit(args: argparse.Namespace) -> int:
+    """``pepper todos edit <id> [--room ROOM] [--title T] [--details D] [--due DATE]
+    [--priority P] [--assignee PERSON] [--clear details|priority|due]``.
+
+    Sends only what was given. On an ask only the person who asked may edit, and both
+    copies follow; ``--assignee`` hands it to another member. There is no ``--if-match``:
+    a todo has no version token, and the server refuses a change that raced another
+    (409), which this prints with the server's own words. Exit codes: 0 ok · 1 refused
+    or transport · 2 bad input (nothing to change / a clash / an unknown person).
+    """
+    if not _valid_uuid(args.todo_id):
+        _emit_error(args, "usage", f"todo id must be a UUID (got: {args.todo_id})")
+        return 2
+    if args.assignee and not args.room:
+        _emit_error(args, "usage", "--assignee needs --room: asks are made in a room")
+        return 2
+    given = {
+        "title": args.title,
+        "details": args.details,
+        "priority": args.priority,
+        "due": args.due,
+    }
+    for field in args.clear:
+        if given[field] is not None:
+            _emit_error(args, "usage", f"--{field} and --clear {field} contradict each other")
+            return 2
+    if args.title is not None and not args.title.strip():
+        _emit_error(args, "usage", "todo title cannot be empty")
+        return 2
+    if all(v is None for v in given.values()) and not args.clear and not args.assignee:
+        _emit_error(
+            args,
+            "usage",
+            "nothing to change: give --title, --details, --due, --priority, --assignee or --clear",
+        )
+        return 2
+    due_iso, due_day, bad_due = _todo_due_args(args)
+    if bad_due:
+        return 2
+
+    fields: dict[str, Any] = {}
+    if args.title is not None:
+        fields["title"] = args.title.strip()
+    if args.details is not None:
+        fields["details"] = args.details
+    if args.priority is not None:
+        fields["priority"] = args.priority
+    if due_iso is not None:
+        fields["due_date"] = due_iso
+    if due_day is not None:
+        fields["due"] = due_day
+    for field in args.clear:
+        fields["due" if field == "due" else field] = None
+
+    def run(api: api_client.ApiClient) -> int:
+        group_id = _opt_group(api, args.room, args=args)
+        body = dict(fields)
+        if args.assignee and group_id:
+            body["assignee_person_id"] = _need_person(api, group_id, args.assignee, args=args)
+        todo = api.edit_todo(args.todo_id, body, group_id=group_id)
+
+        def human() -> None:
+            render.info(f"Updated todo {todo.id}")
+            if todo.assignee is not None:
+                render.info(f"Asked {todo.assignee.label}.")
+
+        _emit(todo, args, human)
+        return 0
+
+    return _with_api(run, _report_todo_error, args)
+
+
+def _report_todo_error(exc: api_client.ApiError, args: argparse.Namespace | None = None) -> int:
+    """:func:`_report_api_error`, with a pointer after a 409.
+
+    A 409 on a todo is the server saying the todo (or the ask behind it) is not as it was
+    when you looked, or is not in a state that takes this change. Its text is shown as it
+    came; the CLI adds only what to do next. 403 and 422 texts (not your ask, a decline
+    that needs a reason, a title that is too long) need no addition."""
+    code = _report_api_error(exc, args)
+    if exc.status == 409:
+        render.info("Run 'pepper todos list' to see it as it is now, then try again.")
+    return code
 
 
 def _resolve_task_id(

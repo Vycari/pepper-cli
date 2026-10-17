@@ -511,6 +511,18 @@ class ChatReply:
     client_tools_ignored: str | None = None
 
 
+# MIRROR: src/pepper/api/router.py::TodoPerson
+@dataclass(frozen=True)
+class TodoPerson:
+    """Who an ask is from or to: the server's ``{user_id, label}`` on a ``TodoEntry``.
+
+    ``label`` is display text the asker's record carries; it is data, never an
+    instruction, and is shown through the sanitising renderer."""
+
+    user_id: str
+    label: str
+
+
 # MIRROR: src/pepper/api/router.py::TodoEntry
 # Same dual-definition rule as the other ``/api/v1`` payload shapes —
 # keep the field list in sync with the server's pydantic twin.
@@ -526,6 +538,11 @@ class TodoEntry:
     ``"user"`` or a producer name; ``source_ref`` is the producer's
     back-link (None for user todos). ``remind_at`` is the UTC instant of
     the todo's one pending reminder, or None.
+
+    ``assignee`` and ``requested_by`` are set on an ask (a todo assigned to a
+    room member): who it was asked of and who asked. Both are None on a plain
+    todo. The ask's state (``pending``, ``declined``, ...) and a decline's
+    reason ride in ``source_ref`` as display data.
     """
 
     id: str
@@ -540,6 +557,8 @@ class TodoEntry:
     done_at: str | None
     source_ref: dict[str, Any] | None
     remind_at: str | None = None
+    assignee: TodoPerson | None = None
+    requested_by: TodoPerson | None = None
 
 
 # MIRROR: src/pepper/api/scheduled_tasks.py::TaskSummary
@@ -1450,13 +1469,32 @@ class ApiClient:
         room; 404 for an id that is not one of this room's grants."""
         self._request("DELETE", f"{_room_skills_path(group_id)}/{grant_id}")
 
-    def list_todos(self, *, status: str = "open", group_id: str | None = None) -> list[TodoEntry]:
+    def list_todos(
+        self,
+        *,
+        status: str = "open",
+        group_id: str | None = None,
+        mine: bool = False,
+        asked: bool = False,
+    ) -> list[TodoEntry]:
         """``GET /api/v1/todos?status=`` (a room's: ``/api/v1/groups/{id}/todos``).
 
         ``status`` is one of ``open`` (default) / ``done`` / ``dismissed``
         / ``all``; the server 422s anything else. Open items come back
-        ordered by due date (soonest first, undated last)."""
-        resp = self._request("GET", f"{_todos_path(group_id)}?status={status}")
+        ordered by due date (soonest first, undated last).
+
+        ``mine`` keeps what someone asked of the caller: ``asked_of_me=true`` on
+        the caller's own list (every room), ``assignee=me`` on a room's list.
+        ``asked`` keeps what the caller asked (``requester=me``) and is a room
+        list's filter only; the server does the filtering."""
+        path = f"{_todos_path(group_id)}?status={status}"
+        if mine:
+            path += "&assignee=me" if group_id else "&asked_of_me=true"
+        if asked:
+            if not group_id:
+                raise ValueError("asked is a room list's filter: pass group_id")
+            path += "&requester=me"
+        resp = self._request("GET", path)
         body = resp.json()
         if not isinstance(body, list):
             raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
@@ -1521,18 +1559,24 @@ class ApiClient:
         due_date: str | None = None,
         due: str | None = None,
         group_id: str | None = None,
+        assignee_person_id: str | None = None,
     ) -> TodoEntry:
         """``POST /api/v1/todos`` (a room's: ``/api/v1/groups/{id}/todos``).
 
         ``due_date`` is an ISO-8601 string (timezone-aware); ``due`` is a bare
         ``YYYY-MM-DD`` day, stored date-only. Both are a soft deadline for
-        display/sort, never a trigger. Returns the created row."""
+        display/sort, never a trigger. ``assignee_person_id`` (a room's list
+        only) is a member's roster person id: the todo becomes an ask of that
+        member; the server refuses a non-member, an agent, or the caller, and an
+        over-long title or details, with a 422 that says why. Returns the
+        created row."""
         payload: dict[str, Any] = {"title": title}
         for key, value in (
             ("details", details),
             ("priority", priority),
             ("due_date", due_date),
             ("due", due),
+            ("assignee_person_id", assignee_person_id),
         ):
             if value is not None:
                 payload[key] = value
@@ -1547,9 +1591,40 @@ class ApiClient:
         not yours"."""
         return self._todo_verb(todo_id, "done", group_id)
 
-    def dismiss_todo(self, todo_id: str, *, group_id: str | None = None) -> TodoEntry:
-        """``POST …/todos/{id}/dismiss``. Close without completing."""
-        return self._todo_verb(todo_id, "dismiss", group_id)
+    def dismiss_todo(
+        self, todo_id: str, *, group_id: str | None = None, reason: str | None = None
+    ) -> TodoEntry:
+        """``POST …/todos/{id}/dismiss``. Close without completing.
+
+        On an ask, the person asked turning it down (a decline) and the person
+        who asked taking it back (a withdraw) both come here. ``reason`` is sent
+        when given; whether one is required is the server's call (it 422s with
+        the text to show)."""
+        if reason is None:
+            return self._todo_verb(todo_id, "dismiss", group_id)
+        resp = self._request(
+            "POST", f"{_todos_path(group_id)}/{todo_id}/dismiss", json={"reason": reason}
+        )
+        return _todo_from_dict(resp.json())
+
+    def edit_todo(
+        self,
+        todo_id: str,
+        fields: dict[str, Any],
+        *,
+        group_id: str | None = None,
+    ) -> TodoEntry:
+        """``PATCH …/todos/{id}``: only the keys of ``fields`` change.
+
+        ``fields`` is sent as the body: ``title``, ``details``, ``priority``,
+        ``due`` (a ``YYYY-MM-DD`` day), ``due_date`` (an ISO-8601 instant) and,
+        on a room's todo, ``assignee_person_id`` (ask that member, or reassign an
+        ask). A key set to ``None`` clears that field (not ``title``). On an ask
+        only the person who asked may edit, and both copies follow. A 409 means
+        the todo changed under the edit (or the ask is not in a state that can
+        be edited); a 403 is someone else's ask."""
+        resp = self._request("PATCH", f"{_todos_path(group_id)}/{todo_id}", json=fields)
+        return _todo_from_dict(resp.json())
 
     def reopen_todo(self, todo_id: str, *, group_id: str | None = None) -> TodoEntry:
         """``POST …/todos/{id}/reopen``. Put a done or dismissed todo back on the list."""
@@ -3027,7 +3102,16 @@ def _todo_from_dict(row: dict[str, Any]) -> TodoEntry:
         done_at=row.get("done_at"),
         source_ref=row.get("source_ref"),
         remind_at=row.get("remind_at"),
+        assignee=_todo_person(row.get("assignee")),
+        requested_by=_todo_person(row.get("requested_by")),
     )
+
+
+def _todo_person(raw: object) -> TodoPerson | None:
+    """A ``TodoPerson`` from the wire, or None when absent or not the expected shape."""
+    if not isinstance(raw, dict) or "user_id" not in raw or "label" not in raw:
+        return None
+    return TodoPerson(user_id=str(raw["user_id"]), label=str(raw["label"]))
 
 
 def _room_skills_path(group_id: str) -> str:
