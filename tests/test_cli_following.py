@@ -417,3 +417,13 @@ def test_an_unknown_group_matches_nothing(server, capsys) -> None:
     assert rc != 0 and "is not one of: Reading, Sports" in out + err
     data = {"counts": {"by_group": {"Reading": 1, "Sports": 1}}}
     assert following_view.resolve_group(data, "sp") == "Sports"
+
+
+def test_an_item_without_a_group_filters_as_other(server, capsys) -> None:
+    body = json.loads(json.dumps(DOC))
+    body["data"]["items"].append({"ref": "x:loose", "name": "Loose", "group": None})
+    server.routes["/api/v1/apps/following/data"] = httpx.Response(200, json=body)
+    _, out, _ = _run(capsys, "following", "list")
+    assert "Other (1)" in out and "Loose" in out
+    rc, out, _ = _run(capsys, "following", "list", "--json", "--group", "Other")
+    assert rc == 0 and [i["ref"] for i in json.loads(out)["items"]] == ["x:loose"]

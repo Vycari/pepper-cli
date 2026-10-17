@@ -72,7 +72,8 @@ def resolve_group(
 
 
 def filter_group(items: list[dict[str, Any]], group: str | None) -> list[dict[str, Any]]:
-    return [i for i in items if i.get("group") == group] if group else items
+    """``--group``: the same group the listing shows an item under (no group is ``Other``)."""
+    return [i for i in items if _group_of(i) == group] if group else items
 
 
 def grouped(
