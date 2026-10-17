@@ -448,6 +448,46 @@ async def test_a_401_on_a_turn_is_fatal() -> None:
     assert app.return_code == 1
 
 
+def tool_call_turn() -> ts.ScriptedTurn:
+    return ts.ScriptedTurn(
+        frames=[
+            ("client_tool_call", {"call_id": "c1", "name": "fs_list", "arguments": {}}),
+            ("reply", {"reply": "Done.", "assistant_message_id": "a1"}),
+        ],
+    )
+
+
+async def test_a_401_returning_a_client_tool_result_is_fatal(tmp_path) -> None:
+    server = ts.standard_server()
+    server.turns = [tool_call_turn()]
+    server.fail["/api/v1/chat/tool-result"] = 401
+    app = tui_app.PepperApp(server.client(), provider=FilesystemProvider([tmp_path]))
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.dm.entries) == 2)
+        await send(pilot, app, "list my files")
+        await until(pilot, lambda: app.fatal == tui_app.LOGIN_HINT)
+        await pilot.press("x")
+    assert app.return_code == 1
+    assert len(server.turn_bodies) == 1
+
+
+async def test_a_missing_call_returning_a_client_tool_result_reads_on(tmp_path) -> None:
+    server = ts.standard_server()
+    gate = threading.Event()
+    turn = tool_call_turn()
+    turn.gates = {1: gate}
+    server.turns = [turn]
+    server.fail["/api/v1/chat/tool-result"] = 404
+    app = tui_app.PepperApp(server.client(), provider=FilesystemProvider([tmp_path]))
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.dm.entries) == 2)
+        await send(pilot, app, "list my files")
+        await until(pilot, lambda: "Couldn't return 'fs_list'" in status_line(app))
+        gate.set()
+        await until(pilot, lambda: "Done." in body_text(app))
+        assert not app.fatal
+
+
 async def test_quitting_mid_stream_stops_reading_and_closes_the_stream(monkeypatch) -> None:
     server = ts.standard_server()
     gate = threading.Event()

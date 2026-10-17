@@ -1117,8 +1117,16 @@ class _TurnStatus(turns.TurnSink):
     def client_tool_call(self, payload: dict[str, Any]) -> None:
         self._status(f"Running local tool {payload.get('name') or ''}…")
         answer = turns.answer_client_tool_call(self.api, payload, provider=self.provider)
-        if answer is not None and answer.post_error is not None:
-            self._status(f"Couldn't return {answer.name!r} to the server.")
+        if answer is None or answer.post_error is None:
+            return
+        error = answer.post_error
+        if isinstance(error, ApiError) and error.status == 401:
+            # The token stopped working: no later request will either. Raised out of the
+            # stream so the turn ends and the app takes its fatal login path (_turn_ended).
+            raise error
+        # A call the server no longer waits on (404) or a network blip: the reply may still
+        # come, so the stream is read on.
+        self._status(f"Couldn't return {answer.name!r} to the server.")
 
     def reply(self, payload: dict[str, Any]) -> None:
         self.payload = payload
