@@ -3851,7 +3851,12 @@ def _topic_parent(*, required: bool = False) -> argparse.ArgumentParser:
         metavar="TOPIC",
         required=required,
         help="Topic: its UUID, or a case-insensitive unique name prefix (needs --room)."
-        + ("" if required else " Omit for the room's default topic."),
+        + (
+            ""
+            if required
+            else " Omit for the most recently active unarchived topic,"
+            " or the most recent topic if all are archived."
+        ),
     )
     return parent
 
