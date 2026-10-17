@@ -127,7 +127,7 @@ def _run(capsys, *argv: str) -> tuple[int, str, str]:
 def test_list_groups_and_marks(server, capsys) -> None:
     rc, out, _ = _run(capsys, "following", "list")
     assert rc == 0
-    assert out.index("Sports (2)") < out.index("Reading (2)")  # the app's chip order
+    assert out.index("Reading (2)") < out.index("Sports (2)")  # the server's by_group order
     assert "LIVE" in out and "2 new" in out
     assert "nothing yet" in out  # the Olympics have no latest line
     assert "aaaaaaaa" in out and "nfl:21" in out  # short ids
@@ -382,3 +382,38 @@ def test_search_state_is_per_profile(server, capsys) -> None:
     rc, _, err = _run(capsys, "--profile", "other", "following", "create", "1")
     assert rc == 2 and "No candidate" in err  # that profile never searched
     assert _run(capsys, "following", "create", "1")[0] == 0  # the default profile did
+
+
+def _item(name: str, group: str) -> dict:
+    return {"ref": f"x:{name}", "name": name, "group": group}
+
+
+def test_groups_follow_the_servers_by_group_order() -> None:
+    items = [_item("a", "Sports"), _item("b", "Reading")]
+    by_group = {"Reading": 1, "Sports": 1}
+    assert [g for g, _ in following_view.grouped(items, {"by_group": by_group})] == [
+        "Reading",
+        "Sports",
+    ]
+    reverse = {"by_group": {"Sports": 1, "Reading": 1}}
+    assert [g for g, _ in following_view.grouped(items, reverse)] == ["Sports", "Reading"]
+
+
+def test_groups_without_by_group_keep_first_appearance() -> None:
+    items = [_item("a", "Sports"), _item("b", "Reading"), _item("c", "Sports")]
+    got = following_view.grouped(items, {})
+    assert [(g, len(r)) for g, r in got] == [("Sports", 2), ("Reading", 1)]
+    assert [g for g, _ in following_view.grouped(items, None)] == ["Sports", "Reading"]
+
+
+def test_a_group_missing_from_by_group_goes_last_by_first_appearance() -> None:
+    items = [_item("a", "Zed"), _item("b", "Reading"), _item("c", "Alpha")]
+    got = following_view.grouped(items, {"by_group": {"Reading": 1}})
+    assert [g for g, _ in got] == ["Reading", "Zed", "Alpha"]
+
+
+def test_an_unknown_group_matches_nothing(server, capsys) -> None:
+    rc, out, err = _run(capsys, "following", "list", "--group", "nope")
+    assert rc != 0 and "is not one of: Reading, Sports" in out + err
+    data = {"counts": {"by_group": {"Reading": 1, "Sports": 1}}}
+    assert following_view.resolve_group(data, "sp") == "Sports"

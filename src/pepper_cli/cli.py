@@ -858,7 +858,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         help="List what you follow, by group, with each one's latest line.",
     )
     p.add_argument(
-        "--group", metavar="GROUP", help="Only Sports, Shows, Reading, Podcasts or Events."
+        "--group",
+        metavar="GROUP",
+        help="Only this group (a name or prefix, as `pepper following list` shows it).",
     )
     p.set_defaults(handler=cmd_following_list)
     p = sub_following.add_parser(
@@ -918,7 +920,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     )
     p_feed.add_argument("--limit", type=int, default=20, metavar="N", help="At most N items (20).")
     p_feed.add_argument(
-        "--group", metavar="GROUP", help="Only Sports, Shows, Reading, Podcasts or Events."
+        "--group",
+        metavar="GROUP",
+        help="Only this group (a name or prefix, as `pepper following list` shows it).",
     )
     p_feed.add_argument(
         "--transcript",
@@ -7446,6 +7450,8 @@ def _feed_transcript(api: api_client.ApiClient, detail: dict[str, Any]) -> dict[
         )
     except api_client.ApiError as exc:
         return {"error": f"the transcript is not available ({exc.detail or exc.status})."}
+    if not (result.get("text") or result.get("note")):
+        return {"error": "the server returned no transcript for this episode."}
     keep = ("kind", "status", "text", "note")
     return {k: result.get(k) for k in keep}
 

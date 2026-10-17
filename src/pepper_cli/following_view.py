@@ -10,9 +10,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-#: The app's filter chips, in its own order (server ``group`` values).
-GROUPS = ("Sports", "Shows", "Reading", "Podcasts", "Events")
-
 _UUID_RE = re.compile(r"^[0-9a-f]{8}(?:-?[0-9a-f]{4}){3}-?[0-9a-f]{12}$", re.IGNORECASE)
 
 
@@ -43,9 +40,23 @@ def short_id(ref: str) -> str:
     return tail[:8] if _UUID_RE.match(tail) else tail
 
 
+def _group_of(item: dict[str, Any]) -> str:
+    return str(item.get("group") or "Other")
+
+
+def group_order(data: dict[str, Any], items: list[dict[str, Any]] | None = None) -> list[str]:
+    """Group names in the server's chip order: the key order of ``counts.by_group``, then any
+    group the items carry that it lacks, by first appearance. An older server with no
+    ``by_group`` gives first appearance alone; there is no list of groups in this client."""
+    by_group = (data.get("counts") or {}).get("by_group")
+    keys = list(by_group) if isinstance(by_group, dict) else []
+    rows = items_of(data) if items is None else items
+    return list(dict.fromkeys([*map(str, keys), *map(_group_of, rows)]))
+
+
 def resolve_group(data: dict[str, Any], query: str) -> str:
     """The canonical group for a case-insensitive prefix (``--group pod`` is ``Podcasts``)."""
-    known = list(dict.fromkeys([*GROUPS, *((data.get("counts") or {}).get("by_group") or {})]))
+    known = group_order(data)
     q = query.strip().lower()
     hits = [g for g in known if g.lower().startswith(q)] if q else []
     exact = [g for g in known if g.lower() == q]
@@ -59,14 +70,14 @@ def filter_group(items: list[dict[str, Any]], group: str | None) -> list[dict[st
     return [i for i in items if i.get("group") == group] if group else items
 
 
-def grouped(items: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
-    """Items by group in the app's chip order (unknown groups last); each group keeps the
-    server's order, which is live first, then latest activity."""
-    order = {g: n for n, g in enumerate(GROUPS)}
-    names = sorted(
-        {str(i.get("group") or "Other") for i in items}, key=lambda g: (order.get(g, 99), g)
-    )
-    return [(g, [i for i in items if str(i.get("group") or "Other") == g]) for g in names]
+def grouped(
+    items: list[dict[str, Any]], counts: dict[str, Any] | None = None
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Items by group in the server's order (see :func:`group_order`); each group keeps the
+    server's item order, which is live first, then latest activity. Groups with no items are
+    not shown."""
+    names = group_order({"counts": counts or {}}, items)
+    return [(g, rows) for g in names if (rows := [i for i in items if _group_of(i) == g])]
 
 
 def resolve_item(items: list[dict[str, Any]], query: str) -> dict[str, Any]:

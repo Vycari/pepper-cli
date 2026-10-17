@@ -54,7 +54,7 @@ def render_following_list(items: list[dict[str, Any]], counts: dict[str, Any]) -
     if not items:
         _out("(you don't follow anything yet)")
         return
-    for group, rows in following_view.grouped(items):
+    for group, rows in following_view.grouped(items, counts):
         _out(f"[bold]{_s(group)}[/bold] [dim]({len(rows)})[/dim]")
         for it in rows:
             marks = []

@@ -242,3 +242,68 @@ def test_a_page_that_trickles_past_the_deadline_is_cut_off(web, monkeypatch) -> 
     )
     art = article_reader.fetch("https://slow.example/")
     assert art.error and "took longer than" in art.error
+
+
+def _unread():
+    """A body that fails the test if anyone reads it."""
+    raise AssertionError("a redirect body was read")
+    yield b""  # pragma: no cover
+
+
+def test_a_redirect_body_is_never_read(web) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/old":
+            return httpx.Response(302, headers={"location": "/new"}, content=_unread())
+        return httpx.Response(200, text=PAGE, headers={"content-type": "text/html"})
+
+    web.state["handler"] = handler
+    art = article_reader.fetch("https://news.example/old")
+    assert art.error is None and art.final_url == "https://news.example/new"
+
+
+def test_five_hops_are_followed_and_a_sixth_is_refused(web) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        n = int(req.url.path.strip("/") or 0)
+        if n < article_reader.MAX_REDIRECTS:
+            return httpx.Response(302, headers={"location": f"/{n + 1}"}, content=_unread())
+        return httpx.Response(200, text=PAGE, headers={"content-type": "text/html"})
+
+    web.state["handler"] = handler
+    assert article_reader.fetch("https://news.example/0").error is None
+    assert len(web.seen) == article_reader.MAX_REDIRECTS + 1
+
+    web.seen.clear()
+    web.state["handler"] = lambda req: httpx.Response(
+        302, headers={"location": f"/{len(web.seen)}"}, content=_unread()
+    )
+    art = article_reader.fetch("https://news.example/start")
+    assert art.error and "too many redirects" in art.error
+    assert len(web.seen) == article_reader.MAX_REDIRECTS + 1
+
+
+def test_a_private_address_on_a_later_hop_is_refused(web) -> None:
+    web.resolved["inner.example"] = ["10.0.0.5"]
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.host == "news.example":
+            return httpx.Response(302, headers={"location": "https://inner.example/x"})
+        return httpx.Response(200, text=PAGE, headers={"content-type": "text/html"})
+
+    web.state["handler"] = handler
+    art = article_reader.fetch("https://news.example/a")
+    assert art.error and "inner.example" in art.error
+    assert [r.url.host for r in web.seen] == ["news.example"]
+
+
+def test_the_deadline_covers_every_hop(web, monkeypatch) -> None:
+    clock = [0.0]
+    monkeypatch.setattr(article_reader.time, "monotonic", lambda: clock[0])
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        clock[0] += article_reader.DEADLINE_SECONDS / 2 + 1  # each hop eats over half of it
+        return httpx.Response(302, headers={"location": f"/{len(web.seen)}"})
+
+    web.state["handler"] = handler
+    art = article_reader.fetch("https://news.example/start")
+    assert art.error and "took longer than" in art.error
+    assert len(web.seen) == 2

@@ -75,6 +75,18 @@ changes, so this is additive.
 - Help and README no longer describe an email or text thread as a "sealed room"; no flag or JSON
   field changed.
 
+### Fixed
+
+- `pepper feed N --read` follows redirects itself: a redirect response's body is never read (it
+  used to be read in full, outside the 2 MB cap and the 45 s deadline), at most 5 hops are
+  followed, each hop is checked for a public address, and the cap and deadline cover the whole
+  fetch (VR-1cba112d, #71).
+- `pepper feed N --transcript` says "the server returned no transcript for this episode" when the
+  server's answer is empty, instead of labelling it "no transcript yet" (VR-c8b1bafa, #71).
+- `pepper following list` and `pepper feed` order groups by the server's `counts.by_group` key
+  order instead of a built-in list; a group absent from it comes last, and an older server with no
+  `by_group` gives the order the items first appear in. `--group` checks against those names.
+
 ## 0.2.0 — 2026-10-15
 
 One grammar for the whole CLI: `pepper <noun> <verb> [--room ROOM [--topic TOPIC]]`. Commands are

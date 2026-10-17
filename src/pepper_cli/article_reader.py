@@ -280,33 +280,45 @@ def fetch(url: str) -> Article:
         return art
     deadline = time.monotonic() + DEADLINE_SECONDS
     try:
-        with (
-            httpx.Client(
-                follow_redirects=True,
-                max_redirects=MAX_REDIRECTS,
-                timeout=TIMEOUT_SECONDS,
-                headers={"User-Agent": USER_AGENT, "Accept": "text/html,*/*;q=0.5"},
-                transport=_transport,
-                event_hooks={"request": [_refuse_non_public]},
-            ) as client,
-            client.stream("GET", url) as resp,
-        ):
-            art.final_url = str(resp.url)
-            if resp.status_code >= 400:
-                why = _REFUSED.get(resp.status_code, f"answered {resp.status_code}")
-                art.error = f"the site {why}; open the link in a browser"
-                return art
-            ctype = resp.headers.get("content-type", "")
-            if ctype and not re.search(r"html|xml|text/plain", ctype, re.IGNORECASE):
-                art.error = f"the link is not a web page ({ctype.split(';')[0].strip()})"
-                return art
-            body = bytearray()
-            for chunk in resp.iter_bytes():
-                body.extend(chunk)
-                if len(body) >= MAX_BYTES:
-                    break
-                if time.monotonic() > deadline:
+        with httpx.Client(
+            follow_redirects=False,
+            timeout=TIMEOUT_SECONDS,
+            headers={"User-Agent": USER_AGENT, "Accept": "text/html,*/*;q=0.5"},
+            transport=_transport,
+            event_hooks={"request": [_refuse_non_public]},
+        ) as client:
+            current = url
+            # Redirects are followed here, not by httpx: httpx reads every redirect response's
+            # body in full, outside the byte cap and the deadline. A redirect is read for its
+            # headers only, then closed; each hop passes the public-address check again.
+            for hop in range(MAX_REDIRECTS + 1):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     raise _TooSlow
+                with client.stream("GET", current, timeout=min(TIMEOUT_SECONDS, remaining)) as resp:
+                    location = resp.headers.get("location")
+                    if resp.is_redirect and location:
+                        if hop == MAX_REDIRECTS:
+                            raise httpx.TooManyRedirects("too many redirects", request=resp.request)
+                        current = str(resp.url.join(location))
+                        continue
+                    art.final_url = str(resp.url)
+                    if resp.status_code >= 400:
+                        why = _REFUSED.get(resp.status_code, f"answered {resp.status_code}")
+                        art.error = f"the site {why}; open the link in a browser"
+                        return art
+                    ctype = resp.headers.get("content-type", "")
+                    if ctype and not re.search(r"html|xml|text/plain", ctype, re.IGNORECASE):
+                        art.error = f"the link is not a web page ({ctype.split(';')[0].strip()})"
+                        return art
+                    body = bytearray()
+                    for chunk in resp.iter_bytes():
+                        body.extend(chunk)
+                        if len(body) >= MAX_BYTES:
+                            break
+                        if time.monotonic() > deadline:
+                            raise _TooSlow
+                    break
     except _NotPublic as exc:
         art.error = f"the link points at {exc.host}, which is not a public web address"
         return art
