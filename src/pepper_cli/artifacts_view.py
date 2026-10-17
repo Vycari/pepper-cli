@@ -11,9 +11,12 @@ a report is a Note.
 
 from __future__ import annotations
 
+import contextlib
 import mimetypes
+import os
 import re
-from pathlib import PurePath
+import tempfile
+from pathlib import Path, PurePath
 from typing import Any
 
 from pepper_cli.numbered_view import NumberedView
@@ -66,6 +69,37 @@ def safe_filename(name: str, fallback: str = "artifact") -> str:
     separators, control characters or be empty)."""
     cleaned = re.sub(r"[\x00-\x1f\x7f/\\]+", "_", name or "").strip(" .")
     return cleaned[:200] or fallback
+
+
+def write_download(target: Path, content: bytes, *, force: bool) -> None:
+    """Write a download to ``target``.
+
+    Without ``force`` the file is created exclusively, so an existing file or link at that
+    name (including one that appeared after the caller's check) raises ``FileExistsError``
+    and nothing else is touched. With ``force`` the bytes go to a temp file with an
+    unpredictable name in the same folder, which then replaces ``target``.
+    """
+    if not force:
+        created = False
+        try:
+            with target.open("xb") as fh:
+                created = True
+                fh.write(content)
+        except BaseException:
+            if created:
+                with contextlib.suppress(OSError):
+                    target.unlink()
+            raise
+        return
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".part")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(content)
+        Path(tmp).replace(target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            Path(tmp).unlink()
+        raise
 
 
 def listing_row(item: dict[str, Any]) -> dict[str, Any]:

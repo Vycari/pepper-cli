@@ -7601,9 +7601,10 @@ def cmd_artifacts_download(args: argparse.Namespace) -> int:
             _emit_error(args, "usage", f"{str(target)!r} already exists; use --force to overwrite")
             return 2
         try:
-            part = target.with_name(target.name + ".part")
-            part.write_bytes(content)
-            part.replace(target)
+            artifacts_view.write_download(target, content, force=args.force)
+        except FileExistsError:
+            _emit_error(args, "usage", f"{str(target)!r} already exists; use --force to overwrite")
+            return 2
         except OSError as exc:
             _emit_error(args, "usage", f"couldn't write {str(target)!r}: {exc.strerror or exc}")
             return 2

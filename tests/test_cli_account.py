@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import httpx
@@ -263,6 +264,67 @@ def test_artifacts_download_writes_the_bytes(server, capsys, tmp_path) -> None:
     (tmp_path / "d").mkdir()
     assert cli.main(["artifacts", "download", FILE, "--out", "d", "--json"]) == 0
     assert (tmp_path / "d" / "Receipt.png").exists()
+
+
+def test_artifacts_download_leaves_a_sibling_part_file_alone(server, capsys, tmp_path) -> None:
+    (tmp_path / "Receipt.png.part").write_bytes(b"someone else's partial download")
+    assert cli.main(["artifacts", "download", FILE, "--json"]) == 0
+    assert (tmp_path / "Receipt.png.part").read_bytes() == b"someone else's partial download"
+    assert (tmp_path / "Receipt.png").read_bytes() == b"\x89PNG"
+    assert cli.main(["artifacts", "download", FILE, "--force", "--json"]) == 0
+    assert sorted(p.name for p in tmp_path.iterdir() if "Receipt" in p.name) == [
+        "Receipt.png",
+        "Receipt.png.part",
+    ]  # --force's temp file is gone too
+
+
+def test_write_download_never_replaces_a_file_that_appeared_after_the_check(tmp_path) -> None:
+    # The exclusive create is the guard itself, so a file made between the CLI's exists()
+    # check and the write (simulated here by making it first) is refused, not replaced.
+    target = tmp_path / "report.pdf"
+    target.write_bytes(b"theirs")
+    with pytest.raises(FileExistsError):
+        artifacts_view.write_download(target, b"mine", force=False)
+    assert target.read_bytes() == b"theirs"
+    artifacts_view.write_download(target, b"mine", force=True)
+    assert target.read_bytes() == b"mine" and [p.name for p in tmp_path.iterdir()] == ["report.pdf"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_write_download_does_not_follow_a_planted_link(tmp_path) -> None:
+    victim = tmp_path / "victim.txt"
+    victim.write_bytes(b"keep")
+    (tmp_path / "report.pdf").symlink_to(victim)
+    with pytest.raises(FileExistsError):
+        artifacts_view.write_download(tmp_path / "report.pdf", b"mine", force=False)
+    assert victim.read_bytes() == b"keep"
+
+
+def test_write_download_removes_its_own_partial_file_on_failure(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "a.bin"
+
+    class Boom:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def write(self, data):
+            raise OSError(28, "No space left on device")
+
+    real_open = Path.open
+
+    def fake_open(self, mode="r", *a, **k):
+        if self == target:
+            real_open(self, mode).close()  # the exclusive create happened
+            return Boom()
+        return real_open(self, mode, *a, **k)
+
+    monkeypatch.setattr(Path, "open", fake_open)
+    with pytest.raises(OSError):
+        artifacts_view.write_download(target, b"x", force=False)
+    assert not target.exists()
 
 
 def test_artifacts_download_stdout_and_json_do_not_mix(server, capsys) -> None:
