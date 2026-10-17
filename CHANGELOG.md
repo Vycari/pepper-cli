@@ -44,12 +44,19 @@ Part of the CLI core-coverage work (Vycari/pepper-cli#61). Each command fetches 
 returns and renders it; none ranks, filters, orders or decides on this side. Nothing existing
 changes, so this is additive.
 
-- `pepper feed [N] [--limit N] [--group G] [--transcript] [--read [--full]] [--json]`: what is new
-  in everything you follow, in the order the server's ranked `data.feed` gives (pepper#4852). Rows
-  carry a coloured type tag; `feed N` shows one item in full (its summary, what the server folded
-  under it, and the game block for a sports entry). `--transcript` uses the entry's `episode_id`;
-  `--read` fetches the article's page from its own site and never sends the Pepper token. A server
-  that does not rank yet gets one line saying so.
+- `pepper feed list [--limit N] [--group G] [--json]` and `pepper feed show N [--transcript]
+  [--read [--full]] [--open] [--json]`: what is new in everything you follow, in the order the
+  server's ranked `data.feed` gives (pepper#4852). `feed` is a noun like `following`, `todos` and
+  `artifacts`. Rows carry a coloured type tag; `feed show N` shows one item in full (its summary,
+  what the server folded under it, and the game block for a sports entry). `--transcript` uses the
+  entry's `episode_id`; `--read` fetches the article's page from its own site and never sends the
+  Pepper token. A server that does not rank yet gets one line saying so.
+- `pepper feed show N --open` opens the item's link in your default browser and prints it. An item
+  with no `http(s)` link exits 2; with no usable browser (an SSH session with no `DISPLAY` or
+  `BROWSER`) it prints the link and a note, and exits 0. It works with `--json`.
+- Item titles in `feed list` and `feed show` are terminal hyperlinks (OSC 8) to the item's link when
+  stdout is a terminal; the plain link line stays for copy-paste, and pipes and `--json` carry no
+  escape sequences.
 - `pepper following list | show | search | create | delete`: manage what you follow. `create` takes
   only a number from the last `following search` (saved per profile): search first, even for a web
   address, then `following create 1`. It never picks a match for typed text.

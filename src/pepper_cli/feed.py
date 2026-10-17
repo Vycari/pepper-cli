@@ -8,14 +8,17 @@ and filters it by a plain field for ``--group``.
 
 from __future__ import annotations
 
+import os
+import sys
+import webbrowser
 from datetime import datetime, tzinfo
 from typing import Any
 
 from pepper_cli.numbered_view import NumberedView
 
-VIEW = NumberedView("feed-view.json", "feed item", "pepper feed")
+VIEW = NumberedView("feed-view.json", "feed item", "pepper feed list")
 
-#: Shown by ``pepper feed`` when the document has no ``feed`` key (a server that predates
+#: Shown by ``pepper feed list`` when the document has no ``feed`` key (a server that predates
 #: pepper#4852). The CLI never falls back to ranking by itself.
 NOT_RANKED_NOTE = "this Pepper server doesn't rank the feed yet (needs pepper#4852)"
 
@@ -76,7 +79,7 @@ def only_group(entries: list[dict[str, Any]], group: str | None) -> list[dict[st
 
 
 def identity(entry: dict[str, Any]) -> dict[str, Any]:
-    """What ``pepper feed`` remembers about a numbered row: enough to name it again."""
+    """What ``pepper feed list`` remembers about a numbered row: enough to name it again."""
     return {
         "id": f"{entry['ref']}\n{entry['url'] or ''}\n{entry['title']}",
         "ref": entry["ref"],
@@ -109,3 +112,21 @@ def exact_time(entry: dict[str, Any], zone: tzinfo | None) -> datetime | None:
         return datetime.fromisoformat(str(stamp)).astimezone(zone)
     except ValueError:
         return None
+
+
+def open_browser(url: str) -> bool:
+    """Open ``url`` in the default browser; False when none could be.
+
+    On Linux and the BSDs with no ``DISPLAY``, ``WAYLAND_DISPLAY`` or ``BROWSER`` (an SSH
+    session), ``webbrowser`` would fall back to a text browser such as lynx and take over the
+    terminal, so nothing is launched there. Everywhere else ``webbrowser.open`` decides.
+    """
+    headless = sys.platform.startswith(("linux", "freebsd", "openbsd", "netbsd")) and not any(
+        os.environ.get(v) for v in ("DISPLAY", "WAYLAND_DISPLAY", "BROWSER")
+    )
+    if headless:
+        return False
+    try:
+        return bool(webbrowser.open(url))
+    except webbrowser.Error:
+        return False

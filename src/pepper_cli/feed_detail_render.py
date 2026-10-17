@@ -1,4 +1,4 @@
-"""Terminal output for ``pepper feed N``: the server's entry, then the optional
+"""Terminal output for ``pepper feed show N``: the server's entry, then the optional
 transcript and article blocks. Plain lines; every server or web field goes through ``_s`` /
 ``_text`` (control characters out, markup escaped). ``--json`` never comes through here.
 """
@@ -12,7 +12,7 @@ from typing import Any
 
 from rich.markup import escape
 
-from pepper_cli.following_render import _out, _s
+from pepper_cli.following_render import _out, _s, linked
 from pepper_cli.terminal_text import sanitize_text
 
 _WRAP = 100
@@ -50,7 +50,7 @@ def _flags(d: dict[str, Any]) -> str:
 
 def render_detail(d: dict[str, Any]) -> None:
     n = f"{d['n']}. " if d.get("n") else ""
-    _out(f"[bold]{n}{_s(d.get('title') or '?')}[/bold]  {_flags(d)}".rstrip())
+    _out(f"[bold]{n}{linked(_s(d.get('title') or '?'), d.get('url'))}[/bold]  {_flags(d)}".rstrip())
     kind = " · ".join(str(x) for x in (d.get("group"), d.get("kind")) if x)
     _out(f"  [dim]from[/dim]      {_s(d.get('source') or '?')}  [dim]{_s(kind)}[/dim]")
     _out(f"  [dim]when[/dim]      {_s(_when(d))}")

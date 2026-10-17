@@ -1,4 +1,4 @@
-"""``pepper feed N --read``: fetch an article's page and pull out its readable text.
+"""``pepper feed show N --read``: fetch an article's page and pull out its readable text.
 
 Pepper keeps only a feed item's title and url, so the CLI fetches the page itself. This is a
 plain third-party GET: a browser-like ``User-Agent``, a per-read timeout and an overall

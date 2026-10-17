@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 from typing import Any
+from urllib.parse import quote, urlsplit
 
 from rich.console import Console
 from rich.markup import escape
@@ -22,6 +23,33 @@ _console = Console()  # writes to the current sys.stdout; NO_COLOR and pipes are
 def _s(value: object) -> str:
     """A one-line server field for a markup string: control characters out, markup escaped."""
     return escape(sanitize_line(html.unescape(str(value))))  # feeds ship "&#8217;" in titles
+
+
+def web_link(url: object) -> str | None:
+    """The server's ``url`` as one safe ``http(s)`` link, or None when it is not one.
+
+    Control characters and escape sequences are gone and every character that could end a
+    rich markup tag or an OSC 8 sequence (``[``, ``]``, a backslash, a quote, space) is
+    percent-encoded, so the result is safe inside ``[link=...]`` and to hand to a browser.
+    Anything but ``http`` or ``https`` with a host (``file:``, ``javascript:``) is refused.
+    """
+    if not isinstance(url, str):
+        return None
+    text = sanitize_line(html.unescape(url)).strip()
+    parts = urlsplit(text)
+    if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+        return None
+    return quote(text, safe="!#$&'()*+,/:;=?@~%-._")
+
+
+def linked(label: str, url: object) -> str:
+    """``label`` (markup already escaped) as a terminal hyperlink to ``url``.
+
+    Only when stdout is a terminal and ``url`` is an ``http(s)`` link; otherwise the label
+    comes back unchanged, so pipes and ``--json`` never see an escape sequence.
+    """
+    target = web_link(url) if _console.is_terminal else None
+    return f"[link={target}]{label}[/link]" if target else label
 
 
 def _out(text: str = "") -> None:
@@ -157,7 +185,8 @@ def render_feed(entries: list[dict[str, Any]], *, note: str | None = None) -> No
         _out("(nothing in your feed yet; follow something with `pepper following create`)")
         return
     for n, e in enumerate(entries, 1):
-        _out(f"[dim]{n:>2}.[/dim] {group_tag(e['group'])} [bold]{_s(e['title'])}[/bold]")
+        title = linked(_s(e["title"]), e.get("url"))
+        _out(f"[dim]{n:>2}.[/dim] {group_tag(e['group'])} [bold]{title}[/bold]")
         source = str(e.get("source") or "")
         meta = f"{source} · {e['when_label']}" if e["when_label"] else source
         _out(f"             [dim]{_s(meta)}[/dim]  " + " ".join(_flags(e)))

@@ -61,9 +61,10 @@ Subcommands:
   ``If-Match``. ``delete`` asks before deleting unless ``--yes``.
 - ``pepper brief [--date YYYY-MM-DD | --now]`` — your morning brief, read from the server's
   Brief document in the order it sends; ``--now`` runs a fresh one.
-- ``pepper feed [N]`` and ``pepper following list | show | search | create | delete`` — the
-  server's ranked stream of what you follow (``N`` shows one item in full), and managing the
-  follows; ``following create N`` follows a number from the last ``following search``.
+- ``pepper feed list | show`` and ``pepper following list | show | search | create | delete`` — the
+  server's ranked stream of what you follow (``feed show N`` shows one item in full), and
+  managing the follows; ``following create N`` follows a number from the last
+  ``following search``.
 - ``pepper artifacts list | show | download | create | delete`` — everything you saved: notes,
   links and files. ``create`` uploads a file; to edit a note's text use ``notes``.
 - ``pepper preferences show | edit`` — the Calendar > Preferences values.
@@ -858,40 +859,50 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
 
     p_feed = sub.add_parser(
         "feed",
-        parents=[_json_parent],
-        help="What's new in everything you follow, as the server ranks it; N shows one in full.",
+        help="What's new in everything you follow, as the server ranks it: list, show.",
         description=(
             "The Pepper server's ranked list of the recent items of everything you follow "
-            "(best first), numbered. 'feed N' shows item N of the last list in full. The CLI "
-            "does no ranking of its own. Read-only; manage what you follow with 'following'."
+            "(best first). 'feed list' prints it numbered; 'feed show N' shows item N of the "
+            "last list in full. The CLI does no ranking of its own. Read-only; manage what you "
+            "follow with 'following'."
         ),
     )
-    p_feed.add_argument(
-        "item",
-        nargs="?",
-        metavar="N",
-        help="Show item N of the last list in full (a number, up to 4 digits).",
+    sub_feed = p_feed.add_subparsers(dest="feed_action", required=True)
+    p = sub_feed.add_parser(
+        "list",
+        parents=[_json_parent],
+        help="The server's ranked list, numbered (for 'feed show N').",
     )
-    p_feed.add_argument("--limit", type=int, default=20, metavar="N", help="At most N items (20).")
-    p_feed.add_argument(
+    p.add_argument("--limit", type=int, default=20, metavar="N", help="At most N items (20).")
+    p.add_argument(
         "--group",
         metavar="GROUP",
         help="Only this group (a name or prefix, as `pepper following list` shows it).",
     )
-    p_feed.add_argument(
+    p.set_defaults(handler=cmd_feed_list)
+    p = sub_feed.add_parser(
+        "show", parents=[_json_parent], help="Item N of the last 'feed list' in full."
+    )
+    p.add_argument("item", metavar="N", help="A number from the last 'feed list' (up to 4 digits).")
+    p.add_argument(
         "--transcript",
         action="store_true",
-        help="With N: a podcast episode's transcript (its show notes until one exists).",
+        help="A podcast episode's transcript (its show notes until one exists).",
     )
-    p_feed.add_argument(
+    p.add_argument(
         "--read",
         action="store_true",
-        help="With N: fetch the article's page from its own site and print its readable text.",
+        help="Fetch the article's page from its own site and print its readable text.",
     )
-    p_feed.add_argument(
+    p.add_argument(
         "--full", action="store_true", help="With --read: every paragraph, not the first twelve."
     )
-    p_feed.set_defaults(handler=cmd_feed)
+    p.add_argument(
+        "--open",
+        action="store_true",
+        help="Open the item's link in your default browser (the link is printed too).",
+    )
+    p.set_defaults(handler=cmd_feed_show)
 
     p_todos = sub.add_parser(
         "todos",
@@ -7308,69 +7319,82 @@ def _feed_unranked(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_feed(args: argparse.Namespace) -> int:
-    """``pepper feed [N] [--limit N] [--group G] [--transcript] [--read [--full]] [--json]``.
+def cmd_feed_list(args: argparse.Namespace) -> int:
+    """``pepper feed list [--limit N] [--group G] [--json]``.
 
-    Without N, the server's ranked ``data.feed`` in the server's order, numbered; the items'
-    identities are remembered (``feed-view.json`` next to the credentials) for ``feed N``. With
-    N, item N in full. The server ranks and folds; this only fetches and renders.
+    The server's ranked ``data.feed`` in the server's order, numbered; the items' identities are
+    remembered (``feed-view.json`` next to the credentials) for ``feed show N``. The server
+    ranks and folds; this only fetches and renders.
     """
-    detail_flags = (args.transcript, args.read, args.full)
-    if args.item is None and any(detail_flags):
-        _emit_error(args, "usage", "--transcript, --read and --full go with an item number")
-        return 2
-    if args.full and not args.read:
-        _emit_error(args, "usage", "--full goes with --read")
-        return 2
     if args.limit < 1:
         _emit_error(args, "usage", "--limit must be at least 1")
         return 2
-    if args.item is not None and not numbered_view.NumberedView.is_number(args.item):
-        _emit_error(
-            args, "usage", f"feed takes an item number from `pepper feed`, not {args.item!r}"
-        )
-        return 2
-    row: dict[str, Any] | None = None
-    if args.item is not None:
-        try:
-            _, row, _meta = feed.VIEW.resolve(args.item)
-        except numbered_view.RefError as exc:
-            _emit_error(args, exc.code, str(exc))
-            return 2
 
     def run(api: api_client.ApiClient) -> int:
         data = following_view.data_of(api.get_app_data("following"))
         entries = feed.server_feed(data)
         if entries is None:
             return _feed_unranked(args)
-        if row is None:
-            try:
-                group = (
-                    following_view.resolve_group(data, args.group, entries) if args.group else None
-                )
-            except following_view.LookupFailure as exc:
-                _emit_error(args, exc.code, exc.message)
-                return 2
-            shown = feed.only_group(entries, group)[: args.limit]
-            problem = feed.VIEW.save([feed.identity(e) for e in shown], {"group": args.group})
-            if _listing_unusable(args, problem):
-                return 1
-            _emit_list(
-                numbered_view.number(shown),
-                args,
-                lambda: following_render.render_feed(shown),
-                **_unsaved_meta(problem),
-            )
-            _warn_unsaved(args, problem)
-            return 0
+        try:
+            group = following_view.resolve_group(data, args.group, entries) if args.group else None
+        except following_view.LookupFailure as exc:
+            _emit_error(args, exc.code, exc.message)
+            return 2
+        shown = feed.only_group(entries, group)[: args.limit]
+        problem = feed.VIEW.save([feed.identity(e) for e in shown], {"group": args.group})
+        if _listing_unusable(args, problem):
+            return 1
+        _emit_list(
+            numbered_view.number(shown),
+            args,
+            lambda: following_render.render_feed(shown),
+            **_unsaved_meta(problem),
+        )
+        _warn_unsaved(args, problem)
+        return 0
+
+    return _run_personal(args, run)
+
+
+def cmd_feed_show(args: argparse.Namespace) -> int:
+    """``pepper feed show N [--transcript] [--read [--full]] [--open] [--json]``: item N of the
+    last ``feed list`` in full."""
+    if args.full and not args.read:
+        _emit_error(args, "usage", "--full goes with --read")
+        return 2
+    if not numbered_view.NumberedView.is_number(args.item):
+        _emit_error(
+            args,
+            "usage",
+            f"feed show takes an item number from `pepper feed list`, not {args.item!r}",
+        )
+        return 2
+    try:
+        _, row, _meta = feed.VIEW.resolve(args.item)
+    except numbered_view.RefError as exc:
+        _emit_error(args, exc.code, str(exc))
+        return 2
+    if row is None:  # a number always resolves to a row; only a bare id would not
+        _emit_error(args, "usage", "feed show takes an item number from `pepper feed list`")
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        data = following_view.data_of(api.get_app_data("following"))
+        entries = feed.server_feed(data)
+        if entries is None:
+            return _feed_unranked(args)
         entry = feed.find(entries, row)
         if entry is None:
             _emit_error(
                 args,
                 "not_found",
-                f"item {args.item} of the last `pepper feed` ({row.get('title')!r}) is gone: "
-                "the server no longer lists it. Run `pepper feed` again.",
+                f"item {args.item} of the last `pepper feed list` ({row.get('title')!r}) is gone: "
+                "the server no longer lists it. Run `pepper feed list` again.",
             )
+            return 2
+        open_url = following_render.web_link(entry.get("url")) if args.open else None
+        if args.open and open_url is None:
+            _emit_error(args, "not_found", f"item {args.item} has no web link to open")
             return 2
         moment = feed.exact_time(entry, next_view.user_now(api).tzinfo)
         detail: dict[str, Any] = {
@@ -7384,6 +7408,11 @@ def cmd_feed(args: argparse.Namespace) -> int:
         if args.read:
             detail["article"] = _feed_article(detail, full=args.full)
         _emit(detail, args, lambda: feed_detail_render.render_detail(detail))
+        if open_url is not None:
+            if feed.open_browser(open_url):
+                render.info(f"opened {open_url}")
+            else:
+                render.info(f"no browser could be opened here; the link is {open_url}")
         return 0
 
     return _run_personal(args, run)

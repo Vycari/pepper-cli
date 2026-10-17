@@ -61,10 +61,10 @@ NOUNS = frozenset(
         "next",
         # `brief` is a view (IA §3 rule 4): a daily read, like `next`.
         "brief",
-        # `following` is the product app's noun (list/show/search/create/delete). `feed` is a
-        # view (IA §3 rule 4): the server's ranked stream of what you follow, `feed [N]`.
-        "feed",
+        # `following` is the product app's noun (list/show/search/create/delete); `feed` is a
+        # noun too (list/show): the server's ranked stream of what you follow.
         "following",
+        "feed",
         "chat",
         "login",
         "logout",
@@ -146,7 +146,8 @@ ROOM_NA = {
     "following search": "your follows are account-wide; a room's follows live on its own page",
     "following create": "your follows are account-wide; a room's follows live on its own page",
     "following delete": "your follows are account-wide; a room's follows live on its own page",
-    "feed": "the server ranks your own follows; a room's follows are not part of it",
+    "feed list": "the server ranks your own follows; a room's follows are not part of it",
+    "feed show": "the server ranks your own follows; a room's follows are not part of it",
     "brief": "your own morning brief; the server exposes no room's brief to a PAT here",
     "artifacts show": "reads any artifact the viewer can see; the id carries the room",
     "artifacts download": "reads any artifact the viewer can see; the id carries the room",
@@ -188,7 +189,7 @@ WORDING_PENDING = frozenset(
     {
         # `--group` is the Following app's own filter chip (Sports, Shows, ...), not a room.
         "following list",
-        "feed",
+        "feed list",
         "notes edit",
         "notes list",
         "notes create",
@@ -798,8 +799,8 @@ def _env(tmp_path, monkeypatch) -> _Server:
     monkeypatch.delenv("PEPPER_JSON", raising=False)
     monkeypatch.chdir(tmp_path)
     credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
-    # `feed N` follows the last `feed`, `following create N` the last `following search`; seed
-    # the one item and candidate ROUTES' documents hold.
+    # `feed show N` follows the last `feed list`, `following create N` the last
+    # `following search`; seed the one item and candidate ROUTES' documents hold.
     feed.VIEW.save(
         [
             {
@@ -859,7 +860,8 @@ JSON_CASES: dict[str, list[str]] = {
     "following search": ["following", "search", "dodgers"],
     "following create": ["following", "create", "1"],
     "following delete": ["following", "delete", "example", "--yes"],
-    "feed": ["feed"],
+    "feed list": ["feed", "list"],
+    "feed show": ["feed", "show", "1"],
     "todos list": ["todos", "list"],
     "rooms list": ["rooms", "list"],
     "rooms show": ["rooms", "show", _G],
