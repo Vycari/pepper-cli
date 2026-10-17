@@ -129,9 +129,10 @@ async def test_room_updates_do_not_cut_a_mention_retry_short(monkeypatch) -> Non
         await until(pilot, lambda: app._loops["mentions"].failures == 1)
         # More room activity arrives on every rail poll while the retry waits.
         for i in range(4):
-            server.rooms[0]["topics"][0]["last_activity_at"] = f"2026-09-16T18:0{i + 1}:00+00:00"
+            at = f"2026-09-16T18:0{i + 1}:00+00:00"
+            server.rooms[0]["topics"][0]["last_activity_at"] = at
             server.bump()
-            await pilot.pause(0.1)
+            await until(pilot, lambda at=at: app.rooms[0].topics[0].last_activity_at == at)
         assert _fetches(server, ts.TOPIC_B1) == 1
         assert app._loops["mentions"].timer is not None
 
