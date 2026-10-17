@@ -159,6 +159,97 @@ class ReadMarks:
         return any(self.is_unread(t, open_topic_id=open_topic_id) for t in room.topics)
 
 
+@dataclass
+class Mentions:
+    """Which unread topics hold a message that mentions you (§6.3, §15 C).
+
+    The rooms list gives only ``last_activity_at``, so a topic is asked about once per new
+    activity: when it is unread and its activity is later than the activity last asked about.
+    The answer is the newest page of its messages, read for rows after the read mark that
+    carry your person id in ``mentions``. A topic with more unread rows than one page holds
+    can miss an older mention; the open topic needs none of this (its rows show the accent).
+    """
+
+    #: ``topic_id -> last_activity_at`` the topic was last asked about.
+    checked: dict[str, datetime] = field(default_factory=dict)
+    #: ``topic_id -> created_at`` of the newest unread message found that mentions you. A hit
+    #: shows only while the read mark is before it, so reading the topic retires it.
+    hits: dict[str, datetime] = field(default_factory=dict)
+    #: ``topic_id -> order`` of topics whose last ask failed and will be retried; they go
+    #: behind every other due topic so one failing topic cannot hold the rest up.
+    deferred: dict[str, int] = field(default_factory=dict)
+    _deferrals: int = 0
+
+    def due(
+        self, rooms: Iterable[GroupSummary], marks: ReadMarks, *, open_topic_id: str | None
+    ) -> list[tuple[str, GroupTopicSummary]]:
+        """``(room_id, topic)`` pairs to ask about: sidebar order, retried topics last."""
+        found: list[tuple[str, GroupTopicSummary]] = []
+        for room in rooms:
+            for topic in topics_by_recency(room):
+                activity = parse_ts(topic.last_activity_at)
+                if activity is None or not marks.is_unread(topic, open_topic_id=open_topic_id):
+                    continue
+                if activity > self.checked.get(topic.topic_id, _EPOCH):
+                    found.append((room.group_id, topic))
+        return sorted(found, key=lambda pair: self.deferred.get(pair[1].topic_id, 0))
+
+    def record(
+        self,
+        topic: GroupTopicSummary,
+        messages: Iterable[GroupMessage],
+        *,
+        you_id: str | None,
+        mark: datetime | None,
+    ) -> bool:
+        """Take the answer for ``topic``; True when it holds a mention newer than any known."""
+        self._answered(topic)
+        newest: datetime | None = None
+        if you_id:
+            for m in messages:
+                if you_id not in m.mentions or m.is_you or m.is_deleted:
+                    continue
+                at = parse_ts(m.created_at) or _EPOCH
+                if (mark is None or at > mark) and (newest is None or at > newest):
+                    newest = at
+        if newest is None:
+            self.hits.pop(topic.topic_id, None)
+            return False
+        was = self.hits.get(topic.topic_id)
+        self.hits[topic.topic_id] = newest
+        return was is None or newest > was
+
+    def skip(self, topic: GroupTopicSummary) -> None:
+        """The topic cannot be read (no access, gone): stop asking about this activity."""
+        self._answered(topic)
+        self.hits.pop(topic.topic_id, None)
+
+    def defer(self, topic: GroupTopicSummary) -> None:
+        """Asking about ``topic`` failed and will be retried: put it behind the others."""
+        self._deferrals += 1
+        self.deferred[topic.topic_id] = self._deferrals
+
+    def _answered(self, topic: GroupTopicSummary) -> None:
+        activity = parse_ts(topic.last_activity_at)
+        if activity is not None:
+            self.checked[topic.topic_id] = activity
+        self.deferred.pop(topic.topic_id, None)
+
+    def topic_mentioned(
+        self, topic: GroupTopicSummary, marks: ReadMarks, *, open_topic_id: str | None
+    ) -> bool:
+        at = self.hits.get(topic.topic_id)
+        if at is None or not marks.is_unread(topic, open_topic_id=open_topic_id):
+            return False
+        mark = marks.marks.get(topic.topic_id)
+        return mark is None or at > mark
+
+    def room_mentioned(
+        self, room: GroupSummary, marks: ReadMarks, *, open_topic_id: str | None
+    ) -> bool:
+        return any(self.topic_mentioned(t, marks, open_topic_id=open_topic_id) for t in room.topics)
+
+
 def topics_by_recency(room: GroupSummary) -> list[GroupTopicSummary]:
     """Non-archived topics, most recent activity first (the server's order, made explicit)."""
     live = [t for t in room.topics if not t.archived_at]
@@ -181,6 +272,8 @@ class SidebarRow:
     topic_id: str | None = None
     color: str | None = None
     unread: bool = False
+    #: Unread, and something in it mentions you (shown as ``@`` in place of the dot).
+    mention: bool = False
     expandable: bool = False
     expanded: bool = False
     hidden_count: int = 0
@@ -240,6 +333,7 @@ def build_sidebar(
     pepper_dot: bool,
     folds: SidebarFolds | None = None,
     now: datetime | None = None,
+    mentions: Mentions | None = None,
 ) -> list[SidebarRow]:
     """The Messages tree as flat rows: Pepper first, then rooms in server (recency) order.
 
@@ -250,6 +344,7 @@ def build_sidebar(
     (never the open room, nor one with something unread); without it nothing folds.
     """
     folds = folds or SidebarFolds()
+    mentions = mentions or Mentions()
     open_topic_id = current.topic_id
     rows = [SidebarRow(key="pepper", kind="pepper", label="Pepper", depth=0, unread=pepper_dot)]
     folded: set[str] = set()
@@ -274,6 +369,7 @@ def build_sidebar(
                 room_id=room.group_id,
                 color=room.color,
                 unread=marks.room_unread(room, open_topic_id=open_topic_id),
+                mention=mentions.room_mentioned(room, marks, open_topic_id=open_topic_id),
                 expandable=True,
                 expanded=expanded,
             )
@@ -281,7 +377,12 @@ def build_sidebar(
         if expanded:
             rows.extend(
                 _room_children(
-                    room, marks, current=current, folds=folds, show_all=room.group_id in show_all
+                    room,
+                    marks,
+                    mentions,
+                    current=current,
+                    folds=folds,
+                    show_all=room.group_id in show_all,
                 )
             )
     if folded:
@@ -302,6 +403,7 @@ def build_sidebar(
 def _room_children(
     room: GroupSummary,
     marks: ReadMarks,
+    mentions: Mentions,
     *,
     current: Conversation,
     folds: SidebarFolds,
@@ -323,6 +425,7 @@ def _room_children(
             room_id=room.group_id,
             topic_id=t.topic_id,
             unread=marks.is_unread(t, open_topic_id=open_topic_id),
+            mention=mentions.topic_mentioned(t, marks, open_topic_id=open_topic_id),
         )
         for t in shown
     ]
@@ -427,6 +530,15 @@ def header_text(current: Conversation, rooms: list[GroupSummary]) -> str:
                 return f"{room.display_name} › {topic.name}{tail}"
         return room.display_name
     return ""
+
+
+def any_mention(
+    rooms: list[GroupSummary], marks: ReadMarks, mentions: Mentions, *, current: Conversation
+) -> bool:
+    """Whether any unread topic holds a mention of you (the terminal title shows ``@``)."""
+    return any(
+        mentions.room_mentioned(room, marks, open_topic_id=current.topic_id) for room in rooms
+    )
 
 
 def any_unread(

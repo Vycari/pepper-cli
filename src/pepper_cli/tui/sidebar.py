@@ -17,6 +17,8 @@ if TYPE_CHECKING:
     from textual.widgets.tree import TreeNode
 
 DOT = "●"
+#: In place of the dot on a row whose unread activity mentions you (§15 C).
+MENTION = "@"
 
 
 def row_label(row: SidebarRow, *, current: bool) -> Text:
@@ -29,7 +31,9 @@ def row_label(row: SidebarRow, *, current: bool) -> Text:
         label.append(name, style="dim italic")
     else:
         label.append(name, style="bold reverse" if current else "bold" if row.unread else "")
-    if row.unread:
+    if row.mention:
+        label.append(f" {MENTION}", style="bold")
+    elif row.unread:
         label.append(f" {DOT}", style="bold")
     return label
 

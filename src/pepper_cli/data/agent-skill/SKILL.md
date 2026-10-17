@@ -319,8 +319,10 @@ is changed. That covers:
 - Every other `rooms`, `topics`, `messages`, `attachments`, `members`, `sharing` or `apps` command, which are the ones that change a room, its topics, its members
   or its apps, or that read or search across rooms.
 - Every command outside those nouns that talks to the server, `whoami`, chat and `tui` included
-  (`tui` is a full-screen app for a person at a terminal: it posts to rooms and sends Pepper turns
-  as that person, and refuses to start without a terminal), other than `login`. Post with the
+  (`tui` is a full-screen app for a person at a terminal, and bare `pepper` opens it when both
+  stdin and stdout are a terminal; it posts to rooms and sends Pepper turns as that person, and
+  `pepper tui` refuses to start without a terminal. A script or agent has no terminal, so bare
+  `pepper` there is the REPL as before; set `PEPPER_NO_TUI=1` to be sure), other than `login`. Post with the
   command in section 6.
 
 Do not try these to see what happens. `pepper --profile <name> rooms --help` lists commands the

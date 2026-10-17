@@ -6,6 +6,7 @@ every other ``pepper`` command pays nothing for it (a test pins that).
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 from pepper_cli.api_client import ApiClient
@@ -13,6 +14,11 @@ from pepper_cli.api_client import ApiClient
 if TYPE_CHECKING:
     from pepper_cli.provider.fs import FilesystemProvider
     from pepper_cli.secret import SecretStr
+
+
+def bell_enabled() -> bool:
+    """``PEPPER_TUI_BELL``: ring the terminal bell on a new mention (§15 C, opt-in only)."""
+    return os.environ.get("PEPPER_TUI_BELL", "").strip().lower() not in ("", "0", "false", "no")
 
 
 def run(*, server_url: str, token: SecretStr, provider: FilesystemProvider | None = None) -> int:
@@ -23,6 +29,6 @@ def run(*, server_url: str, token: SecretStr, provider: FilesystemProvider | Non
     from pepper_cli.tui.app import PepperApp  # Textual is imported here, not at module load
 
     with ApiClient(server_url=server_url, token=token) as api:
-        app = PepperApp(api, provider=provider)
+        app = PepperApp(api, provider=provider, bell=bell_enabled())
         app.run()
         return app.return_code or 0
