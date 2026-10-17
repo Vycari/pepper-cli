@@ -7768,7 +7768,9 @@ def cmd_preferences_edit(args: argparse.Namespace) -> int:
     except pv.PrefsError as exc:
         _emit_error(args, "usage", str(exc))
         return 2
-    if all(v is None or v == [] for v in parsed.values()):
+    # An empty list from --show/--hide/--meal means the flag was not given; --work-days none
+    # is an empty list too, and it is a change (clear the work days), so only None counts there.
+    if parsed["work_days"] is None and all(v is None or v == [] for v in parsed.values()):
         _emit_error(args, "usage", "nothing to change: give at least one flag (see --help)")
         return 2
 
