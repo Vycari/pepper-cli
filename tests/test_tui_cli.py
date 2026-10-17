@@ -78,9 +78,11 @@ def test_a_refused_root_is_one_line_and_exit_2(monkeypatch, tmp_path, capsys) ->
     monkeypatch.setattr(credentials, "load", lambda: creds)
     monkeypatch.setattr(tui, "run", lambda **kw: pytest.fail("must not start"))
     assert cli.main(["tui", "--root", str(tmp_path / "missing")]) == 2
-    err = capsys.readouterr().err  # one error, wrapped to the terminal's width
+    # One error, which Rich wraps at the console's width (80 columns off a terminal), so
+    # where the line breaks depends on the length of the temporary path: compare it unwrapped.
+    err = " ".join(capsys.readouterr().err.split())
     assert err.startswith("error: --root:")
-    assert "not a directory" in err
+    assert err.endswith("missing is not a directory")
 
 
 def test_a_network_error_is_one_line_and_exit_1(monkeypatch, capsys) -> None:
