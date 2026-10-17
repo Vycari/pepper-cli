@@ -378,16 +378,71 @@ async def test_the_new_marker_clears_however_the_bottom_is_reached() -> None:
         await until(pilot, lambda: "row 39" in body_text(app))
         scroller = app.thread.scroller
         await until(pilot, lambda: scroller.max_scroll_y > 0 and app.thread.pinned)
+        # Pause polling, so only the poll this test drives can refresh the thread.
+        app.on_app_blur(events.AppBlur())
+        await until(pilot, lambda: not app._loops["topic"].busy)
+        await pilot.pause(0.1)
         scroller.scroll_home(animate=False)
         await until(pilot, lambda: not app.thread.pinned)
         server.messages[ts.TOPIC_A1].append(message_at("r99", "2026-09-16T18:30:00+00:00"))
+        app._run("topic")
         marker = app.query_one("#thread-new", Static)
         await until(pilot, lambda: bool(marker.display))
-        app.on_app_blur(events.AppBlur())  # no more polls, so no refresh can clear it
-        await pilot.pause(0.2)
-        assert marker.display
+        assert not app.thread.pinned
         scroller.scroll_end(animate=False)  # not a page key: a wheel or scrollbar would do this
         await until(pilot, lambda: not marker.display)
+
+
+async def test_a_topic_retry_survives_blur_and_resumes_after_focus() -> None:
+    server = ts.standard_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        path = _messages_path(ts.ROOM_A, ts.TOPIC_A1)
+        server.fail[path] = 503
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: app._loops["topic"].failures >= 1)
+        app.on_app_blur(events.AppBlur())
+        server.fail.clear()
+        # The backoff retry still fires while blurred, and the loop recovers.
+        await until(pilot, lambda: app._loops["topic"].failures == 0)
+        await until(pilot, lambda: "flight options" in body_text(app))
+        # A failing loop whose timer was lost is re-armed by focus.
+        server.fail[path] = 503
+        app.on_app_focus(events.AppFocus())
+        await until(pilot, lambda: app._loops["topic"].failures >= 1)
+        await until(pilot, lambda: not app._loops["topic"].busy)
+        app._loops["topic"].stop_timer()
+        server.fail.clear()
+        app.on_app_focus(events.AppFocus())
+        await until(pilot, lambda: app._loops["topic"].failures == 0)
+
+
+async def test_a_mark_dropped_after_a_retry_clears_the_offline_banner() -> None:
+    server = ts.standard_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        path = _read_path(ts.ROOM_A, ts.TOPIC_A1)
+        server.fail[path] = 503
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: app._loops["publish"].failures >= 1)
+        app.open_conversation(state.PEPPER)
+        server.fail[path] = 404
+        await until(pilot, lambda: not app._owed)
+        await until(pilot, lambda: "offline" not in plain(app, "#header"))
+        assert app._loops["publish"].failures == 0
+
+
+async def test_an_empty_queue_clears_a_stale_publish_failure() -> None:
+    server = ts.standard_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        app._loops["publish"].failures = 2
+        app._run("publish")
+        assert app._loops["publish"].failures == 0
+        await until(pilot, lambda: "offline" not in plain(app, "#header"))
 
 
 async def test_a_result_that_lands_after_quit_is_ignored() -> None:

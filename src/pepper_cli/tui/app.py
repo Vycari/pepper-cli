@@ -227,6 +227,9 @@ class PepperApp(App[None]):
             self.fail_fatal(str(exc))
             return
         if on_error is not None and on_error(exc):
+            # The server answered, so the connection is fine: no backoff, no offline banner.
+            self._loops[kind].failures = 0
+            self.refresh_chrome()
             self._run(kind)
             return
         self._loops[kind].failures += 1
@@ -261,9 +264,12 @@ class PepperApp(App[None]):
 
     def on_app_blur(self, _event: events.AppBlur) -> None:
         """Pause the open-topic poll. A request already in flight still lands, but its rows
-        are not marked read until focus returns (§6.3: open *and focused* = read)."""
+        are not marked read until focus returns (§6.3: open *and focused* = read). A backoff
+        retry stays armed: recovering from a failure does not wait for focus."""
         self._blurred = True
-        self._loops["topic"].stop_timer()
+        topic = self._loops["topic"]
+        if topic.failures == 0:
+            topic.stop_timer()
 
     def on_app_focus(self, _event: events.AppFocus) -> None:
         self._blurred = False
@@ -322,12 +328,16 @@ class PepperApp(App[None]):
 
     def _poll_now(self) -> None:
         """Focus came back: poll every healthy loop now, except one whose request is already
-        in flight (its result will land and re-arm it). Started only once ``whoami`` has."""
+        in flight (its result will land and re-arm it). A failing loop keeps its backoff, and
+        is re-armed if nothing is pending for it. Started only once ``whoami`` has."""
         if not self._started:
             return
         for kind in ("rail", "dm", "topic", "publish"):
-            if self._loops[kind].failures == 0:
+            loop = self._loops[kind]
+            if loop.failures == 0:
                 self._run(kind)
+            elif loop.timer is None and not loop.busy:
+                self._schedule(kind)
 
     # ------------------------------------------------------------------ startup
 
@@ -550,6 +560,11 @@ class PepperApp(App[None]):
                 on_error=lambda exc, tid=topic_id, t=through: self._publish_failed(tid, t, exc),
             )
             return
+        loop = self._loops["publish"]
+        if loop.failures:  # nothing left to retry, so nothing is failing
+            loop.failures = 0
+            loop.stop_timer()
+            self.refresh_chrome()
 
     def _published_ok(self, topic_id: str, through: str, kept: str) -> None:
         self._published[topic_id] = through
