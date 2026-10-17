@@ -552,10 +552,12 @@ class PepperApp(App[None]):
         self._run("mentions")
 
     def _mentions_failed(self, topic: GroupTopicSummary, exc: Exception) -> bool:
-        """A topic this token cannot read is dropped; anything else retries with backoff."""
+        """A topic this token cannot read is dropped; anything else retries with backoff,
+        behind the other due topics so one failing topic does not hold them up."""
         if isinstance(exc, ApiError) and exc.status in _PUBLISH_PERMANENT:
             self.mentions.skip(topic)
             return True
+        self.mentions.defer(topic)
         return False
 
     def _on_dm(self, history: list[ChatHistoryEntry]) -> None:

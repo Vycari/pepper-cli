@@ -175,11 +175,15 @@ class Mentions:
     #: ``topic_id -> created_at`` of the newest unread message found that mentions you. A hit
     #: shows only while the read mark is before it, so reading the topic retires it.
     hits: dict[str, datetime] = field(default_factory=dict)
+    #: ``topic_id -> order`` of topics whose last ask failed and will be retried; they go
+    #: behind every other due topic so one failing topic cannot hold the rest up.
+    deferred: dict[str, int] = field(default_factory=dict)
+    _deferrals: int = 0
 
     def due(
         self, rooms: Iterable[GroupSummary], marks: ReadMarks, *, open_topic_id: str | None
     ) -> list[tuple[str, GroupTopicSummary]]:
-        """``(room_id, topic)`` pairs to ask about, in sidebar order."""
+        """``(room_id, topic)`` pairs to ask about: sidebar order, retried topics last."""
         found: list[tuple[str, GroupTopicSummary]] = []
         for room in rooms:
             for topic in topics_by_recency(room):
@@ -188,7 +192,7 @@ class Mentions:
                     continue
                 if activity > self.checked.get(topic.topic_id, _EPOCH):
                     found.append((room.group_id, topic))
-        return found
+        return sorted(found, key=lambda pair: self.deferred.get(pair[1].topic_id, 0))
 
     def record(
         self,
@@ -220,10 +224,16 @@ class Mentions:
         self._answered(topic)
         self.hits.pop(topic.topic_id, None)
 
+    def defer(self, topic: GroupTopicSummary) -> None:
+        """Asking about ``topic`` failed and will be retried: put it behind the others."""
+        self._deferrals += 1
+        self.deferred[topic.topic_id] = self._deferrals
+
     def _answered(self, topic: GroupTopicSummary) -> None:
         activity = parse_ts(topic.last_activity_at)
         if activity is not None:
             self.checked[topic.topic_id] = activity
+        self.deferred.pop(topic.topic_id, None)
 
     def topic_mentioned(
         self, topic: GroupTopicSummary, marks: ReadMarks, *, open_topic_id: str | None

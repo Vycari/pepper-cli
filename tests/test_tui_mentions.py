@@ -103,6 +103,21 @@ async def test_a_transport_failure_retries_with_backoff_and_then_finds_the_menti
         await until(pilot, lambda: ts.TOPIC_B1 in app.mentions.hits)
 
 
+async def test_one_failing_topic_does_not_hold_up_mentions_in_the_others() -> None:
+    server = ts.standard_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        # A1 sorts first and keeps failing; B1's mention must still be found.
+        server.fail[f"/api/v1/groups/{ts.ROOM_A}/topics/{ts.TOPIC_A1}/messages"] = 500
+        server.messages[ts.TOPIC_A1].append(ts.message("m-a", NEW, "hi"))
+        server.rooms[0]["topics"][0]["last_activity_at"] = NEW
+        _activity(server, ts.TOPIC_B1, 1, mentions=[ts.ME])
+        await until(pilot, lambda: ts.TOPIC_B1 in app.mentions.hits)
+        assert _fetches(server, ts.TOPIC_A1) >= 1
+        assert ts.TOPIC_A1 not in app.mentions.checked
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 async def test_the_bell_rings_once_per_new_mention_and_only_when_asked(enabled) -> None:
     server = ts.standard_server()

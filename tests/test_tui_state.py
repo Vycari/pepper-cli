@@ -459,6 +459,34 @@ def test_a_mention_after_the_topic_was_read_is_new_again_and_an_old_hit_retires(
     assert mentions.topic_mentioned(later.topics[0], marks, open_topic_id=None)
 
 
+def test_a_topic_whose_ask_failed_goes_behind_the_other_due_topics() -> None:
+    (room,) = _rooms(
+        ts.room(
+            ts.ROOM_A,
+            "A",
+            [
+                ts.topic("t1", "One", "2026-02-02T00:00:00Z"),
+                ts.topic("t2", "Two", "2026-02-01T00:00:00Z"),
+            ],
+        )
+    )
+    marks = state.ReadMarks()
+    marks.merge_server({"t1": "2026-01-01T00:00:00Z", "t2": "2026-01-01T00:00:00Z"})
+    mentions = state.Mentions()
+
+    def order() -> list[str]:
+        return [t.topic_id for _, t in mentions.due([room], marks, open_topic_id=None)]
+
+    assert order() == ["t1", "t2"]
+    mentions.defer(room.topics[0])
+    assert order() == ["t2", "t1"]
+    mentions.defer(room.topics[1])
+    assert order() == ["t1", "t2"]  # the most recently failed goes last
+    mentions.record(room.topics[0], [], you_id=ts.ME, mark=None)
+    assert "t1" not in mentions.deferred
+    assert order() == ["t2"]
+
+
 def test_sidebar_rows_carry_the_mention_on_topic_and_collapsed_room() -> None:
     room, marks = _unread_room()
     mentions = state.Mentions()
