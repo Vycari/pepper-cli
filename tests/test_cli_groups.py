@@ -769,6 +769,16 @@ def test_messages_list_renders_attachments_reactions_edits_and_deletes(
     assert "deleted" in out
 
 
+def test_messages_list_help_describes_omitted_topic(capsys) -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["messages", "list", "--help"])
+    assert exc.value.code == 0
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "most recently active unarchived topic" in help_text
+    assert "most recent topic if all are archived" in help_text
+    assert "room's default topic" not in help_text
+
+
 def test_messages_list_resolves_default_topic_when_omitted(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api(

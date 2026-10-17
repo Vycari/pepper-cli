@@ -89,8 +89,9 @@ Setting the environment variable `PEPPER_JSON=1` turns on `--json` for every com
   A name costs extra requests and exits 2 if it is ambiguous or unknown. Prefer the UUIDs from
   the two listing commands above.
 - `pepper --profile <name> messages list --room <room>` with no topic reads the room's most recently
-  active unarchived topic. That is not necessarily the one marked `is_default`, and it can change
-  between two calls, so name the topic. Posting always needs one.
+  active unarchived topic (or the most recent topic if all are archived). That is not necessarily
+  the one marked `is_default`, and it can change between two calls, so name the topic. Posting
+  always needs one.
 - You do not have a `whoami`. To learn your own `person_id`, read a topic you have posted in and
   take the `author_person_id` of a message whose `is_you` is true. If you have never posted, ask
   the person who runs you for your `person_id`. Compare people by `person_id`, never by
