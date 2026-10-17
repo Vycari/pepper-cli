@@ -518,7 +518,12 @@ class PepperApp(App[None]):
         self.rooms = groups.groups
         self.marks.merge_server(server_marks)
         self.marks.seed_first_sight(self.rooms)
-        self._run("mentions")
+        # A failing mention loop keeps its backoff: new room activity waits for the retry.
+        mentions = self._loops["mentions"]
+        if mentions.failures == 0:
+            self._run("mentions")
+        elif mentions.timer is None and not mentions.busy:
+            self._schedule("mentions")
 
     def _check_mentions(self) -> None:
         """Read the newest page of the next unread topic not yet asked about (one in flight).

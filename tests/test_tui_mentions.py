@@ -118,6 +118,24 @@ async def test_one_failing_topic_does_not_hold_up_mentions_in_the_others() -> No
         assert ts.TOPIC_A1 not in app.mentions.checked
 
 
+async def test_room_updates_do_not_cut_a_mention_retry_short(monkeypatch) -> None:
+    monkeypatch.setattr(state, "BACKOFF_STEPS", (30.0,))
+    server = ts.standard_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        server.fail[f"/api/v1/groups/{ts.ROOM_B}/topics/{ts.TOPIC_B1}/messages"] = 500
+        _activity(server, ts.TOPIC_B1, 1, mentions=[ts.ME])
+        await until(pilot, lambda: app._loops["mentions"].failures == 1)
+        # More room activity arrives on every rail poll while the retry waits.
+        for i in range(4):
+            server.rooms[0]["topics"][0]["last_activity_at"] = f"2026-09-16T18:0{i + 1}:00+00:00"
+            server.bump()
+            await pilot.pause(0.1)
+        assert _fetches(server, ts.TOPIC_B1) == 1
+        assert app._loops["mentions"].timer is not None
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 async def test_the_bell_rings_once_per_new_mention_and_only_when_asked(enabled) -> None:
     server = ts.standard_server()
