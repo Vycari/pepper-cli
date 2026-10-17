@@ -525,6 +525,8 @@ def test_a_failed_feed_save_drops_the_old_numbers(server, capsys, monkeypatch) -
 def browser(monkeypatch):
     """A desktop session whose ``webbrowser.open`` is recorded (and may be made to fail)."""
     monkeypatch.setenv("DISPLAY", ":0")
+    for var in ("SSH_CONNECTION", "SSH_TTY", "BROWSER"):
+        monkeypatch.delenv(var, raising=False)
     calls: list[str] = []
     result = {"ok": True}
 
@@ -579,6 +581,32 @@ def test_open_over_ssh_never_launches_a_browser(server, browser, monkeypatch, ca
     assert rc == 0
     assert browser.calls == []
     assert "no browser could be opened" in err
+
+
+@pytest.mark.parametrize("var", ["SSH_CONNECTION", "SSH_TTY"])
+@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+def test_open_over_ssh_with_a_display_never_launches_a_browser(
+    server, browser, monkeypatch, capsys, var, platform
+) -> None:
+    monkeypatch.setenv(var, "10.0.0.2 51000 10.0.0.1 22")  # ssh -X: DISPLAY is set as well
+    monkeypatch.setattr(feed.sys, "platform", platform)
+    n = _numbers(capsys)["Rock & Roll"]
+    rc, _, err = _run(capsys, "feed", "show", str(n), "--open")
+    assert rc == 0
+    assert browser.calls == []
+    assert "no browser could be opened" in err
+
+
+def test_open_over_ssh_honours_an_explicit_browser(server, browser, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("SSH_CONNECTION", "10.0.0.2 51000 10.0.0.1 22")
+    monkeypatch.delenv("DISPLAY")
+    monkeypatch.setenv("BROWSER", "/remote-cli/helpers/browser.sh")
+    monkeypatch.setattr(feed.sys, "platform", "linux")
+    n = _numbers(capsys)["Rock & Roll"]
+    rc, _, err = _run(capsys, "feed", "show", str(n), "--open")
+    assert rc == 0
+    assert len(browser.calls) == 1
+    assert "opened " in err
 
 
 def test_open_treats_a_webbrowser_error_as_no_browser(server, browser, monkeypatch, capsys) -> None:

@@ -117,15 +117,21 @@ def exact_time(entry: dict[str, Any], zone: tzinfo | None) -> datetime | None:
 def open_browser(url: str) -> bool:
     """Open ``url`` in the default browser; False when none could be.
 
-    On Linux and the BSDs with no ``DISPLAY``, ``WAYLAND_DISPLAY`` or ``BROWSER`` (an SSH
-    session), ``webbrowser`` would fall back to a text browser such as lynx and take over the
-    terminal, so nothing is launched there. Everywhere else ``webbrowser.open`` decides.
+    Nothing is launched in an SSH session (``SSH_CONNECTION`` or ``SSH_TTY`` set), nor on
+    Linux and the BSDs with no ``DISPLAY`` or ``WAYLAND_DISPLAY``: there ``webbrowser`` can
+    fall back to a text browser such as lynx and take over the terminal, which ``ssh -X``
+    (``DISPLAY`` set, no graphical opener on the host) does not prevent. An explicit
+    ``BROWSER`` is the user's own choice and is always honoured (an editor's remote session
+    sets it to a helper that opens the link on the local machine). Everywhere else
+    ``webbrowser.open`` decides.
     """
-    headless = sys.platform.startswith(("linux", "freebsd", "openbsd", "netbsd")) and not any(
-        os.environ.get(v) for v in ("DISPLAY", "WAYLAND_DISPLAY", "BROWSER")
-    )
-    if headless:
-        return False
+    env = os.environ
+    if not env.get("BROWSER"):
+        if env.get("SSH_CONNECTION") or env.get("SSH_TTY"):
+            return False
+        no_display = not (env.get("DISPLAY") or env.get("WAYLAND_DISPLAY"))
+        if no_display and sys.platform.startswith(("linux", "freebsd", "openbsd", "netbsd")):
+            return False
     try:
         return bool(webbrowser.open(url))
     except webbrowser.Error:
