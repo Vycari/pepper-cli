@@ -8,8 +8,60 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 
 Part of the groups simplification (vycari/groups#249, phase 5).
 
+### Breaking
+
+`pepper next` is rebuilt from the todo list (Vycari/pepper-cli#50). Since pepper#4820 the schedule
+plan's `plans` come back empty, so `next` showed an empty Do next, only email deadlines under Due
+soon, a Later of 0, and ignored `--first`. Scripts that parse `pepper next --json` must be updated.
+
+The CLI makes no decisions here: it fetches and renders. It does no ranking, scoring or filtering by
+urgency, so every client shows the same order. Ordering belongs to the server.
+
+- `--first urgent|important|fast` is removed; argparse rejects it with exit 2. There are no plans to
+  choose between any more.
+- The sections changed: Now, Do next, Due soon and Later are now Now, Today's calendar, and Todos.
+  Todos are listed in the order Pepper returns them: due date soonest first, undated last, then
+  creation order. The top 10 show, and `--all` lists every todo (it used to list every Later item).
+  Each line carries the server's own fields as labels: due date or time (tagged `overdue` once it
+  is behind you, which never moves the todo), priority, and source when it is not `user`.
+  Email-deadline cards from Planning are no longer shown, and todo deadlines and reminders are not
+  turned into calendar rows.
+- `--room` and `--source` narrow the todos only. `--room` now reads that room's own todo list
+  (same server order), and `--source` is a case-insensitive prefix match on the todo's `source`
+  field (`user` or a producer name), not a source label or room name.
+- The `--json` shape is replaced. It was `{generated_at, source, now: [item], plan, do_next,
+  due_soon, later}`. It is now `{generated_at, timezone, source: "todos", note, now,
+  next_event, calendar: [event], todos: {count, items: [todo]}}`, where `timezone` is the account's
+  IANA zone name (null when unreadable) and every time is shown in it. `now` is one event object or null (it was a
+  list), `plan`, `do_next`, `due_soon` and `later` are gone, and `source` is always `"todos"` (it
+  was `"schedule-plan"` or `"fallback"`). Each todo item is `{id, title, due, due_is_date_only,
+  remind_at, priority, source}`, a subset of the server's todo fields with values unchanged
+  (`due` is the server's `due_date`), in the server's order; the README has the details.
+
 ### Added
 
+Part of the CLI core-coverage work (Vycari/pepper-cli#61). Each command fetches what the server
+returns and renders it; none ranks, filters, orders or decides on this side. Nothing existing
+changes, so this is additive.
+
+- `pepper feed [N] [--limit N] [--group G] [--transcript] [--read [--full]] [--json]`: what is new
+  in everything you follow, in the order the server's ranked `data.feed` gives (pepper#4852). Rows
+  carry a coloured type tag; `feed N` shows one item in full (its summary, what the server folded
+  under it, and the game block for a sports entry). `--transcript` uses the entry's `episode_id`;
+  `--read` fetches the article's page from its own site and never sends the Pepper token. A server
+  that does not rank yet gets one line saying so.
+- `pepper following list | show | search | create | delete`: manage what you follow. `create` takes
+  only a number from the last `following search` (saved per profile): search first, even for a web
+  address, then `following create 1`. It never picks a match for typed text.
+- `pepper brief [--date YYYY-MM-DD] [--now] [--json]`: your morning brief, readably. The Brief
+  document already lists editions newest first, so the first is the latest and `--date` is a lookup
+  by the edition's `date`; `--now` runs `brief.run_now`.
+- `pepper artifacts list | show | download | create | delete`: notes, links and files. `list`
+  numbers its rows (`show 2`, `download 2`, `delete 2`) and sends `--kind`, `--label`, `--search`
+  and `--limit` to the server as query parameters.
+- `pepper preferences show | edit`: the Calendar > Preferences values (timezone, addresses, work
+  days and hours, meals, workouts, weather switches). `edit` sends only the fields given; the
+  server checks the values.
 - `pepper tui`, a full-screen terminal UI (Textual): the Pepper chat and your rooms and topics in
   one view, with unread dots from the server's read marks, posting and `@` mentions, quote-reply,
   reactions, edit and delete of your own messages, older-message paging, link previews and app
@@ -36,6 +88,18 @@ Part of the groups simplification (vycari/groups#249, phase 5).
   "Other conversations".
 - Help and README no longer describe an email or text thread as a "sealed room"; no flag or JSON
   field changed.
+
+### Fixed
+
+- `pepper feed N --read` follows redirects itself: a redirect response's body is never read (it
+  used to be read in full, outside the 2 MB cap and the 45 s deadline), at most 5 hops are
+  followed, each hop is checked for a public address, and the cap and deadline cover the whole
+  fetch (VR-1cba112d, #71).
+- `pepper feed N --transcript` says "the server returned no transcript for this episode" when the
+  server's answer is empty, instead of labelling it "no transcript yet" (VR-c8b1bafa, #71).
+- `pepper following list` and `pepper feed` order groups by the server's `counts.by_group` key
+  order instead of a built-in list; a group absent from it comes last, and an older server with no
+  `by_group` gives the order the items first appear in. `--group` checks against those names.
 
 ## 0.2.0 — 2026-10-15
 

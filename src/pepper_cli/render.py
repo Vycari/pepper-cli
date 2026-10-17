@@ -1025,7 +1025,7 @@ def _format_stamp(iso: str) -> str:
     return f"{rendered} {label}" if label else rendered
 
 
-def _format_due(iso: str, date_only: bool | None = None) -> str:
+def _format_due(iso: str, date_only: bool | None = None, tz: tzinfo | None = None) -> str:
     """Render a UTC ISO-8601 due date for display.
 
     When ``date_only`` is ``True`` the server stored midnight UTC on a
@@ -1033,9 +1033,9 @@ def _format_due(iso: str, date_only: bool | None = None) -> str:
     off the UTC value with no zone conversion, exactly as the web
     applet's ``fmtDue`` does, or a client east of UTC renders a clock
     that was never there and a client west of UTC shows the wrong day.
-    Otherwise localize to the machine's own zone: ``YYYY-MM-DD`` for a
-    deadline that happens to land on local midnight, ``YYYY-MM-DD HH:MM``
-    otherwise. Falls back to the raw string if it can't be parsed —
+    Otherwise localize to ``tz``, or the machine's own zone when it is
+    ``None``: ``YYYY-MM-DD`` for a deadline that happens to land on local
+    midnight, ``YYYY-MM-DD HH:MM`` otherwise. Falls back to the raw string if it can't be parsed —
     better a verbatim timestamp than a crashed listing.
     """
     import datetime as dt
@@ -1046,7 +1046,7 @@ def _format_due(iso: str, date_only: bool | None = None) -> str:
         return iso
     if date_only:
         return parsed_utc.strftime("%Y-%m-%d")
-    parsed = parsed_utc.astimezone(_local_tz())
+    parsed = parsed_utc.astimezone(tz if tz is not None else _local_tz())
     if (parsed.hour, parsed.minute) == (0, 0):
         return parsed.strftime("%Y-%m-%d")
     return parsed.strftime("%Y-%m-%d %H:%M")
@@ -1083,82 +1083,139 @@ def _short(value: Any) -> str:
     return s
 
 
-def _next_item_line(n: int | None, item: dict[str, Any]) -> str:
-    """One Do next / Due soon / Later row from an item's own fields (plan item or todo row)."""
-    due = item.get("due") or {}
-    due_label = due.get("label") or (
-        _format_due(item["due_date"], item.get("due_is_date_only"))
-        if item.get("due_date")
-        else None
-    )
-    if due_label == "No due date":
-        due_label = None
-    elif due_label and not due_label.lower().startswith("due"):
-        due_label = f"due {due_label}"
-    bits = [
-        item.get("estimate_label"),
-        due_label,
-        item.get("source_label") or item.get("room"),
-        f"room {item['principal']}" if item.get("principal") else None,
-    ]
-    meta = f"  [dim]({_s(', '.join(b for b in bits if b))})[/dim]" if any(bits) else ""
-    head = f"{n:>2}. " if n else "  - "
-    line = f"{head}{_s(item.get('title') or '(untitled)')}{meta}"
-    if item.get("reason"):
-        line += f"\n      [dim]{_s(item['reason'])}[/dim]"
-    return line
+def _countdown(minutes: int) -> str:
+    hours, mins = divmod(minutes, 60)
+    return f"{hours}h {mins}m" if hours and mins else f"{hours}h" if hours else f"{mins}m"
+
+
+def _event_when(row: dict[str, Any]) -> str:
+    return f"{row.get('start_label') or ''}-{row.get('end_label') or ''}".strip("-")
+
+
+def _started(row: dict[str, Any], now: datetime | None) -> bool:
+    try:
+        return now is not None and datetime.fromisoformat(row["start"]) <= now
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _todo_due_label(item: dict[str, Any], now: datetime | None, zone: tzinfo | None) -> str:
+    """The server's due field as text, tagged "overdue" once it is behind ``now``.
+
+    A timed due is shown in ``zone``, the account's IANA zone, so it reads on the same clock as
+    the event labels and keeps the right offset across a DST change. With no account zone
+    (``zone`` is ``None``) it is shown in UTC, labelled, and never tagged: "today" is the
+    account's, and the machine's zone is not a stand-in for it. Presentation only: the tag never
+    moves or hides a todo."""
+    raw = item.get("due")
+    if not raw:
+        return ""
+    date_only = item.get("due_is_date_only")
+    if zone is None:
+        return f"due {_format_due(raw, date_only, UTC)}" + ("" if date_only else " UTC")
+    text = f"due {_format_due(raw, date_only, zone)}"
+    if now is not None:
+        try:
+            due = datetime.fromisoformat(raw)
+            local = now.astimezone(zone)
+            late = due.date() < local.date() if date_only else due <= local
+        except (TypeError, ValueError):
+            late = False
+        if late:
+            text += " (overdue)"
+    return text
+
+
+def _result_zone(name: Any) -> tzinfo | None:
+    """The account's zone named in a ``pepper next`` result, or ``None`` when absent or unknown."""
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    if not isinstance(name, str) or not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
 
 
 def render_next(result: dict[str, Any]) -> None:
-    """Print a ``pepper next`` result: Now, a numbered Do next, Due soon, Later."""
+    """Print a ``pepper next`` result: Now, today's calendar, and the todos in server order."""
 
     def out(text: str = "") -> None:
         _stdout.print(text, soft_wrap=not _stdout.is_terminal)
 
+    now, nxt = result.get("now"), result.get("next_event")
+    try:
+        clock: datetime | None = datetime.fromisoformat(result["generated_at"])
+    except (KeyError, ValueError):
+        clock = None
+    zone = _result_zone(result.get("timezone"))
     out("[bold]Now[/bold]")
-    for ev in result["now"]:
-        if "countdown" in ev:  # schedule-plan's next_up
-            when = f"{ev.get('start_label')}-{ev.get('end_label')}"
-            title, countdown = _s(ev.get("title") or ""), _s(ev["countdown"])
-            out(f"  {title}  [dim]{_s(when)}, {countdown}[/dim]")
-            if ev.get("leave"):
-                out(f"  [dim]leave by {_s(str(ev['leave']))}[/dim]")
-        else:
-            out(_calendar_event_line(ev))
-    if not result["now"]:
-        out("  [dim](nothing on the calendar)[/dim]")
-    do_next = result["do_next"]
-    out("\n[bold]Do next[/bold]")
-    info = result.get("plan")
-    if info and info.get("name"):
-        mark = ", Pepper's choice today" if info["chosen_by_pepper"] else ""
-        sub = _s(info.get("subtitle") or "")
-        out(f"  [bold]{_s(info['name'])}[/bold]{mark}  [dim]{sub}[/dim]")
-        diff = [o for o in info["others"] if o["differs"]]
-        if diff:
-            parts = []
-            for o in diff:
-                n = o["blocks"]
-                fits = f"fits {n} block{'' if n == 1 else 's'}"
-                head = f"starts with {o['first_block']} and " if o["first_block"] else ""
-                parts.append(f"{o['name']} {head}{fits}")
-            out(f"  [dim]{_s('; '.join(parts))}[/dim]")
-        elif info.get("agree_note"):
-            out(f"  [dim]{_s(info['agree_note'])}[/dim]")
-    if do_next["note"]:
-        out(f"  [dim]{_s(do_next['note'])}[/dim]")
-    for n, item in enumerate(do_next["items"], 1):
-        out(_next_item_line(n, item))
-    if not do_next["items"]:
-        out("  [dim](nothing)[/dim]")
-    if result["due_soon"]:
-        out("\n[bold]Due soon[/bold] [dim](next 48 hours)[/dim]")
-        for item in result["due_soon"]:
-            out(_next_item_line(None, item))
-    later = result["later"]
-    if later["count"]:
-        out(f"\n[bold]Later[/bold] [dim]({later['count']})[/dim]")
-        for item in later["items"]:
-            out(_next_item_line(None, {"title": item.get("title")}))
-        if later["count"] > len(later["items"]):
-            out(f"  [dim]... {later['count'] - len(later['items'])} more (--all)[/dim]")
+    if now:
+        left = _countdown(now["minutes_left"])
+        out(f"  {_s(now.get('title') or '')}  [dim]{_s(_event_when(now))}, {left} left[/dim]")
+        if now.get("detail"):
+            out(f"  [dim]@ {_s(now['detail'])}[/dim]")
+    elif result.get("note"):
+        # The calendar was not read: say so here, where "(no event right now)" would read as an
+        # answer about a calendar nobody looked at.
+        out(f"  [dim]{_s(result['note'])}[/dim]")
+    else:
+        out("  [dim](no event right now)[/dim]")
+    if nxt:
+        out(
+            f"  [dim]next: {_s(nxt['title'])} at {_s(nxt['start_label'] or '')}, "
+            f"in {_countdown(nxt['in_minutes'])}[/dim]"
+        )
+    elif now:
+        out("  [dim]nothing else on the calendar today[/dim]")
+    if result["calendar"]:
+        out("\n[bold]Today's calendar[/bold]")
+    for row in result["calendar"]:
+        meta = f"  [dim]@ {_s(row['detail'])}[/dim]" if row.get("detail") else ""
+        # Now shows one live event; another one running at the same time is marked here, so it
+        # does not read as still ahead.
+        if _started(row, clock):
+            meta = f"  [dim](in progress)[/dim]{meta}"
+        out(f"  {_s(_event_when(row)):<16} {_s(row.get('title') or '')}{meta}")
+    todos = result["todos"]
+    out(f"\n[bold]Todos[/bold] [dim]({todos['count']})[/dim]")
+    for n, item in enumerate(todos["items"], 1):
+        line = f"{n:>2}. {_s(item.get('title') or '(untitled)')}"
+        labels = [_todo_due_label(item, clock, zone)]
+        if item.get("priority"):
+            labels.append(f"priority {item['priority']}")
+        if item.get("source") and item["source"] != "user":
+            labels.append(f"from {item['source']}")
+        labels = [x for x in labels if x]
+        if labels:
+            line += f"  [dim]{_s(', '.join(labels))}[/dim]"
+        out(line)
+    if not todos["items"]:
+        out("  [dim](nothing open)[/dim]")
+    if todos["count"] > len(todos["items"]):
+        out(f"  [dim]... {todos['count'] - len(todos['items'])} more (--all)[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# Public helpers for the modules that draw their own views (``account_render``).
+
+
+def out_line(text: str = "") -> None:
+    """One line of rich-markup text to stdout, never folded (ids and links stay pasteable)."""
+    _stdout.print(text, soft_wrap=True)
+
+
+def out_text(text: str) -> None:
+    """Server text to stdout as it is: no markup, no highlighting."""
+    _stdout.print(sanitize_text(text), markup=False, highlight=False)
+
+
+def local_stamp(iso: object) -> str:
+    """A UTC ISO-8601 timestamp in this machine's zone, labelled (``_format_stamp``)."""
+    return _format_stamp(str(iso)) if iso else ""
+
+
+def one_line(value: object) -> str:
+    """A server field made safe for one line of markup (``_s``)."""
+    return _s(value)

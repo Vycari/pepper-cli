@@ -157,6 +157,8 @@ pepper whoami
 
 ## 4. Commands
 
+### Every command
+
 Every command except `login` and the interactive REPL takes `--json`, and also switches to JSON output when the environment variable `PEPPER_JSON` is exactly `1`, so an agent can export it once; `--json` on the command line always wins, any other value (or unset) leaves the human output, and `login` and the interactive REPL ignore it. List commands answer `{"items": [...], "next_before": CURSOR-or-null}` (unpaged lists always have `null`); a failure under `--json` is one line on stderr, `{"error": {"code", "status", "message"}}`, with stdout empty. In JSON mode nothing prompts or opens an editor: pass `--yes` to destructive commands and `--file` to `notes`/`skills` create and edit, or the command exits 2.
 
 | Command | What it does |
@@ -187,7 +189,14 @@ Every command except `login` and the interactive REPL takes `--json`, and also s
 | `pepper skills create\|edit <name> [--file PATH \| -]` | Author one of your own skills in `$EDITOR`, or from a SKILL.md file. Never takes `--room`. |
 | `pepper skills delete <name> [--yes]` | Delete one of your skills; asks for confirmation unless `--yes`. |
 | `pepper skills share <name> --room R` / `revoke <name> --room R [--yes]` | Share one of your skills with a room, or stop sharing one there. |
-| `pepper next [--room R] [--source PREFIX] [--first urgent\|important\|fast] [--all] [--json]` | What to do next: Now, a numbered Do next, Due soon (48h), Later. GETs only. `--room` takes a room name or UUID and must resolve to exactly one room; `--source` narrows by a case-insensitive prefix of the item's source label. |
+| `pepper next [--room R] [--source PREFIX] [--all] [--json]` | What is on now, today's calendar, and your open todos in the order Pepper returns them (top 10; `--all` for every todo). GETs only. `--room` takes a room name or UUID, must resolve to exactly one room, and reads that room's todos; `--source` narrows todos by a case-insensitive prefix of their source. |
+| `pepper brief [--date YYYY-MM-DD] [--now] [--json]` | Your morning brief, readably. It reads the Brief app's document and shows its first edition, which is the latest because the server sends them newest first (the CLI does no sorting). `--date` shows the edition whose `date` is that day (the app keeps about a month). `--now` asks the server to run and deliver a fresh brief: a write that queues a real run (about a minute; it arrives where your brief is delivered and the command does not wait). A view, so the run is a flag rather than a `run` verb. |
+| `pepper following list [--group G] [--json]` | What you follow, by group (Sports, Shows, Reading, Podcasts, Events), with the latest line, LIVE and new markers, and a short id. Read-only. |
+| `pepper following show ITEM [--json]` | One followed thing and its recent items. `ITEM` is the short id from `list`, a full ref, or a name prefix; an ambiguous one exits 2. |
+| `pepper following search QUERY… [--json]` | Find something to follow: a team (`utah utes`), show, podcast, or a website's address (`https://simonwillison.net`). Prints numbered matches, what you already follow first; the numbers are saved per profile for `following create N`. |
+| `pepper following create N [--json]` | Follow number N from your last `following search`. It only takes a number: search first, even for a web address (`following search https://example.com`, then `following create 1`). The CLI never picks a match for typed text. |
+| `pepper following delete ITEM [--yes] [--json]` | Stop following `ITEM` (the app keeps it, with Follow again). Asks on a terminal unless `--yes`; `--yes` is required under `--json`. |
+| `pepper feed [N] [--limit N] [--group G] [--transcript] [--read [--full]] [--json]` | What's new in everything you follow, as the Pepper server ranks it (best first; the CLI does no ranking, folding or scoring of its own). Without `N`: the server's list, numbered, each row tagged by type (sports, podcast, article, show, event) with its summary and a server-written fold line ("+2 more"). `--limit` shows the first N (20), `--group` keeps one group. With `N`: item N of the last list in full (found again by source, link and title, not rank; says so if it is gone): its summary, exact time in your timezone, what the server folded under it, and its link. `--transcript` prints a podcast's transcript (the show notes, labelled, until one exists; it only reads, never starts transcription). `--read` fetches the article from its own site (plain GET, no Pepper token or cookies, 15 s per read and 45 s in all, 2 MB, 5 redirects; public internet addresses only, so a link or redirect to localhost, a private network or a cloud metadata address is refused) and prints its title, description, author, date and the first 12 paragraphs; `--full` all. A server that does not rank yet (before pepper#4852) gets one line, `this Pepper server doesn't rank the feed yet`, and an empty list (`--json`: `{"items": [], "next_before": null, "note": ...}`). |
 | `pepper todos list [--status S] [--room R] [--json]` | List your todos, or a room's with `--room`. |
 | `pepper todos create <title…> [--details D] [--priority P] [--due D] [--room R]` | Create a todo. With `--room`, `--due` is a `YYYY-MM-DD` date. |
 | `pepper todos done\|reopen <id> [--room R]` | Tick a todo as Schedule does (closes it in your or the room's list and releases the rest of its held time), or put it back. |
@@ -228,6 +237,13 @@ Every command except `login` and the interactive REPL takes `--json`, and also s
 | `pepper notes create "<name>" [--room <group>] [--file PATH \| -]` | Create a note. Body from `$EDITOR`, or `--file PATH`/`--file -` for stdin. |
 | `pepper notes edit <note> [--room <group>] [--file PATH \| -] [--name NAME] [--if-match ETAG \| --force]` | Edit a note; sends nothing when the text is unchanged. |
 | `pepper notes delete <note> [--room <group>] [--yes]` | Delete a note; asks for confirmation unless `--yes` (off a terminal, `--yes` is required). |
+| `pepper artifacts list [--kind note\|link\|file] [--label L] [--search TEXT] [--limit N] [--room R] [--json]` | Everything you have asked Pepper to keep, of any kind (pictures, PDFs, recordings and recipe photos are files; reports and recipes are notes), newest first, numbered. `--kind`, `--label` and `--search` go to the server as query parameters (`--search` is its substring match over names and note bodies); the CLI filters nothing. The numbers are saved per profile (`artifacts-view.json`, next to the credentials, removed at `logout` and `login`) for `show`/`download`/`delete N`; if they cannot be saved the list says so and the numbers do not resolve; in `--json` each item carries `n`. `--room` lists a room's. |
+| `pepper artifacts show ARTIFACT [--json]` | One artifact: kind, type, size, labels, and its text if it has any (a note's body, a text file's preview). `ARTIFACT` is a number from the last `list` or a full id. `--json` is the server's detail (minus the rendered `body_html`). |
+| `pepper artifacts download ARTIFACT [--out PATH\|DIR\|-] [--force] [--json]` | Save a file artifact's bytes: here under its name (an extension is added from its type when the name has none), to `--out`, or to stdout with `-`. Will not overwrite without `--force`. A note or a link has no file (use `show`). `--json` emits `{"path", "bytes", "id", "name"}`. |
+| `pepper artifacts create --file PATH [--name N] [--summary S] [--label L]... [--room R] [--json]` | Upload a file as a new artifact. The server accepts pictures, PDFs, plain text, audio clips and MP4 video up to its size limit (25 MiB by default) and checks the bytes against the declared type; anything else is refused (415/413). To write a note, use `notes create`. |
+| `pepper artifacts delete ARTIFACT [--room R] [--yes] [--json]` | Delete an artifact of any kind (the server keeps it for a retention window; the CLI has no restore). Asks on a terminal; needs `--yes` otherwise. A number from a `--room` listing deletes in that room. |
+| `pepper preferences show [--json]` | Calendar > Preferences: home and work address, the account timezone, work days and hours, meals, workout time, weather switches. |
+| `pepper preferences edit [--timezone ZONE] [--home-address T] [--work-address T] [--work-days D] [--work-start HH:MM] [--work-end HH:MM] [--show N] [--hide N] [--meal NAME=HH:MM[,MIN]]... [--workout-at HH:MM] [--workout-minutes N] [--json]` | Change only the fields given; the server keeps the rest and refuses an unknown timezone or an address it cannot place. `--work-days` takes `mon,wed-fri`, `weekdays`, `weekend`, `all`, or `none` to clear them; `--show`/`--hide` take `weather,commute,precip-amount,humidity,wind,uv,severe`. Moving the timezone also moves your scheduled tasks that follow it. Times, zones and addresses are sent as typed and the server checks them (a 422 is shown). A `--meal` or `--workout-*` flag that gives only half a pair is completed from your current values, because the server takes a meal's start and minutes together. |
 | `pepper login` / `pepper logout` | Store / delete credentials. |
 
 **For agents.** `pepper agents guide` prints a skill document (frontmatter plus
@@ -448,31 +464,56 @@ backs off).
 
 ## `pepper next`
 
-Assembles what Pepper already knows into one list: **Now** (the next event, countdown, leave-by),
-**Do next** (today's Schedule plan, in its order, with reasons and estimates; when nothing is left
-it shows the plan summary then what was left out), **Due soon** (due in 48 hours and not already
-above, plus Planning's email deadlines) and **Later** (a count and the first five titles; `--all`
-lists them). The CLI never ranks. `--room R` keeps items whose room or source starts with `R`
-(case-insensitive) or whose room id is `R`; Now is never filtered. A room item carries its room id
-as `principal` (shown as `room <id>` in the text view), so `pepper todos done <todo_id> --room
-<principal>` closes it.
+What you are doing now, what is on today's calendar, and your open todos. `next` only fetches and
+renders: it does no ranking, and the server decides the order. Three sections:
 
-On a server without `GET /api/v1/calendars/schedule-plan` it falls back to the open todos list in
-the server's order, labelled unranked. "Today" and the 48-hour window are in your account's
-timezone, never the machine's.
+- **Now**: the live calendar event with the time left, and the next upcoming event.
+- **Today's calendar**: the rest of today's events that have not ended; one already running
+  beside the event in Now is marked `(in progress)`.
+- **Todos**: your open todos in the order Pepper returns them: due date soonest first, undated
+  last, then creation order. The top 10 show; `--all` lists every todo. Each line shows the
+  server's own fields: the due date or time (tagged `(overdue)` once it is behind you; that label
+  never changes a todo's position), the priority, and the source when it is not `user`.
 
-`--first urgent|important|fast` shows Do next from that one of Pepper's plans (following `same_as`)
-instead of Pepper's choice, names it, and adds one line on how the other two differ (or Pepper's
-`agree_note` when all agree). It never chooses a plan. On the fallback it prints a stderr note
-and the usual list. It never calls a write endpoint: every request is a GET, and it never calls
-`schedule-now`. Your token has no scopes, so the server doesn't enforce this, and a few of those
-GETs update server-side caches (the requests document, a Google token refresh).
+The todos come from your open todo list (`GET /api/v1/todos?status=open`), or from a room's own
+list with `--room R` (a room name or UUID, resolved to exactly one room). `--source PREFIX` keeps
+todos whose `source` (`user`, or a producer name) starts with `PREFIX`, case-insensitively. Both
+narrow todos only; Now and the calendar are never filtered.
 
-`--json` prints `{"generated_at", "source": "schedule-plan"|"fallback", "now": [item],
-"plan": {"first", "name", "subtitle", "chosen_by_pepper", "agree_note", "others": [{"first",
-"name", "same_as", "summary", "first_block", "blocks", "differs"}]} (null on the fallback),
-"do_next": {"note", "items"}, "due_soon": [item], "later": {"count", "items"}}`. Items keep the
-server's own fields; `note` is the plan summary, or the unranked notice on the fallback.
+Today's events come from the schedule plan (`GET /api/v1/calendars/schedule-plan`, `your_day`); when
+the plan is unavailable it reads the calendar range instead, and when that fails too it says
+`calendar unavailable` under Now and shows the todos alone. A plan or calendar response that can't
+be parsed counts as unavailable too.
+
+"Today" and every time shown are in your account's timezone (the plan's `timezone`, else
+whoami's), never the machine's. When neither can be read, there is no account timezone: the
+calendar is skipped with the note above, timed dues are shown in UTC and labelled `UTC`, and no
+todo is tagged `(overdue)`, since "today" isn't known.
+
+Every request is a GET; `next` never calls `schedule-now`. Your token has no scopes, so the server
+doesn't enforce this, and a few of those GETs update server-side caches (the requests document, a
+Google token refresh).
+
+`--json` prints `{"generated_at", "timezone", "source": "todos", "note", "now", "next_event",
+"calendar": [event], "todos": {"count", "items": [todo]}}`:
+
+- `timezone` is the account's IANA zone name (for example `America/Los_Angeles`), or null when it
+  could not be read. `generated_at` carries that zone's current offset.
+
+- `note` is a string when the calendar could not be read, else null. When it is set, `now`,
+  `next_event` and `calendar` are empty because nothing was read, not because the day is free.
+- `now` is the live event, or null: `{"id", "title", "start", "end", "start_label", "end_label",
+  "detail", "minutes_left"}`.
+- `next_event` is null, or the next upcoming event: the same fields as `now` with `in_minutes` in
+  place of `minutes_left`.
+- `calendar` is today's other events that have not ended, including any running at the same time
+  as `now` (as `now` without `minutes_left`).
+- `todos.count` is the total after `--room` and `--source`; `todos.items` is that list in the order
+  Pepper returns it, cut to 10 unless `--all`, each `{"id", "title", "due", "due_is_date_only",
+  "remind_at", "priority", "source"}`. These are a subset of the server's todo fields with values
+  passed through unchanged; one is renamed: `due` is the server's `due_date` (a UTC instant;
+  midnight UTC on a named day when `due_is_date_only` is true) or null. `pepper todos list --json`
+  has the full rows.
 
 ## Troubleshooting
 

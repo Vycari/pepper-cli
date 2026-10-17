@@ -10,6 +10,10 @@ command is `pepper`. User documentation is `README.md`.
 - `src/pepper_cli/cli.py` — command definitions and dispatch (`__main__.py` is the entry point).
 - `api_client.py` — the HTTP/SSE client and the wire models that mirror the server.
 - `render.py` — all terminal output. `next_view.py` — the `pepper next` view.
+- `feed.py`, `following_*.py`, `brief_view.py`, `artifacts_view.py`, `preferences_view.py`,
+  `numbered_view.py`, `*_render.py`, `article_reader.py` — the feed, following, brief, artifacts and
+  preferences commands. They fetch and render what the server returns; the CLI holds no business
+  logic (ranking, filtering, choosing).
 - `credentials.py`, `secret.py` — the credentials file and the `SecretStr` wrapper for tokens.
 - `provider/fs.py` — filesystem provider helpers.
 - `agent_skill.py`, `skill_doc.py`, `data/agent-skill/SKILL.md` — the bundled agent skill.

@@ -1,11 +1,10 @@
-"""``pepper next``: plan ordering, left_out and 404 fallbacks, --room, --json shape."""
+"""``pepper next``: events, todos in server order, fallbacks, --room/--source, --json shape."""
 
 from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -14,44 +13,65 @@ from pepper_cli import cli, credentials, next_view
 from pepper_cli.secret import SecretStr
 
 NOW = datetime(2026, 10, 2, 16, 0, tzinfo=UTC)
-DAY = NOW.date().isoformat()
-NEXT_UP = {"title": "Standup", "start_label": "9am", "end_label": "9:30am", "countdown": "in 5 min"}
+TODAY = NOW.date()
 
 
-def _at(minutes: int = 0, hours: int = 0) -> str:
-    return (NOW + timedelta(minutes=minutes, hours=hours)).isoformat()
+def _at(minutes: int = 0, hours: int = 0, days: int = 0) -> str:
+    return (NOW + timedelta(minutes=minutes, hours=hours, days=days)).isoformat()
 
 
-def _todo(title: str, room: str, due: str | None = None) -> dict:
+def _day(days: int) -> str:
+    return (NOW + timedelta(days=days)).date().isoformat()
+
+
+def _todo(
+    title: str,
+    *,
+    due: str | None = None,
+    at: str | None = None,
+    high: bool = False,
+    remind: str | None = None,
+    source: str = "user",
+) -> dict:
+    """A ``GET /api/v1/todos`` row. ``due`` is a day (date-only), ``at`` an instant."""
+    raw = at or (f"{due}T00:00:00Z" if due else None)
     return {
-        "todo_id": title,
+        "id": title,
         "title": title,
-        "source_label": room,
-        "reason": f"why {title}",
-        "estimate_label": "about 30 min",
-        "due": {"label": f"Due {due}" if due else "No due date", "date": due, "at": None},
+        "details": None,
+        "status": "open",
+        "source": source,
+        "priority": "high" if high else None,
+        "due_date": raw,
+        "due_is_date_only": None if raw is None else at is None,
+        "created_at": "2026-10-01T00:00:00Z",
+        "done_at": None,
+        "source_ref": None,
+        "remind_at": remind,
     }
 
 
-def _block(title: str, room: str, start: int, end: int) -> dict:
-    return {**_todo(title, room), "type": "todo", "start": _at(start), "end": _at(end)}
+def _event(title: str, start: int, end: int, detail: str | None = None) -> dict:
+    return {
+        "event_id": title,
+        "title": title,
+        "start": _at(start),
+        "end": _at(end),
+        "start_label": f"{start}m",
+        "end_label": f"{end}m",
+        "detail": detail,
+    }
 
 
-def _plan(blocks: list[dict], left_out: list[dict] | None = None) -> dict:
-    tomorrow = (NOW + timedelta(days=1)).date().isoformat()
+def _plan(events=()) -> dict:
     return {
         "now": NOW.isoformat(),
-        "active": "urgent",
-        "next_up": NEXT_UP,
-        "plans": [
-            {
-                "philosophies": ["urgent"],
-                "summary": "Nothing fits in the time that is left today.",
-                "blocks": blocks,
-                "left_out": left_out or [],
-            }
-        ],
-        "more": {"count": 7, "items": [_todo("Water plants", "Personal", tomorrow)]},
+        "timezone": "UTC",
+        "plans": [],
+        "your_day": {
+            "items": list(events),
+            "tomorrow": {"items": [_event("Tomorrow", 1500, 1560)]},
+        },
     }
 
 
@@ -97,138 +117,338 @@ def _run(capsys, *argv: str) -> str:
     return capsys.readouterr().out
 
 
-def _mock_plan(server, plan: dict, cards: list[dict] | None = None) -> None:
-    server.add("/api/v1/calendars/schedule-plan", plan)
-    server.add("/api/v1/calendars/planning", {"cards": cards or []})
+def _mock(server, todos=(), events=(), plan: bool = True) -> None:
+    if plan:
+        server.add("/api/v1/calendars/schedule-plan", _plan(events))
+    else:
+        server.add("/api/v1/calendars/schedule-plan", {"detail": "nope"}, 404)
+    server.add("/api/v1/todos", list(todos))
 
 
-def test_plan_keeps_order_drops_past_blocks_and_dedupes_due_soon(server, capsys) -> None:
-    cards = [
-        {"kind": "email_deadline", "title": "Water plants", "when": _at(hours=20)},
-        {"kind": "email_deadline", "title": "File form", "when": _at(hours=5)},
+def _json(server, capsys, *argv: str, todos=(), events=(), plan: bool = True) -> dict:
+    _mock(server, todos, events, plan)
+    return json.loads(_run(capsys, "--json", *argv))
+
+
+def _titles(data: dict) -> list[str]:
+    return [t["title"] for t in data["todos"]["items"]]
+
+
+def test_live_event_is_now_with_time_left_and_the_next_event(server, capsys) -> None:
+    events = [_event("Past", -90, -30), _event("Standup", -10, 20), _event("Dentist", 60, 120)]
+    data = _json(server, capsys, events=events)
+    assert data["source"] == "todos" and data["note"] is None
+    assert data["now"]["title"] == "Standup" and data["now"]["minutes_left"] == 20
+    assert data["next_event"]["title"] == "Dentist"
+    assert data["next_event"]["in_minutes"] == 60
+    assert [r["title"] for r in data["calendar"]] == ["Dentist"]  # tomorrow and past are not shown
+
+
+def test_no_live_event_means_no_now_and_todos_carry_the_servers_fields(server, capsys) -> None:
+    data = _json(server, capsys, todos=[_todo("A", due=_day(1), high=True, remind=_at(30))])
+    assert data["now"] is None and data["next_event"] is None
+    assert data["todos"]["items"] == [
+        {
+            "id": "A",
+            "title": "A",
+            "due": f"{_day(1)}T00:00:00Z",
+            "due_is_date_only": True,
+            "remind_at": _at(30),
+            "priority": "high",
+            "source": "user",
+        }
     ]
-    blocks = [_block("Past", "Pepper", -60, -30), _block("B", "Pepper", 10, 40)]
-    _mock_plan(server, _plan([*blocks, _block("A", "Home", 40, 70)]), cards)
-    data = json.loads(_run(capsys, "--json"))
-    assert [i["title"] for i in data["do_next"]["items"]] == ["B", "A"]
-    assert [i["title"] for i in data["due_soon"]] == ["Water plants", "File form"]  # once each
-    assert data["later"] == {"count": 6, "items": []}
-    assert data["source"] == "schedule-plan" and data["now"][0]["title"] == "Standup"
 
 
-def test_nothing_ahead_shows_summary_then_left_out_in_order(server, capsys) -> None:
-    left_out = [_todo("Z", "Pepper"), _todo("Y", "Pepper")]
-    _mock_plan(server, _plan([_block("Past", "Pepper", -60, -30)], left_out))
-    out = _run(capsys)
-    assert out.index("Nothing fits") < out.index(" 1. Z") < out.index(" 2. Y")
-    assert out.index("Now") < out.index("Do next")
+def test_todos_keep_the_servers_order_and_are_capped(server, capsys) -> None:
+    """No reordering: an overdue item stays where the server put it."""
+    todos = [
+        _todo("far high", due=_day(90), high=True),
+        _todo("late", due=_day(-3)),
+        _todo("high nodue", high=True),
+        _todo("today", due=_day(0)),
+    ]
+    todos += [_todo(f"filler{n}") for n in range(12)]
+    data = _json(server, capsys, todos=todos)
+    assert _titles(data)[:4] == ["far high", "late", "high nodue", "today"]
+    everything = json.loads(_run(capsys, "--json", "--all"))
+    assert _titles(everything) == [t["title"] for t in todos]
+    assert data["todos"]["count"] == 16 and len(data["todos"]["items"]) == 10
+    assert len(everything["todos"]["items"]) == 16
 
 
-def test_unplaced_left_out_lands_in_later_when_blocks_are_ahead(server, capsys) -> None:
-    _mock_plan(server, _plan([_block("B", "Pepper", 10, 40)], [_todo("Unplaced", "Pepper")]))
-    data = json.loads(_run(capsys, "--json"))
-    assert data["later"]["count"] == 7
-    assert [i["title"] for i in data["later"]["items"]] == ["Unplaced"]
+def test_empty_plans_are_not_needed(server, capsys) -> None:
+    """The bug in #50: schedule-plan answers with no plans, and todos still show."""
+    data = _json(server, capsys, todos=[_todo("A", due=_day(1))])
+    assert _titles(data) == ["A"]
 
 
-def test_due_soon_window_is_48_elapsed_hours_across_dst() -> None:
-    # 2026-11-01 02:00 is a fall-back in New York: 48 elapsed hours end at 11:00 on Nov 2, not noon.
-    now = datetime(2026, 10, 31, 12, 0, tzinfo=ZoneInfo("America/New_York"))
-    assert next_view._in_window(None, "2026-11-02T10:30:00-05:00", now)
-    assert not next_view._in_window(None, "2026-11-02T11:30:00-05:00", now)
+def test_source_narrows_todos_but_keeps_events(server, capsys) -> None:
+    todos = [_todo("Mine"), _todo("Theirs", source="gmail-scan")]
+    data = _json(server, capsys, "--source", "GMAIL", todos=todos, events=[_event("E", -5, 30)])
+    assert _titles(data) == ["Theirs"]
+    assert data["now"]["title"] == "E"
 
 
-def test_source_narrows_by_case_insensitive_prefix(server, capsys) -> None:
-    _mock_plan(server, _plan([_block("B", "Pepper Design", 10, 40), _block("A", "Home", 40, 70)]))
-    data = json.loads(_run(capsys, "--json", "--source", "pepper"))
-    assert [i["title"] for i in data["do_next"]["items"]] == ["B"]
-    assert data["due_soon"] == [] and data["later"]["count"] == 0
+def test_room_reads_that_rooms_todo_list(server, capsys) -> None:
+    gid = _rooms(server, "Trip")["Trip"]
+    server.add("/api/v1/calendars/schedule-plan", _plan())
+    server.add(f"/api/v1/groups/{gid}/todos", [_todo("Book hotel")])
+    assert _titles(json.loads(_run(capsys, "--json", "--room", "trip"))) == ["Book hotel"]
+    assert f"/api/v1/groups/{gid}/todos" in server.seen
 
 
-def test_404_falls_back_to_unranked_todos_and_never_calls_schedule_now(server, capsys) -> None:
-    server.add("/api/v1/calendars/schedule-plan", {}, 404)
-    event = {"summary": "Dentist", "start": _at(hours=1), "calendar_id": "me"}
-    shared = {"summary": "Mrs Gee", "start": _at(minutes=-5), "end": _at(hours=2), "is_next": True}
-    cals = [{"id": "me", "is_primary": True}, {"id": "sh", "writable": False, "shared": True}]
-    free = {"summary": "Focus", "start": _at(minutes=10), "busy": False, "calendar_id": "me"}
-    days = [{"date": DAY, "events": [{**shared, "calendar_id": "sh"}, free, event]}]
-    server.add("/api/v1/calendars/range", {"calendars": cals, "days": days})
-    server.add("/api/v1/calendars/planning", {}, 404)
-    row = {"status": "open", "source": "user", "created_at": _at(), "due_date": None}
+def test_missing_plan_falls_back_to_the_calendar_range(server, capsys) -> None:
+    server.add("/api/v1/whoami", {"user_id": "u", "display_name": "U", "timezone": "UTC"})
     server.add(
-        "/api/v1/todos",
-        [{**row, "id": "t1", "title": "First"}, {**row, "id": "t2", "title": "Second"}],
+        "/api/v1/calendars/range",
+        {
+            "calendars": [{"id": "me", "is_primary": True}, {"id": "other"}],
+            "days": [
+                {
+                    "date": TODAY.isoformat(),
+                    "events": [
+                        {
+                            "id": "1",
+                            "calendar_id": "me",
+                            "title": "Lunch",
+                            "start": _at(30),
+                            "end": _at(90),
+                        },
+                        {
+                            "id": "2",
+                            "calendar_id": "other",
+                            "title": "Not mine",
+                            "start": _at(40),
+                            "end": _at(50),
+                        },
+                        {
+                            "id": "3",
+                            "calendar_id": "me",
+                            "title": "All day",
+                            "all_day": True,
+                            "start": _at(0),
+                            "end": _at(0),
+                        },
+                        {
+                            "id": "4",
+                            "calendar_id": "me",
+                            "title": "Gone",
+                            "start": _at(-90),
+                            "end": _at(-30),
+                        },
+                    ],
+                }
+            ],
+        },
     )
+    data = _json(server, capsys, todos=[_todo("A")], plan=False)
+    assert [r["title"] for r in data["calendar"]] == ["Lunch"]
+    # The range rows carry no labels, so the CLI formats them (the Windows crash path).
+    assert data["calendar"][0]["start_label"] == "4:30pm"
+    assert data["calendar"][0]["end_label"] == "5:30pm"
+    assert data["note"] is None and _titles(data) == ["A"]
+    assert "/api/v1/calendars/schedule-plan" in server.seen
+
+
+@pytest.mark.parametrize(
+    ("iso", "label"),
+    [
+        ("2026-10-02T00:05:00+00:00", "12:05am"),
+        ("2026-10-02T09:30:00+00:00", "9:30am"),
+        ("2026-10-02T12:00:00+00:00", "12:00pm"),
+        ("2026-10-02T23:59:00+00:00", "11:59pm"),
+    ],
+)
+def test_clock_label_has_no_platform_specific_strftime(iso: str, label: str) -> None:
+    """``%-I`` raises on Windows; the label is built by hand and reads the same everywhere."""
+    assert next_view._label(iso, UTC) == label
+
+
+def test_calendar_down_still_shows_todos_with_a_note(server, capsys) -> None:
+    server.add("/api/v1/whoami", {"user_id": "u", "display_name": "U", "timezone": "UTC"})
+    server.add("/api/v1/calendars/range", {"detail": "boom"}, 500)
+    data = _json(server, capsys, todos=[_todo("A")], plan=False)
+    assert data["note"] == next_view.NO_CALENDAR_NOTE and data["calendar"] == []
+    assert _titles(data) == ["A"]
+
+
+def test_calendar_down_is_said_under_now_not_shown_as_a_free_slot(server, capsys) -> None:
+    server.add("/api/v1/calendars/range", {"detail": "boom"}, 500)
+    _mock(server, [_todo("A")], plan=False)
     out = _run(capsys)
-    assert "unranked: Pepper's Schedule ranking isn't available" in out
-    assert "Dentist" in out and "Mrs Gee" not in out and "Focus" not in out
-    assert out.index("First") < out.index("Second")
-    assert "/api/v1/calendars/schedule-plan" in server.seen  # and nothing unregistered ran
+    assert "(no event right now)" not in out
+    assert out.index("Now") < out.index(next_view.NO_CALENDAR_NOTE) < out.index("Todos")
+
+
+def test_a_non_json_plan_body_falls_back_instead_of_aborting(server, capsys) -> None:
+    """A captive portal answers 200 with HTML; that is a failed read, not a crash."""
+    server.add("/api/v1/calendars/range", {"days": [], "calendars": []})
+    _mock(server, [_todo("A")])
+    server.routes["/api/v1/calendars/schedule-plan"] = httpx.Response(
+        200, text="<html>login</html>"
+    )
+    data = json.loads(_run(capsys, "--json"))
+    assert _titles(data) == ["A"] and data["note"] is None
+    assert "/api/v1/calendars/range" in server.seen
+
+
+def test_plan_and_whoami_both_down_still_shows_the_todos(server, capsys) -> None:
+    server.add("/api/v1/whoami", {"detail": "unavailable"}, 503)
+    data = _json(server, capsys, todos=[_todo("A")], plan=False)
+    assert data["note"] == next_view.NO_CALENDAR_NOTE and _titles(data) == ["A"]
+    assert "/api/v1/calendars/range" not in server.seen
+
+
+def test_next_never_writes(server, capsys) -> None:
+    _json(server, capsys, todos=[_todo("A")], events=[_event("E", 5, 30)])
+    # _Server asserts every request is a GET; schedule-now is not registered either.
+    assert "/api/v1/calendars/schedule-now" not in server.seen
+
+
+def test_first_flag_is_gone(server, capsys) -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["next", "--first", "urgent"])
+    assert exc.value.code == 2
+    assert "--first" in capsys.readouterr().err
 
 
 def test_json_shape_is_stable(server, capsys) -> None:
-    _mock_plan(server, _plan([_block("B", "Pepper", 10, 40)]))
-    data = json.loads(_run(capsys, "--json"))
-    assert list(data) == ["generated_at", "source", "plan", "now", "do_next", "due_soon", "later"]
-    assert set(data["do_next"]) == {"note", "items"} and set(data["later"]) == {"count", "items"}
-
-
-def _three(fast_blocks: list[dict], same: bool = False) -> dict:
-    keys = {"urgent": "Urgent first", "important": "Important first", "fast": "Fast first"}
-    urgent = [_block("U", "Pepper", 10, 40), _block("V", "Pepper", 40, 70)]
-    plan = _plan(urgent)
-    plan["philosophies"] = [{"key": k, "name": n, "subtitle": f"{n}."} for k, n in keys.items()]
-    base = {"summary": "s", "left_out": [], "agree_note": "All three give the same plan today"}
-    plan["plans"] = [
-        {**base, "philosophies": ["urgent"], "same_as": None, "blocks": urgent},
-        {**base, "philosophies": ["important"], "same_as": "urgent", "blocks": []},
-        {
-            **base,
-            "philosophies": ["fast"],
-            "same_as": "urgent" if same else None,
-            "blocks": [] if same else fast_blocks,
-        },
+    data = _json(server, capsys, todos=[_todo("A")], events=[_event("E", 5, 30)])
+    assert list(data) == [
+        "generated_at",
+        "timezone",
+        "source",
+        "note",
+        "now",
+        "next_event",
+        "calendar",
+        "todos",
     ]
-    return plan
+    assert set(data["todos"]) == {"count", "items"}
+    assert list(data["next_event"]) == [
+        "id",
+        "title",
+        "start",
+        "end",
+        "start_label",
+        "end_label",
+        "detail",
+        "in_minutes",
+    ]
 
 
-def test_first_picks_plan_through_same_as(server, capsys) -> None:
-    _mock_plan(server, _three([_block("F", "Pepper", 10, 40)]))
-    data = json.loads(_run(capsys, "--first", "important", "--json"))
-    assert [i["title"] for i in data["do_next"]["items"]] == ["U", "V"]  # via same_as
-    assert data["plan"]["first"] == "important" and not data["plan"]["chosen_by_pepper"]
-    fast = next(o for o in data["plan"]["others"] if o["first"] == "fast")
-    assert (fast["first_block"], fast["blocks"]) == ("F", 1)
-    default = json.loads(_run(capsys, "--json"))
-    assert default["plan"]["first"] == "urgent" and default["plan"]["chosen_by_pepper"]
-
-
-def test_comparison_line_when_plans_differ_and_agree_note_when_not(server, capsys) -> None:
-    _mock_plan(server, _three([_block("F", "Pepper", 10, 40)]))
-    out = _run(capsys, "--first", "fast")
-    assert "Fast first" in out and "Urgent first starts with U and fits 2 blocks" in out
-    _mock_plan(server, _three([], same=True))
+def test_text_view_reads_in_sections_and_labels_the_servers_fields(server, capsys) -> None:
+    _mock(
+        server,
+        [
+            _todo("Scan", source="gmail-scan"),
+            _todo("Pay tax", due=_day(-2), high=True),
+            _todo("Timed", at=_at(minutes=-30)),
+            _todo("Later", due=_day(3)),
+        ],
+        [_event("Standup", -10, 20, "Room 1, 2 Main St"), _event("Later event", 60, 90)],
+    )
     out = _run(capsys)
-    assert "Urgent first, Pepper's choice today" in out
-    assert "All three give the same plan today" in out
+    assert out.index("Now") < out.index("Today's calendar") < out.index("Todos")
+    assert "Standup" in out and "20m left" in out and "@ Room 1" in out
+    assert "next: Later event at" in out
+    assert out.index("Scan") < out.index("Pay tax")  # server order, not priority order
+    assert f"due {_day(-2)} (overdue)" in out and "priority high" in out
+    assert "from gmail-scan" in out
+    lines = {
+        ln.split(".", 1)[1].split("  ")[0].strip(): ln for ln in out.splitlines() if ". " in ln
+    }
+    assert "(overdue)" in lines["Timed"] and "(overdue)" not in lines["Later"]
 
 
-def test_first_on_fallback_notes_on_stderr_and_still_lists(server, capsys) -> None:
-    for path in ("schedule-plan", "range", "planning"):
-        server.add(f"/api/v1/calendars/{path}", {}, 404)
+def test_timed_due_reads_on_the_accounts_clock_not_the_machines(
+    server, capsys, monkeypatch
+) -> None:
+    """Events are labelled in the account's zone; a timed due beside them must be too."""
+    from pepper_cli import render
+
+    monkeypatch.setattr(render, "_local_tz", lambda: UTC)  # the machine says UTC
+    server.add("/api/v1/calendars/schedule-plan", {**_plan(), "timezone": "America/Los_Angeles"})
+    server.add("/api/v1/todos", [_todo("Call", at="2026-10-02T18:00:00+00:00")])
+    out = _run(capsys)
+    assert "due 2026-10-02 11:00" in out and "18:00" not in out
+
+
+def test_timed_due_across_a_dst_change_uses_the_zones_rules_not_todays_offset(
+    server, capsys
+) -> None:
+    """Today is PDT (-07:00); Nov 2 is PST (-08:00). 17:00Z that day is 09:00, not 10:00."""
+    server.add("/api/v1/calendars/schedule-plan", {**_plan(), "timezone": "America/Los_Angeles"})
+    server.add("/api/v1/todos", [_todo("Renew", at="2026-11-02T17:00:00+00:00")])
+    data = json.loads(_run(capsys, "--json"))
+    assert data["timezone"] == "America/Los_Angeles"
+    assert "due 2026-11-02 09:00" in _run(capsys)
+
+
+def test_plan_without_a_timezone_takes_the_zone_from_whoami(server, capsys) -> None:
+    plan = _plan()
+    del plan["timezone"]
+    server.add("/api/v1/calendars/schedule-plan", plan)
     server.add("/api/v1/todos", [])
-    assert cli.main(["next", "--first", "fast"]) == 0
-    cap = capsys.readouterr()
-    assert "plans aren't available" in cap.err and "Do next" in cap.out
+    server.add("/api/v1/whoami", {"user_id": "u", "display_name": "U", "timezone": "Europe/Paris"})
+    data = json.loads(_run(capsys, "--json"))
+    assert data["timezone"] == "Europe/Paris"
+    assert data["generated_at"].endswith("+02:00")
 
 
-def test_room_items_carry_their_room_id_and_room_accepts_it(server, capsys) -> None:
-    gid = _rooms(server, "Trip")["Trip"]
-    room = {**_block("B", "Trip", 10, 40), "principal": gid}
-    _mock_plan(server, _plan([room, _block("A", "Home", 40, 70)]))
-    data = json.loads(_run(capsys, "--json", "--room", gid))
-    assert [(i["title"], i["principal"]) for i in data["do_next"]["items"]] == [("B", gid)]
-    assert f"room {gid}" in _run(capsys)
+def test_no_account_zone_shows_utc_labelled_and_never_overdue(server, capsys) -> None:
+    """Plan and whoami both down: no guessing from the machine's zone."""
+    server.add("/api/v1/whoami", {"detail": "unavailable"}, 503)
+    _mock(
+        server,
+        [_todo("Late", due=_day(-3)), _todo("Timed", at="2026-10-01T09:30:00+00:00")],
+        plan=False,
+    )
+    out = _run(capsys)
+    assert "(overdue)" not in out
+    assert f"due {_day(-3)}" in out and "due 2026-10-01 09:30 UTC" in out
+    data = json.loads(_run(capsys, "--json"))
+    assert data["timezone"] is None and data["note"] == next_view.NO_CALENDAR_NOTE
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"title": "X", "start": _at(10), "end": "not-a-time"},
+        {"title": "X", "start": "2026-10-02T17:00:00", "end": "2026-10-02T18:00:00"},  # naive
+    ],
+)
+def test_a_calendar_that_cant_be_parsed_is_a_calendar_that_couldnt_be_read(
+    server, capsys, bad
+) -> None:
+    _mock(server, [_todo("A")], [bad])
+    data = json.loads(_run(capsys, "--json"))
+    assert data["note"] == next_view.NO_CALENDAR_NOTE and _titles(data) == ["A"]
+    assert data["now"] is None and data["calendar"] == []
+    assert next_view.NO_CALENDAR_NOTE in _run(capsys)
+
+
+def test_a_second_event_running_now_is_marked_in_progress(server, capsys) -> None:
+    _mock(
+        server,
+        events=[_event("Standup", -20, 10), _event("Review", -20, 70), _event("Lunch", 60, 90)],
+    )
+    cal = _run(capsys).split("Today's calendar")[1].split("Todos")[0].splitlines()
+    review = next(ln for ln in cal if "Review" in ln)
+    lunch = next(ln for ln in cal if "Lunch" in ln)
+    assert "(in progress)" in review and "(in progress)" not in lunch
+
+
+def test_text_view_when_empty(server, capsys) -> None:
+    _mock(server)
+    out = _run(capsys)
+    assert "(no event right now)" in out and "(nothing open)" in out
+
+
+def test_text_view_hint_when_more_than_shown(server, capsys) -> None:
+    _mock(server, [_todo(f"t{n}") for n in range(12)])
+    assert "... 2 more (--all)" in _run(capsys)
 
 
 def _rooms(server, *names: str) -> dict[str, str]:
@@ -255,15 +475,6 @@ def _rooms(server, *names: str) -> dict[str, str]:
         },
     )
     return ids
-
-
-def test_room_resolves_a_name_to_its_id(server, capsys) -> None:
-    ids = _rooms(server, "Trip", "Home")
-    room = {**_block("B", "Trip", 10, 40), "principal": ids["Trip"]}
-    other = {**_block("A", "Home", 40, 70), "principal": ids["Home"]}
-    _mock_plan(server, _plan([room, other]))
-    data = json.loads(_run(capsys, "--json", "--room", "trip"))
-    assert [i["title"] for i in data["do_next"]["items"]] == ["B"]
 
 
 def test_room_that_matches_nothing_is_exit_2_not_an_empty_list(server, capsys) -> None:
@@ -300,10 +511,10 @@ def test_room_uuid_that_is_not_one_of_yours_is_not_found(server, capsys) -> None
 
 def test_room_uuid_matches_case_insensitively_and_uses_the_canonical_id(server, capsys) -> None:
     gid = _rooms(server, "Trip")["Trip"]
-    room = {**_block("B", "Trip", 10, 40), "principal": gid}
-    _mock_plan(server, _plan([room, _block("A", "Home", 40, 70)]))
+    server.add("/api/v1/calendars/schedule-plan", _plan())
+    server.add(f"/api/v1/groups/{gid}/todos", [_todo("B")])
     data = json.loads(_run(capsys, "--json", "--room", gid.upper()))
-    assert [i["title"] for i in data["do_next"]["items"]] == ["B"]
+    assert _titles(data) == ["B"]
 
 
 @pytest.mark.parametrize(

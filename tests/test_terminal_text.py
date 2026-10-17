@@ -430,16 +430,25 @@ _RENDER_PATHS: list[tuple[str, Callable[[], None], bool]] = [
         "next",
         lambda: render.render_next(
             {
-                "now": [{"title": H, "countdown": H, "start_label": H, "end_label": H}],
-                "plan": {
-                    "name": H,
-                    "subtitle": H,
-                    "chosen_by_pepper": True,
-                    "others": [{"differs": True, "blocks": 1, "first_block": H, "name": H}],
+                "note": H,
+                "now": {
+                    "title": H,
+                    "start_label": H,
+                    "end_label": H,
+                    "minutes_left": 5,
+                    "detail": H,
                 },
-                "do_next": {"note": H, "items": [{"title": H, "reason": H, "room": H}]},
-                "due_soon": [],
-                "later": {"count": 1, "items": [{"title": H}]},
+                "next_commitment": {"title": H, "start_label": H, "in_minutes": 5},
+                "due_today": [{"title": H}],
+                "calendar": [
+                    {"title": H, "start_label": H, "end_label": H, "detail": H},
+                    {"kind": "deadline", "title": H, "start_label": H, "passed": True},
+                    {"kind": "deadline", "title": H, "start_label": H, "source_time": "remind"},
+                ],
+                "todos": {
+                    "count": 12,
+                    "items": [{"title": H, "reasons": [H], "source": H}],
+                },
             }
         ),
         True,
