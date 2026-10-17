@@ -14,6 +14,8 @@ from pepper_cli import (
     artifacts_view,
     cli,
     credentials,
+    feed,
+    following_search,
     numbered_view,
     preferences_view,
 )
@@ -395,6 +397,21 @@ def test_listing_save_uses_a_private_unshared_temp_file(tmp_path, monkeypatch) -
     assert [p.name for p in view.state_path().parent.iterdir() if p.suffix == ".tmp"] == []
     if os.name == "posix":
         assert view.state_path().stat().st_mode & 0o777 == 0o600
+
+
+def test_logout_forgets_the_saved_listings(server, capsys) -> None:
+    cli.main(["artifacts", "list", "--json"])
+    following_search.save("q", [{"n": 1, "ref": "r"}])
+    feed.VIEW.save([{"id": "x"}])
+    paths = [
+        artifacts_view.VIEW.state_path(),
+        feed.VIEW.state_path(),
+        following_search.state_path(),
+    ]
+    assert all(p.exists() for p in paths)
+    assert cli.main(["logout"]) == 0
+    assert not any(p.exists() for p in paths)
+    assert cli.main(["logout"]) == 0  # nothing left to remove is fine
 
 
 # ---------------------------------------------------------------------------

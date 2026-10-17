@@ -63,6 +63,12 @@ def write_state(path: Path, doc: dict[str, Any]) -> SaveProblem | None:
         return SaveProblem(why, False)
 
 
+def forget(path: Path) -> None:
+    """Remove a saved listing (sign-out, sign-in); a missing file is fine."""
+    with contextlib.suppress(OSError):
+        path.unlink(missing_ok=True)
+
+
 class NumberedView:
     def __init__(self, state_name: str, noun: str, list_command: str) -> None:
         self.state_name = state_name

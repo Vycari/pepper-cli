@@ -1935,6 +1935,7 @@ def _login_manual(server_url: str, raw_token: str | None) -> int:
         return 1
 
     path = credentials.save(server_url=server_url, token=token)
+    _forget_listings()
     render.info(
         render.styled(
             "Logged in as ",
@@ -1981,6 +1982,7 @@ def _login_agent(server_url: str, token: SecretStr) -> int:
         return 1
 
     path = credentials.save(server_url=server_url, token=token)
+    _forget_listings()
     render.info(f"Logged in as an agent member of {rooms.total} room(s).")
     render.info(f"Credentials written to {path}.")
     return 0
@@ -2079,6 +2081,7 @@ def _login_device(server_url: str, *, open_browser: bool) -> int:
         return 1
 
     path = credentials.save(server_url=server_url, token=token)
+    _forget_listings()
     render.info(
         render.styled(
             "Logged in as ",
@@ -7012,6 +7015,7 @@ def cmd_agents_guide(args: argparse.Namespace) -> int:
 def cmd_logout(args: argparse.Namespace) -> int:
     path = credentials.credentials_path()
     removed = credentials.delete()
+    _forget_listings()
     message = (
         f"Removed credentials at {path}."
         if removed
@@ -7250,6 +7254,16 @@ def _warn_unsaved(args: argparse.Namespace, problem: numbered_view.SaveProblem |
 def _unsaved_meta(problem: numbered_view.SaveProblem | None) -> dict[str, str]:
     """The ``--json`` list envelope's note when the numbers were not saved."""
     return {} if problem is None else {"note": f"{problem.message}; numbers were not saved"}
+
+
+def _forget_listings() -> None:
+    """Drop this profile's saved numbered listings, so another sign-in never resolves them."""
+    for path in (
+        feed.VIEW.state_path(),
+        artifacts_view.VIEW.state_path(),
+        following_search.state_path(),
+    ):
+        numbered_view.forget(path)
 
 
 def cmd_following_search(args: argparse.Namespace) -> int:
