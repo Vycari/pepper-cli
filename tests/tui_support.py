@@ -6,15 +6,24 @@ state is only mutated by the test body or under the GIL by the handler's own app
 
 from __future__ import annotations
 
+import asyncio
+import io
 import json
 import threading
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
+from rich.console import Console
+from textual.widgets import Static
 
 from pepper_cli import api_client
 from pepper_cli.secret import SecretStr
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from textual.app import App
 
 ME = "00000000-0000-0000-0000-00000000aaaa"
 ROOM_A = "00000000-0000-0000-0000-0000000000a1"
@@ -22,6 +31,25 @@ ROOM_B = "00000000-0000-0000-0000-0000000000a2"
 TOPIC_A1 = "00000000-0000-0000-0000-0000000000b1"
 TOPIC_A2 = "00000000-0000-0000-0000-0000000000b2"
 TOPIC_B1 = "00000000-0000-0000-0000-0000000000b3"
+
+
+async def until(pilot, condition: Callable[[], bool], *, seconds: float = 5.0) -> None:
+    deadline = asyncio.get_running_loop().time() + seconds
+    while not condition():
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError("condition not reached")
+        await pilot.pause(0.02)
+
+
+def plain(app: App, selector: str) -> str:
+    """The text a Static currently shows, with Rich layout applied."""
+    console = Console(width=100, file=io.StringIO(), record=True, force_terminal=False)
+    console.print(app.query_one(selector, Static).content)
+    return console.export_text()
+
+
+def body_text(app: App) -> str:
+    return plain(app, "#thread-body")
 
 
 def topic(topic_id: str, name: str, at: str, **over: Any) -> dict[str, Any]:

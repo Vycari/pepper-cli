@@ -19,7 +19,7 @@ from pepper_cli.tui import state
 from pepper_cli.tui.composer import Composer
 from pepper_cli.tui.thread import ThreadScroll
 from tests import tui_support as ts
-from tests.test_tui_app import body_text, plain, until
+from tests.tui_support import body_text, plain, until
 
 A1 = state.Conversation(ts.ROOM_A, ts.TOPIC_A1)
 A2 = state.Conversation(ts.ROOM_A, ts.TOPIC_A2)
@@ -65,8 +65,11 @@ def status_line(app: tui_app.PepperApp) -> str:
     return plain(app, "#dm-status")
 
 
-def blur(app: tui_app.PepperApp) -> None:
+async def blur(pilot, app: tui_app.PepperApp) -> None:
+    """Stop the topic cadence, and let a poll already in flight land, so that a poll the
+    test then drives by hand (``app._run("topic")``) is not skipped as a duplicate."""
     app.on_app_blur(events.AppBlur())
+    await until(pilot, lambda: not app._loops["topic"].busy)
 
 
 # ---------------------------------------------------------------- room sends: failure paths
@@ -99,7 +102,7 @@ async def test_a_duplicate_after_a_timeout_is_stored_once() -> None:
     app = tui_app.PepperApp(server.client())
     async with app.run_test(size=(120, 40)) as pilot:
         await open_topic(pilot, app)
-        blur(app)
+        await blur(pilot, app)
         # The server stores the message, then the answer is lost.
         server.raise_after[POST_A1] = httpx.ReadTimeout("lost")
         await send(pilot, app, "booked it")
@@ -161,7 +164,7 @@ async def test_sending_while_rows_arrive_keeps_the_pending_row_last_and_unbadged
     app = tui_app.PepperApp(server.client())
     async with app.run_test(size=(120, 40)) as pilot:
         await open_topic(pilot, app)
-        blur(app)
+        await blur(pilot, app)
         await send(pilot, app, "mine first")
         await until(pilot, lambda: "sending…" in body_text(app))
         server.messages[ts.TOPIC_A1].append(
@@ -210,7 +213,8 @@ async def test_a_quote_reply_sends_the_parent_and_shows_it_on_the_pending_row() 
         await pilot.press("up", "r")
         await send(pilot, app, "the 9am one")
         await until(pilot, lambda: "sending…" in body_text(app))
-        assert "flight options" in body_text(app).split("the 9am one")[0]
+        assert app.pending.items[0].quote_text == "flight options"
+        assert "Replying to" not in plain(app, "#quote")  # sent: the quote left the composer
         gate.set()
         await until(pilot, lambda: server.posts)
         assert server.posts[0]["parent_message_id"] == "m1"

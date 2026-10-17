@@ -2,22 +2,16 @@
 
 from __future__ import annotations
 
-import asyncio
-import io
 import threading
-from typing import TYPE_CHECKING
 
 import pytest
-from rich.console import Console
 from textual import events
 from textual.widgets import Static
 
 from pepper_cli.tui import app as tui_app
 from pepper_cli.tui import state
 from tests import tui_support as ts
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
+from tests.tui_support import body_text, plain, until
 
 
 @pytest.fixture(autouse=True)
@@ -29,25 +23,6 @@ def _fast_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(state, "RAIL_INTERVAL", 0.05)
     monkeypatch.setattr(state, "DM_INTERVAL", 0.05)
     monkeypatch.setattr(state, "BACKOFF_STEPS", (0.05, 0.05, 0.05, 0.05))
-
-
-async def until(pilot, condition: Callable[[], bool], *, seconds: float = 5.0) -> None:
-    deadline = asyncio.get_running_loop().time() + seconds
-    while not condition():
-        if asyncio.get_running_loop().time() > deadline:
-            raise AssertionError("condition not reached")
-        await pilot.pause(0.02)
-
-
-def plain(app: tui_app.PepperApp, selector: str) -> str:
-    """The text a Static currently shows, with Rich layout applied."""
-    console = Console(width=100, file=io.StringIO(), record=True, force_terminal=False)
-    console.print(app.query_one(selector, Static).content)
-    return console.export_text()
-
-
-def body_text(app: tui_app.PepperApp) -> str:
-    return plain(app, "#thread-body")
 
 
 async def test_opens_on_the_pepper_dm_and_lists_rooms() -> None:
