@@ -392,6 +392,11 @@ def test_artifact_helpers() -> None:
     assert artifacts_view.guess_mime("a.unknownext") == "application/octet-stream"
     assert artifacts_view.safe_filename("../../etc/passwd") == "_.._etc_passwd"
     assert artifacts_view.safe_filename("  ") == "artifact"
+    assert artifacts_view.safe_filename('Receipt? <1>: "a|b*"') == "Receipt_ _1_ _a_b_"
+    assert artifacts_view.safe_filename("CON") == "_CON"
+    assert artifacts_view.safe_filename("nul.txt") == "_nul.txt"
+    assert artifacts_view.safe_filename("Console") == "Console"
+    assert artifacts_view.download_name("Receipt?", "image/png") == "Receipt_.png"
     assert artifacts_view.download_name("Shot", "image/png") == "Shot.png"
     assert artifacts_view.download_name("a.pdf", "application/pdf") == "a.pdf"
 

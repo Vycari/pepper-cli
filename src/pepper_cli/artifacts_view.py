@@ -64,11 +64,23 @@ def guess_mime(filename: str) -> str:
     return mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
 
+#: Device names Windows reserves in any folder, with or without an extension.
+_WINDOWS_RESERVED = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{i}" for i in range(1, 10)}
+    | {f"lpt{i}" for i in range(1, 10)}
+)
+
+
 def safe_filename(name: str, fallback: str = "artifact") -> str:
     """One path segment made from an artifact's name (which is user text and may hold
-    separators, control characters or be empty)."""
-    cleaned = re.sub(r"[\x00-\x1f\x7f/\\]+", "_", name or "").strip(" .")
-    return cleaned[:200] or fallback
+    separators, control characters or be empty), valid on Windows as well as POSIX: the
+    characters Windows refuses (``<>:"|?*``) become ``_`` and a reserved device name gets one."""
+    cleaned = re.sub(r'[\x00-\x1f\x7f/\\<>:"|?*]+', "_", name or "").strip(" .")
+    cleaned = cleaned[:200].rstrip(" .")
+    if cleaned.split(".")[0].strip().lower() in _WINDOWS_RESERVED:
+        cleaned = f"_{cleaned}"
+    return cleaned or fallback
 
 
 def write_download(target: Path, content: bytes, *, force: bool) -> None:
