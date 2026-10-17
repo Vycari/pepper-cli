@@ -8,7 +8,25 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 
 Part of the groups simplification (vycari/groups#249, phase 5).
 
+### Added
+
+- `pepper tui`, a full-screen terminal UI (Textual): the Pepper chat and your rooms and topics in
+  one view, with unread dots from the server's read marks, posting and `@` mentions, quote-reply,
+  reactions, edit and delete of your own messages, older-message paging, link previews and app
+  cards, a fuzzy jump (Ctrl+K) and per-conversation drafts. `--root PATH` shares a folder with
+  Pepper's turns as `pepper chat --root` does. Design: `planning/terminal-ui.md`.
+- In the TUI, a topic or collapsed room with unread activity that mentions you shows `@` instead
+  of the dot, and the terminal title reads `@ Pepper`. `PEPPER_TUI_BELL=1` also rings the terminal
+  bell when a mention is first found (off by default).
+
 ### Changed
+
+- Bare `pepper` opens the TUI when stdin and stdout are both a terminal. It still opens the REPL
+  when either is piped or redirected, when `TERM=dumb`, or when `PEPPER_NO_TUI=1`; `pepper chat`
+  is the explicit way to the REPL. `pepper <message>`, every other command, and the exit codes
+  and stdout of non-interactive runs are unchanged.
+- `textual` is now a core dependency; it is imported only when the TUI starts, so other commands
+  do not pay for it.
 
 - `pepper rooms create` now requires `--name`. Without one (or with a blank one) it fails locally,
   exit 2, with a message saying so, and sends nothing. The service answers an unnamed create with

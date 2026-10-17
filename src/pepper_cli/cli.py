@@ -255,7 +255,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     or a top-level flag, the whole arg list is treated as a single
     chat message — ``pepper what's on my calendar`` shorthand for
     ``pepper chat "what's on my calendar"``. Bare ``pepper`` (no args)
-    opens the REPL. The explicit ``pepper chat ...`` form keeps
+    opens the TUI on a terminal and the REPL otherwise
+    (:func:`_bare_opens_tui`). The explicit ``pepper chat ...`` form keeps
     working unchanged.
     """
     # First thing, every subcommand: a console-script's argv[0] is the
@@ -283,11 +284,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     if not argv:
-        # Bare ``pepper`` — drop straight into the REPL via the chat
-        # subcommand with no message. Most CLIs print help here, but
+        # Bare ``pepper`` opens the full-screen TUI on a real terminal and
+        # the REPL (the chat subcommand with no message) everywhere else:
+        # piped stdin or stdout, ``TERM=dumb``, or ``PEPPER_NO_TUI=1``
+        # (planning/terminal-ui.md §10). Most CLIs print help here, but
         # interactive tools (psql, python, node) open a REPL and that's
         # the natural shape for this one.
-        argv = ["chat"]
+        argv = ["tui"] if _bare_opens_tui() else ["chat"]
     elif argv[0] not in subcommand_names and not argv[0].startswith("-"):
         # Implicit chat: anything that isn't a subcommand name and
         # doesn't look like a flag becomes a chat message. We let the
@@ -372,6 +375,21 @@ class _RejectUnappliedProfile(argparse.Action):
             "exactly once, spelled in full, as the first argument "
             "(pepper --profile NAME <command> ...)."
         )
+
+
+def _bare_opens_tui() -> bool:
+    """Whether bare ``pepper`` opens the TUI rather than the REPL.
+
+    Only an interactive terminal on both stdin and stdout qualifies, and
+    ``TERM=dumb`` or a truthy ``PEPPER_NO_TUI`` (the same spellings as
+    ``PEPPER_NO_IMPLICIT_CHAT``) keeps the REPL. Anything that is not a
+    terminal (a pipe, a redirect, a script) gets the REPL exactly as before.
+    """
+    if os.environ.get("PEPPER_NO_TUI", "").strip().lower() not in ("", "0", "false", "no"):
+        return False
+    if os.environ.get("TERM", "").strip().lower() == "dumb":
+        return False
+    return bool(sys.stdout.isatty() and _stdin_is_tty())
 
 
 def _reject_command_typo(first: str, subcommand_names: frozenset[str]) -> int | None:

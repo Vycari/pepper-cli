@@ -350,3 +350,120 @@ def test_an_answered_turn_gives_up_on_its_rows_after_the_window_and_is_not_activ
     assert state.DmTurn(text="q", phase="checking").active
     assert not state.DmTurn(text="q").active
     assert state.DmTurn(text="q").known_ids() == set()
+
+
+# ---------------------------------------------------------------------------
+# Mentions (P4, §15 C)
+
+
+def _mention_msg(mid: str, at: str, **over) -> api_client.GroupMessage:
+    return api_client.group_message_from_dict(ts.message(mid, at, mentions=[ts.ME], **over))
+
+
+def _unread_room():
+    (room,) = _rooms(
+        ts.room(
+            ts.ROOM_A,
+            "A",
+            [
+                ts.topic("t1", "One", "2026-02-01T00:00:00Z"),
+                ts.topic("t2", "Two", "2026-02-01T00:00:00Z"),
+            ],
+        )
+    )
+    marks = state.ReadMarks()
+    marks.merge_server({"t1": "2026-01-31T00:00:00+00:00", "t2": "2026-02-01T00:00:00+00:00"})
+    return room, marks
+
+
+def test_mentions_asks_only_about_unread_topics_and_once_per_activity() -> None:
+    room, marks = _unread_room()
+    mentions = state.Mentions()
+    due = mentions.due([room], marks, open_topic_id=None)
+    assert [(r, t.topic_id) for r, t in due] == [(ts.ROOM_A, "t1")]  # t2 is read
+    assert mentions.due([room], marks, open_topic_id="t1") == []  # on screen, so no fetch
+    mentions.record(room.topics[0], [], you_id=ts.ME, mark=marks.marks["t1"])
+    assert mentions.due([room], marks, open_topic_id=None) == []
+    # New activity on the same topic is asked about again.
+    (newer,) = _rooms(ts.room(ts.ROOM_A, "A", [ts.topic("t1", "One", "2026-02-02T00:00:00Z")]))
+    assert len(mentions.due([newer], marks, open_topic_id=None)) == 1
+
+
+def test_mentions_counts_only_unread_rows_from_others_that_name_you() -> None:
+    room, marks = _unread_room()
+    topic = room.topics[0]
+    mark = marks.marks["t1"]
+    mentions = state.Mentions()
+    after, before = "2026-02-01T00:00:00+00:00", "2026-01-30T00:00:00+00:00"
+    ignored = [
+        _mention_msg("old", before),  # already read
+        _mention_msg("mine", after, is_you=True),  # your own message
+        _mention_msg("gone", after, is_deleted=True),
+        _msg("plain", after),  # no mentions
+        api_client.group_message_from_dict(ts.message("other", after, mentions=["someone-else"])),
+    ]
+    assert mentions.record(topic, ignored, you_id=ts.ME, mark=mark) is False
+    assert not mentions.topic_mentioned(topic, marks, open_topic_id=None)
+    assert mentions.record(topic, [*ignored, _mention_msg("hit", after)], you_id=ts.ME, mark=mark)
+    assert mentions.topic_mentioned(topic, marks, open_topic_id=None)
+    assert mentions.room_mentioned(room, marks, open_topic_id=None)
+    # Already known: not "newly" mentioned again (the bell rings once).
+    assert mentions.record(topic, [_mention_msg("hit", after)], you_id=ts.ME, mark=mark) is False
+    assert mentions.topic_mentioned(topic, marks, open_topic_id=None)
+
+
+def test_a_mention_stops_showing_once_the_topic_is_read_or_open() -> None:
+    room, marks = _unread_room()
+    topic = room.topics[0]
+    mentions = state.Mentions()
+    mentions.record(
+        topic, [_mention_msg("hit", "2026-02-01T00:00:00+00:00")], you_id=ts.ME, mark=None
+    )
+    assert mentions.topic_mentioned(topic, marks, open_topic_id=None)
+    assert not mentions.topic_mentioned(topic, marks, open_topic_id="t1")
+    marks.merge("t1", state.parse_ts("2026-02-01T00:00:00+00:00"))
+    assert not mentions.topic_mentioned(topic, marks, open_topic_id=None)
+    assert not state.any_mention([room], marks, mentions, current=state.PEPPER)
+
+
+def test_mentions_without_an_identity_never_match_and_skip_stops_asking() -> None:
+    room, marks = _unread_room()
+    topic = room.topics[0]
+    mentions = state.Mentions()
+    assert (
+        mentions.record(
+            topic, [_mention_msg("hit", "2026-02-01T00:00:00Z")], you_id=None, mark=None
+        )
+        is False
+    )
+    mentions.hits.add("t1")
+    mentions.skip(topic)
+    assert "t1" not in mentions.hits
+    assert mentions.due([room], marks, open_topic_id=None) == []
+
+
+def test_sidebar_rows_carry_the_mention_on_topic_and_collapsed_room() -> None:
+    room, marks = _unread_room()
+    mentions = state.Mentions()
+    mentions.record(
+        room.topics[0], [_mention_msg("hit", "2026-02-01T00:00:00+00:00")], you_id=ts.ME, mark=None
+    )
+    for manual, keys in (
+        ({}, {"room:" + ts.ROOM_A}),
+        ({ts.ROOM_A: True}, {"room:" + ts.ROOM_A, "topic:t1"}),
+    ):
+        rows = state.build_sidebar(
+            [room],
+            marks,
+            current=state.PEPPER,
+            manual=manual,
+            show_all=set(),
+            pepper_dot=False,
+            mentions=mentions,
+        )
+        assert {r.key for r in rows if r.mention} == keys
+    plain_rows = state.build_sidebar(
+        [room], marks, current=state.PEPPER, manual={}, show_all=set(), pepper_dot=False
+    )
+    assert not any(r.mention for r in plain_rows)
+    assert any(r.unread for r in plain_rows)

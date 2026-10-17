@@ -1,11 +1,12 @@
 # `pepper` — the Pepper command-line client
 
 A small terminal client for talking to Pepper over the `/api/v1` HTTP API:
-one-shot messages, an interactive REPL, and read-only trajectory inspection.
+one-shot messages, a full-screen terminal UI for your rooms and Pepper chat, an interactive
+REPL, and read-only trajectory inspection.
 It authenticates with a **personal access token (PAT)** scoped to your own
 user — it never sees your Google credentials and never acts as anyone else.
 
-It depends only on `httpx`, `rich`, and `prompt_toolkit` (no dependency on
+It depends only on `httpx`, `rich`, `prompt_toolkit`, and `textual` (no dependency on
 the Pepper server package).
 
 The package is published as `vycari-pepper`; the command it installs is `pepper`.
@@ -77,7 +78,7 @@ chatting. Trade-off: a one-word chat message that happens to be near a command
 name (`pepper note`) gets the hint too; send it with `pepper chat note`. Agents
 should set `PEPPER_NO_IMPLICIT_CHAT=1`, which turns implicit chat off entirely:
 any first word that isn't a command exits 2. `pepper chat ...` and bare `pepper`
-(the REPL) still work.
+still work.
 
 ### Working in this repo — always run the source
 
@@ -160,12 +161,12 @@ Every command except `login` and the interactive REPL takes `--json`, and also s
 
 | Command | What it does |
 | --- | --- |
-| `pepper` | Open the interactive REPL (shorthand for `pepper chat`). |
+| `pepper` | On a terminal, open the full-screen UI (`pepper tui`). With stdin or stdout piped or redirected, `TERM=dumb`, or `PEPPER_NO_TUI=1`, open the interactive REPL (shorthand for `pepper chat`) as before. |
 | `pepper <message>` | Send a one-shot message — multi-word, no quotes needed. |
-| `pepper chat ["msg"]` | One-shot with a message, or the REPL with none. |
+| `pepper chat ["msg"]` | One-shot with a message, or the REPL with none (the way back to the REPL on a terminal). |
 | `pepper chat --root PATH ["msg"]` | Same, but let this session read files under `PATH` (repeatable). |
 | `pepper whoami [--json]` | Print the user behind the current credentials. |
-| `pepper tui` | Full-screen terminal UI: read and post in your rooms, and chat with Pepper. Needs a terminal; see [`pepper tui`](#pepper-tui). |
+| `pepper tui` | Full-screen terminal UI: read and post in your rooms, and chat with Pepper. Needs a terminal; bare `pepper` opens it on one. See [`pepper tui`](#pepper-tui). |
 | `pepper chat "msg" --json` | One-shot chat; prints one JSON line per event, `{"kind", "payload"}`. The REPL ignores `--json`. |
 | `pepper calendar [WINDOW] [--planning] [--room R] [--json]` | Your calendar, or a room's with `--room` (any window except `schedule`; the room view has no weather, drive or schedule-plan layers). |
 | `pepper apps show SLUG [--room R] [--json]` | An app's data document, `{"rev", "data"}`, yours or the room's. |
@@ -373,6 +374,12 @@ Notes:
 
 ## `pepper tui`
 
+Bare `pepper` opens this view when stdin and stdout are both a terminal. The REPL is still what
+you get from `pepper chat`, from bare `pepper` when either end is piped or redirected or
+`TERM=dumb`, and from bare `pepper` with `PEPPER_NO_TUI=1` set (any value but empty, `0`, `false`
+or `no`). `pepper <message>` and every other command are unchanged: exit codes and stdout of a
+non-interactive run do not depend on any of this.
+
 A full-screen view of your messages: Pepper first, then your rooms by recency with their topics
 nested under the open room. Unread dots come from the server's read marks, and a topic you open
 is marked read.
@@ -403,6 +410,13 @@ The composer at the bottom posts to whatever is open:
 - The sidebar shows the first five topics of a room with a "Show more" row, an archived
   fold, an "Inactive" fold for rooms quiet for a week, and a "New topic" row.
 - Each conversation keeps its own draft while you move around.
+- **Mentions**: a topic (or a collapsed room) with unread activity that mentions you shows `@`
+  in place of the dot, and the terminal title reads `@ Pepper`. The room list carries no mention
+  flag, so when a topic turns unread the TUI reads its newest page of messages once (one request
+  per new activity, one at a time) and looks for your id. A topic with more unread messages than
+  one page can miss an older mention. The open topic needs none of this: a message that mentions
+  you shows in the accent colour. Set `PEPPER_TUI_BELL=1` to also ring the terminal bell when a
+  mention is first found in another topic; it is off by default.
 
 `pepper tui --root PATH` (repeatable; `--tools-root` is an alias) lets Pepper read files under
 `PATH` during chat turns, exactly as `pepper chat --root` does: read-only, enforced on this
