@@ -7310,10 +7310,6 @@ def cmd_following_create(args: argparse.Namespace) -> int:
                 f"No candidate {n} in the last search; run `pepper following search QUERY` first.",
             )
             return 2
-        if chosen.get("following"):
-            msg = f"Already following {chosen.get('name')}."
-            _emit({"ok": True, "message": msg}, args, lambda: render.info(msg))
-            return 0
         result = _following_action(
             api, "follow", {"ref": chosen["ref"], "payload": chosen.get("payload") or {}}
         )

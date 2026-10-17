@@ -286,12 +286,18 @@ def test_search_then_create_a_url_by_number(server, capsys) -> None:
     assert rc == 0 and server.bodies[-1][1]["params"]["ref"] == "feeds:feed:new"
 
 
-def test_create_by_number_already_following_sends_nothing(server, capsys) -> None:
+def test_create_always_asks_the_server_even_for_a_row_marked_following(server, capsys) -> None:
+    # The saved "following" flag is a snapshot: the follow may have been deleted since the
+    # search, so the CLI sends the follow and the server says what is true now.
     _search_returns(server, yours=[MINE])
     _run(capsys, "following", "search", "eagles")
+    _run(capsys, "following", "delete", "eagles", "--yes")
     server.bodies.clear()
     rc, _, err = _run(capsys, "following", "create", "1")
-    assert rc == 0 and "Already following" in err and server.bodies == []
+    assert rc == 0 and "Now following" in err
+    assert server.bodies == [
+        (ACT + "follow", {"params": {"ref": MINE["ref"], "payload": MINE["payload"]}})
+    ]
 
 
 def test_a_failed_search_save_drops_the_old_list_so_create_follows_nothing(
