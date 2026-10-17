@@ -240,3 +240,92 @@ def test_backoff_steps_cap_at_thirty() -> None:
 
 def test_lookback_is_ten_seconds() -> None:
     assert timedelta(seconds=10) == state.LOOKBACK
+
+
+# ---------------------------------------------------------------- posting (phase 2)
+
+_ROSTER = [
+    api_client.GroupRosterMember(person_id="pepper", display_name="Pepper", is_pepper=True),
+    api_client.GroupRosterMember(person_id="p-al", display_name="Al"),
+    api_client.GroupRosterMember(person_id="p-allen", display_name="Allen Hu"),
+    api_client.GroupRosterMember(person_id="p-ada", display_name="Ada Lovelace"),
+    api_client.GroupRosterMember(person_id="p-ada2", display_name="Ada"),
+]
+
+
+def test_mention_ids_match_whole_names_longest_first() -> None:
+    assert state.mention_ids("hi @Allen Hu and @al", _ROSTER) == ("p-allen", "p-al")
+    assert state.mention_ids("@Allenby", _ROSTER) == ()  # a name must end at a non-word char
+    assert state.mention_ids("@Ada Lovelace", _ROSTER) == ("p-ada",)  # the span is consumed
+    assert state.mention_ids("@Ada Lovelace and @Ada.", _ROSTER) == ("p-ada", "p-ada2")
+    assert state.mention_ids("mail al@example.com", _ROSTER) == ()
+    assert state.mention_ids("no mentions", []) == ()
+
+
+def test_mention_query_needs_an_at_that_starts_a_word() -> None:
+    assert state.mention_query("hello @Al") == "Al"
+    assert state.mention_query("@") == ""
+    assert state.mention_query("@Ada Lo") == "Ada Lo"
+    assert state.mention_query("me@example") is None
+    assert state.mention_query("plain text") is None
+    assert state.mention_query("line one\n@x") is not None
+
+
+def test_roster_matches_any_word_prefix_in_roster_order() -> None:
+    assert [m.person_id for m in state.roster_matches("lo", _ROSTER)] == ["p-ada"]
+    assert [m.person_id for m in state.roster_matches("al", _ROSTER)] == ["p-al", "p-allen"]
+    assert len(state.roster_matches("", _ROSTER, limit=2)) == 2
+
+
+def test_quote_snippet_is_the_first_non_blank_line_cut_short() -> None:
+    assert state.quote_snippet("\n  first line \nsecond") == "first line"
+    long = "x" * (state.QUOTE_SNIPPET_CHARS + 10)
+    snippet = state.quote_snippet(long)
+    assert len(snippet) == state.QUOTE_SNIPPET_CHARS and snippet.endswith("…")
+    assert state.quote_snippet("") == ""
+
+
+def test_pending_sends_retry_keeps_the_key_and_confirm_drops_stored_rows() -> None:
+    conv = state.Conversation(ts.ROOM_A, ts.TOPIC_A1)
+    other = state.Conversation(ts.ROOM_A, ts.TOPIC_A2)
+    sends = state.PendingSends()
+    sends.add(state.PendingSend(key="k1", conversation=conv, body="one"))
+    sends.add(state.PendingSend(key="k2", conversation=other, body="two"))
+    first = sends.next_queued()
+    assert first is not None and first.key == "k1"
+    assert not sends.retry("k1")  # only a failed send is retried
+    first.status, first.error = "failed", "HTTP 500"
+    assert sends.next_queued() is not None and sends.next_queued().key == "k2"
+    assert sends.retry("k1")
+    assert (first.key, first.status, first.error) == ("k1", "queued", "")
+    assert not sends.retry("missing")
+    first.status, first.server_id = "sent", "srv-1"
+    assert sends.confirm(other, {"srv-1"}) == []  # another topic's store
+    assert sends.confirm(conv, {"m0"}) == []
+    assert sends.confirm(conv, {"srv-1"}) == ["k1"]
+    assert [p.key for p in sends.items] == ["k2"]
+    assert sends.in_conversation(other)[0].body == "two"
+
+
+def _entry(eid: str, role: str) -> api_client.ChatHistoryEntry:
+    return api_client.ChatHistoryEntry(
+        id=eid, role=role, text="t", channel="terminal", created_at="2026-09-16T09:00:00Z"
+    )
+
+
+def test_dm_turn_lands_by_id_or_by_snapshot_only_while_checking() -> None:
+    before = {"h1": _entry("h1", "user"), "h2": _entry("h2", "assistant")}
+    after = {**before, "u1": _entry("u1", "user"), "a1": _entry("a1", "assistant")}
+    turn = state.DmTurn(text="q", snapshot=frozenset(before))
+    assert not turn.user_landed(after)  # queued: never sent, so never in history
+    turn.phase = "streaming"
+    assert turn.user_landed(after) and not turn.user_landed(before)
+    assert not turn.reply_landed(after)  # a reply is only guessed after a drop
+    turn.phase = "checking"
+    assert turn.reply_landed(after) and not turn.reply_landed(before)
+    turn.user_id, turn.assistant_id = "u9", "a9"
+    assert not turn.user_landed(after) and not turn.reply_landed(after)
+    assert not turn.gave_up(100.0)
+    turn.lost_at = 100.0
+    assert not turn.gave_up(100.0 + state.DM_RECONCILE_WINDOW - 1)
+    assert turn.gave_up(100.0 + state.DM_RECONCILE_WINDOW)

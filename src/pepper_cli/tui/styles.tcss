@@ -60,3 +60,32 @@ Screen {
     background: $accent;
     display: none;
 }
+
+#compose-box {
+    height: auto;
+    border-top: tall $primary-darken-2;
+}
+
+#dm-status, #quote {
+    height: 1;
+    padding: 0 1;
+    color: $text-muted;
+}
+
+#dm-status.empty, #quote.empty {
+    display: none;
+}
+
+#mentions {
+    height: auto;
+    max-height: 7;
+    border: none;
+}
+
+#composer {
+    height: auto;
+    min-height: 1;
+    max-height: 8;
+    border: none;
+    padding: 0 1;
+}

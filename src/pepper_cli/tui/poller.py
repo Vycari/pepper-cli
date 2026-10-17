@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from pepper_cli.api_client import ApiError
+from pepper_cli.api_client import ApiError, group_message_from_dict
 
 if TYPE_CHECKING:
     from pepper_cli.api_client import (
@@ -20,9 +20,10 @@ if TYPE_CHECKING:
         ChatHistoryEntry,
         GroupList,
         GroupMessage,
+        GroupRosterMember,
         GroupSummary,
     )
-    from pepper_cli.tui.state import Conversation
+    from pepper_cli.tui.state import Conversation, PendingSend
 
 #: Concurrent read-mark fetches on the first load (one request per room).
 MARK_FETCH_WORKERS = 4
@@ -144,3 +145,28 @@ def publish_read_mark(api: ApiClient, conv: Conversation, read_through: str) -> 
     answer = api.set_group_read_mark(conv.room_id, conv.topic_id, read_through=read_through)
     kept = answer.get("read_through") if isinstance(answer, dict) else None
     return kept if isinstance(kept, str) else read_through
+
+
+def post_message(api: ApiClient, pending: PendingSend) -> GroupMessage:
+    """``POST`` one room message under its idempotency key; the stored row the server answers.
+
+    The same key on a retry makes the server answer with the row it already stored, so a
+    send whose first answer was lost (a timeout after the server committed) is not doubled.
+    """
+    conv = pending.conversation
+    if conv.room_id is None or conv.topic_id is None:
+        raise ValueError("a room message needs a room and a topic")
+    row = api.post_group_message(
+        conv.room_id,
+        conv.topic_id,
+        message=pending.body,
+        mentions=list(pending.mentions) or None,
+        parent_message_id=pending.parent_id,
+        idempotency_key=pending.key,
+    )
+    return group_message_from_dict(row)
+
+
+def fetch_roster(api: ApiClient, room_id: str) -> list[GroupRosterMember]:
+    """The room's ``@``-mention roster (Pepper first)."""
+    return api.group_roster(room_id)

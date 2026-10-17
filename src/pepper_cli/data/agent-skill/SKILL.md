@@ -318,8 +318,9 @@ is changed. That covers:
 - Every other `rooms`, `topics`, `messages`, `attachments`, `members`, `sharing` or `apps` command, which are the ones that change a room, its topics, its members
   or its apps, or that read or search across rooms.
 - Every command outside those nouns that talks to the server, `whoami`, chat and `tui` included
-  (`tui` is a full-screen app for a person at a terminal and refuses to start without one), other
-  than `login`.
+  (`tui` is a full-screen app for a person at a terminal: it posts to rooms and sends Pepper turns
+  as that person, and refuses to start without a terminal), other than `login`. Post with the
+  command in section 6.
 
 Do not try these to see what happens. `pepper --profile <name> rooms --help` lists commands the
 binary has, not commands your token may use.

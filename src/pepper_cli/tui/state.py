@@ -12,9 +12,10 @@ disagree with comparing the moments.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
     from pepper_cli.api_client import (
         ChatHistoryEntry,
         GroupMessage,
+        GroupRosterMember,
         GroupSummary,
         GroupTopicSummary,
     )
@@ -45,6 +47,13 @@ RAIL_INTERVAL = 15.0
 DM_INTERVAL = 15.0
 #: Seconds to wait after the Nth consecutive failure: 3, 6, 12, then 30 and no more.
 BACKOFF_STEPS = (3.0, 6.0, 12.0, 30.0)
+#: After a DM stream drops, how long history is re-read for the reply before giving up (§6.5).
+DM_RECONCILE_WINDOW = 120.0
+#: History cadence while waiting for a dropped turn's reply.
+DM_RECONCILE_INTERVAL = 3.0
+#: Longest quote snippet shown above the composer and on a pending row (local, from the
+#: quoted message's own body; never the server's ``quote_excerpt``).
+QUOTE_SNIPPET_CHARS = 80
 
 _EPOCH = datetime.min.replace(tzinfo=UTC)
 
@@ -122,8 +131,9 @@ class ReadMarks:
     def is_unread(self, topic: GroupTopicSummary, *, open_topic_id: str | None) -> bool:
         """The unread rule: activity later than the mark, and not the topic on screen.
 
-        Own pending sends (a P2 concern) will pass through ``open_topic_id``-style
-        suppression too; P1 has no composer, so there is nothing pending to suppress.
+        Own sends never light a topic: a pending row is not in the rail at all, and once the
+        server stores it the app raises the mark to that row's ``created_at``
+        (:meth:`PepperApp._sent`), so the activity it causes is already read.
         """
         if topic.topic_id == open_topic_id or topic.archived_at:
             return False
@@ -411,3 +421,179 @@ def backoff_delay(failures: int) -> float:
     if failures <= 0:
         return 0.0
     return BACKOFF_STEPS[min(failures, len(BACKOFF_STEPS)) - 1]
+
+
+# ---------------------------------------------------------------------------
+# Posting (P2): pending room sends, drafts, mentions, the DM turn
+
+
+type SendStatus = Literal["queued", "sending", "sent", "failed"]
+
+
+@dataclass
+class PendingSend:
+    """One room message this session is posting, from Enter until a poll returns it.
+
+    ``key`` is the idempotency key: minted once, when the message is composed, and reused by
+    every retry, so a POST whose answer was lost and is sent again is stored once (§6.4).
+    The row never enters :class:`MessageStore`; the store's copy, when the poll brings it,
+    replaces this one (matched by ``server_id``), so the poll cursor never moves on an echo.
+    """
+
+    key: str
+    conversation: Conversation
+    body: str
+    mentions: tuple[str, ...] = ()
+    parent_id: str | None = None
+    quote_text: str = ""
+    status: SendStatus = "queued"
+    error: str = ""
+    #: The stored message's id and ``created_at``, once the POST has answered.
+    server_id: str | None = None
+    created_at: str | None = None
+
+
+@dataclass
+class PendingSends:
+    """Room sends in the order they were composed. One POST is in flight at a time."""
+
+    items: list[PendingSend] = field(default_factory=list)
+
+    def add(self, item: PendingSend) -> None:
+        self.items.append(item)
+
+    def get(self, key: str) -> PendingSend | None:
+        return next((p for p in self.items if p.key == key), None)
+
+    def next_queued(self) -> PendingSend | None:
+        return next((p for p in self.items if p.status == "queued"), None)
+
+    def in_conversation(self, conv: Conversation) -> list[PendingSend]:
+        return [p for p in self.items if p.conversation == conv]
+
+    def retry(self, key: str) -> bool:
+        """Queue a failed send again, with the key it already had. True when it was failed."""
+        item = self.get(key)
+        if item is None or item.status != "failed":
+            return False
+        item.status, item.error = "queued", ""
+        return True
+
+    def confirm(self, conv: Conversation, store_ids: Iterable[str]) -> list[str]:
+        """Drop sends whose stored copy the poll has returned; their keys."""
+        present = set(store_ids)
+        gone = [
+            p
+            for p in self.items
+            if p.conversation == conv and p.server_id is not None and p.server_id in present
+        ]
+        for p in gone:
+            self.items.remove(p)
+        return [p.key for p in gone]
+
+
+@dataclass
+class Draft:
+    """What is in the composer for one destination: text, and the message it quotes."""
+
+    text: str = ""
+    quote_id: str | None = None
+    quote_name: str = ""
+    quote_text: str = ""
+
+
+def quote_snippet(body: str) -> str:
+    """The first line of a message, cut to :data:`QUOTE_SNIPPET_CHARS`."""
+    first = next((line.strip() for line in body.splitlines() if line.strip()), "")
+    if len(first) > QUOTE_SNIPPET_CHARS:
+        return first[: QUOTE_SNIPPET_CHARS - 1].rstrip() + "…"
+    return first
+
+
+def mention_ids(text: str, roster: Iterable[GroupRosterMember]) -> tuple[str, ...]:
+    """Person ids of roster members whose ``@Display Name`` is in ``text``, longest name first.
+
+    Decided at send time from the text, so a mention picked from the menu and then deleted is
+    not sent, and one typed out in full is. ``@Al`` does not match inside ``@Allen``: the name
+    must end at a non-word character. Each matched span is consumed, so "@Ada Lovelace" does
+    not also mention a member called "Ada".
+    """
+    remaining = text
+    found: list[str] = []
+    members = sorted(roster, key=lambda m: len(m.display_name), reverse=True)
+    for member in members:
+        name = member.display_name.strip()
+        if not name or member.person_id in found:
+            continue
+        pattern = re.compile("@" + re.escape(name) + r"(?!\w)", re.IGNORECASE)
+        if pattern.search(remaining):
+            found.append(member.person_id)
+            remaining = pattern.sub(" ", remaining)
+    return tuple(found)
+
+
+def mention_query(before_cursor: str) -> str | None:
+    """The partial name after an ``@`` the cursor is in, or ``None`` when not in a mention.
+
+    The ``@`` must start the line or follow whitespace (so an e-mail address does not open
+    the menu). Names have spaces, so the query runs to the cursor, up to 32 characters.
+    """
+    match = re.search(r"(?:^|\s)@([^@\n]{0,32})$", before_cursor)
+    return match.group(1) if match else None
+
+
+def roster_matches(
+    query: str, roster: Iterable[GroupRosterMember], *, limit: int = 6
+) -> list[GroupRosterMember]:
+    """Roster members whose name (or any word of it) starts with ``query``, roster order kept."""
+    q = query.casefold()
+    out = []
+    for member in roster:
+        name = member.display_name.casefold()
+        if not name:
+            continue
+        if name.startswith(q) or any(word.startswith(q) for word in name.split()):
+            out.append(member)
+    return out[:limit]
+
+
+type TurnPhase = Literal["queued", "streaming", "checking", "done"]
+
+
+@dataclass
+class DmTurn:
+    """One message to Pepper, from Enter until its reply is in today's history (§6.5).
+
+    ``snapshot`` holds the history ids on screen when the turn started. A reply frame names
+    its rows (``user_message_id``/``assistant_message_id``); a dropped stream does not, and
+    then the reply is "an assistant row that was not in the snapshot". The turn is never
+    sent twice: a drop only ever re-reads history.
+    """
+
+    text: str
+    snapshot: frozenset[str] = frozenset()
+    phase: TurnPhase = "queued"
+    status: str = ""
+    reply: str | None = None
+    user_id: str | None = None
+    assistant_id: str | None = None
+    #: ``time.monotonic()`` when the stream was found dropped.
+    lost_at: float | None = None
+
+    def user_landed(self, entries: dict[str, ChatHistoryEntry]) -> bool:
+        if self.user_id is not None:
+            return self.user_id in entries
+        if self.phase == "queued":
+            return False
+        return any(e.role == "user" and eid not in self.snapshot for eid, e in entries.items())
+
+    def reply_landed(self, entries: dict[str, ChatHistoryEntry]) -> bool:
+        if self.assistant_id is not None:
+            return self.assistant_id in entries
+        if self.phase != "checking":
+            return False
+        return any(e.role == "assistant" and eid not in self.snapshot for eid, e in entries.items())
+
+    def gave_up(self, now: float) -> bool:
+        """A dropped turn whose reply did not show within :data:`DM_RECONCILE_WINDOW`."""
+        return self.lost_at is not None and now - self.lost_at >= DM_RECONCILE_WINDOW

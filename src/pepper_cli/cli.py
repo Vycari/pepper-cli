@@ -485,6 +485,19 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "tui",
         help="Open the full-screen terminal UI for your rooms and Pepper chat (needs a terminal).",
     )
+    # The same grant as ``pepper chat --root``, for the Pepper DM turns sent from the UI:
+    # read-only, enforced here, for the length of this session.
+    p_tui.add_argument(
+        "--root",
+        "--tools-root",
+        action="append",
+        dest="root",
+        metavar="PATH",
+        help=(
+            "Let Pepper read files under PATH on this machine during DM turns (repeatable). "
+            "Read-only; the search runs here and only matches are sent."
+        ),
+    )
     p_tui.set_defaults(handler=cmd_tui)
 
     p_chat = sub.add_parser(
@@ -1802,11 +1815,12 @@ def cmd_whoami(args: argparse.Namespace) -> int:
 
 
 def cmd_tui(args: argparse.Namespace) -> int:
-    """``pepper tui``: the full-screen terminal UI (read-only in this phase).
+    """``pepper tui``: the full-screen terminal UI.
 
     Exit codes (``planning/terminal-ui.md`` §10): 0 on a normal quit, 1 for an auth or
-    unexpected error, 2 when it was not started on a terminal. The terminal check comes
-    first, before credentials or Textual are touched, so a script gets one line and a 2.
+    unexpected error, 2 when it was not started on a terminal or a ``--root`` is refused.
+    The terminal check comes first, before credentials or Textual are touched, so a script
+    gets one line and a 2.
     """
     if not (sys.stdout.isatty() and _stdin_is_tty()):
         _emit_error(None, "usage", "pepper tui needs an interactive terminal (stdin and stdout)")
@@ -1814,11 +1828,16 @@ def cmd_tui(args: argparse.Namespace) -> int:
     creds = _load_or_error(None)
     if creds is None:
         return 1
+    try:
+        provider = _build_provider(getattr(args, "root", None))
+    except provider_fs.PathRefused as exc:
+        _emit_error(None, "usage", f"--root: {exc}")
+        return 2
     # Imported here so no other command pays for Textual (a test pins that).
     from pepper_cli import tui
 
     try:
-        return tui.run(server_url=creds.server_url, token=creds.token)
+        return tui.run(server_url=creds.server_url, token=creds.token, provider=provider)
     except httpx.RequestError as exc:
         _emit_error(None, "network", f"Couldn't reach {creds.server_url}: {exc}")
         return 1

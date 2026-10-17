@@ -13,6 +13,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from rich.console import Group
+from rich.styled import Styled
 from rich.table import Table
 from rich.text import Text
 
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
     from rich.console import RenderableType
 
     from pepper_cli.api_client import ChatHistoryEntry, GroupMessage
+    from pepper_cli.tui.state import PendingSend
 
 _HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
 #: Style of a message that mentions the viewer (the web's accent treatment).
@@ -33,6 +35,15 @@ ACCENT = "bold yellow"
 DELETED = "Message deleted"
 BROKEN = "Couldn't show this message"
 INDENT = "  "
+#: Background of the selected row (the target of ``r``).
+SELECTED = "on grey23"
+#: What a pending row says after "You", by status.
+PENDING_LABEL = {
+    "queued": "sending…",
+    "sending": "sending…",
+    "sent": "sent",
+    "failed": "failed, r to retry",
+}
 
 
 def safe_color(value: str | None) -> str | None:
@@ -144,26 +155,89 @@ def message_renderable(
     return Group(*parts)
 
 
-def thread_renderable(messages: Iterable[GroupMessage], *, you_id: str | None) -> RenderableType:
-    """A topic's rows: day dividers where ``day_key`` changes, then each message.
+def _indented(text: str, *, style: str = "") -> Text:
+    out = Text(style=style)
+    for i, line in enumerate(sanitize_text(text).split("\n")):
+        if i:
+            out.append("\n")
+        out.append(INDENT + line)
+    return out
 
-    A message with an empty ``day_key`` or ``day_label`` (the server's broken-message
-    placeholder) neither opens a divider nor resets the day, as on the web.
-    """
-    parts: list[RenderableType] = []
-    last_day: str | None = None
-    for m in messages:
-        if m.day_key and m.day_label and m.day_key != last_day:
-            parts.append(day_divider(m.day_label))
-            last_day = m.day_key
-        parts.append(message_renderable(m, you_id=you_id))
-    if not parts:
-        return Text("(no messages)", style="dim")
+
+def pending_renderable(p: PendingSend) -> RenderableType:
+    """An own message not yet returned by a poll: dimmed, with its state after "You"."""
+    failed = p.status == "failed"
+    label = PENDING_LABEL.get(p.status, "")
+    if failed and p.error:
+        label = f"{label} ({sanitize_line(p.error)})"
+    name = Text("You", style="bold dim")
+    stamp = Text(" " + label, style="bold red" if failed else "dim italic")
+    parts: list[RenderableType] = [name + stamp]
+    if p.quote_text:
+        parts.append(Text(f"{INDENT}┃ {sanitize_line(p.quote_text)}", style="dim"))
+    parts.append(_indented(p.body, style="dim"))
     return Group(*parts)
 
 
-def dm_renderable(entries: Iterable[ChatHistoryEntry], *, hour24: bool = False) -> RenderableType:
-    """Today's Pepper thread. ``You`` and ``Pepper`` take a name line on each change of speaker."""
+def thread_items(
+    messages: Iterable[GroupMessage],
+    *,
+    you_id: str | None,
+    pending: Iterable[PendingSend] = (),
+    selected: str | None = None,
+) -> list[tuple[str | None, RenderableType]]:
+    """A topic's rows with their selection keys (``msg:<id>``, ``pending:<key>``; ``None``
+    for a day divider), in display order: server rows, then this session's pending sends.
+
+    A message with an empty ``day_key`` or ``day_label`` (the server's broken-message
+    placeholder) neither opens a divider nor resets the day, as on the web. A message is
+    shown with its name line when it is selected, so the selection always says whose it is.
+    """
+    items: list[tuple[str | None, RenderableType]] = []
+    last_day: str | None = None
+    for m in messages:
+        if m.day_key and m.day_label and m.day_key != last_day:
+            items.append((None, day_divider(m.day_label)))
+            last_day = m.day_key
+        key = f"msg:{m.id}"
+        if key == selected:
+            row = message_renderable(m, you_id=you_id, show_name=True)
+            items.append((key, Styled(row, SELECTED)))
+        else:
+            items.append((key, message_renderable(m, you_id=you_id)))
+    for p in pending:
+        key = f"pending:{p.key}"
+        row = pending_renderable(p)
+        items.append((key, Styled(row, SELECTED) if key == selected else row))
+    return items
+
+
+def thread_renderable(
+    messages: Iterable[GroupMessage],
+    *,
+    you_id: str | None,
+    pending: Iterable[PendingSend] = (),
+    selected: str | None = None,
+) -> RenderableType:
+    """The topic pane's body: :func:`thread_items` as one renderable."""
+    items = thread_items(messages, you_id=you_id, pending=pending, selected=selected)
+    if not items:
+        return Text("(no messages)", style="dim")
+    return Group(*(r for _, r in items))
+
+
+def dm_renderable(
+    entries: Iterable[ChatHistoryEntry],
+    *,
+    hour24: bool = False,
+    provisional: Iterable[tuple[str, str, str]] = (),
+) -> RenderableType:
+    """Today's Pepper thread. ``You`` and ``Pepper`` take a name line on each change of speaker.
+
+    ``provisional`` rows are this session's turns not yet in history, as ``(role, text,
+    label)``: an own message still sending (dimmed, ``label`` saying so), or a reply the
+    stream delivered before the history read caught up with it.
+    """
     parts: list[RenderableType] = [day_divider("Today")]
     previous_role: str | None = None
     for entry in entries:
@@ -183,6 +257,15 @@ def dm_renderable(entries: Iterable[ChatHistoryEntry], *, hour24: bool = False) 
         parts.extend(_attachment_lines(entry.attachments))
         if entry.reactions and (line := _reaction_line(entry.reactions)):
             parts.append(line)
+    for role, text, label in provisional:
+        mine = role == "user"
+        if role != previous_role or label:
+            who = Text("You" if mine else "Pepper", style="bold dim" if mine else "bold")
+            if label:
+                who.append(" " + sanitize_line(label), style="dim italic")
+            parts.append(who)
+            previous_role = role
+        parts.append(_indented(text, style="dim" if mine else ""))
     if len(parts) == 1:
         parts.append(Text("(no messages yet today)", style="dim"))
     return Group(*parts)

@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from pepper_cli import cli, credentials, tui
+from pepper_cli.provider.fs import FilesystemProvider
 from pepper_cli.secret import SecretStr
 
 
@@ -47,15 +48,39 @@ def test_it_starts_the_app_with_the_stored_credentials(monkeypatch) -> None:
     monkeypatch.setattr(credentials, "load", lambda: creds)
     seen = {}
 
-    def fake_run(*, server_url: str, token: SecretStr) -> int:
-        seen.update(server_url=server_url, token=token)
+    def fake_run(*, server_url: str, token: SecretStr, provider: object = None) -> int:
+        seen.update(server_url=server_url, token=token, provider=provider)
         return 0
 
     monkeypatch.setattr(tui, "run", fake_run)
     assert cli.main(["tui"]) == 0
-    assert seen == {"server_url": "http://example.com", "token": creds.token}
+    assert seen == {"server_url": "http://example.com", "token": creds.token, "provider": None}
     monkeypatch.setattr(tui, "run", lambda **kw: 1)
     assert cli.main(["tui"]) == 1
+
+
+@pytest.mark.parametrize("flag", ["--root", "--tools-root"])
+def test_root_shares_a_folder_with_the_dm_turns(monkeypatch, tmp_path, flag) -> None:
+    _tty(monkeypatch, stdin=True, stdout=True)
+    creds = credentials.Credentials(server_url="http://example.com", token=SecretStr("pep_pat_x"))
+    monkeypatch.setattr(credentials, "load", lambda: creds)
+    seen = {}
+    monkeypatch.setattr(tui, "run", lambda **kw: seen.update(kw) or 0)
+    assert cli.main(["tui", flag, str(tmp_path)]) == 0
+    provider = seen["provider"]
+    assert isinstance(provider, FilesystemProvider)
+    assert provider.manifest()  # the tools ride on each DM turn
+
+
+def test_a_refused_root_is_one_line_and_exit_2(monkeypatch, tmp_path, capsys) -> None:
+    _tty(monkeypatch, stdin=True, stdout=True)
+    creds = credentials.Credentials(server_url="http://example.com", token=SecretStr("pep_pat_x"))
+    monkeypatch.setattr(credentials, "load", lambda: creds)
+    monkeypatch.setattr(tui, "run", lambda **kw: pytest.fail("must not start"))
+    assert cli.main(["tui", "--root", str(tmp_path / "missing")]) == 2
+    err = capsys.readouterr().err  # one error, wrapped to the terminal's width
+    assert err.startswith("error: --root:")
+    assert "not a directory" in err
 
 
 def test_a_network_error_is_one_line_and_exit_1(monkeypatch, capsys) -> None:

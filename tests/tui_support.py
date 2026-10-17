@@ -85,6 +85,31 @@ def message(mid: str, at: str, body: str = "hello", **over: Any) -> dict[str, An
     }
 
 
+def history_entry(hid: str, role: str, text: str, at: str) -> dict[str, Any]:
+    return {"id": hid, "role": role, "text": text, "channel": "terminal", "created_at": at}
+
+
+def sse(kind: str, payload: dict[str, Any]) -> bytes:
+    return f"event: {kind}\ndata: {json.dumps(payload)}\n\n".encode()
+
+
+@dataclass
+class ScriptedTurn:
+    """What the fake answers to one ``POST /api/v1/chat/send``.
+
+    ``frames`` stream in order. ``gates`` holds the stream before frame ``i`` until its event
+    is set. ``history`` is appended to the DM history just before the terminal frame, or when
+    the stream ends or drops without one (the server ran the turn either way). ``drop`` raises
+    a transport error after the frames, the way a connection lost mid-turn surfaces from
+    ``iter_lines``.
+    """
+
+    frames: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    gates: dict[int, threading.Event] = field(default_factory=dict)
+    history: list[dict[str, Any]] = field(default_factory=list)
+    drop: bool = False
+
+
 @dataclass
 class FakeServer:
     rooms: list[dict[str, Any]] = field(default_factory=list)
@@ -98,8 +123,23 @@ class FakeServer:
     fail: dict[str, int] = field(default_factory=dict)
     #: path prefix -> exception to raise instead of answering (a transport failure).
     raise_on: dict[str, Exception] = field(default_factory=dict)
-    #: exact path -> event the handler waits on before answering (holds a request open).
+    #: exact path, or ``"METHOD path"``, -> event the handler waits on before answering.
     gates: dict[str, threading.Event] = field(default_factory=dict)
+    #: path prefix -> exception raised *after* the request was handled (a lost answer).
+    raise_after: dict[str, Exception] = field(default_factory=dict)
+    #: ``group_id -> roster members`` (dicts as ``/roster`` answers them).
+    rosters: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    #: Room post attempts, in arrival order: the JSON body plus the ``Idempotency-Key``.
+    posts: list[dict[str, Any]] = field(default_factory=list)
+    #: ``Idempotency-Key -> stored row``: a repeated key answers the row already stored.
+    stored: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Answers to ``chat/send``, popped one per turn.
+    turns: list[ScriptedTurn] = field(default_factory=list)
+    #: The JSON body of each ``chat/send`` received.
+    turn_bodies: list[dict[str, Any]] = field(default_factory=list)
+    #: The JSON body of each ``chat/tool-result`` received.
+    tool_results: list[dict[str, Any]] = field(default_factory=list)
+    clock: int = 0
     rev: int = 1
     requests: list[tuple[str, str, dict[str, str]]] = field(default_factory=list)
     puts: list[tuple[str, str]] = field(default_factory=list)
@@ -113,14 +153,71 @@ class FakeServer:
         path = request.url.path
         query = dict(request.url.params)
         self.requests.append((request.method, path, query))
-        if (gate := self.gates.get(path)) is not None:
+        keyed = f"{request.method} {path}"
+        if request.method == "POST" and path.endswith("/messages"):
+            # Every attempt, including one the fake then fails: retries are what is tested.
+            body = json.loads(request.content)
+            self.posts.append({**body, "key": request.headers.get("Idempotency-Key")})
+        gate = self.gates.get(keyed) or self.gates.get(path)
+        if gate is not None:
             gate.wait(timeout=10)
         for prefix, exc in list(self.raise_on.items()):
-            if path.startswith(prefix):
+            if path.startswith(prefix) or keyed.startswith(prefix):
                 raise exc
         for prefix, status in list(self.fail.items()):
-            if path.startswith(prefix):
+            if path.startswith(prefix) or keyed.startswith(prefix):
                 return httpx.Response(status, json={"detail": "synthetic failure"})
+        response = self._answer(request, path, query)
+        for prefix, exc in list(self.raise_after.items()):
+            if path.startswith(prefix) or keyed.startswith(prefix):
+                raise exc
+        return response
+
+    def _next_at(self) -> str:
+        """A created_at later than every fixture row (the server's clock moves on)."""
+        self.clock += 1
+        return f"2026-09-16T18:{self.clock // 60:02d}:{self.clock % 60:02d}+00:00"
+
+    def _post_message(self, request: httpx.Request, topic_id: str) -> httpx.Response:
+        body = json.loads(request.content)
+        key = request.headers.get("Idempotency-Key")
+        if key is not None and key in self.stored:
+            return httpx.Response(200, json={"message": self.stored[key]})
+        row = message(
+            f"posted-{len(self.posts)}",
+            self._next_at(),
+            body["message"],
+            is_you=True,
+            display_name="Me",
+        )
+        if key is not None:
+            self.stored[key] = row
+        self.messages.setdefault(topic_id, []).append(row)
+        return httpx.Response(201, json={"message": row})
+
+    def _chat_send(self, request: httpx.Request) -> httpx.Response:
+        self.turn_bodies.append(json.loads(request.content))
+        script = self.turns.pop(0) if self.turns else ScriptedTurn()
+
+        def stream() -> Any:
+            stored = False
+            for i, (kind, payload) in enumerate(script.frames):
+                if (gate := script.gates.get(i)) is not None:
+                    gate.wait(timeout=10)
+                if kind in ("reply", "error") and not stored:
+                    # The server stores the turn before its terminal frame, and the client
+                    # stops reading at that frame.
+                    self.history.extend(script.history)
+                    stored = True
+                yield sse(kind, payload)
+            if not stored:
+                self.history.extend(script.history)
+            if script.drop:
+                raise httpx.ReadError("connection dropped")
+
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=stream())
+
+    def _answer(self, request: httpx.Request, path: str, query: dict[str, str]) -> httpx.Response:
         if path == "/api/v1/whoami":
             return httpx.Response(
                 200,
@@ -146,7 +243,12 @@ class FakeServer:
             }
             return httpx.Response(200, json=body, headers={"ETag": etag})
         if path == "/api/v1/chat/history":
-            return httpx.Response(200, json=self.history)
+            return httpx.Response(200, json=list(self.history))
+        if path == "/api/v1/chat/send":
+            return self._chat_send(request)
+        if path == "/api/v1/chat/tool-result":
+            self.tool_results.append(json.loads(request.content))
+            return httpx.Response(200, json={"ok": True})
         parts = path.strip("/").split("/")
         if parts[:3] == ["api", "v1", "groups"] and len(parts) >= 5:
             if parts[4] == "read" and request.method == "GET":
@@ -157,8 +259,12 @@ class FakeServer:
                 self.puts.append((parts[5], through))
                 self.marks[parts[5]] = through
                 return httpx.Response(200, json={"read_through": through})
+            if len(parts) == 5 and parts[4] == "roster":
+                return httpx.Response(200, json={"members": self.rosters.get(parts[3], [])})
+            if len(parts) == 7 and parts[6] == "messages" and request.method == "POST":
+                return self._post_message(request, parts[5])
             if len(parts) == 7 and parts[6] == "messages":
-                rows = self.messages.get(parts[5], [])
+                rows = list(self.messages.get(parts[5], []))
                 since = query.get("since")
                 if since is not None:
                     from pepper_cli.tui.state import parse_ts
