@@ -1115,6 +1115,9 @@ class PepperApp(App[None]):
     def on_thread_scroll_edit(self, _event: ThreadScroll.Edit) -> None:
         if (message := self._own_message("edit")) is None:
             return
+        if self.composer.read_only:
+            self.notify("Still saving the last change.", timeout=2)
+            return
         draft = self._draft()
         draft.text = self.composer.text if self.editing is None else draft.text
         self.editing = (self.current, message.id)
@@ -1128,6 +1131,7 @@ class PepperApp(App[None]):
         if self.editing is None:
             return
         self.editing = None
+        self.composer.read_only = False
         self._load_draft()
 
     def _submit_edit(self, text: str) -> None:
@@ -1142,12 +1146,21 @@ class PepperApp(App[None]):
             self.notify("Still saving the last change.", timeout=2)
             return
         room = conv.room_id
+        # Hold the text still while it saves: whatever was typed meanwhile would be thrown
+        # away when the reply ends edit mode. Esc still leaves (the save carries on).
+        self.composer.read_only = True
         self._start(
             "mutate",
             lambda: poller.edit_message(self._api, room, message_id, body=text),
             lambda answer: self._mutated(message_id, answer, deleted=False),
-            on_error=lambda exc: self._action_failed("save your edit", exc),
+            on_error=self._edit_failed,
         )
+
+    def _edit_failed(self, exc: Exception) -> bool:
+        """The edit didn't save: stay in edit mode with the text, editable again, to retry."""
+        if self.editing is not None:
+            self.composer.read_only = False
+        return self._action_failed("save your edit", exc)
 
     def on_thread_scroll_delete(self, _event: ThreadScroll.Delete) -> None:
         if (message := self._own_message("delete")) is None:

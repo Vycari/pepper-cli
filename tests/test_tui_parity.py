@@ -3,6 +3,7 @@ folds, new topic, room info, Ctrl+K and ``o``."""
 
 from __future__ import annotations
 
+import threading
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -173,6 +174,35 @@ async def test_a_failed_edit_keeps_the_text_and_says_so() -> None:
         await until(pilot, lambda: any("HTTP 500" in n.message for n in app._notifications))
         assert app.editing is not None
         assert app.composer.text == "new words"
+        assert not app.composer.read_only  # editable again, to fix and retry
+
+
+async def test_nothing_typed_while_an_edit_saves_is_lost() -> None:
+    server = ts.standard_server()
+    _a1(server, ts.message("m1", "2026-09-16T17:30:00+00:00", "old words", is_you=True))
+    gate = threading.Event()
+    server.gates[f"POST /api/v1/groups/{ts.ROOM_A}/messages/m1/edit"] = gate
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await _open_a1(app, pilot, "old words")
+        app.composer.load_text("my draft")
+        app.thread.focus_scroller()
+        await _select_newest(pilot)
+        await pilot.press("e")
+        await until(pilot, lambda: app.editing is not None)
+        app.composer.load_text("new words")
+        await pilot.press("enter")
+        await until(pilot, lambda: app.composer.read_only)
+        await pilot.press("x", "y", "alt+enter")  # held still: the text cannot change
+        assert app.composer.text == "new words"
+        app.thread.focus_scroller()
+        await pilot.press("e")  # a second edit waits for the first to save
+        assert app.composer.text == "new words"
+        gate.set()
+        await until(pilot, lambda: app.editing is None)
+        assert not app.composer.read_only
+        assert app.composer.text == "my draft"  # the draft set aside comes back whole
+        await until(pilot, lambda: "new words" in body_text(app))
 
 
 async def test_scrolling_up_past_the_first_row_loads_the_page_before_it(
