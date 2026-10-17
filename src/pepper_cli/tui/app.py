@@ -172,6 +172,9 @@ class PepperApp(App[None]):
         self.show_all: set[str] = set()
         #: Which archived/inactive folds are open, and the topic rails read for the archived ones.
         self.folds = state.SidebarFolds()
+        #: Rooms opened while another room's topic rail was being read; read next, in order.
+        self._topics_waiting: list[str] = []
+        self._topics_reading: str | None = None
         #: The message being edited in the composer: ``(conversation, message id)``.
         self.editing: tuple[state.Conversation, str] | None = None
         self.you_id: str | None = None
@@ -1270,18 +1273,39 @@ class PepperApp(App[None]):
             self.open_conversation(state.Conversation(room_id, topic_id))
 
     def _ensure_topics(self, room_id: str) -> None:
-        """Read a room's whole topic rail once (archived topics included) when it is opened."""
-        if room_id in self.folds.fetched or self._loops["topics"].busy or not self._started:
+        """Read a room's whole topic rail once (archived topics included) when it is opened.
+
+        One read at a time: a room opened while another's is in flight waits its turn.
+        """
+        if room_id in self.folds.fetched or not self._started:
             return
+        if self._loops["topics"].busy:
+            if room_id != self._topics_reading and room_id not in self._topics_waiting:
+                self._topics_waiting.append(room_id)
+            return
+        self._topics_reading = room_id
         self._start(
             "topics",
             lambda: poller.fetch_topic_rail(self._api, room_id),
             lambda topics: self._got_topics(room_id, topics),
-            on_error=lambda _exc: False,
+            on_error=self._topics_failed,
         )
 
     def _got_topics(self, room_id: str, topics: list[GroupTopicSummary]) -> None:
         self.folds = replace(self.folds, fetched={**self.folds.fetched, room_id: topics})
+        self._next_topics()
+
+    def _topics_failed(self, _exc: Exception) -> bool:
+        """That room is left for its next opening to retry; the waiting ones still go."""
+        self._next_topics()
+        return False
+
+    def _next_topics(self) -> None:
+        while self._topics_waiting:
+            room_id = self._topics_waiting.pop(0)
+            if room_id not in self.folds.fetched:
+                self._ensure_topics(room_id)
+                return
 
     # ------------------------------------------------------------------ Pepper turns (§6.5)
 

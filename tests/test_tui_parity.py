@@ -350,6 +350,30 @@ async def test_an_archived_fold_lists_the_rooms_archived_topics_on_demand() -> N
         await until(pilot, lambda: "topic:t-old" not in app.sidebar._by_key)
 
 
+@pytest.mark.parametrize("first_fails", [False, True])
+async def test_a_room_opened_while_another_rail_loads_is_read_next(first_fails: bool) -> None:
+    server = ts.standard_server()
+    gate = threading.Event()
+    rail_a = f"GET /api/v1/groups/{ts.ROOM_A}/topics"
+    server.gates[rail_a] = gate
+    if first_fails:
+        server.fail[rail_a] = 500
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: app._loops["topics"].busy)
+        app.open_conversation(state.Conversation(ts.ROOM_B, ts.TOPIC_B1))
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))  # queued once only
+        app.open_conversation(state.Conversation(ts.ROOM_B, ts.TOPIC_B1))
+        gate.set()
+        await until(pilot, lambda: ts.ROOM_B in app.folds.fetched)
+        await until(pilot, lambda: not app._loops["topics"].busy)
+        assert (ts.ROOM_A in app.folds.fetched) is not first_fails
+        rails = [p for m, p, _ in server.requests if m == "GET" and p.endswith("/topics")]
+        assert rails == [rail_a.removeprefix("GET "), f"/api/v1/groups/{ts.ROOM_B}/topics"]
+
+
 async def test_rooms_quiet_for_a_week_fold_behind_show_inactive() -> None:
     server = ts.standard_server()
     late = datetime(2026, 10, 20, tzinfo=UTC)
