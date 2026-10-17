@@ -1069,6 +1069,13 @@ def _event_when(row: dict[str, Any]) -> str:
     return f"{row.get('start_label') or ''}-{row.get('end_label') or ''}".strip("-")
 
 
+def _started(row: dict[str, Any], now: datetime | None) -> bool:
+    try:
+        return now is not None and datetime.fromisoformat(row["start"]) <= now
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def _todo_due_label(item: dict[str, Any], now: datetime | None) -> str:
     """The server's due field as text, tagged "overdue" once it is behind ``now``.
 
@@ -1124,6 +1131,10 @@ def render_next(result: dict[str, Any]) -> None:
         out("\n[bold]Today's calendar[/bold]")
     for row in result["calendar"]:
         meta = f"  [dim]@ {_s(row['detail'])}[/dim]" if row.get("detail") else ""
+        # Now shows one live event; another one running at the same time is marked here, so it
+        # does not read as still ahead.
+        if _started(row, clock):
+            meta = f"  [dim](in progress)[/dim]{meta}"
         out(f"  {_s(_event_when(row)):<16} {_s(row.get('title') or '')}{meta}")
     todos = result["todos"]
     out(f"\n[bold]Todos[/bold] [dim]({todos['count']})[/dim]")

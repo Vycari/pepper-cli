@@ -376,7 +376,8 @@ What you are doing now, what is on today's calendar, and your open todos. `next`
 renders: it does no ranking, and the server decides the order. Three sections:
 
 - **Now**: the live calendar event with the time left, and the next upcoming event.
-- **Today's calendar**: the events still ahead today.
+- **Today's calendar**: the rest of today's events that have not ended; one already running
+  beside the event in Now is marked `(in progress)`.
 - **Todos**: your open todos in the order Pepper returns them: due date soonest first, undated
   last, then creation order. The top 10 show; `--all` lists every todo. Each line shows the
   server's own fields: the due date or time (tagged `(overdue)` once it is behind you; that label
@@ -404,7 +405,8 @@ Google token refresh).
   "detail", "minutes_left"}`.
 - `next_event` is null, or the next upcoming event: the same fields as `now` with `in_minutes` in
   place of `minutes_left`.
-- `calendar` is the events still ahead today (as `now` without `minutes_left`).
+- `calendar` is today's other events that have not ended, including any running at the same time
+  as `now` (as `now` without `minutes_left`).
 - `todos.count` is the total after `--room` and `--source`; `todos.items` is that list in the order
   Pepper returns it, cut to 10 unless `--all`, each `{"id", "title", "due", "due_is_date_only",
   "remind_at", "priority", "source"}`: the server's fields as returned. `due` is the server's

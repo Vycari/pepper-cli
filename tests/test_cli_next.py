@@ -376,6 +376,17 @@ def test_timed_due_reads_on_the_accounts_clock_not_the_machines(
     assert "due 2026-10-02 11:00" in out and "18:00" not in out
 
 
+def test_a_second_event_running_now_is_marked_in_progress(server, capsys) -> None:
+    _mock(
+        server,
+        events=[_event("Standup", -20, 10), _event("Review", -20, 70), _event("Lunch", 60, 90)],
+    )
+    cal = _run(capsys).split("Today's calendar")[1].split("Todos")[0].splitlines()
+    review = next(ln for ln in cal if "Review" in ln)
+    lunch = next(ln for ln in cal if "Lunch" in ln)
+    assert "(in progress)" in review and "(in progress)" not in lunch
+
+
 def test_text_view_when_empty(server, capsys) -> None:
     _mock(server)
     out = _run(capsys)
