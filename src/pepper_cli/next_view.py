@@ -122,13 +122,8 @@ def _todo_row(t: api_client.TodoEntry) -> dict[str, Any]:
     }
 
 
-def _shape(
-    now: datetime,
-    events: list[dict[str, Any]],
-    todos: list[api_client.TodoEntry],
-    show_all: bool,
-    note: str | None,
-) -> dict[str, Any]:
+def _event_view(now: datetime, events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Now, the next event and today's calendar from the event rows; raises on a bad timestamp."""
     rows = [_event_row(e, now.tzinfo) for e in events]
     rows.sort(key=lambda r: datetime.fromisoformat(r["start"]))
     live = next(
@@ -158,15 +153,7 @@ def _shape(
         if upcoming
         else None
     )
-    items = [_todo_row(t) for t in todos]  # the server's order, untouched
-    return {
-        "source": "todos",
-        "note": note,
-        "now": now_row,
-        "next_event": nxt,
-        "calendar": [r for r in rows if r is not live],
-        "todos": {"count": len(items), "items": items if show_all else items[:CAP]},
-    }
+    return {"now": now_row, "next_event": nxt, "calendar": [r for r in rows if r is not live]}
 
 
 def _plan_events(plan: dict[str, Any], now: datetime) -> list[dict[str, Any]]:
@@ -202,24 +189,57 @@ def _todays_events(api: Any, now: datetime) -> list[dict[str, Any]] | None:
     return timed
 
 
+def _zone_name(name: Any) -> str | None:
+    """``name`` when it is an IANA zone this machine knows, else ``None``."""
+    if not isinstance(name, str) or not name:
+        return None
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+    return name
+
+
+def _whoami_zone(api: Any) -> str | None:
+    """The account's zone from whoami; UTC when unset (as the server); ``None`` when unreadable."""
+    try:
+        name = api.whoami().timezone
+    except _READ_FAILED:
+        return None
+    return _zone_name(name) or "UTC"
+
+
 def assemble(api: Any, *, scope: Scope | None = None, show_all: bool = False) -> dict[str, Any]:
-    """Build the ``pepper next`` result; the ``--json`` shape (see the README)."""
+    """Build the ``pepper next`` result; the ``--json`` shape (see the README).
+
+    ``timezone`` is the account's IANA zone, from the plan or else whoami; every time is shown
+    through it. When neither can be read it is ``None``: the calendar is skipped (the note says
+    so) and the renderer shows times in UTC, labelled, rather than guess from the machine's zone.
+    """
     scope = scope or Scope()
     plan = _tolerate(api.calendar_schedule_plan)
+    if not isinstance(plan, dict):
+        plan = None
+    tz_name = _zone_name(plan.get("timezone")) if plan else None
+    tz_name = tz_name or _whoami_zone(api)
+    zone: tzinfo = ZoneInfo(tz_name) if tz_name else UTC
+    now = _clock(zone)
+    events: list[dict[str, Any]] | None = None
     if plan and plan.get("now"):
-        now = datetime.fromisoformat(plan["now"])
-        events: list[dict[str, Any]] | None = _plan_events(plan, now)
-    else:
-        try:
-            now = user_now(api)
-        except _READ_FAILED:
-            # No account zone to say what "today" is: skip the calendar (the note says so) and
-            # still show the todos, on the machine's clock.
-            now, events = _clock(UTC).astimezone(), None
-        else:
-            events = _todays_events(api, now)
+        now = datetime.fromisoformat(plan["now"]).astimezone(zone)
+        events = _plan_events(plan, now)
+    elif tz_name:
+        events = _todays_events(api, now)
+    shaped_events = _event_view(now, events or [])
     todos = [
         t for t in api.list_todos(status="open", group_id=scope.room_id) if _source_ok(t, scope)
     ]
-    note = None if events is not None else NO_CALENDAR_NOTE
-    return {"generated_at": now.isoformat(), **_shape(now, events or [], todos, show_all, note)}
+    items = [_todo_row(t) for t in todos]  # the server's order, untouched
+    return {
+        "generated_at": now.isoformat(),
+        "timezone": tz_name,
+        "source": "todos",
+        "note": None if events is not None else NO_CALENDAR_NOTE,
+        **shaped_events,
+        "todos": {"count": len(items), "items": items if show_all else items[:CAP]},
+    }

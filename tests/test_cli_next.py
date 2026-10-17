@@ -66,6 +66,7 @@ def _event(title: str, start: int, end: int, detail: str | None = None) -> dict:
 def _plan(events=()) -> dict:
     return {
         "now": NOW.isoformat(),
+        "timezone": "UTC",
         "plans": [],
         "your_day": {
             "items": list(events),
@@ -316,6 +317,7 @@ def test_json_shape_is_stable(server, capsys) -> None:
     data = _json(server, capsys, todos=[_todo("A")], events=[_event("E", 5, 30)])
     assert list(data) == [
         "generated_at",
+        "timezone",
         "source",
         "note",
         "now",
@@ -364,16 +366,50 @@ def test_timed_due_reads_on_the_accounts_clock_not_the_machines(
     server, capsys, monkeypatch
 ) -> None:
     """Events are labelled in the account's zone; a timed due beside them must be too."""
-    from zoneinfo import ZoneInfo
-
     from pepper_cli import render
 
     monkeypatch.setattr(render, "_local_tz", lambda: UTC)  # the machine says UTC
-    pacific = NOW.astimezone(ZoneInfo("America/Los_Angeles"))
-    server.add("/api/v1/calendars/schedule-plan", {**_plan(), "now": pacific.isoformat()})
+    server.add("/api/v1/calendars/schedule-plan", {**_plan(), "timezone": "America/Los_Angeles"})
     server.add("/api/v1/todos", [_todo("Call", at="2026-10-02T18:00:00+00:00")])
     out = _run(capsys)
     assert "due 2026-10-02 11:00" in out and "18:00" not in out
+
+
+def test_timed_due_across_a_dst_change_uses_the_zones_rules_not_todays_offset(
+    server, capsys
+) -> None:
+    """Today is PDT (-07:00); Nov 2 is PST (-08:00). 17:00Z that day is 09:00, not 10:00."""
+    server.add("/api/v1/calendars/schedule-plan", {**_plan(), "timezone": "America/Los_Angeles"})
+    server.add("/api/v1/todos", [_todo("Renew", at="2026-11-02T17:00:00+00:00")])
+    data = json.loads(_run(capsys, "--json"))
+    assert data["timezone"] == "America/Los_Angeles"
+    assert "due 2026-11-02 09:00" in _run(capsys)
+
+
+def test_plan_without_a_timezone_takes_the_zone_from_whoami(server, capsys) -> None:
+    plan = _plan()
+    del plan["timezone"]
+    server.add("/api/v1/calendars/schedule-plan", plan)
+    server.add("/api/v1/todos", [])
+    server.add("/api/v1/whoami", {"user_id": "u", "display_name": "U", "timezone": "Europe/Paris"})
+    data = json.loads(_run(capsys, "--json"))
+    assert data["timezone"] == "Europe/Paris"
+    assert data["generated_at"].endswith("+02:00")
+
+
+def test_no_account_zone_shows_utc_labelled_and_never_overdue(server, capsys) -> None:
+    """Plan and whoami both down: no guessing from the machine's zone."""
+    server.add("/api/v1/whoami", {"detail": "unavailable"}, 503)
+    _mock(
+        server,
+        [_todo("Late", due=_day(-3)), _todo("Timed", at="2026-10-01T09:30:00+00:00")],
+        plan=False,
+    )
+    out = _run(capsys)
+    assert "(overdue)" not in out
+    assert f"due {_day(-3)}" in out and "due 2026-10-01 09:30 UTC" in out
+    data = json.loads(_run(capsys, "--json"))
+    assert data["timezone"] is None and data["note"] == next_view.NO_CALENDAR_NOTE
 
 
 def test_a_second_event_running_now_is_marked_in_progress(server, capsys) -> None:

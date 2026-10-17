@@ -390,14 +390,22 @@ narrow todos only; Now and the calendar are never filtered.
 
 Today's events come from the schedule plan (`GET /api/v1/calendars/schedule-plan`, `your_day`); when
 the plan is unavailable it reads the calendar range instead, and when that fails too it says
-`calendar unavailable` under Now and shows the todos alone. "Today" is in your account's timezone, never the machine's.
+`calendar unavailable` under Now and shows the todos alone.
+
+"Today" and every time shown are in your account's timezone (the plan's `timezone`, else
+whoami's), never the machine's. When neither can be read, there is no account timezone: the
+calendar is skipped with the note above, timed dues are shown in UTC and labelled `UTC`, and no
+todo is tagged `(overdue)`, since "today" isn't known.
 
 Every request is a GET; `next` never calls `schedule-now`. Your token has no scopes, so the server
 doesn't enforce this, and a few of those GETs update server-side caches (the requests document, a
 Google token refresh).
 
-`--json` prints `{"generated_at", "source": "todos", "note", "now", "next_event", "calendar":
-[event], "todos": {"count", "items": [todo]}}`:
+`--json` prints `{"generated_at", "timezone", "source": "todos", "note", "now", "next_event",
+"calendar": [event], "todos": {"count", "items": [todo]}}`:
+
+- `timezone` is the account's IANA zone name (for example `America/Los_Angeles`), or null when it
+  could not be read. `generated_at` carries that zone's current offset.
 
 - `note` is a string when the calendar could not be read, else null. When it is set, `now`,
   `next_event` and `calendar` are empty because nothing was read, not because the day is free.

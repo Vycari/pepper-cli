@@ -30,8 +30,9 @@ urgency, so every client shows the same order. Ordering belongs to the server.
   (same server order), and `--source` is a case-insensitive prefix match on the todo's `source`
   field (`user` or a producer name), not a source label or room name.
 - The `--json` shape is replaced. It was `{generated_at, source, now: [item], plan, do_next,
-  due_soon, later}`. It is now `{generated_at, source: "todos", note, now, next_event,
-  calendar: [event], todos: {count, items: [todo]}}`. `now` is one event object or null (it was a
+  due_soon, later}`. It is now `{generated_at, timezone, source: "todos", note, now,
+  next_event, calendar: [event], todos: {count, items: [todo]}}`, where `timezone` is the account's
+  IANA zone name (null when unreadable) and every time is shown in it. `now` is one event object or null (it was a
   list), `plan`, `do_next`, `due_soon` and `later` are gone, and `source` is always `"todos"` (it
   was `"schedule-plan"` or `"fallback"`). Each todo item is `{id, title, due, due_is_date_only,
   remind_at, priority, source}`, a subset of the server's todo fields with values unchanged

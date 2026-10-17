@@ -1076,25 +1076,43 @@ def _started(row: dict[str, Any], now: datetime | None) -> bool:
         return False
 
 
-def _todo_due_label(item: dict[str, Any], now: datetime | None) -> str:
+def _todo_due_label(item: dict[str, Any], now: datetime | None, zone: tzinfo | None) -> str:
     """The server's due field as text, tagged "overdue" once it is behind ``now``.
 
-    A timed due is shown on ``now``'s clock, the account's zone the event labels in the same view
-    use, not the machine's. Presentation only: the tag never moves or hides a todo."""
+    A timed due is shown in ``zone``, the account's IANA zone, so it reads on the same clock as
+    the event labels and keeps the right offset across a DST change. With no account zone
+    (``zone`` is ``None``) it is shown in UTC, labelled, and never tagged: "today" is the
+    account's, and the machine's zone is not a stand-in for it. Presentation only: the tag never
+    moves or hides a todo."""
     raw = item.get("due")
     if not raw:
         return ""
     date_only = item.get("due_is_date_only")
-    text = f"due {_format_due(raw, date_only, now.tzinfo if now is not None else None)}"
+    if zone is None:
+        return f"due {_format_due(raw, date_only, UTC)}" + ("" if date_only else " UTC")
+    text = f"due {_format_due(raw, date_only, zone)}"
     if now is not None:
         try:
             due = datetime.fromisoformat(raw)
-            late = due.date() < now.date() if date_only else due <= now
-        except ValueError:
+            local = now.astimezone(zone)
+            late = due.date() < local.date() if date_only else due <= local
+        except (TypeError, ValueError):
             late = False
         if late:
             text += " (overdue)"
     return text
+
+
+def _result_zone(name: Any) -> tzinfo | None:
+    """The account's zone named in a ``pepper next`` result, or ``None`` when absent or unknown."""
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    if not isinstance(name, str) or not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
 
 
 def render_next(result: dict[str, Any]) -> None:
@@ -1108,6 +1126,7 @@ def render_next(result: dict[str, Any]) -> None:
         clock: datetime | None = datetime.fromisoformat(result["generated_at"])
     except (KeyError, ValueError):
         clock = None
+    zone = _result_zone(result.get("timezone"))
     out("[bold]Now[/bold]")
     if now:
         left = _countdown(now["minutes_left"])
@@ -1140,7 +1159,7 @@ def render_next(result: dict[str, Any]) -> None:
     out(f"\n[bold]Todos[/bold] [dim]({todos['count']})[/dim]")
     for n, item in enumerate(todos["items"], 1):
         line = f"{n:>2}. {_s(item.get('title') or '(untitled)')}"
-        labels = [_todo_due_label(item, clock)]
+        labels = [_todo_due_label(item, clock, zone)]
         if item.get("priority"):
             labels.append(f"priority {item['priority']}")
         if item.get("source") and item["source"] != "user":
