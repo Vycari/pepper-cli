@@ -925,6 +925,9 @@ class PepperApp(App[None]):
         self.rosters[room] = members
         if self.current.room_id == room:
             self.composer.roster = members
+        # A room opened while this request ran was skipped (one roster request at a time):
+        # fetch it now. A no-op when the open room's roster is already held.
+        self._run("roster")
 
     # ------------------------------------------------------------------ Pepper turns (§6.5)
 

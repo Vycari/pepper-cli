@@ -241,6 +241,24 @@ async def test_mentions_come_from_the_roster_and_are_sent_by_person_id() -> None
         assert sorted(server.posts[0]["mentions"]) == ["p-ada", "p-bob"]
 
 
+async def test_a_room_opened_while_another_roster_loads_gets_its_own_roster() -> None:
+    server = server_with_roster()
+    server.rosters[ts.ROOM_B] = [{"person_id": "p-cy", "display_name": "Cy Young"}]
+    gate = threading.Event()
+    server.gates[f"/api/v1/groups/{ts.ROOM_A}/roster"] = gate
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await open_topic(pilot, app)
+        await until(pilot, lambda: app._loops["roster"].busy)
+        app.open_conversation(state.Conversation(ts.ROOM_B, ts.TOPIC_B1))
+        await until(pilot, lambda: "next book" in body_text(app))
+        assert ts.ROOM_B not in app.rosters  # skipped: room A's request is still running
+        gate.set()
+        await until(pilot, lambda: ts.ROOM_B in app.rosters)
+        assert [m.person_id for m in app.composer.roster] == ["p-cy"]
+        assert ts.ROOM_A in app.rosters
+
+
 async def test_composer_keys_newline_and_slash_and_quit_command() -> None:
     server = server_with_roster()
     app = tui_app.PepperApp(server.client())
