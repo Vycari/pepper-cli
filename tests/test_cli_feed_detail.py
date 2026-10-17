@@ -572,24 +572,21 @@ def test_open_without_a_usable_browser_prints_the_url_and_exits_zero(
     assert _ROCK in err.replace("\n", "")
 
 
-def test_open_over_ssh_never_launches_a_browser(server, browser, monkeypatch, capsys) -> None:
+def test_no_display_on_linux_launches_no_browser(browser, monkeypatch) -> None:
+    # open_browser alone: patching sys.platform under the whole CLI breaks it on Windows
     for var in ("DISPLAY", "WAYLAND_DISPLAY", "BROWSER"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(feed.sys, "platform", "linux")
-    n = _numbers(capsys)["Rock & Roll"]
-    rc, _, err = _run(capsys, "feed", "show", str(n), "--open")
-    assert rc == 0
+    assert feed.open_browser("https://news.example/a") is False
     assert browser.calls == []
-    assert "no browser could be opened" in err
 
 
 @pytest.mark.parametrize("var", ["SSH_CONNECTION", "SSH_TTY"])
-@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
 def test_open_over_ssh_with_a_display_never_launches_a_browser(
-    server, browser, monkeypatch, capsys, var, platform
+    server, browser, monkeypatch, capsys, var
 ) -> None:
+    # the rule is the same on every platform, so it runs on whichever one CI is
     monkeypatch.setenv(var, "10.0.0.2 51000 10.0.0.1 22")  # ssh -X: DISPLAY is set as well
-    monkeypatch.setattr(feed.sys, "platform", platform)
     n = _numbers(capsys)["Rock & Roll"]
     rc, _, err = _run(capsys, "feed", "show", str(n), "--open")
     assert rc == 0
@@ -601,7 +598,6 @@ def test_open_over_ssh_honours_an_explicit_browser(server, browser, monkeypatch,
     monkeypatch.setenv("SSH_CONNECTION", "10.0.0.2 51000 10.0.0.1 22")
     monkeypatch.delenv("DISPLAY")
     monkeypatch.setenv("BROWSER", "/remote-cli/helpers/browser.sh")
-    monkeypatch.setattr(feed.sys, "platform", "linux")
     n = _numbers(capsys)["Rock & Roll"]
     rc, _, err = _run(capsys, "feed", "show", str(n), "--open")
     assert rc == 0
@@ -660,7 +656,11 @@ def _terminal(monkeypatch, *, tty: bool):
 
     buf = io.StringIO()
     console = Console(
-        file=buf, force_terminal=tty, width=120, color_system="standard" if tty else None
+        file=buf,
+        force_terminal=tty,
+        width=120,
+        color_system="standard" if tty else None,
+        legacy_windows=False,  # a legacy Windows console never gets OSC 8 links
     )
     monkeypatch.setattr(following_render, "_console", console)
     return buf
