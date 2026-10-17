@@ -10,7 +10,7 @@ the PRs in §9.
 **Tracked by:** not filed
 **Related:** `planning/cli-information-architecture.md` (the grammar this extends; its §2 rows and
 §3.1 verbs change in the PRs below, not here), pepper-cli#50 (`pepper next` after pepper#4820),
-pepper-cli#62 (the `next` fix), pepper#4847 (RSS `summary` and `published_at` on Following recent
+pepper-cli#62 (the `next` fix), pepper#4847 (merged; RSS `summary` and `published_at` on Following recent
 items), vycari#142 (`docs/design/streams-to-pepper-room.md`, todo assignment), pepper
 `planning/requests.md` (the Requests primitive), pepper `planning/dash.md`, pepper#4802 (the
 Dash/Inbox rename). Server paths below are relative to `src/pepper/` in Vycari/pepper; CLI paths
@@ -109,7 +109,7 @@ through `POST /api/v1/apps/{slug}/actions/{name}`. "Needs" names the server chan
 |---|---|---|
 | `dash list` / `show N` | The open Dash cards in the server's order, numbered (`--limit`); one card in full with its context, options, links and draft bodies | Needs `GET /api/v1/apps/dash/view` (pepper branch `inbox-pat-actions`), the server's filtered list. The CLI keeps no copy of the filters (§6) |
 | `dash do N OPTION` / `dismiss N` / `snooze N` / `undo` | Take one of a card's options exactly as its web button does; decline a card; hide it until later; reverse the last action | Needs `POST /api/v1/apps/dash/actions/{name}` and `GET /api/v1/apps/dash/view` (pepper branch `inbox-pat-actions`) |
-| `feed` | The server's ranked stream of the recent items of everything followed, numbered (`--limit`) | Needs `data.feed` in the Following app data (a server PR stacked on pepper#4847) (§4.3) |
+| `feed` | The server's ranked stream of the recent items of everything followed, numbered (`--limit`) | Needs `data.feed` in the Following app data (pepper#4852) (§4.3) |
 | `feed N` | One item in full: source, sports or episode detail, the RSS summary. `--transcript` for a podcast episode, `--read` (with `--full`) fetches the article from its own site | `--transcript` uses the Following app's `episode_transcript` action; `--read` is a plain client-side GET that never carries the Pepper token |
 | `following list` / `show` / `search` / `create` / `delete` | What the person follows, by group; one followed thing; find something to follow (team, show, podcast, website address); follow number N from the last search; unfollow | Works today over the Following app's owner-scoped actions |
 | `events show` / `create` / `edit` / `delete` / `rsvp` | One event in full; add, change or delete an event on the primary calendar; reply yes, no or maybe | Works today over the calendar app's actions. **Writes hit the person's real Google Calendar.** `rsvp` has no note (§6) |
@@ -151,7 +151,7 @@ verb to discover first (Allen's review, 2026-10-17). `following` stays the noun 
 is followed.
 
 **The server ranks.** The order, the folding and the scoring belong to the Following app on the
-server, so the stream is the same on web, iOS and the CLI. A server PR stacked on pepper#4847
+server, so the stream is the same on web, iOS and the CLI. pepper#4852
 (which adds the RSS `summary` and `published_at` to recent items) adds a ranked `data.feed` to the
 Following app data. The CLI reads `data.feed` and prints it in the order given. `feed.py`'s
 `Weights`, the client-side scoring and folding, and the `--why` score breakdown on `proto` leave the
@@ -289,7 +289,7 @@ Client-side logic on `proto` removed under the no-business-logic rule:
 |---|---|---|
 | pepper `inbox-pat-actions` | `GET /api/v1/apps/dash/view` and `POST /api/v1/apps/dash/actions/{name}`: the PAT twins of the web Dash view and action routes (`api/dash.py`, `features/dash/web.py`) | All of `dash`: `list/show` read the filtered view, `do/dismiss/snooze/undo` act |
 | pepper#4847 | RSS `summary` and `published_at` on Following recent items | `feed N` detail; no time parsed out of a display label |
-| A server PR stacked on pepper#4847 | A server-ranked `data.feed` in the Following app data | `feed` (§4.3) |
+| pepper#4852 | A server-ranked `data.feed` in the Following app data | `feed` (§4.3) |
 | pepper `todo-pat-writes` | `GET`/`PATCH /api/v1/todos/{id}` | `todos show/edit`. A PR with only show and edit is ready to open on Chris's go |
 | pepper `todo-pat-writes`, rest | assign, asked and withdraw routes | Superseded by vycari#142 P1a; not opened |
 | vycari#142 P1a | `assignee_person_id` on room todo create, `?assignee=me` / `?requester=me` / `?asked_of_me=true`, decline and withdraw over dismiss, PATCH with `assignee_person_id` | todo assignment (§4.4) |
@@ -307,7 +307,7 @@ PRs. Phases without a dependency can run in parallel, kept file-disjoint where `
 | 1 | Intent map | `INTENT_MAP` at the top of `pepper --help` (§3), its test | — |
 | 2 | `next` | §5, pepper-cli#62; refs pepper-cli#50. Listed under **Breaking** (`--first` removed) | — |
 | 3 | Dash | `dash list/show/do/dismiss/snooze/undo` (§4.1) | `inbox-pat-actions` deployed, snapshot refreshed |
-| 4 | Feed and following | `feed`, `feed N`, `following list/show/search/create/delete`, `article_reader.py` | pepper#4847 and the server PR stacked on it deployed |
+| 4 | Feed and following | `feed`, `feed N`, `following list/show/search/create/delete`, `article_reader.py` | pepper#4847 and pepper#4852 deployed |
 | 5 | Events | `events show/create/edit/delete/rsvp`, numbered `calendar` | — |
 | 6 | Brief and feedback | `brief`, REPL `/good /bad`, `trajectories feedback`. `chat --attach/--history` and REPL `/attach` only if §11 A says so | — |
 | 7 | Account and data | `artifacts`, `people`, `preferences`, `booking-pages`, `numbered_view.py` | Booking app data (§8) for the public link |
@@ -339,7 +339,7 @@ the code stay in step.
 | | Decision |
 |---|---|
 | 11 | No business logic in the CLI: the server ranks, filters, decides and owns ordering; the CLI fetches and renders (§6) |
-| 12 | Feed ranking and folding move to the server (`data.feed`, a server PR stacked on pepper#4847); `feed.py`'s `Weights` leave the CLI. `feed` is a view: `pepper feed` and `pepper feed N` (§4.3) |
+| 12 | Feed ranking and folding move to the server (`data.feed`, pepper#4852); `feed.py`'s `Weights` leave the CLI. `feed` is a view: `pepper feed` and `pepper feed N` (§4.3) |
 | 13 | `next` is presentation only: now and next event, today's calendar, todos in the server's order (pepper-cli#62). A server-ranked "what should I do now" list belongs with the Todos redesign (§5) |
 | 14 | `dash` reads the server's filtered `GET /api/v1/apps/dash/view` and drops its copy of the filters (§4.1, §6) |
 
