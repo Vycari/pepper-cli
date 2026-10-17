@@ -182,7 +182,7 @@ The `assign`, `asked` and `withdraw` verbs on `proto` came from an earlier serve
 
 `next` was rebuilt around the todo list. This fixes pepper-cli#50: since pepper#4820 the server's
 `schedule-plan` returns no plans, so the old view showed an empty "Do next", hid the person's own
-todos due soon, and silently ignored `--first`. The work is on branch `next-from-todos`.
+todos due soon, and silently ignored `--first`. The fix is #62.
 
 The view has three parts (`next_view.py`):
 
