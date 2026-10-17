@@ -48,6 +48,8 @@ DM_INTERVAL = 15.0
 #: Seconds to wait after the Nth consecutive failure: 3, 6, 12, then 30 and no more.
 BACKOFF_STEPS = (3.0, 6.0, 12.0, 30.0)
 #: After a DM stream drops, how long history is re-read for the reply before giving up (§6.5).
+#: Also how long an answered turn waits for its rows to show before it is retired (a turn
+#: that straddles midnight never shows its user row in today's history).
 DM_RECONCILE_WINDOW = 120.0
 #: History cadence while waiting for a dropped turn's reply.
 DM_RECONCILE_INTERVAL = 3.0
@@ -563,12 +565,16 @@ type TurnPhase = Literal["queued", "streaming", "checking", "done"]
 
 @dataclass
 class DmTurn:
-    """One message to Pepper, from Enter until its reply is in today's history (§6.5).
+    """One message to Pepper, from Enter until its rows are in today's history (§6.5).
 
     ``snapshot`` holds the history ids on screen when the turn started. A reply frame names
     its rows (``user_message_id``/``assistant_message_id``); a dropped stream does not, and
     then the reply is "an assistant row that was not in the snapshot". The turn is never
     sent twice: a drop only ever re-reads history.
+
+    Only a ``streaming`` or ``checking`` turn holds back the next one. A ``done`` turn stays
+    just to show its rows until history does, and is retired after
+    :data:`DM_RECONCILE_WINDOW` even if history never shows them.
     """
 
     text: str
@@ -580,6 +586,17 @@ class DmTurn:
     assistant_id: str | None = None
     #: ``time.monotonic()`` when the stream was found dropped.
     lost_at: float | None = None
+    #: ``time.monotonic()`` when the reply frame arrived.
+    done_at: float | None = None
+
+    @property
+    def active(self) -> bool:
+        """Streaming, or re-reading history after a drop: the next turn waits for this one."""
+        return self.phase in ("streaming", "checking")
+
+    def known_ids(self) -> set[str]:
+        """The history ids the reply frame named."""
+        return {i for i in (self.user_id, self.assistant_id) if i is not None}
 
     def user_landed(self, entries: dict[str, ChatHistoryEntry]) -> bool:
         if self.user_id is not None:
@@ -596,5 +613,7 @@ class DmTurn:
         return any(e.role == "assistant" and eid not in self.snapshot for eid, e in entries.items())
 
     def gave_up(self, now: float) -> bool:
-        """A dropped turn whose reply did not show within :data:`DM_RECONCILE_WINDOW`."""
-        return self.lost_at is not None and now - self.lost_at >= DM_RECONCILE_WINDOW
+        """A dropped turn whose reply, or an answered turn whose rows, did not show within
+        :data:`DM_RECONCILE_WINDOW`."""
+        since = {"checking": self.lost_at, "done": self.done_at}.get(self.phase)
+        return since is not None and now - since >= DM_RECONCILE_WINDOW

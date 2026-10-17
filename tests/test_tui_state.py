@@ -334,3 +334,19 @@ def test_dm_turn_lands_by_id_or_by_snapshot_only_while_checking() -> None:
     turn.lost_at = 100.0
     assert not turn.gave_up(100.0 + state.DM_RECONCILE_WINDOW - 1)
     assert turn.gave_up(100.0 + state.DM_RECONCILE_WINDOW)
+
+
+def test_an_answered_turn_gives_up_on_its_rows_after_the_window_and_is_not_active() -> None:
+    turn = state.DmTurn(text="q", phase="done", user_id="u1", assistant_id="a1")
+    assert not turn.active
+    assert turn.known_ids() == {"u1", "a1"}
+    assert not turn.gave_up(1e9)  # no done_at yet
+    turn.done_at = 100.0
+    assert not turn.gave_up(100.0 + state.DM_RECONCILE_WINDOW - 1)
+    assert turn.gave_up(100.0 + state.DM_RECONCILE_WINDOW)
+    turn.lost_at = 0.0  # only the window of the turn's own phase counts
+    assert not turn.gave_up(100.0 + state.DM_RECONCILE_WINDOW - 1)
+    assert state.DmTurn(text="q", phase="streaming").active
+    assert state.DmTurn(text="q", phase="checking").active
+    assert not state.DmTurn(text="q").active
+    assert state.DmTurn(text="q").known_ids() == set()

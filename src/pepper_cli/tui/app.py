@@ -358,7 +358,7 @@ class PepperApp(App[None]):
         if kind == "rail":
             return state.RAIL_INTERVAL
         if kind == "dm":
-            if self.turns and self.turns[0].phase == "checking":
+            if any(turn.phase == "checking" for turn in self.turns):
                 return state.DM_RECONCILE_INTERVAL
             return state.DM_INTERVAL
         if kind == "topic":
@@ -752,7 +752,8 @@ class PepperApp(App[None]):
         """The dim line above the composer: what the running turn is doing (DM only)."""
         text = ""
         if self.current.is_pepper:
-            text = self.turns[0].status if self.turns and self.turns[0].status else self.dm_note
+            active = self._active_turn()
+            text = active.status if active is not None and active.status else self.dm_note
         box = self.query_one("#dm-status", Static)
         box.update(Text(sanitize_line(text), style="dim italic"))
         box.set_class(not text, "empty")
@@ -939,16 +940,23 @@ class PepperApp(App[None]):
         self._render_dm(new_rows=0, reset=True)
         self._run("turn")
 
+    def _active_turn(self) -> state.DmTurn | None:
+        return next((turn for turn in self.turns if turn.active), None)
+
     def _start_turn(self) -> None:
-        """Start the first turn if it is waiting and none is streaming or being checked."""
-        if self._quitting or not self.turns or self.turns[0].phase != "queued":
+        """Start the first waiting turn if none is streaming or being checked."""
+        if self._quitting or self._active_turn() is not None:
             return
-        turn = self.turns[0]
+        turn = next((t for t in self.turns if t.phase == "queued"), None)
+        if turn is None:
+            return
         loop = self._loops["turn"]
         loop.generation += 1
         generation = loop.generation
         loop.in_flight = generation
-        turn.snapshot = frozenset(self.dm.entries)
+        # An answered turn's rows may not be in history yet; they are not this turn's.
+        earlier = set().union(*(t.known_ids() for t in self.turns if t.phase == "done"))
+        turn.snapshot = frozenset(self.dm.entries) | earlier
         turn.phase, turn.status = "streaming", "Sending…"
         self._loops["dm"].stop_timer()
         self._paint_dm_status()
@@ -1005,6 +1013,7 @@ class PepperApp(App[None]):
             return
         if outcome == "reply" and error is None:
             turn.phase, turn.status = "done", ""
+            turn.done_at = time.monotonic()
             turn.reply = str(payload.get("reply") or "")
             turn.user_id = _str_or_none(payload.get("user_message_id"))
             turn.assistant_id = _str_or_none(payload.get("assistant_message_id"))
@@ -1041,22 +1050,26 @@ class PepperApp(App[None]):
             self.composer.move_cursor(self.composer.document.end)
 
     def _settle_turns(self) -> None:
-        """Retire turns whose rows history now shows, give up on a lost one past its
-        window, and start the next queued turn once nothing is streaming or being checked."""
+        """Retire turns whose rows history now shows, or that are past their window, and
+        start the next queued turn once nothing is streaming or being checked.
+
+        An answered turn is retired after the window even when history never shows both
+        rows (its user row was stored before midnight, and today's history has dropped it).
+        """
         entries = self.dm.entries
-        while self.turns:
-            head = self.turns[0]
-            if head.phase == "done" and head.reply_landed(entries) and head.user_landed(entries):
-                self.turns.pop(0)
-            elif head.phase == "checking" and head.reply_landed(entries):
-                self.turns.pop(0)
+        now = time.monotonic()
+        for turn in list(self.turns):
+            if turn.phase == "done" and (
+                (turn.reply_landed(entries) and turn.user_landed(entries)) or turn.gave_up(now)
+            ):
+                self.turns.remove(turn)
+            elif turn.phase == "checking" and turn.reply_landed(entries):
+                self.turns.remove(turn)
                 self.dm_note = ""
-            elif head.phase == "checking" and head.gave_up(time.monotonic()):
-                self.turns.pop(0)
+            elif turn.phase == "checking" and turn.gave_up(now):
+                self.turns.remove(turn)
                 self.dm_note = "No reply yet. It may still arrive; check back in a moment."
-            else:
-                break
-        if self.turns and self.turns[0].phase == "queued":
+        if any(turn.phase == "queued" for turn in self.turns):
             self._run("turn")
         self._paint_dm_status()
 

@@ -413,6 +413,33 @@ async def test_a_second_send_waits_until_the_current_turn_finishes() -> None:
         assert "second" in body_text(app)
 
 
+async def test_an_answered_turn_whose_user_row_never_shows_does_not_hold_the_queue(
+    monkeypatch,
+) -> None:
+    # The question was stored before midnight and the answer after it: today's history has
+    # the answer but will never have the question.
+    monkeypatch.setattr(state, "DM_RECONCILE_WINDOW", 0.3)
+    server = ts.standard_server()
+    gate = threading.Event()
+    first = reply_turn("after midnight", 1, gates={1: gate})
+    first.history = [h for h in first.history if h["role"] == "assistant"]
+    server.turns = [first, reply_turn("second", 2)]
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.dm.entries) == 2)
+        await send(pilot, app, "question 1")
+        await until(pilot, lambda: "Thinking" in status_line(app))
+        await send(pilot, app, "question 2")
+        gate.set()
+        await until(pilot, lambda: len(server.turn_bodies) == 2)
+        await until(pilot, lambda: "second" in body_text(app))
+        assert [t.text for t in app.turns] == ["question 1"]  # still shown, still waiting
+        assert app.turns[0].phase == "done"
+        await until(pilot, lambda: not app.turns)  # retired after the window
+        assert body_text(app).count("question 1") == 0
+        assert "after midnight" in body_text(app)
+
+
 async def test_an_error_frame_shows_in_the_status_line() -> None:
     server = ts.standard_server()
     server.turns = [ts.ScriptedTurn(frames=[("error", {"kind": "model", "message": "busy"})])]
