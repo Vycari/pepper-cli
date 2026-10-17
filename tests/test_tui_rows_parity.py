@@ -24,7 +24,16 @@ CARD = {
 
 
 def _text(renderable: RenderableType, width: int = 60) -> str:
-    console = Console(width=width, file=io.StringIO(), record=True, force_terminal=False)
+    # ``legacy_windows=False``: on a Windows runner with no console Rich detects a legacy
+    # console and swaps rounded boxes for square ones. Textual never draws through a legacy
+    # console, so the TUI always gets the rounded box this checks for.
+    console = Console(
+        width=width,
+        file=io.StringIO(),
+        record=True,
+        force_terminal=False,
+        legacy_windows=False,
+    )
     console.print(renderable)
     return console.export_text()
 
