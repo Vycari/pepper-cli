@@ -41,6 +41,7 @@ def _fast_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(state, "DM_INTERVAL", 0.05)
     monkeypatch.setattr(state, "DM_RECONCILE_INTERVAL", 0.05)
     monkeypatch.setattr(state, "BACKOFF_STEPS", (0.05, 0.05, 0.05, 0.05))
+    monkeypatch.setattr(tui_app, "utcnow", lambda: ts.NOW)
 
 
 def server_with_roster() -> ts.FakeServer:

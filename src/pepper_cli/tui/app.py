@@ -32,7 +32,9 @@ import contextlib
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+import webbrowser
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
@@ -42,6 +44,7 @@ from textual import events
 from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
+from textual.screen import ModalScreen
 from textual.widgets import Footer, Static
 
 from pepper_cli import turn as turns
@@ -49,6 +52,14 @@ from pepper_cli.api_client import ApiError, UpgradeRequiredError
 from pepper_cli.terminal_text import sanitize_line
 from pepper_cli.tui import poller, rows, state
 from pepper_cli.tui.composer import Composer, MentionMenu
+from pepper_cli.tui.screens import (
+    ConfirmScreen,
+    InfoScreen,
+    JumpScreen,
+    PickerScreen,
+    PromptScreen,
+    room_info_text,
+)
 from pepper_cli.tui.sidebar import Sidebar
 from pepper_cli.tui.thread import ThreadScroll, ThreadView
 
@@ -63,8 +74,10 @@ if TYPE_CHECKING:
         ChatHistoryEntry,
         GroupList,
         GroupMessage,
+        GroupMessagePage,
         GroupRosterMember,
         GroupSummary,
+        GroupTopicSummary,
     )
     from pepper_cli.provider.fs import FilesystemProvider
 
@@ -77,13 +90,20 @@ _EXPECTED = (ApiError, UpgradeRequiredError, httpx.RequestError, ValueError, Key
 _LOOPS = ("startup", "rail", "dm", "topic", "publish")
 #: On-demand loops. A failed send is not retried by itself (it waits for ``r``), so it does not
 #: say "retrying"; the roster retries quietly; the turn reports in the status line.
-_ON_DEMAND = ("send", "roster", "turn")
+#: P3 adds one-at-a-time requests started by a key: an older page, a reaction, an edit or
+#: delete (``mutate``), a new topic, the room-info card, and a room's full topic rail.
+_ON_DEMAND = ("send", "roster", "turn", "older", "react", "mutate", "newtopic", "info", "topics")
 #: Transport failures that mean a turn's request never reached the server, so it is safe to
 #: give the text back for the user to send again.
 _NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout)
 #: Client errors a read-mark PUT will keep getting however often it is retried (no access to
 #: the topic any more, the topic is gone, the request is refused). The mark is dropped.
 _PUBLISH_PERMANENT = frozenset({400, 403, 404, 409, 410, 422})
+
+
+def utcnow() -> datetime:
+    """The wall clock, in one place so a test can replace it (or pass ``now=`` to the app)."""
+    return datetime.now(UTC)
 
 
 @dataclass
@@ -118,12 +138,26 @@ class PepperApp(App[None]):
         Binding("pageup", "page_up", "Page up", show=False),
         Binding("pagedown", "page_down", "Page down", show=False),
         Binding("slash", "focus_composer", "Compose", show=False),
+        # Priority: a focused TextArea would otherwise take Ctrl+K as "delete to line end".
+        Binding("ctrl+k", "jump", "Jump", priority=True),
+        Binding("i", "room_info", "Room info"),
         Binding("ctrl+q", "quit_app", "Quit", priority=True),
     ]
 
-    def __init__(self, api: ApiClient, *, provider: FilesystemProvider | None = None) -> None:
+    def __init__(
+        self,
+        api: ApiClient,
+        *,
+        provider: FilesystemProvider | None = None,
+        open_url: Callable[[str], object] = webbrowser.open,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
         super().__init__()
         self._api = api
+        #: Hands a link to the system browser (``o``); a test passes a recorder.
+        self._open_url = open_url
+        #: The clock for the "inactive rooms" fold.
+        self._now = now or utcnow
         #: The ``--root`` filesystem toolset served to Pepper's client-tool calls, if any.
         self._provider = provider
         self._rail = poller.RailPoller(api)
@@ -136,6 +170,10 @@ class PepperApp(App[None]):
         self.dm = state.DmTracker()
         self.manual: dict[str, bool] = {}
         self.show_all: set[str] = set()
+        #: Which archived/inactive folds are open, and the topic rails read for the archived ones.
+        self.folds = state.SidebarFolds()
+        #: The message being edited in the composer: ``(conversation, message id)``.
+        self.editing: tuple[state.Conversation, str] | None = None
         self.you_id: str | None = None
         self.hour24 = False
         self.loaded_topic = False
@@ -407,14 +445,14 @@ class PepperApp(App[None]):
             self._fetch_roster()
         elif kind == "turn":
             self._start_turn()
-        elif not self.current.is_pepper:
+        elif kind == "topic" and not self.current.is_pepper:
             conv = self.current
             reconcile = self.store.next_is_reconcile()
             since = None if reconcile else self.store.since()
             self._start(
                 kind,
-                lambda: poller.fetch_topic(self._api, conv, since=since).messages,
-                self._on_topic,
+                lambda: poller.fetch_topic(self._api, conv, since=since),
+                lambda page: self._on_topic_page(page, newest=since is None),
             )
 
     def _poll_now(self) -> None:
@@ -465,6 +503,12 @@ class PepperApp(App[None]):
         if self.current.is_pepper:
             self._render_dm(new_rows=len(new_ids), reset=False)
 
+    def _on_topic_page(self, page: GroupMessagePage, *, newest: bool) -> None:
+        """A poll's page. Only a read of the newest page says where the older ones start."""
+        if newest:
+            self.store.note_newest_page(page.next_before)
+        self._on_topic(page.messages)
+
     def _on_topic(self, messages: list[GroupMessage]) -> None:
         new_ids = self.store.add(messages)
         # A send the poll has now returned is the store's row from here on; a selection on
@@ -512,13 +556,13 @@ class PepperApp(App[None]):
             selected=self.selected,
         )
 
-    def _render_topic(self, *, new_rows: int, reset: bool) -> None:
+    def _render_topic(self, *, new_rows: int, reset: bool, prepended: bool = False) -> None:
         if not self.loaded_topic:
             self.thread.show(Text("Loading…", style="dim"), reset=True)
             return
         items = self._topic_items()
         body = Group(*(r for _, r in items)) if items else Text("(no messages)", style="dim")
-        self.thread.show(body, new_rows=new_rows, reset=reset)
+        self.thread.show(body, new_rows=new_rows, reset=reset, prepended=prepended)
 
     def refresh_chrome(self) -> None:
         """Sidebar, header, notice, subline and terminal title from the current state."""
@@ -532,6 +576,8 @@ class PepperApp(App[None]):
                 manual=self.manual,
                 show_all=self.show_all,
                 pepper_dot=self.dm.dot,
+                folds=self.folds,
+                now=self._now(),
             ),
             current_key=current_key,
         )
@@ -580,15 +626,28 @@ class PepperApp(App[None]):
             return
         if row.kind == "room" and row.room_id:
             self.manual[row.room_id] = not row.expanded
+            if not row.expanded:
+                self._ensure_topics(row.room_id)
             self.refresh_chrome()
         elif row.kind == "more" and row.room_id:
             self.show_all.add(row.room_id)
             self.refresh_chrome()
+        elif row.kind == "archived" and row.room_id:
+            archived = set(self.folds.archived) ^ {row.room_id}
+            self.folds = replace(self.folds, archived=frozenset(archived))
+            self.refresh_chrome()
+        elif row.kind == "inactive":
+            self.folds = replace(self.folds, inactive=not self.folds.inactive)
+            self.refresh_chrome()
+        elif row.kind == "newtopic" and row.room_id:
+            self._prompt_topic(row.room_id)
         elif (conv := row.conversation) is not None:
             self.open_conversation(conv)
 
     def on_sidebar_room_toggled(self, event: Sidebar.RoomToggled) -> None:
         self.manual[event.room_id] = event.expanded
+        if event.expanded:
+            self._ensure_topics(event.room_id)
         self.refresh_chrome()
 
     def open_conversation(self, conv: state.Conversation) -> None:
@@ -601,6 +660,7 @@ class PepperApp(App[None]):
             return
         self._note_viewed()
         self._run("publish")
+        self._end_edit()
         self._draft().text = self.composer.text
         self.current = conv
         self.selected = None
@@ -614,8 +674,10 @@ class PepperApp(App[None]):
         topic.stop_timer()
         topic.failures = 0
         topic.generation += 1
+        self._loops["older"].generation += 1
         if conv.room_id is not None:
             self.manual.setdefault(conv.room_id, True)
+            self._ensure_topics(conv.room_id)
         if conv.is_pepper:
             self.dm.dot = False
             self._render_dm(new_rows=0, reset=True)
@@ -657,6 +719,40 @@ class PepperApp(App[None]):
 
     def action_focus_composer(self) -> None:
         self.composer.focus()
+
+    def action_jump(self) -> None:
+        """``Ctrl+K``: fuzzy-pick a room or topic to open."""
+        if self.fatal or isinstance(self.screen, ModalScreen):
+            return
+        shown = self.rooms if self.groups_enabled else []
+        self.push_screen(JumpScreen(state.jump_targets(shown)), self._jumped)
+
+    def _jumped(self, conv: state.Conversation | None) -> None:
+        if conv is None:
+            return
+        self.open_conversation(conv)
+        self.sidebar.select_key("pepper" if conv.is_pepper else f"topic:{conv.topic_id}")
+
+    def action_room_info(self) -> None:
+        """``i``: members, topics and apps of the room under the cursor (or the open one)."""
+        if isinstance(self.screen, ModalScreen):
+            return
+        row = self.sidebar.highlighted_row if self.sidebar.has_focus else None
+        room_id = (row.room_id if row is not None else None) or self.current.room_id
+        if room_id is None:
+            self.notify("Open a room first.", timeout=2)
+            return
+        if self._loops["info"].busy:
+            return
+        self._start(
+            "info",
+            lambda: poller.fetch_room_info(self._api, room_id),
+            self._show_info,
+            on_error=lambda exc: self._action_failed("load the room info", exc),
+        )
+
+    def _show_info(self, info: dict[str, Any]) -> None:
+        self.push_screen(InfoScreen(room_info_text(info)))
 
     # ------------------------------------------------------------------ read marks
 
@@ -743,6 +839,12 @@ class PepperApp(App[None]):
     def _paint_quote(self) -> None:
         draft = self._draft()
         box = self.query_one("#quote", Static)
+        if self.editing is not None:
+            line = Text("✎ Editing your message", style="bold")
+            line.append("  (Enter saves · Esc cancels)", style="dim italic")
+            box.update(line)
+            box.set_class(False, "empty")
+            return
         if draft.quote_id is None:
             box.update("")
             box.set_class(True, "empty")
@@ -774,6 +876,9 @@ class PepperApp(App[None]):
         if self.fatal:
             return
         self._last_input = time.monotonic()
+        if self.editing is not None:
+            self._submit_edit(text)
+            return
         if self.current.is_pepper:
             self._send_turn(text)
         else:
@@ -784,7 +889,10 @@ class PepperApp(App[None]):
         self._paint_quote()
 
     def on_composer_escaped(self, _event: Composer.Escaped) -> None:
-        """Esc cancels a quote first; a second Esc leaves the composer for the thread."""
+        """Esc cancels an edit, else a quote; the next Esc leaves the composer for the thread."""
+        if self.editing is not None:
+            self._end_edit()
+            return
         draft = self._draft()
         if draft.quote_id is not None:
             draft.quote_id, draft.quote_name, draft.quote_text = None, "", ""
@@ -810,6 +918,8 @@ class PepperApp(App[None]):
         self.selected = keys[index]
         self._render_topic(new_rows=0, reset=False)
         self._reveal_selected()
+        if index == 0 and event.step < 0:
+            self._load_older()  # ↑ past the first row asks for the page before it
 
     def on_thread_scroll_unselect(self, _event: ThreadScroll.Unselect) -> None:
         if self.selected is not None:
@@ -935,6 +1045,223 @@ class PepperApp(App[None]):
         # A room opened while this request ran was skipped (one roster request at a time):
         # fetch it now. A no-op when the open room's roster is already held.
         self._run("roster")
+
+    # ------------------------------------------------------------------ P3: parity
+
+    def _action_failed(self, what: str, exc: Exception) -> bool:
+        """A key-started request failed: say so. Never retried by itself (False: back off)."""
+        self.notify(f"Couldn't {what} ({_short_error(exc)}).", severity="error", timeout=4)
+        return False
+
+    def _selected_message(self) -> GroupMessage | None:
+        """The selected sent message, or ``None`` after saying why not."""
+        key = self.selected
+        if self.current.is_pepper:
+            self.notify("This works on room messages.", timeout=2)
+        elif key is None:
+            self.notify("Select a message with ↑/↓ first.", timeout=2)
+        elif not key.startswith("msg:"):
+            self.notify("That message hasn't been sent yet.", timeout=2)
+        else:
+            return self.store.rows.get(key.removeprefix("msg:"))
+        return None
+
+    def _own_message(self, verb: str) -> GroupMessage | None:
+        message = self._selected_message()
+        if message is not None and not state.is_own_editable(message):
+            self.notify(f"You can only {verb} your own messages.", timeout=2)
+            return None
+        return message
+
+    # reactions
+
+    def on_thread_scroll_react(self, _event: ThreadScroll.React) -> None:
+        message = self._selected_message()
+        if message is None:
+            return
+        if message.is_deleted or message.is_broken:
+            self.notify("Nothing to react to.", timeout=2)
+            return
+        mine = {c.get("emoji") for c in message.reactions if c.get("mine") is True}
+        choices = [
+            (e, e + ("   yours: picks it back" if e in mine else "")) for e in state.EMOJI_CHOICES
+        ]
+        self.push_screen(
+            PickerScreen("React", choices), lambda emoji: self._react(message.id, emoji)
+        )
+
+    def _react(self, message_id: str, emoji: str | None) -> None:
+        room = self.current.room_id
+        message = self.store.rows.get(message_id)
+        if emoji is None or room is None or message is None:
+            return
+        if self._loops["react"].busy:
+            self.notify("Still sending the last reaction.", timeout=2)
+            return
+        clear = state.reaction_action(message.reactions, emoji) == "clear"
+        self._start(
+            "react",
+            lambda: poller.react(self._api, room, message_id, emoji=emoji, clear=clear),
+            lambda chips: self._reacted(message_id, chips),
+            on_error=lambda exc: self._action_failed("react", exc),
+        )
+
+    def _reacted(self, message_id: str, chips: list[dict[str, Any]]) -> None:
+        self.store.set_reactions(message_id, chips)
+        self._render_topic(new_rows=0, reset=False)
+
+    # edit and delete
+
+    def on_thread_scroll_edit(self, _event: ThreadScroll.Edit) -> None:
+        if (message := self._own_message("edit")) is None:
+            return
+        draft = self._draft()
+        draft.text = self.composer.text if self.editing is None else draft.text
+        self.editing = (self.current, message.id)
+        self.composer.load_text(message.raw_body)
+        self.composer.move_cursor(self.composer.document.end)
+        self._paint_quote()
+        self.composer.focus()
+
+    def _end_edit(self) -> None:
+        """Leave edit mode and put the draft that was set aside back in the composer."""
+        if self.editing is None:
+            return
+        self.editing = None
+        self._load_draft()
+
+    def _submit_edit(self, text: str) -> None:
+        if self.editing is None:
+            return
+        conv, message_id = self.editing
+        original = self.store.rows.get(message_id)
+        if not text.strip() or (original is not None and text.strip() == original.raw_body.strip()):
+            self._end_edit()  # nothing changed (an empty edit is not a delete)
+            return
+        if self._loops["mutate"].busy or conv.room_id is None:
+            self.notify("Still saving the last change.", timeout=2)
+            return
+        room = conv.room_id
+        self._start(
+            "mutate",
+            lambda: poller.edit_message(self._api, room, message_id, body=text),
+            lambda _answer: self._mutated(edited=message_id),
+            on_error=lambda exc: self._action_failed("save your edit", exc),
+        )
+
+    def on_thread_scroll_delete(self, _event: ThreadScroll.Delete) -> None:
+        if (message := self._own_message("delete")) is None:
+            return
+        snippet = state.quote_snippet(message.raw_body)
+        self.push_screen(
+            ConfirmScreen("Delete this message?", snippet),
+            lambda yes: self._delete(message.id) if yes else None,
+        )
+
+    def _delete(self, message_id: str) -> None:
+        room = self.current.room_id
+        if room is None:
+            return
+        if self._loops["mutate"].busy:
+            self.notify("Still saving the last change.", timeout=2)
+            return
+        self._start(
+            "mutate",
+            lambda: poller.delete_message(self._api, room, message_id),
+            lambda _answer: self._mutated(edited=None),
+            on_error=lambda exc: self._action_failed("delete the message", exc),
+        )
+
+    def _mutated(self, *, edited: str | None) -> None:
+        """The server took an edit or delete: leave edit mode and re-read the topic, so the
+        row on screen is the server's own."""
+        if edited is not None and self.editing is not None and self.editing[1] == edited:
+            self._end_edit()
+        self.store.expect_reconcile()
+        self._run("topic")
+
+    # open a link
+
+    def on_thread_scroll_open(self, _event: ThreadScroll.Open) -> None:
+        if (message := self._selected_message()) is None:
+            return
+        url = state.first_url(message, base=self._api.server_url)
+        if url is None:
+            self.notify("No link in this message.", timeout=2)
+            return
+        try:
+            opened = bool(self._open_url(url))
+        except webbrowser.Error:
+            opened = False
+        shown = sanitize_line(url)
+        self.notify(
+            f"Opened {shown}" if opened else f"Couldn't open a browser for {shown}",
+            markup=False,
+            timeout=3,
+        )
+
+    # load older
+
+    def on_thread_view_at_top(self, _event: ThreadView.AtTop) -> None:
+        self._load_older()
+
+    def _load_older(self) -> None:
+        conv, before = self.current, self.store.older
+        if conv.is_pepper or before is None or self._loops["older"].busy:
+            return
+        self._start(
+            "older",
+            lambda: poller.fetch_older(self._api, conv, before=before, limit=state.OLDER_PAGE),
+            self._got_older,
+            on_error=lambda exc: self._action_failed("load older messages", exc),
+        )
+
+    def _got_older(self, page: GroupMessagePage) -> None:
+        added = self.store.add_older(page.messages, page.next_before)
+        self._render_topic(new_rows=0, reset=False, prepended=bool(added))
+
+    # new topic and the topic rail
+
+    def _prompt_topic(self, room_id: str) -> None:
+        self.push_screen(
+            PromptScreen("New topic", placeholder="Topic name"),
+            lambda name: self._create_topic(room_id, name),
+        )
+
+    def _create_topic(self, room_id: str, name: str | None) -> None:
+        if not name:
+            return
+        if self._loops["newtopic"].busy:
+            return
+        self._start(
+            "newtopic",
+            lambda: poller.create_topic(self._api, room_id, name=name),
+            lambda topic: self._topic_created(room_id, topic),
+            on_error=lambda exc: self._action_failed("create the topic", exc),
+        )
+
+    def _topic_created(self, room_id: str, topic: dict[str, Any]) -> None:
+        """Open the new topic at once; the sidebar lists it when the rail next answers."""
+        self._rail.forget_etag()
+        self._run("rail")
+        topic_id = topic.get("topic_id") or topic.get("id")
+        if isinstance(topic_id, str):
+            self.manual[room_id] = True
+            self.open_conversation(state.Conversation(room_id, topic_id))
+
+    def _ensure_topics(self, room_id: str) -> None:
+        """Read a room's whole topic rail once (archived topics included) when it is opened."""
+        if room_id in self.folds.fetched or self._loops["topics"].busy or not self._started:
+            return
+        self._start(
+            "topics",
+            lambda: poller.fetch_topic_rail(self._api, room_id),
+            lambda topics: self._got_topics(room_id, topics),
+            on_error=lambda _exc: False,
+        )
+
+    def _got_topics(self, room_id: str, topics: list[GroupTopicSummary]) -> None:
+        self.folds = replace(self.folds, fetched={**self.folds.fetched, room_id: topics})
 
     # ------------------------------------------------------------------ Pepper turns (§6.5)
 

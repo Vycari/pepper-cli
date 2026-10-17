@@ -510,6 +510,11 @@ class MessageStore:
             return None
         return (self.cursor - LOOKBACK).isoformat()
 
+    def expect_reconcile(self) -> None:
+        """Make the next poll a full re-read (after an edit or delete, whose result is the
+        server's row, not something to patch in here)."""
+        self.ticks = RECONCILE_EVERY - 1
+
     def next_is_reconcile(self) -> bool:
         """Count a poll tick; True on every ``RECONCILE_EVERY``-th one."""
         self.ticks += 1

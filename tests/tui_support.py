@@ -11,6 +11,7 @@ import io
 import json
 import threading
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -25,6 +26,9 @@ if TYPE_CHECKING:
 
     from textual.app import App
 
+#: The app's clock in every TUI test: a day after the fixtures' newest activity, so no room
+#: reads as inactive unless a test says so.
+NOW = datetime(2026, 9, 17, 12, 0, tzinfo=UTC)
 ME = "00000000-0000-0000-0000-00000000aaaa"
 ROOM_A = "00000000-0000-0000-0000-0000000000a1"
 ROOM_B = "00000000-0000-0000-0000-0000000000a2"

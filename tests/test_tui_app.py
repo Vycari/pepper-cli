@@ -23,6 +23,7 @@ def _fast_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(state, "RAIL_INTERVAL", 0.05)
     monkeypatch.setattr(state, "DM_INTERVAL", 0.05)
     monkeypatch.setattr(state, "BACKOFF_STEPS", (0.05, 0.05, 0.05, 0.05))
+    monkeypatch.setattr(tui_app, "utcnow", lambda: ts.NOW)
 
 
 async def test_opens_on_the_pepper_dm_and_lists_rooms() -> None:
