@@ -514,9 +514,10 @@ def mention_ids(text: str, roster: Iterable[GroupRosterMember]) -> tuple[str, ..
     """Person ids of roster members whose ``@Display Name`` is in ``text``, longest name first.
 
     Decided at send time from the text, so a mention picked from the menu and then deleted is
-    not sent, and one typed out in full is. ``@Al`` does not match inside ``@Allen``: the name
-    must end at a non-word character. Each matched span is consumed, so "@Ada Lovelace" does
-    not also mention a member called "Ada".
+    not sent, and one typed out in full is. The ``@`` must start the text or follow whitespace,
+    as in :func:`mention_query`, so ``help@ada.com`` mentions no one. ``@Al`` does not match
+    inside ``@Allen``: the name must end at a non-word character. Each matched span is
+    consumed, so "@Ada Lovelace" does not also mention a member called "Ada".
     """
     remaining = text
     found: list[str] = []
@@ -525,7 +526,7 @@ def mention_ids(text: str, roster: Iterable[GroupRosterMember]) -> tuple[str, ..
         name = member.display_name.strip()
         if not name or member.person_id in found:
             continue
-        pattern = re.compile("@" + re.escape(name) + r"(?!\w)", re.IGNORECASE)
+        pattern = re.compile(r"(?<!\S)@" + re.escape(name) + r"(?!\w)", re.IGNORECASE)
         if pattern.search(remaining):
             found.append(member.person_id)
             remaining = pattern.sub(" ", remaining)

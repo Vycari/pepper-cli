@@ -259,6 +259,11 @@ def test_mention_ids_match_whole_names_longest_first() -> None:
     assert state.mention_ids("@Ada Lovelace", _ROSTER) == ("p-ada",)  # the span is consumed
     assert state.mention_ids("@Ada Lovelace and @Ada.", _ROSTER) == ("p-ada", "p-ada2")
     assert state.mention_ids("mail al@example.com", _ROSTER) == ()
+    # The @ starts the text or follows whitespace, as in mention_query: e-mail never mentions.
+    assert state.mention_ids("contact me@example.com or help@ada.com", _ROSTER) == ()
+    assert state.mention_ids("x@Ada Lovelace", _ROSTER) == ()
+    assert state.mention_ids("@ada first", _ROSTER) == ("p-ada2",)
+    assert state.mention_ids("line one\n@Ada", _ROSTER) == ("p-ada2",)
     assert state.mention_ids("no mentions", []) == ()
 
 
