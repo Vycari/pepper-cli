@@ -194,7 +194,9 @@ class PepperApp(App[None]):
         self._topics_reading: str | None = None
         #: The message being edited in the composer: ``(conversation, message id)``.
         self.editing: tuple[state.Conversation, str] | None = None
-        self.you_id: str | None = None
+        #: Your groups person id: what ``mentions`` and ``author_person_id`` carry. Not the
+        #: core user id (``whoami().user_id``), which never appears in a group payload.
+        self.you_person_id: str | None = None
         self.hour24 = False
         self.loaded_topic = False
         self.fatal: str | None = None
@@ -494,15 +496,36 @@ class PepperApp(App[None]):
 
     def _load_identity(self) -> tuple[str | None, bool]:
         who = self._api.whoami()
-        return who.user_id, who.time_format == "24h"
+        return who.person_id, who.time_format == "24h"
 
     def _on_identity(self, result: tuple[str | None, bool]) -> None:
-        self.you_id, self.hour24 = result
+        person_id, self.hour24 = result
+        if person_id:
+            self._learn_person_id(person_id)
         self._started = True
         self._run("rail")
         self._run("dm")
 
     # ------------------------------------------------------------------ results
+
+    def _learn_person_id(self, person_id: str) -> None:
+        """Keep your person id for the session; topics asked about before it was known are
+        asked again."""
+        if self.you_person_id is not None:
+            return
+        self.you_person_id = person_id
+        self.mentions.checked.clear()
+        if self._started:
+            self._run("mentions")
+
+    def _learn_from_messages(self, messages: list[GroupMessage]) -> None:
+        """Until whoami carries ``person_id``: your own message names you."""
+        if self.you_person_id is not None:
+            return
+        for m in messages:
+            if m.is_you and m.author_person_id:
+                self._learn_person_id(m.author_person_id)
+                return
 
     def _on_rail(self, update: poller.RailUpdate) -> None:
         self._rail.commit(update)
@@ -531,7 +554,7 @@ class PepperApp(App[None]):
         Each delivery asks again, so a burst of unread topics is worked off one request at a
         time; a topic is asked about once per new activity (``Mentions.due``).
         """
-        if self.you_id is None:
+        if self.you_person_id is None:
             return
         due = self.mentions.due(self.rooms, self.marks, open_topic_id=self.current.topic_id)
         if not due:
@@ -549,7 +572,7 @@ class PepperApp(App[None]):
         found = self.mentions.record(
             topic,
             page.messages,
-            you_id=self.you_id,
+            you_id=self.you_person_id,
             mark=self.marks.marks.get(topic.topic_id),
         )
         if found and self._bell:
@@ -578,6 +601,7 @@ class PepperApp(App[None]):
         self._on_topic(page.messages)
 
     def _on_topic(self, messages: list[GroupMessage]) -> None:
+        self._learn_from_messages(messages)
         new_ids = self.store.add(messages)
         # A send the poll has now returned is the store's row from here on; a selection on
         # its pending row is dropped with it.
@@ -619,7 +643,7 @@ class PepperApp(App[None]):
     def _topic_items(self) -> list[tuple[str | None, Any]]:
         return rows.thread_items(
             self.store.ordered(),
-            you_id=self.you_id,
+            you_id=self.you_person_id,
             pending=self.pending.in_conversation(self.current),
             selected=self.selected,
         )
@@ -1307,6 +1331,7 @@ class PepperApp(App[None]):
         )
 
     def _got_older(self, page: GroupMessagePage) -> None:
+        self._learn_from_messages(page.messages)
         added = self.store.add_older(page.messages, page.next_before)
         self._render_topic(new_rows=0, reset=False, prepended=bool(added))
 

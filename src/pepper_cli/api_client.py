@@ -151,6 +151,10 @@ class Whoami:
     #: Defaulted so a server older than the field still parses.
     date_format: str = "mdy"
     time_format: str = "12h"
+    #: The caller's groups *person* id (what group messages carry in ``mentions`` and
+    #: ``author_person_id``), distinct from ``user_id``. ``None`` when the server does not
+    #: know it or is older than the field.
+    person_id: str | None = None
 
 
 # MIRROR: src/pepper/api/router.py::SkillSummary
@@ -1331,6 +1335,7 @@ class ApiClient:
             merged_from=body.get("merged_from", []),
             date_format=body.get("date_format", "mdy"),
             time_format=body.get("time_format", "12h"),
+            person_id=body.get("person_id"),
         )
 
     def list_skills(self) -> list[SkillSummary]:

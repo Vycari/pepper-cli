@@ -357,7 +357,7 @@ def test_an_answered_turn_gives_up_on_its_rows_after_the_window_and_is_not_activ
 
 
 def _mention_msg(mid: str, at: str, **over) -> api_client.GroupMessage:
-    return api_client.group_message_from_dict(ts.message(mid, at, mentions=[ts.ME], **over))
+    return api_client.group_message_from_dict(ts.message(mid, at, mentions=[ts.ME_PERSON], **over))
 
 
 def _unread_room():
@@ -382,7 +382,7 @@ def test_mentions_asks_only_about_unread_topics_and_once_per_activity() -> None:
     due = mentions.due([room], marks, open_topic_id=None)
     assert [(r, t.topic_id) for r, t in due] == [(ts.ROOM_A, "t1")]  # t2 is read
     assert mentions.due([room], marks, open_topic_id="t1") == []  # on screen, so no fetch
-    mentions.record(room.topics[0], [], you_id=ts.ME, mark=marks.marks["t1"])
+    mentions.record(room.topics[0], [], you_id=ts.ME_PERSON, mark=marks.marks["t1"])
     assert mentions.due([room], marks, open_topic_id=None) == []
     # New activity on the same topic is asked about again.
     (newer,) = _rooms(ts.room(ts.ROOM_A, "A", [ts.topic("t1", "One", "2026-02-02T00:00:00Z")]))
@@ -402,13 +402,18 @@ def test_mentions_counts_only_unread_rows_from_others_that_name_you() -> None:
         _msg("plain", after),  # no mentions
         api_client.group_message_from_dict(ts.message("other", after, mentions=["someone-else"])),
     ]
-    assert mentions.record(topic, ignored, you_id=ts.ME, mark=mark) is False
+    assert mentions.record(topic, ignored, you_id=ts.ME_PERSON, mark=mark) is False
     assert not mentions.topic_mentioned(topic, marks, open_topic_id=None)
-    assert mentions.record(topic, [*ignored, _mention_msg("hit", after)], you_id=ts.ME, mark=mark)
+    assert mentions.record(
+        topic, [*ignored, _mention_msg("hit", after)], you_id=ts.ME_PERSON, mark=mark
+    )
     assert mentions.topic_mentioned(topic, marks, open_topic_id=None)
     assert mentions.room_mentioned(room, marks, open_topic_id=None)
     # Already known: not "newly" mentioned again (the bell rings once).
-    assert mentions.record(topic, [_mention_msg("hit", after)], you_id=ts.ME, mark=mark) is False
+    assert (
+        mentions.record(topic, [_mention_msg("hit", after)], you_id=ts.ME_PERSON, mark=mark)
+        is False
+    )
     assert mentions.topic_mentioned(topic, marks, open_topic_id=None)
 
 
@@ -417,7 +422,7 @@ def test_a_mention_stops_showing_once_the_topic_is_read_or_open() -> None:
     topic = room.topics[0]
     mentions = state.Mentions()
     mentions.record(
-        topic, [_mention_msg("hit", "2026-02-01T00:00:00+00:00")], you_id=ts.ME, mark=None
+        topic, [_mention_msg("hit", "2026-02-01T00:00:00+00:00")], you_id=ts.ME_PERSON, mark=None
     )
     assert mentions.topic_mentioned(topic, marks, open_topic_id=None)
     assert not mentions.topic_mentioned(topic, marks, open_topic_id="t1")
@@ -447,7 +452,7 @@ def test_a_mention_after_the_topic_was_read_is_new_again_and_an_old_hit_retires(
     topic = room.topics[0]
     mentions = state.Mentions()
     first = "2026-02-01T00:00:00+00:00"
-    assert mentions.record(topic, [_mention_msg("hit", first)], you_id=ts.ME, mark=None)
+    assert mentions.record(topic, [_mention_msg("hit", first)], you_id=ts.ME_PERSON, mark=None)
     # The topic is read past the mention; the cached hit no longer shows.
     marks.merge("t1", state.parse_ts(first))
     (later,) = _rooms(ts.room(ts.ROOM_A, "A", [ts.topic("t1", "One", "2026-02-03T00:00:00Z")]))
@@ -455,7 +460,7 @@ def test_a_mention_after_the_topic_was_read_is_new_again_and_an_old_hit_retires(
     # A second mention after that read is new (the bell rings again).
     second = _mention_msg("hit2", "2026-02-03T00:00:00+00:00")
     mark = marks.marks["t1"]
-    assert mentions.record(later.topics[0], [second], you_id=ts.ME, mark=mark) is True
+    assert mentions.record(later.topics[0], [second], you_id=ts.ME_PERSON, mark=mark) is True
     assert mentions.topic_mentioned(later.topics[0], marks, open_topic_id=None)
 
 
@@ -482,7 +487,7 @@ def test_a_topic_whose_ask_failed_goes_behind_the_other_due_topics() -> None:
     assert order() == ["t2", "t1"]
     mentions.defer(room.topics[1])
     assert order() == ["t1", "t2"]  # the most recently failed goes last
-    mentions.record(room.topics[0], [], you_id=ts.ME, mark=None)
+    mentions.record(room.topics[0], [], you_id=ts.ME_PERSON, mark=None)
     assert "t1" not in mentions.deferred
     assert order() == ["t2"]
 
@@ -491,7 +496,10 @@ def test_sidebar_rows_carry_the_mention_on_topic_and_collapsed_room() -> None:
     room, marks = _unread_room()
     mentions = state.Mentions()
     mentions.record(
-        room.topics[0], [_mention_msg("hit", "2026-02-01T00:00:00+00:00")], you_id=ts.ME, mark=None
+        room.topics[0],
+        [_mention_msg("hit", "2026-02-01T00:00:00+00:00")],
+        you_id=ts.ME_PERSON,
+        mark=None,
     )
     for manual, keys in (
         ({}, {"room:" + ts.ROOM_A}),

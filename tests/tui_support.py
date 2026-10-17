@@ -29,7 +29,9 @@ if TYPE_CHECKING:
 #: The app's clock in every TUI test: a day after the fixtures' newest activity, so no room
 #: reads as inactive unless a test says so.
 NOW = datetime(2026, 9, 17, 12, 0, tzinfo=UTC)
-ME = "00000000-0000-0000-0000-00000000aaaa"
+ME = "00000000-0000-0000-0000-00000000aaaa"  # your core user id (whoami user_id)
+#: Your groups person id: a different id, as in production; mentions carry this one.
+ME_PERSON = "00000000-0000-0000-0000-00000000bbbb"
 ROOM_A = "00000000-0000-0000-0000-0000000000a1"
 ROOM_B = "00000000-0000-0000-0000-0000000000a2"
 TOPIC_A1 = "00000000-0000-0000-0000-0000000000b1"
@@ -152,6 +154,8 @@ class FakeServer:
     enabled: bool = True
     degraded: bool = False
     time_format: str = "12h"
+    #: What whoami reports as ``person_id``; ``None`` models a server older than the field.
+    person_id: str | None = ME_PERSON
     #: path prefix -> status to answer instead (e.g. ``{"/api/v1/groups": 401}``).
     fail: dict[str, int] = field(default_factory=dict)
     #: path prefix -> exception to raise instead of answering (a transport failure).
@@ -374,6 +378,7 @@ class FakeServer:
                     "display_name": "Me",
                     "timezone": "UTC",
                     "time_format": self.time_format,
+                    "person_id": self.person_id,
                 },
             )
         if path == "/api/v1/groups":

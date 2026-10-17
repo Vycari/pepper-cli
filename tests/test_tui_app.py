@@ -195,7 +195,7 @@ async def test_startup_retries_whoami_after_a_transient_failure() -> None:
         server.fail.clear()
         await until(pilot, lambda: len(app.rooms) == 2 and len(app.dm.entries) == 2)
         assert "offline" not in plain(app, "#header")
-        assert app.you_id == ts.ME
+        assert app.you_person_id == ts.ME_PERSON
 
 
 async def test_a_426_shows_the_upgrade_notice_and_a_keypress_exits_1() -> None:

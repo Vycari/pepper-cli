@@ -49,10 +49,10 @@ def test_tombstone_and_broken_rows_are_a_dim_sentence() -> None:
 def test_via_tag_needs_a_bridged_message() -> None:
     """The server stamps Pepper as ``via`` on every API post; only a bridge shows the chip."""
     audit = _m(via_display_name="Pepper")
-    assert "(via" not in _text(rows.message_renderable(audit, you_id=ts.ME))
+    assert "(via" not in _text(rows.message_renderable(audit, you_id=ts.ME_PERSON))
     bridged = _m(via_display_name="Pepper", is_bridged=True)
-    assert "(via Pepper)" in _text(rows.message_renderable(bridged, you_id=ts.ME))
-    assert "(via" not in _text(rows.message_renderable(_m(is_bridged=True), you_id=ts.ME))
+    assert "(via Pepper)" in _text(rows.message_renderable(bridged, you_id=ts.ME_PERSON))
+    assert "(via" not in _text(rows.message_renderable(_m(is_bridged=True), you_id=ts.ME_PERSON))
 
 
 def test_tags_edited_quote_mentions_attachments_and_reactions() -> None:
@@ -64,11 +64,11 @@ def test_tags_edited_quote_mentions_attachments_and_reactions() -> None:
         quote_excerpt="hi @Bob",
         quote={"id": "p1", "author": "Ada", "excerpt": "earlier words", "deleted": False},
         mention_names=["Bob"],
-        mentions=[ts.ME],
+        mentions=[ts.ME_PERSON],
         attachments=[{"filename": "plan.pdf", "size_bytes": 2048}, {"id": "x", "size": "?"}],
         reactions=[{"emoji": "👍", "count": 2}, {"emoji": "", "count": ""}],
     )
-    out = _text(rows.message_renderable(m, you_id=ts.ME))
+    out = _text(rows.message_renderable(m, you_id=ts.ME_PERSON))
     assert "(via Pepper)" in out
     assert "(edited)" in out
     assert "┃ Ada: earlier words" in out
