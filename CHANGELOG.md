@@ -4,29 +4,26 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (while 0.x, a minor bump may change flags or output).
 
-## 0.3.0 - 2026-10-17
+## 0.3.0 — 2026-10-17
 
-Todo assignees (streams-to-pepper-room P2b, Vycari/vycari#143): a room todo can be asked of a member.
+A full-screen terminal UI, which bare `pepper` now opens on a terminal; `pepper next` rebuilt from
+the todo list; todo assignees; and new commands for the feed, what you follow, the morning brief,
+artifacts and preferences. Every PR merged since 0.2.0 is listed below.
 
-### Added
+Upgrade notes:
 
-- `pepper todos create --room R --assignee PERSON` asks a room member. The name resolves through the
-  room roster, the same matcher as `--mention`.
-- `pepper todos list --mine` (what was asked of you) and `--asked` (what you asked, needs `--room`).
-  Rows show who asked, who was asked and the ask's state.
-- `pepper todos edit <id>` changes title, details, due, priority or assignee; `--clear` removes a
-  field. A todo has no version token, so there is no `--if-match`; the server's 409 is shown with a
-  pointer to `todos list`.
-- `pepper todos dismiss --reason TEXT`: an optional reason, sent as given.
-- The vendored `/api/v1` contract is refreshed to pepper f48317b.
-
-Part of the groups simplification (vycari/groups#249, phase 5).
+- Scripts that parse `pepper next --json` or pass `--first` must change (see Breaking).
+- Bare `pepper` on an interactive terminal opens the TUI instead of the REPL. Scripts and agents
+  are unaffected: piped or redirected I/O still gets the REPL, and `PEPPER_NO_TUI=1` or
+  `pepper chat` keeps the old behaviour on a terminal.
+- New core dependency `textual>=8.2`, which raises the `rich` floor to `>=14.2`.
 
 ### Breaking
 
-`pepper next` is rebuilt from the todo list (Vycari/pepper-cli#50). Since pepper#4820 the schedule
-plan's `plans` come back empty, so `next` showed an empty Do next, only email deadlines under Due
-soon, a Later of 0, and ignored `--first`. Scripts that parse `pepper next --json` must be updated.
+`pepper next` is rebuilt from the todo list (Vycari/pepper-cli#50, #62). Since pepper#4820 the
+schedule plan's `plans` come back empty, so `next` showed an empty Do next, only email deadlines
+under Due soon, a Later of 0, and ignored `--first`. Scripts that parse `pepper next --json` must be
+updated.
 
 The CLI makes no decisions here: it fetches and renders. It does no ranking, scoring or filtering by
 urgency, so every client shows the same order. Ordering belongs to the server.
@@ -46,17 +43,50 @@ urgency, so every client shows the same order. Ordering belongs to the server.
 - The `--json` shape is replaced. It was `{generated_at, source, now: [item], plan, do_next,
   due_soon, later}`. It is now `{generated_at, timezone, source: "todos", note, now,
   next_event, calendar: [event], todos: {count, items: [todo]}}`, where `timezone` is the account's
-  IANA zone name (null when unreadable) and every time is shown in it. `now` is one event object or null (it was a
-  list), `plan`, `do_next`, `due_soon` and `later` are gone, and `source` is always `"todos"` (it
-  was `"schedule-plan"` or `"fallback"`). Each todo item is `{id, title, due, due_is_date_only,
-  remind_at, priority, source}`, a subset of the server's todo fields with values unchanged
-  (`due` is the server's `due_date`), in the server's order; the README has the details.
+  IANA zone name (null when unreadable) and every time is shown in it. `now` is one event object or
+  null (it was a list), `plan`, `do_next`, `due_soon` and `later` are gone, and `source` is always
+  `"todos"` (it was `"schedule-plan"` or `"fallback"`). Each todo item is `{id, title, due,
+  due_is_date_only, remind_at, priority, source}`, a subset of the server's todo fields with values
+  unchanged (`due` is the server's `due_date`), in the server's order; the README has the details.
 
 ### Added
 
-Part of the CLI core-coverage work (Vycari/pepper-cli#61). Each command fetches what the server
-returns and renders it; none ranks, filters, orders or decides on this side. Nothing existing
-changes, so this is additive.
+**Terminal UI** (`planning/terminal-ui.md`, tracking #54; built in #60, #64, #67, #69):
+
+- `pepper tui`, a full-screen terminal client built on Textual. A sidebar holds the Pepper chat
+  and your rooms and topics; the main pane shows the open conversation. Unread dots come from the
+  server's read marks, opening a conversation marks it read, and new messages arrive by polling.
+- Posting: room messages go out with an idempotency key, so a retry never double-posts. `@` mentions
+  complete from the room roster, `r` on a selected message quote-replies (or retries a failed
+  send), and each conversation keeps its own unsent draft.
+- Pepper chat: turns stream into the pane the way the REPL streams them. `--root PATH` shares a
+  folder with Pepper's turns, as `pepper chat --root` does. The REPL's streaming code moved into a
+  shared module that both use; REPL output is unchanged.
+- Messages: `+` reacts, `e` edits and `d` deletes your own messages (delete asks first), `o` opens
+  a message's link, and moving up past the first message (or reaching the top) loads the page
+  before it. Messages render Markdown, link previews and app cards.
+- Navigation: Ctrl+N and Ctrl+P jump to the next and previous unread conversation, Ctrl+K opens a
+  fuzzy jump to any room or topic, Ctrl+B hides the sidebar, Left and Right fold and unfold a room,
+  `/` focuses the composer, `i` shows room info, and Ctrl+Q quits. A "new topic" row in each room
+  creates a topic and opens it.
+- A topic or collapsed room with unread activity that mentions you shows `@` instead of the dot,
+  and the terminal title reads `@ Pepper`. `PEPPER_TUI_BELL=1` also rings the terminal bell when a
+  mention is first found (off by default). This reads `person_id` from `/api/v1/whoami`
+  (pepper#4868); against an older server the TUI learns it from your own messages instead.
+
+**Todo assignees** (streams-to-pepper-room P2b, Vycari/vycari#143; #75):
+
+- `pepper todos create --room R --assignee PERSON` asks a room member. The name resolves through the
+  room roster, the same matcher as `--mention`.
+- `pepper todos list --mine` (what was asked of you) and `--asked` (what you asked, needs `--room`).
+  Rows show who asked, who was asked and the ask's state.
+- `pepper todos edit <id>` changes title, details, due, priority or assignee; `--clear` removes a
+  field. A todo has no version token, so there is no `--if-match`; the server's 409 is shown with a
+  pointer to `todos list`.
+- `pepper todos dismiss --reason TEXT`: an optional reason, sent as given.
+
+**Core coverage** (Vycari/pepper-cli#61; #71, #73). Each command fetches what the server returns and
+renders it; none ranks, filters, orders or decides on this side.
 
 - `pepper feed list [--limit N] [--group G] [--json]` and `pepper feed show N [--transcript]
   [--read [--full]] [--open] [--json]`: what is new in everything you follow, in the order the
@@ -84,44 +114,62 @@ changes, so this is additive.
 - `pepper preferences show | edit`: the Calendar > Preferences values (timezone, addresses, work
   days and hours, meals, workouts, weather switches). `edit` sends only the fields given; the
   server checks the values.
-- `pepper tui`, a full-screen terminal UI (Textual): the Pepper chat and your rooms and topics in
-  one view, with unread dots from the server's read marks, posting and `@` mentions, quote-reply,
-  reactions, edit and delete of your own messages, older-message paging, link previews and app
-  cards, a fuzzy jump (Ctrl+K) and per-conversation drafts. `--root PATH` shares a folder with
-  Pepper's turns as `pepper chat --root` does. Design: `planning/terminal-ui.md`.
-- In the TUI, a topic or collapsed room with unread activity that mentions you shows `@` instead
-  of the dot, and the terminal title reads `@ Pepper`. `PEPPER_TUI_BELL=1` also rings the terminal
-  bell when a mention is first found (off by default).
+
+**Other:**
+
+- `PEPPER_CONFLICT_DIR`: when `pepper notes edit` hits a 412 conflict, the `.mine.md` copy of your
+  text is written to this directory (created if missing) instead of the current directory. Unset
+  or blank behaves as before (#59, Vycari/pepper-cli#56).
 
 ### Changed
 
 - Bare `pepper` opens the TUI when stdin and stdout are both a terminal. It still opens the REPL
   when either is piped or redirected, when `TERM=dumb`, or when `PEPPER_NO_TUI=1`; `pepper chat`
   is the explicit way to the REPL. `pepper <message>`, every other command, and the exit codes
-  and stdout of non-interactive runs are unchanged.
-- `textual` is now a core dependency; it is imported only when the TUI starts, so other commands
-  do not pay for it.
-
+  and stdout of non-interactive runs are unchanged (#69).
+- `textual>=8.2` is now a core dependency, and the `rich` floor rises to `>=14.2` because Textual
+  needs it. Textual is imported only when the TUI starts, so other commands do not pay its
+  ~180 ms import (#60).
 - `pepper rooms create` now requires `--name`. Without one (or with a blank one) it fails locally,
   exit 2, with a message saying so, and sends nothing. The service answers an unnamed create with
-  422 once groups phase 3 lands; this reports it first.
+  422 once groups phase 3 lands; this reports it first (#52, groups simplification
+  vycari/groups#249 phase 5).
 - `pepper rooms show` labels a room whose wire `kind` is `sealed` as `email/text thread`
-  (it was `room`). The CLI still parses `sealed`; only the wording changed. The apps list these under
-  "Other conversations".
+  (it was `room`). The CLI still parses `sealed`; only the wording changed. The apps list these
+  under "Other conversations" (#52).
 - Help and README no longer describe an email or text thread as a "sealed room"; no flag or JSON
-  field changed.
+  field changed (#52).
+- `pepper skills share --room` explains a 409 with Pepper's own wording: "Sharing a skill into this
+  room isn't allowed. A skill can only be shared into a named channel." Email and text threads are
+  refused by design, so the message no longer says "yet" (#58, Vycari/pepper-cli#55).
+- `pepper messages list --help` now says that omitting `--topic` picks the most recently active
+  unarchived topic (or the most recent topic when all are archived), not "the room's default
+  topic". Behaviour is unchanged (#66).
+- The vendored `/api/v1` contract is refreshed to pepper f48317b, which adds `person_id` to
+  `whoami` (#69, #75).
 
 ### Fixed
 
-- `pepper feed N --read` follows redirects itself: a redirect response's body is never read (it
+- `pepper feed show N --read` follows redirects itself: a redirect response's body is never read (it
   used to be read in full, outside the 2 MB cap and the 45 s deadline), at most 5 hops are
   followed, each hop is checked for a public address, and the cap and deadline cover the whole
-  fetch (VR-1cba112d, #71).
-- `pepper feed N --transcript` says "the server returned no transcript for this episode" when the
-  server's answer is empty, instead of labelling it "no transcript yet" (VR-c8b1bafa, #71).
-- `pepper following list` and `pepper feed` order groups by the server's `counts.by_group` key
+  fetch (#72).
+- `pepper feed show N --transcript` says "the server returned no transcript for this episode" when
+  the server's answer is empty, instead of labelling it "no transcript yet" (#72).
+- `pepper following list` and `pepper feed list` order groups by the server's `counts.by_group` key
   order instead of a built-in list; a group absent from it comes last, and an older server with no
-  `by_group` gives the order the items first appear in. `--group` checks against those names.
+  `by_group` gives the order the items first appear in. `--group` checks against those names (#72).
+- Windows: when `pepper notes edit` cannot write its conflict copy in the working directory, the
+  fallback now goes to `%LOCALAPPDATA%\pepper` (a per-user folder) instead of `%TEMP%`, which can
+  point at a shared folder. Windows ignores the file's `0o600` mode, so the folder's inherited ACL
+  is what keeps the copy private; no ACL is set explicitly (#48).
+
+### Internal
+
+- CI runs the full test suite on `windows-latest` as well as Linux (#44), and the zone-rendering
+  tests pin the zone through a seam in `render.py` instead of `time.tzset`, so they run on Windows
+  too (#47). The FIFO test stays POSIX-only on purpose.
+- The TUI has snapshot tests via the new dev dependency `pytest-textual-snapshot` (#67).
 
 ## 0.2.0 — 2026-10-15
 
