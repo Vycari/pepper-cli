@@ -208,9 +208,21 @@ def test_dm_tracker_baselines_then_lights_on_a_new_reply_unless_open() -> None:
         [_entry("1", "assistant"), _entry("2", "user"), _entry("3", "assistant")], is_open=False
     )
     assert dm.dot is True
-    dm.update([_entry("4", "assistant")], is_open=True)
+    dm.update([_entry("1", "assistant"), _entry("4", "assistant")], is_open=True)
     assert dm.dot is False
-    assert [e.id for e in dm.ordered()] == ["1", "2", "3", "4"]
+    assert [e.id for e in dm.ordered()] == ["1", "4"]
+
+
+def test_dm_tracker_drops_rows_that_leave_the_history_after_midnight() -> None:
+    dm = state.DmTracker()
+    dm.update([_entry("y1", "user"), _entry("y2", "assistant")], is_open=False)
+    # Past midnight the history is a new day's thread: yesterday's rows are gone from it.
+    assert dm.update([_entry("t1", "assistant")], is_open=False) == ["t1"]
+    assert [e.id for e in dm.ordered()] == ["t1"]
+    assert dm.dot is True
+    # An empty new day holds nothing over from the old one.
+    assert dm.update([], is_open=True) == []
+    assert dm.ordered() == []
 
 
 def test_poll_cadence_tiers_and_pause() -> None:

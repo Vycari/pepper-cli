@@ -7,6 +7,7 @@ state is only mutated by the test body or under the GIL by the handler's own app
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -95,6 +96,10 @@ class FakeServer:
     time_format: str = "12h"
     #: path prefix -> status to answer instead (e.g. ``{"/api/v1/groups": 401}``).
     fail: dict[str, int] = field(default_factory=dict)
+    #: path prefix -> exception to raise instead of answering (a transport failure).
+    raise_on: dict[str, Exception] = field(default_factory=dict)
+    #: exact path -> event the handler waits on before answering (holds a request open).
+    gates: dict[str, threading.Event] = field(default_factory=dict)
     rev: int = 1
     requests: list[tuple[str, str, dict[str, str]]] = field(default_factory=list)
     puts: list[tuple[str, str]] = field(default_factory=list)
@@ -108,7 +113,12 @@ class FakeServer:
         path = request.url.path
         query = dict(request.url.params)
         self.requests.append((request.method, path, query))
-        for prefix, status in self.fail.items():
+        if (gate := self.gates.get(path)) is not None:
+            gate.wait(timeout=10)
+        for prefix, exc in list(self.raise_on.items()):
+            if path.startswith(prefix):
+                raise exc
+        for prefix, status in list(self.fail.items()):
             if path.startswith(prefix):
                 return httpx.Response(status, json={"detail": "synthetic failure"})
         if path == "/api/v1/whoami":

@@ -45,11 +45,17 @@ class ThreadView(Vertical):
             self._unseen += new_rows
         self._paint_marker()
 
-    def scroll_page(self, *, down: bool) -> None:
-        (self.scroller.scroll_page_down if down else self.scroller.scroll_page_up)(animate=False)
-        if self.pinned:
+    def on_mount(self) -> None:
+        # However the bottom is reached (keys, wheel, scrollbar drag), the marker clears.
+        self.watch(self.scroller, "scroll_y", self._scrolled, init=False)
+
+    def _scrolled(self, _old: float, _new: float) -> None:
+        if self._unseen and self.pinned:
             self._unseen = 0
             self._paint_marker()
+
+    def scroll_page(self, *, down: bool) -> None:
+        (self.scroller.scroll_page_down if down else self.scroller.scroll_page_up)(animate=False)
 
     def _paint_marker(self) -> None:
         marker = self.query_one("#thread-new", Static)

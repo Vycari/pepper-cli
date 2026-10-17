@@ -2,13 +2,26 @@
 
 Everything that talks to the network runs on a worker thread (``pepper_cli.tui.poller``) and
 hands plain data back through ``call_from_thread``; the shared state (read marks, the open
-topic's rows, the sidebar rows) is only touched on the UI thread. One request per loop is ever
-in flight: the next timer is armed when the previous result (or failure) has been applied.
+topic's rows, the sidebar rows, the rail's ETag) is only touched on the UI thread.
+
+There are five loops: ``startup`` (whoami, until it succeeds), ``rail``, ``dm``, ``topic`` (the
+open topic) and ``publish`` (owed read marks). Each is a :class:`_Loop`, and the rules are the
+same for all of them:
+
+- At most one request per loop is in flight. ``_run`` is a no-op while one is, so a timer, a
+  focus return or a key press can never start a second one.
+- A loop's ``generation`` changes only when what it is about changes (switching topics). A
+  result from an older generation is dropped. Nothing a worker returns has been committed
+  yet, so dropping it loses nothing: the rail's ETag is adopted only when its result is
+  applied, and a topic's cursor moves only when its rows are merged.
+- Success resets the failure count and arms the next timer at the normal cadence; failure
+  counts up and arms the next timer at the backoff delay. A 401 or 426 stops everything.
 """
 
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
 import httpx
@@ -40,9 +53,35 @@ if TYPE_CHECKING:
     )
 
 LOGIN_HINT = "Authentication failed (401). Run 'pepper login' to refresh your token."
-#: What a poll can fail with and still be worth retrying. Anything else is a bug and should
-#: surface as a traceback rather than as an endless "offline" banner.
-_RETRYABLE = (ApiError, httpx.RequestError, ValueError, KeyError, TypeError)
+#: What a request can fail with and be handled by ``_failed``: retried with backoff, or (401,
+#: 426) shown as a fatal notice. Anything else is a bug and should surface as a traceback
+#: rather than as an endless "offline" banner.
+_EXPECTED = (ApiError, UpgradeRequiredError, httpx.RequestError, ValueError, KeyError, TypeError)
+#: Loops whose failures put "offline, retrying" in the header.
+_LOOPS = ("startup", "rail", "dm", "topic", "publish")
+#: Client errors a read-mark PUT will keep getting however often it is retried (no access to
+#: the topic any more, the topic is gone, the request is refused). The mark is dropped.
+_PUBLISH_PERMANENT = frozenset({400, 403, 404, 409, 410, 422})
+
+
+@dataclass
+class _Loop:
+    """Scheduling state of one poll loop (see the module docstring)."""
+
+    failures: int = 0
+    generation: int = 0
+    #: The generation of the request in flight, or ``None``.
+    in_flight: int | None = None
+    timer: Timer | None = None
+
+    @property
+    def busy(self) -> bool:
+        return self.in_flight is not None and self.in_flight == self.generation
+
+    def stop_timer(self) -> None:
+        if self.timer is not None:
+            self.timer.stop()
+            self.timer = None
 
 
 class PepperApp(App[None]):
@@ -76,15 +115,15 @@ class PepperApp(App[None]):
         self.hour24 = False
         self.loaded_topic = False
         self.fatal: str | None = None
-        self._failures = {"rail": 0, "topic": 0, "dm": 0}
+        self._loops = {kind: _Loop() for kind in _LOOPS}
         self._topic_error: str | None = None
-        self._loop_timers: dict[str, Timer] = {}
-        self._generation = {"rail": 0, "topic": 0, "dm": 0}
         self._last_input = time.monotonic()
         self._blurred = False
+        #: ``topic_id -> read_through`` the server has acknowledged.
         self._published: dict[str, str] = {}
+        self._started = False
+        #: Marks still to send, oldest first: ``topic_id -> (conversation, read_through)``.
         self._owed: dict[str, tuple[state.Conversation, str]] = {}
-        self._publishing = False
 
     # ------------------------------------------------------------------ layout
 
@@ -109,7 +148,7 @@ class PepperApp(App[None]):
     def on_mount(self) -> None:
         self.refresh_chrome()
         self.sidebar.focus()
-        self._start("startup", self._load_identity, self._on_identity)
+        self._run("startup")
 
     # ------------------------------------------------------------------ workers
 
@@ -119,43 +158,59 @@ class PepperApp(App[None]):
         work: Callable[[], T],
         deliver: Callable[[T], None],
         *,
-        generation: int | None = None,
+        on_error: Callable[[Exception], bool] | None = None,
     ) -> None:
-        """Run ``work`` on a thread; apply its result (or failure) on the UI thread."""
+        """Run ``work`` on a thread; apply its result (or failure) on the UI thread.
+
+        ``on_error`` runs for a non-fatal failure of a current request. It returns True when
+        that failure was final for the item and the loop should move on at once instead of
+        backing off (the publish loop drops a mark the server will never accept).
+        """
+        loop = self._loops[kind]
+        generation = loop.generation
+        loop.in_flight = generation
 
         def run() -> None:
             try:
                 result = work()
-            except _RETRYABLE as exc:
-                self.call_from_thread(self._failed, kind, exc, generation)
+            except _EXPECTED as exc:
+                self.call_from_thread(self._failed, kind, exc, generation, on_error)
             else:
                 self.call_from_thread(self._delivered, kind, deliver, result, generation)
 
         self.run_worker(run, thread=True, group=kind, exit_on_error=True)
 
-    def _stale(self, kind: str, generation: int | None) -> bool:
-        return generation is not None and generation != self._generation.get(kind)
+    def _finish(self, kind: str, generation: int) -> bool:
+        """Clear the in-flight token; True when the result should be applied."""
+        loop = self._loops[kind]
+        if loop.in_flight == generation:
+            loop.in_flight = None
+        return not self.fatal and generation == loop.generation
 
     def _delivered[T](
         self,
         kind: str,
         deliver: Callable[[T], None],
         result: T,
-        generation: int | None,
+        generation: int,
     ) -> None:
-        if self.fatal or self._stale(kind, generation):
+        if not self._finish(kind, generation):
             return
-        if kind in self._failures:
-            self._failures[kind] = 0
-            if kind == "topic":
-                self._topic_error = None
+        self._loops[kind].failures = 0
+        if kind == "topic":
+            self._topic_error = None
         deliver(result)
         self.refresh_chrome()
-        if kind in self._failures:
-            self._schedule(kind)
+        self._schedule(kind)
 
-    def _failed(self, kind: str, exc: Exception, generation: int | None) -> None:
-        if self.fatal or self._stale(kind, generation):
+    def _failed(
+        self,
+        kind: str,
+        exc: Exception,
+        generation: int,
+        on_error: Callable[[Exception], bool] | None,
+    ) -> None:
+        if not self._finish(kind, generation):
             return
         if isinstance(exc, ApiError) and exc.status == 401:
             self.fail_fatal(LOGIN_HINT)
@@ -163,23 +218,22 @@ class PepperApp(App[None]):
         if isinstance(exc, UpgradeRequiredError):
             self.fail_fatal(str(exc))
             return
-        if kind == "publish":
-            self._publishing = False  # the mark stays owed; the next kick retries it
+        if on_error is not None and on_error(exc):
+            self._run(kind)
             return
-        if kind == "startup":
-            return
-        self._failures[kind] += 1
+        self._loops[kind].failures += 1
         if kind == "topic" and isinstance(exc, ApiError):
             self._topic_error = "You can't open this topic." if exc.status in (403, 404) else None
+        if kind == "rail":
+            self._rail.forget_etag()
         self.refresh_chrome()
         self._schedule(kind)
 
     def fail_fatal(self, message: str) -> None:
         """Stop every loop and wait for a keypress, then exit 1 (§10)."""
         self.fatal = message
-        for timer in self._loop_timers.values():
-            timer.stop()
-        self._loop_timers.clear()
+        for loop in self._loops.values():
+            loop.stop_timer()
         self.refresh_chrome()
 
     def on_key(self, event: events.Key) -> None:
@@ -198,7 +252,10 @@ class PepperApp(App[None]):
         self._last_input = time.monotonic()
 
     def on_app_blur(self, _event: events.AppBlur) -> None:
+        """Pause the open-topic poll. A request already in flight still lands, but its rows
+        are not marked read until focus returns (§6.3: open *and focused* = read)."""
         self._blurred = True
+        self._loops["topic"].stop_timer()
 
     def on_app_focus(self, _event: events.AppFocus) -> None:
         self._blurred = False
@@ -208,19 +265,22 @@ class PepperApp(App[None]):
     # ------------------------------------------------------------------ scheduling
 
     def _interval(self, kind: str) -> float | None:
-        if self._failures[kind]:
-            return state.backoff_delay(self._failures[kind])
+        failures = self._loops[kind].failures
+        if failures:
+            return state.backoff_delay(failures)
         if kind == "rail":
             return state.RAIL_INTERVAL
         if kind == "dm":
             return state.DM_INTERVAL
-        return state.poll_interval(time.monotonic() - self._last_input, hidden=self._blurred)
+        if kind == "topic":
+            return state.poll_interval(time.monotonic() - self._last_input, hidden=self._blurred)
+        return None  # startup runs once; publish runs when there is something owed
 
     def _schedule(self, kind: str) -> None:
         """Arm the next run of one loop. Open-topic polling is skipped while blurred (it is
-        restarted by focus); the other two keep their slow cadence."""
-        if (old := self._loop_timers.pop(kind, None)) is not None:
-            old.stop()
+        restarted by focus); the rail and DM keep their slow cadence."""
+        loop = self._loops[kind]
+        loop.stop_timer()
         if self.fatal:
             return
         if kind == "topic" and self.current.is_pepper:
@@ -228,35 +288,37 @@ class PepperApp(App[None]):
         delay = self._interval(kind)
         if delay is None:
             return
-        self._loop_timers[kind] = self.set_timer(delay, lambda: self._run(kind))
+        loop.timer = self.set_timer(delay, lambda: self._run(kind))
 
     def _run(self, kind: str) -> None:
-        if self.fatal:
+        """Start one request for ``kind`` now, unless one is already in flight."""
+        loop = self._loops[kind]
+        if self.fatal or loop.busy:
             return
-        generation = self._generation[kind]
-        if kind == "rail":
-            self._start(kind, self._rail.step, self._on_rail, generation=generation)
+        loop.stop_timer()
+        if kind == "startup":
+            self._start(kind, self._load_identity, self._on_identity)
+        elif kind == "rail":
+            self._start(kind, self._rail.step, self._on_rail)
         elif kind == "dm":
-            self._start(
-                kind, lambda: poller.fetch_dm(self._api), self._on_dm, generation=generation
-            )
+            self._start(kind, lambda: poller.fetch_dm(self._api), self._on_dm)
+        elif kind == "publish":
+            self._send_next_mark()
         elif not self.current.is_pepper:
             conv = self.current
             reconcile = self.store.next_is_reconcile()
             since = None if reconcile else self.store.since()
             self._start(
-                kind,
-                lambda: poller.fetch_topic(self._api, conv, since=since),
-                self._on_topic,
-                generation=generation,
+                kind, lambda: poller.fetch_topic(self._api, conv, since=since), self._on_topic
             )
 
     def _poll_now(self) -> None:
-        for kind in ("rail", "dm", "topic"):
-            if self._failures[kind] == 0 and not self.fatal:
-                if (timer := self._loop_timers.pop(kind, None)) is not None:
-                    timer.stop()
-                self._generation[kind] += 1
+        """Focus came back: poll every healthy loop now, except one whose request is already
+        in flight (its result will land and re-arm it). Started only once ``whoami`` has."""
+        if not self._started:
+            return
+        for kind in ("rail", "dm", "topic", "publish"):
+            if self._loops[kind].failures == 0:
                 self._run(kind)
 
     # ------------------------------------------------------------------ startup
@@ -267,12 +329,14 @@ class PepperApp(App[None]):
 
     def _on_identity(self, result: tuple[str | None, bool]) -> None:
         self.you_id, self.hour24 = result
+        self._started = True
         self._run("rail")
         self._run("dm")
 
     # ------------------------------------------------------------------ results
 
     def _on_rail(self, update: poller.RailUpdate) -> None:
+        self._rail.commit(update)
         groups = update.groups
         if groups is None:
             return
@@ -297,8 +361,9 @@ class PepperApp(App[None]):
         first = not self.loaded_topic
         self.loaded_topic = True
         self._render_topic(new_rows=len(fresh), reset=first)
-        self._note_viewed()
-        self._kick_publish()
+        if not self._blurred:
+            self._note_viewed()
+            self._run("publish")
 
     # ------------------------------------------------------------------ rendering
 
@@ -332,7 +397,7 @@ class PepperApp(App[None]):
             current_key=current_key,
         )
         header = sanitize_line(state.header_text(self.current, shown))
-        if any(self._failures.values()):
+        if any(loop.failures for loop in self._loops.values()):
             header += "  · offline, retrying"
         self.query_one("#header", Static).update(Text(header))
         notice = self._notice()
@@ -392,13 +457,17 @@ class PepperApp(App[None]):
         if conv == self.current:
             return
         self._note_viewed()
-        self._kick_publish()
+        self._run("publish")
         self.current = conv
         self.store = state.MessageStore()
         self.loaded_topic = False
         self._topic_error = None
-        self._failures["topic"] = 0
-        self._generation["topic"] += 1
+        # A new subject for the topic loop: cancel its timer, and let a request still in
+        # flight for the old topic land as stale rather than block or overwrite this one.
+        topic = self._loops["topic"]
+        topic.stop_timer()
+        topic.failures = 0
+        topic.generation += 1
         if conv.room_id is not None:
             self.manual.setdefault(conv.room_id, True)
         if conv.is_pepper:
@@ -454,28 +523,41 @@ class PepperApp(App[None]):
         if owed is None or (state.parse_ts(owed[1]) or stamp) < stamp:
             self._owed[conv.topic_id] = (conv, newest)
 
-    def _kick_publish(self) -> None:
-        """Send at most one PUT; the owed mark stays queued until a PUT for it succeeds."""
-        if self._publishing or self.fatal:
-            return
+    def _send_next_mark(self) -> None:
+        """Send the oldest owed mark (one PUT in flight at a time, across all topics).
+
+        The queue is independent of the open conversation: a failed PUT is retried by the
+        publish loop's own backoff timer, and a mark that failed goes to the back of the
+        queue so one bad topic cannot hold up the others.
+        """
         for topic_id, (conv, through) in list(self._owed.items()):
             done = state.parse_ts(self._published.get(topic_id))
             if done is not None and (state.parse_ts(through) or done) <= done:
                 del self._owed[topic_id]
                 continue
-            self._publishing = True
             self._start(
                 "publish",
                 lambda c=conv, t=through: poller.publish_read_mark(self._api, c, t),
                 lambda kept, tid=topic_id, t=through: self._published_ok(tid, t, kept),
+                on_error=lambda exc, tid=topic_id, t=through: self._publish_failed(tid, t, exc),
             )
             return
 
     def _published_ok(self, topic_id: str, through: str, kept: str) -> None:
-        self._publishing = False
         self._published[topic_id] = through
         self.marks.merge(topic_id, state.parse_ts(kept))
         owed = self._owed.get(topic_id)
         if owed is not None and owed[1] == through:
             del self._owed[topic_id]
-        self._kick_publish()
+        self._run("publish")
+
+    def _publish_failed(self, topic_id: str, through: str, exc: Exception) -> bool:
+        """Drop a mark the server will never accept (True); requeue any other at the back."""
+        owed = self._owed.pop(topic_id, None)
+        if isinstance(exc, ApiError) and exc.status in _PUBLISH_PERMANENT:
+            if owed is not None and owed[1] != through:
+                self._owed[topic_id] = owed  # a newer mark arrived meanwhile; let it try
+            return True
+        if owed is not None:
+            self._owed[topic_id] = owed
+        return False

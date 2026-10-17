@@ -367,14 +367,16 @@ class DmTracker:
     _primed: bool = False
 
     def update(self, history: Iterable[ChatHistoryEntry], *, is_open: bool) -> list[str]:
-        """Merge a history read. Returns the ids that are new."""
-        new_ids: list[str] = []
-        fresh_assistant = False
-        for entry in history:
-            if entry.id not in self.entries:
-                new_ids.append(entry.id)
-                fresh_assistant = fresh_assistant or entry.role == "assistant"
-            self.entries[entry.id] = entry
+        """Replace the rows with a history read. Returns the ids not in the previous read.
+
+        The read is the whole of today's thread, so it replaces what was held rather than
+        merging into it: after midnight, yesterday's rows drop out instead of staying under
+        the "Today" heading.
+        """
+        previous = self.entries
+        self.entries = {entry.id: entry for entry in history}
+        new_ids = [eid for eid in self.entries if eid not in previous]
+        fresh_assistant = any(self.entries[eid].role == "assistant" for eid in new_ids)
         if is_open:
             self.dot = False
         elif self._primed and fresh_assistant:
