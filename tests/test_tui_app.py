@@ -244,8 +244,13 @@ async def test_switching_topics_cancels_the_old_topic_poll() -> None:
         new = _messages_path(ts.ROOM_A, ts.TOPIC_A2)
         gate = threading.Event()
         server.gates[new] = gate
-        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A2))
+        # A poll of the old topic started just before the switch would reach the fake server
+        # (and be counted) after the switch, on its worker thread. So switch only while none is
+        # in flight, with no await in between: no timer can fire, and every old request the
+        # server will ever see is already counted.
+        await until(pilot, lambda: not app._loops["topic"].busy)
         old_count = _count(server, old)
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A2))
         await until(pilot, lambda: _count(server, new) == 1)
         await pilot.pause(0.3)  # several topic intervals: no timer for either topic fires
         assert _count(server, new) == 1
