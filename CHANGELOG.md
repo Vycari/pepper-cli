@@ -52,8 +52,9 @@ changes, so this is additive.
   entry's `episode_id`; `--read` fetches the article's page from its own site and never sends the
   Pepper token. A server that does not rank yet gets one line saying so.
 - `pepper feed show N --open` opens the item's link in your default browser and prints it. An item
-  with no `http(s)` link exits 2; with no usable browser (an SSH session with no `DISPLAY` or
-  `BROWSER`) it prints the link and a note, and exits 0. It works with `--json`.
+  with no usable `http(s)` link exits 2; with no usable browser (any SSH session unless `BROWSER`
+  is set, or Linux with no `DISPLAY`) it prints the link and a note, and exits 0. It works with
+  `--json`.
 - Item titles in `feed list` and `feed show` are terminal hyperlinks (OSC 8) to the item's link when
   stdout is a terminal; the plain link line stays for copy-paste, and pipes and `--json` carry no
   escape sequences.
