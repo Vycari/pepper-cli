@@ -5512,6 +5512,17 @@
             },
             "type": "array"
           },
+          "person_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "time_format": {
             "type": "string"
           },
