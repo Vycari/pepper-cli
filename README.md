@@ -156,25 +156,6 @@ pepper whoami
 
 ## 4. Commands
 
-### What do you want to know?
-
-`pepper --help` leads with this map; each question has one command that answers it.
-
-| Question | Command |
-| --- | --- |
-| What should I do now / today? | `pepper next` |
-| What did my morning brief say? | `pepper brief` |
-| What have I committed to? | `pepper calendar` |
-| What do I need to do? | `pepper todos` |
-| What's new in things I follow? | `pepper feed` (manage with `pepper following`) |
-| What's going on in my rooms? | `pepper rooms` / `messages` (`rooms watch` to stream) |
-| What have I written down? | `pepper notes` |
-| What have I saved (notes, links, files)? | `pepper artifacts` |
-| My timezone, work hours, meals | `pepper preferences` |
-| What runs without me? | `pepper scheduled-tasks` / `skills` |
-| Ask Pepper anything | `pepper <message>` (or `chat`) |
-| What did Pepper do, and why? | `pepper trajectories` |
-
 ### Every command
 
 Every command except `login` and the interactive REPL takes `--json`, and also switches to JSON output when the environment variable `PEPPER_JSON` is exactly `1`, so an agent can export it once; `--json` on the command line always wins, any other value (or unset) leaves the human output, and `login` and the interactive REPL ignore it. List commands answer `{"items": [...], "next_before": CURSOR-or-null}` (unpaged lists always have `null`); a failure under `--json` is one line on stderr, `{"error": {"code", "status", "message"}}`, with stdout empty. In JSON mode nothing prompts or opens an editor: pass `--yes` to destructive commands and `--file` to `notes`/`skills` create and edit, or the command exits 2.

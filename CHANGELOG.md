@@ -62,7 +62,6 @@ changes, so this is additive.
 - `pepper preferences show | edit`: the Calendar > Preferences values (timezone, addresses, work
   days and hours, meals, workouts, weather switches). `edit` sends only the fields given; the
   server checks the values.
-- `pepper --help` opens with a map from the question you have to the command that answers it.
 
 ### Changed
 

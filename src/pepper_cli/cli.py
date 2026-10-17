@@ -425,51 +425,6 @@ def _reject_command_typo(first: str, subcommand_names: frozenset[str]) -> int | 
     return 2
 
 
-# What a person wants to know -> the command that answers it. The top-level
-# help leads with this, and the agent skill and README repeat it, so a new
-# command earns a row here rather than only a line in the command list.
-INTENT_MAP: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
-    (
-        "What do you want to know?",
-        (
-            ("What should I do now / today?", "next"),
-            ("What did my morning brief say?", "brief"),
-            ("What have I committed to?", "calendar"),
-            ("What do I need to do?", "todos"),
-            ("What's new in things I follow?", "feed  (manage: following)"),
-            ("What's going on in my rooms?", "rooms / messages  (rooms watch to stream)"),
-            ("What have I written down?", "notes"),
-            ("What have I saved (notes, links, files)?", "artifacts"),
-            ("My timezone, work hours, meals", "preferences"),
-            ("What runs without me?", "scheduled-tasks / skills"),
-            ("Ask Pepper anything", "<message>  (or chat)"),
-            ("What did Pepper do, and why?", "trajectories"),
-            ("Account", "login / whoami / logout / takeout"),
-        ),
-    ),
-    (
-        "In a room",
-        (
-            ("Its topics, people and apps", "topics / members / apps"),
-            ("What it sees of your calendars", "sharing"),
-            ("A message's files", "attachments"),
-            ("Taking part as an agent", "agents guide"),
-        ),
-    ),
-)
-
-
-def _intent_map_text() -> str:
-    width = max(len(q) for _, rows in INTENT_MAP for q, _ in rows) + 3
-    lines: list[str] = []
-    for heading, rows in INTENT_MAP:
-        if lines:
-            lines.append("")
-        lines.append(f"{heading}")
-        lines.extend(f"  {q:<{width}}pepper {cmd}" for q, cmd in rows)
-    return "\n".join(lines)
-
-
 def _register_account_commands(sub: Any) -> None:
     """``artifacts`` and ``preferences``."""
     # -- artifacts ----------------------------------------------------------
@@ -604,11 +559,10 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     """
     parser = argparse.ArgumentParser(
         prog="pepper",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
-            "Pepper CLI — talk to your agent and read what it holds for you.\n"
+            "Pepper CLI — talk to your agent and read what it holds for you. "
             "Bare `pepper` opens the REPL; `pepper <message>` is shorthand for "
-            "`pepper chat <message>`.\n\n" + _intent_map_text()
+            "`pepper chat <message>`. Use a subcommand for everything else."
         ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
