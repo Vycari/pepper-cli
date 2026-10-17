@@ -390,7 +390,8 @@ narrow todos only; Now and the calendar are never filtered.
 
 Today's events come from the schedule plan (`GET /api/v1/calendars/schedule-plan`, `your_day`); when
 the plan is unavailable it reads the calendar range instead, and when that fails too it says
-`calendar unavailable` under Now and shows the todos alone.
+`calendar unavailable` under Now and shows the todos alone. A plan or calendar response that can't
+be parsed counts as unavailable too.
 
 "Today" and every time shown are in your account's timezone (the plan's `timezone`, else
 whoami's), never the machine's. When neither can be read, there is no account timezone: the

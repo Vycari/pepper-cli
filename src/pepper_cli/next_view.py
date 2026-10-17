@@ -209,6 +209,11 @@ def _whoami_zone(api: Any) -> str | None:
     return _zone_name(name) or "UTC"
 
 
+#: What a calendar payload that is not the shape the CLI reads raises while being parsed: a
+#: timestamp that is not ISO, a naive one compared with an aware one, a missing key.
+_PARSE_FAILED = (ValueError, TypeError, KeyError, AttributeError)
+
+
 def assemble(api: Any, *, scope: Scope | None = None, show_all: bool = False) -> dict[str, Any]:
     """Build the ``pepper next`` result; the ``--json`` shape (see the README).
 
@@ -225,12 +230,16 @@ def assemble(api: Any, *, scope: Scope | None = None, show_all: bool = False) ->
     zone: tzinfo = ZoneInfo(tz_name) if tz_name else UTC
     now = _clock(zone)
     events: list[dict[str, Any]] | None = None
-    if plan and plan.get("now"):
-        now = datetime.fromisoformat(plan["now"]).astimezone(zone)
-        events = _plan_events(plan, now)
-    elif tz_name:
-        events = _todays_events(api, now)
-    shaped_events = _event_view(now, events or [])
+    try:
+        if plan and plan.get("now"):
+            now = datetime.fromisoformat(plan["now"]).astimezone(zone)
+            events = _plan_events(plan, now)
+        elif tz_name:
+            events = _todays_events(api, now)
+        shaped_events = _event_view(now, events or [])
+    except _PARSE_FAILED:
+        # A calendar that can't be parsed is a calendar that couldn't be read.
+        events, shaped_events = None, _event_view(now, [])
     todos = [
         t for t in api.list_todos(status="open", group_id=scope.room_id) if _source_ok(t, scope)
     ]

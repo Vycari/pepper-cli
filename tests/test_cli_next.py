@@ -412,6 +412,23 @@ def test_no_account_zone_shows_utc_labelled_and_never_overdue(server, capsys) ->
     assert data["timezone"] is None and data["note"] == next_view.NO_CALENDAR_NOTE
 
 
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"title": "X", "start": _at(10), "end": "not-a-time"},
+        {"title": "X", "start": "2026-10-02T17:00:00", "end": "2026-10-02T18:00:00"},  # naive
+    ],
+)
+def test_a_calendar_that_cant_be_parsed_is_a_calendar_that_couldnt_be_read(
+    server, capsys, bad
+) -> None:
+    _mock(server, [_todo("A")], [bad])
+    data = json.loads(_run(capsys, "--json"))
+    assert data["note"] == next_view.NO_CALENDAR_NOTE and _titles(data) == ["A"]
+    assert data["now"] is None and data["calendar"] == []
+    assert next_view.NO_CALENDAR_NOTE in _run(capsys)
+
+
 def test_a_second_event_running_now_is_marked_in_progress(server, capsys) -> None:
     _mock(
         server,
