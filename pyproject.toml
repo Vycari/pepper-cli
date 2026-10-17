@@ -52,6 +52,8 @@ dev = [
     "ruff>=0.16.10,<0.18",
     "ty>=0.0.85,<0.1",
     "pytest-cov>=5.0",
+    # Rendered-screen snapshot tests for the terminal UI (tests/test_tui_snapshots.py).
+    "pytest-textual-snapshot>=1.1",
 ]
 
 [build-system]

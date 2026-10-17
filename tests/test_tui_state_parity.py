@@ -261,3 +261,11 @@ def test_jump_targets_list_live_topics_and_filter_ranks_best_first() -> None:
     assert state.fuzzy_filter("", targets) == targets
     assert state.fuzzy_filter("qqq", targets) == []
     assert [t.label for t in state.fuzzy_filter("flights", targets)] == ["Trip planning › Flights"]
+
+
+def test_expect_reconcile_makes_the_next_poll_a_full_read() -> None:
+    store = state.MessageStore()
+    assert store.next_is_reconcile() is False
+    store.expect_reconcile()
+    assert store.next_is_reconcile() is True
+    assert store.next_is_reconcile() is False

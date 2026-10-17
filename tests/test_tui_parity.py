@@ -10,7 +10,13 @@ import pytest
 
 from pepper_cli.tui import app as tui_app
 from pepper_cli.tui import rows, state
-from pepper_cli.tui.screens import ConfirmScreen, InfoScreen, JumpScreen, PickerScreen
+from pepper_cli.tui.screens import (
+    ConfirmScreen,
+    InfoScreen,
+    JumpScreen,
+    PickerScreen,
+    room_info_text,
+)
 from tests import tui_support as ts
 from tests.tui_support import body_text, plain, until
 
@@ -354,3 +360,21 @@ async def test_i_shows_the_room_info_card() -> None:
         assert "Members (1)" in text
         await pilot.press("escape")
         await until(pilot, lambda: not isinstance(app.screen, InfoScreen))
+
+
+def test_room_info_text_survives_odd_and_hostile_values() -> None:
+    out = room_info_text(
+        {
+            "display_name": "[red]Room[/red]\x1b[2J",
+            "members": ["junk", {"display_name": "Ada", "role": "admin", "is_you": True}],
+            "topics": [{"archived": True}, {}, "junk"],
+            "apps": {"installed": [{"title": "Notes"}, "junk"]},
+        }
+    ).plain
+    assert "[red]Room[/red]" in out
+    assert "\x1b" not in out
+    assert "Ada (you) · admin" in out
+    assert "1 active, 1 archived" in out
+    assert "Notes" in out
+    assert "unavailable right now" in room_info_text({"apps": {"unavailable": True}}).plain
+    assert "none installed" in room_info_text({}).plain

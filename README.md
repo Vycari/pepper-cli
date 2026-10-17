@@ -393,6 +393,15 @@ The composer at the bottom posts to whatever is open:
   waits until the current answer finishes. If the connection drops mid-answer the message is
   never sent again: it shows "connection lost, checking…" and re-reads today's chat for up to
   two minutes until the reply appears.
+- **On a selected message** (Up/Down in the thread): `+` opens an emoji picker (picking one
+  you already used takes it back), `e` edits your own message in the composer (Enter saves,
+  Esc cancels), `d` deletes it after a yes/no, and `o` opens its first link, attachment or app
+  card in your browser (http and https only).
+- Scrolling up past the first message loads the page before it.
+- Bodies that look like Markdown are rendered as such; link previews are one line, and app
+  cards are boxed with their summary.
+- The sidebar shows the first five topics of a room with a "Show more" row, an archived
+  fold, an "Inactive" fold for rooms quiet for a week, and a "New topic" row.
 - Each conversation keeps its own draft while you move around.
 
 `pepper tui --root PATH` (repeatable; `--tools-root` is an alias) lets Pepper read files under
@@ -408,7 +417,10 @@ machine, and only for this session. A path that is not a directory exits 2.
 | Enter | In the composer: send. |
 | Alt+Enter or Ctrl+J | In the composer: new line. |
 | Up / Down, `r` | In the thread: select a message; quote it (or retry a failed post). |
-| Esc | Cancel the quote, then leave the composer. |
+| `+`, `e`, `d`, `o` | In the thread, on a selected message: react, edit, delete, open link. |
+| `i` | Room info (members, topics, apps) for the open room. |
+| Ctrl+K | Fuzzy jump to any room or topic. |
+| Esc | Cancel the quote or edit, then leave the composer. |
 | Ctrl+N / Ctrl+P | Jump to the next / previous unread conversation. |
 | PgUp / PgDn | Scroll the thread. |
 | Ctrl+B | Hide or show the sidebar. |
