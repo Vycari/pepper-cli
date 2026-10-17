@@ -223,6 +223,14 @@ def test_limit_and_group_are_plain_filters(server, capsys) -> None:
     assert [i["ref"] for i in json.loads(out)["items"]] == [POD]
 
 
+def test_group_resolves_against_the_feed_entries_too(server, capsys) -> None:
+    # Sports is only in data.feed: not in counts.by_group, not on a followed item
+    rc, out, _ = _run(capsys, "feed", "--json", "--group", "spo")
+    assert rc == 0 and [i["ref"] for i in json.loads(out)["items"]] == [TEAM]
+    rc, _, err = _run(capsys, "feed", "--json", "--group", "nope")
+    assert rc == 2 and "Reading, Podcasts, Sports" in err
+
+
 def test_no_server_ranking_is_one_line_and_never_a_client_ranking(server, capsys) -> None:
     doc = _doc()
     del doc["data"]["feed"]

@@ -7391,7 +7391,9 @@ def cmd_feed(args: argparse.Namespace) -> int:
             return _feed_unranked(args)
         if row is None:
             try:
-                group = following_view.resolve_group(data, args.group) if args.group else None
+                group = (
+                    following_view.resolve_group(data, args.group, entries) if args.group else None
+                )
             except following_view.LookupFailure as exc:
                 _emit_error(args, exc.code, exc.message)
                 return 2

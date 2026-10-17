@@ -54,9 +54,14 @@ def group_order(data: dict[str, Any], items: list[dict[str, Any]] | None = None)
     return list(dict.fromkeys([*map(str, keys), *map(_group_of, rows)]))
 
 
-def resolve_group(data: dict[str, Any], query: str) -> str:
-    """The canonical group for a case-insensitive prefix (``--group pod`` is ``Podcasts``)."""
-    known = group_order(data)
+def resolve_group(
+    data: dict[str, Any], query: str, entries: list[dict[str, Any]] | None = None
+) -> str:
+    """The canonical group for a case-insensitive prefix (``--group pod`` is ``Podcasts``).
+
+    ``entries`` are the rows being filtered when they are not the followed items (``pepper
+    feed`` passes ``data.feed``): their groups are valid names too, after the items' groups."""
+    known = group_order(data, [*items_of(data), *(entries or [])])
     q = query.strip().lower()
     hits = [g for g in known if g.lower().startswith(q)] if q else []
     exact = [g for g in known if g.lower() == q]
