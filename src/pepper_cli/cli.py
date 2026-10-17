@@ -101,6 +101,7 @@ from pepper_cli import (
     proctitle,
     render,
     skill_doc,
+    turn,
     window_title,
 )
 from pepper_cli.provider import fs as provider_fs
@@ -2166,79 +2167,109 @@ def _stream_one_turn(
     arrives, the ``reply`` event last; nothing is drawn, and a failure is the J8 line
     on stderr.
     """
-    # Thoughts arrive as fragments of any size followed by a terminal
-    # ``model_thought_block``; the fragments stream onto one line and the block
-    # ends it, so a thought reads as a paragraph on every backend rather than
-    # one word per line on the token-level ones.
-    # What the fragments have put on screen for the thought still open, so the
-    # block can tell whether the screen already holds it. ``retry_attempt``
-    # resets it, so it only holds the attempt a block will close.
-    streamed = ""
-    manifest = provider.manifest() if provider is not None else None
-    for event in api.chat_send_stream(message, client_tools=manifest):
-        if json_args is not None:
-            sys.stdout.write(
-                json.dumps({"kind": event.kind, "payload": event.payload}, default=str) + "\n"
-            )
-            sys.stdout.flush()
-            if event.kind == "client_tool_call":
-                _serve_client_tool_call(
-                    api, event.payload, provider=provider, trace=False, json_args=json_args
-                )
-            elif event.kind == "reply":
-                return True
-            elif event.kind == "error":
-                _emit_error(
-                    json_args,
-                    "server",
-                    str(event.payload.get("message") or "model service unavailable"),
-                )
-                return False
-            continue
-        if event.kind == "model_thought":
-            text = event.payload.get("text") or ""
-            if text:
-                if trace:
-                    render.render_thought_delta(text, first=not streamed)
-                streamed += text
-        elif event.kind == "model_thought_block":
-            if trace:
-                render.end_thought(event.payload.get("text") or "", streamed=streamed)
-            streamed = ""
-        elif event.kind == "retry_attempt":
-            # The abandoned attempt's fragments stay on screen; end their line
-            # so the retry's start fresh. The common retry lands before
-            # any fragment, and then there is no line to end.
-            if trace and streamed:
-                render.discard_thought()
-            streamed = ""
-        elif event.kind == "tool_call":
-            if trace:
-                render.render_tool_call(event.payload)
-        elif event.kind == "tool_result":
-            if trace:
-                render.render_tool_result(event.payload)
-        elif event.kind == "client_tools":
-            if trace:
-                _render_client_tools_ack(event.payload)
-        elif event.kind == "client_tool_call":
-            _serve_client_tool_call(api, event.payload, provider=provider, trace=trace)
-        elif event.kind == "reply":
-            render.render_reply(event.payload.get("reply") or "")
-            return True
-        elif event.kind == "error":
-            render.error(event.payload.get("message") or "model service unavailable")
-            return False
-        # Unknown kinds skipped silently — forward-compat with future
-        # server-side event types we haven't taught the CLI yet. This is
-        # also what makes the two frames above safe to add: an older CLI
-        # against a newer server simply never runs a client tool.
-    _emit_error(
-        json_args,
-        "server",
-        "Chat stream ended without a reply. Check the web chat before sending again.",
-    )
+    sink: turn.TurnSink
+    if json_args is not None:
+        sink = _JsonTurnSink(api, provider=provider, json_args=json_args)
+    else:
+        sink = _ReplTurnSink(api, provider=provider, trace=trace)
+    outcome = turn.run_turn(api, message, sink, provider=provider)
+    if outcome == "reply":
+        return True
+    if outcome == "ended":
+        _emit_error(
+            json_args,
+            "server",
+            "Chat stream ended without a reply. Check the web chat before sending again.",
+        )
     return False
+
+
+class _ReplTurnSink(turn.TurnSink):
+    """Draws a turn in the REPL: thoughts as paragraphs, tools as one line each.
+
+    Thought fragments stream onto one line and the block ends it, so a thought reads as a
+    paragraph on every backend rather than one word per line on the token-level ones.
+    """
+
+    def __init__(
+        self,
+        api: api_client.ApiClient,
+        *,
+        provider: provider_fs.FilesystemProvider | None,
+        trace: bool,
+    ) -> None:
+        self.api = api
+        self.provider = provider
+        self.trace = trace
+
+    def thought_delta(self, text: str, *, first: bool) -> None:
+        if self.trace:
+            render.render_thought_delta(text, first=first)
+
+    def thought_block(self, text: str, *, streamed: str) -> None:
+        if self.trace:
+            render.end_thought(text, streamed=streamed)
+
+    def retry(self, *, streamed: str) -> None:
+        # The abandoned attempt's fragments stay on screen; end their line so the retry's
+        # start fresh. The common retry lands before any fragment, and then there is no
+        # line to end.
+        if self.trace and streamed:
+            render.discard_thought()
+
+    def tool_call(self, payload: dict) -> None:
+        if self.trace:
+            render.render_tool_call(payload)
+
+    def tool_result(self, payload: dict) -> None:
+        if self.trace:
+            render.render_tool_result(payload)
+
+    def client_tools(self, payload: dict) -> None:
+        if self.trace:
+            _render_client_tools_ack(payload)
+
+    def client_tool_call(self, payload: dict) -> None:
+        _serve_client_tool_call(self.api, payload, provider=self.provider, trace=self.trace)
+
+    def reply(self, payload: dict) -> None:
+        render.render_reply(payload.get("reply") or "")
+
+    def error(self, payload: dict) -> None:
+        render.error(payload.get("message") or "model service unavailable")
+
+
+class _JsonTurnSink(turn.TurnSink):
+    """``chat MESSAGE --json`` (J6): one ``{"kind", "payload"}`` line per frame, nothing drawn."""
+
+    def __init__(
+        self,
+        api: api_client.ApiClient,
+        *,
+        provider: provider_fs.FilesystemProvider | None,
+        json_args: argparse.Namespace,
+    ) -> None:
+        self.api = api
+        self.provider = provider
+        self.json_args = json_args
+
+    def frame(self, event: api_client.StreamEvent) -> None:
+        sys.stdout.write(
+            json.dumps({"kind": event.kind, "payload": event.payload}, default=str) + "\n"
+        )
+        sys.stdout.flush()
+
+    def client_tool_call(self, payload: dict) -> None:
+        _serve_client_tool_call(
+            self.api, payload, provider=self.provider, trace=False, json_args=self.json_args
+        )
+
+    def error(self, payload: dict) -> None:
+        _emit_error(
+            self.json_args,
+            "server",
+            str(payload.get("message") or "model service unavailable"),
+        )
 
 
 def _render_client_tools_ack(payload: dict) -> None:
@@ -2284,24 +2315,14 @@ def _serve_client_tool_call(
     ``chat``) the note is a J8 line on stderr instead of text, so stderr stays
     parseable; the turn's exit code still says whether the command succeeded.
     """
-    call_id = str(payload.get("call_id") or "")
-    name = str(payload.get("name") or "")
-    if not call_id:
+    answer = turn.answer_client_tool_call(api, payload, provider=provider)
+    if answer is None:
         return
-    if provider is None:
-        text, is_error = "No local tools are shared with this session.", True
-    else:
-        arguments = payload.get("arguments")
-        text, is_error = provider.call(name, arguments if isinstance(arguments, dict) else {})
+    name = answer.name
     if trace:
         render.render_tool_call({"name": name, "args": payload.get("arguments") or {}})
-    try:
-        api.post_tool_result(
-            call_id=call_id,
-            content=[{"type": "text", "text": text}],
-            is_error=is_error,
-        )
-    except (api_client.ApiError, httpx.RequestError) as exc:
+    exc = answer.post_error
+    if exc is not None:
         if json_args is not None:
             if isinstance(exc, api_client.ApiError):
                 code, status = _error_code_for_status(exc.status), exc.status
