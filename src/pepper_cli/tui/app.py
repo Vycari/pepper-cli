@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, ClassVar
 import httpx
 from rich.text import Text
 from textual import events
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.widgets import Footer, Static
@@ -185,7 +185,15 @@ class PepperApp(App[None]):
         loop = self._loops[kind]
         if loop.in_flight == generation:
             loop.in_flight = None
+        if not self._mounted():
+            return False  # a worker can finish after quit has torn the screen down
         return not self.fatal and generation == loop.generation
+
+    def _mounted(self) -> bool:
+        try:
+            return bool(self.query(Sidebar))
+        except ScreenStackError:
+            return False
 
     def _delivered[T](
         self,
@@ -420,7 +428,7 @@ class PepperApp(App[None]):
         return ""
 
     def _update_subline(self) -> None:
-        if not self.query(Sidebar):  # a highlight event can outlive the screen at shutdown
+        if not self._mounted():  # a highlight event can outlive the screen at shutdown
             return
         row = self.sidebar.highlighted_row
         text = ""

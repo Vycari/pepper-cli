@@ -388,3 +388,16 @@ async def test_the_new_marker_clears_however_the_bottom_is_reached() -> None:
         assert marker.display
         scroller.scroll_end(animate=False)  # not a page key: a wheel or scrollbar would do this
         await until(pilot, lambda: not marker.display)
+
+
+async def test_a_result_that_lands_after_quit_is_ignored() -> None:
+    server = ts.standard_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        await pilot.press("ctrl+q")
+    generation = app._loops["dm"].generation
+    app._delivered("dm", app._on_dm, [], generation)  # would query a torn-down screen
+    app._failed("dm", ValueError("late"), generation, None)
+    app._update_subline()
+    assert app.return_code == 0
