@@ -279,6 +279,7 @@ def fetch(url: str) -> Article:
         art.error = "this item's link is not a web page (http or https) I can fetch"
         return art
     deadline = time.monotonic() + DEADLINE_SECONDS
+    cut_short = False  # the last request's timeout was the deadline's remainder, not 15 s
     try:
         with httpx.Client(
             follow_redirects=False,
@@ -295,6 +296,7 @@ def fetch(url: str) -> Article:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise _TooSlow
+                cut_short = remaining < TIMEOUT_SECONDS
                 with client.stream("GET", current, timeout=min(TIMEOUT_SECONDS, remaining)) as resp:
                     location = resp.headers.get("location")
                     if resp.is_redirect and location:
@@ -329,7 +331,11 @@ def fetch(url: str) -> Article:
         art.error = f"too many redirects (more than {MAX_REDIRECTS})"
         return art
     except httpx.TimeoutException:
-        art.error = f"the site did not answer within {TIMEOUT_SECONDS:.0f} seconds"
+        art.error = (
+            f"the site took longer than {DEADLINE_SECONDS:.0f} seconds to send the page"
+            if cut_short
+            else f"the site did not answer within {TIMEOUT_SECONDS:.0f} seconds"
+        )
         return art
     except (httpx.HTTPError, httpx.InvalidURL) as exc:
         art.error = f"could not fetch the page ({type(exc).__name__})"

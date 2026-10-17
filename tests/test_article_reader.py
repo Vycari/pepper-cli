@@ -307,3 +307,28 @@ def test_the_deadline_covers_every_hop(web, monkeypatch) -> None:
     art = article_reader.fetch("https://news.example/start")
     assert art.error and "took longer than" in art.error
     assert len(web.seen) == 2
+
+
+def test_a_timeout_cut_short_by_the_deadline_names_the_deadline(web, monkeypatch) -> None:
+    clock = [0.0]
+    monkeypatch.setattr(article_reader.time, "monotonic", lambda: clock[0])
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/start":
+            clock[0] += article_reader.DEADLINE_SECONDS - 5
+            return httpx.Response(302, headers={"location": "/next"})
+        assert req.extensions["timeout"]["read"] == 5
+        raise httpx.ReadTimeout("slow", request=req)
+
+    web.state["handler"] = handler
+    art = article_reader.fetch("https://news.example/start")
+    assert art.error and "took longer than 45 seconds" in art.error
+
+
+def test_a_plain_timeout_names_the_per_request_wait(web) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow", request=req)
+
+    web.state["handler"] = handler
+    art = article_reader.fetch("https://news.example/start")
+    assert art.error and "within 15 seconds" in art.error
