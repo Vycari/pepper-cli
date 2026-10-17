@@ -1191,3 +1191,27 @@ def render_next(result: dict[str, Any]) -> None:
         out("  [dim](nothing open)[/dim]")
     if todos["count"] > len(todos["items"]):
         out(f"  [dim]... {todos['count'] - len(todos['items'])} more (--all)[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# Public helpers for the modules that draw their own views (``account_render``).
+
+
+def out_line(text: str = "") -> None:
+    """One line of rich-markup text to stdout, never folded (ids and links stay pasteable)."""
+    _stdout.print(text, soft_wrap=True)
+
+
+def out_text(text: str) -> None:
+    """Server text to stdout as it is: no markup, no highlighting."""
+    _stdout.print(sanitize_text(text), markup=False, highlight=False)
+
+
+def local_stamp(iso: object) -> str:
+    """A UTC ISO-8601 timestamp in this machine's zone, labelled (``_format_stamp``)."""
+    return _format_stamp(str(iso)) if iso else ""
+
+
+def one_line(value: object) -> str:
+    """A server field made safe for one line of markup (``_s``)."""
+    return _s(value)

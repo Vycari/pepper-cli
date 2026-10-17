@@ -1,0 +1,85 @@
+"""``pepper artifacts``: kinds, the numbered listing, file names and upload types.
+
+The product calls the whole collection "Artifacts" (the app is titled that in
+``agent/apps/registry.py``, the room page has an Artifacts surface, the settings page and the
+help topic say it) and names the three kinds Note, Link and File (``KIND_LABELS`` in
+``agent/artifacts/applet.py``). The stored discriminators are ``inline_text``, ``external_url``
+and ``blob``; the CLI speaks the product words. Images, PDFs,
+audio, recipes and research reports are not kinds of their own: an image is a File, a recipe or
+a report is a Note.
+"""
+
+from __future__ import annotations
+
+import mimetypes
+import re
+from pathlib import PurePath
+from typing import Any
+
+from pepper_cli.numbered_view import NumberedView
+
+VIEW = NumberedView("artifacts-view.json", "artifact", "pepper artifacts list")
+
+#: The CLI word for each kind, and the stored value the list route filters on (``--kind``
+#: is restricted to these words by argparse).
+KINDS: dict[str, str] = {"note": "inline_text", "link": "external_url", "file": "blob"}
+_LABELS = {wire: word.capitalize() for word, wire in KINDS.items()}
+
+
+def kind_label(wire: str) -> str:
+    return _LABELS.get(wire, wire)
+
+
+#: Types the server's upload gate accepts (``ALLOWED_UPLOAD_MIMES``), by extension, for the
+#: ones ``mimetypes`` misses or names differently. The server is the authority; this only
+#: picks the type to declare, and a file the server refuses comes back as a 415.
+_MIME_BY_EXT = {
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+    ".avif": "image/avif",
+    ".webp": "image/webp",
+    ".m4a": "audio/m4a",
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+    ".webm": "audio/webm",
+    ".ogg": "audio/ogg",
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".mp4": "video/mp4",
+    ".pdf": "application/pdf",
+    ".txt": "text/plain",
+    ".text": "text/plain",
+}
+
+UPLOAD_TYPES_HINT = "pictures, PDFs, plain text, audio clips and MP4 video"
+
+
+def guess_mime(filename: str) -> str:
+    ext = PurePath(filename).suffix.lower()
+    if ext in _MIME_BY_EXT:
+        return _MIME_BY_EXT[ext]
+    return mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+
+def safe_filename(name: str, fallback: str = "artifact") -> str:
+    """One path segment made from an artifact's name (which is user text and may hold
+    separators, control characters or be empty)."""
+    cleaned = re.sub(r"[\x00-\x1f\x7f/\\]+", "_", name or "").strip(" .")
+    return cleaned[:200] or fallback
+
+
+def listing_row(item: dict[str, Any]) -> dict[str, Any]:
+    """What a listing remembers about one artifact: enough for ``show``/``delete`` to name it."""
+    return {k: item[k] for k in ("id", "name", "kind", "labels", "updated_at") if k in item}
+
+
+def download_name(name: object, mime: object) -> str:
+    """The file name to save under: the artifact's name, with the type's extension added when
+    the name has none (a pasted screenshot is often just named "Screenshot")."""
+    base = safe_filename(str(name or ""))
+    if not PurePath(base).suffix and isinstance(mime, str) and mime:
+        ext = next((e for e, m in _MIME_BY_EXT.items() if m == mime), None) or (
+            mimetypes.guess_extension(mime) or ""
+        )
+        base += ext
+    return base

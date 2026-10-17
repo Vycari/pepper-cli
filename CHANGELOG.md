@@ -38,6 +38,32 @@ urgency, so every client shows the same order. Ordering belongs to the server.
   remind_at, priority, source}`, a subset of the server's todo fields with values unchanged
   (`due` is the server's `due_date`), in the server's order; the README has the details.
 
+### Added
+
+Part of the CLI core-coverage work (Vycari/pepper-cli#61). Each command fetches what the server
+returns and renders it; none ranks, filters, orders or decides on this side. Nothing existing
+changes, so this is additive.
+
+- `pepper feed [N] [--limit N] [--group G] [--transcript] [--read [--full]] [--json]`: what is new
+  in everything you follow, in the order the server's ranked `data.feed` gives (pepper#4852). Rows
+  carry a coloured type tag; `feed N` shows one item in full (its summary, what the server folded
+  under it, and the game block for a sports entry). `--transcript` uses the entry's `episode_id`;
+  `--read` fetches the article's page from its own site and never sends the Pepper token. A server
+  that does not rank yet gets one line saying so.
+- `pepper following list | show | search | create | delete`: manage what you follow. `create` takes
+  only a number from the last `following search` (saved per profile): search first, even for a web
+  address, then `following create 1`. It never picks a match for typed text.
+- `pepper brief [--date YYYY-MM-DD] [--now] [--json]`: your morning brief, readably. The Brief
+  document already lists editions newest first, so the first is the latest and `--date` is a lookup
+  by the edition's `date`; `--now` runs `brief.run_now`.
+- `pepper artifacts list | show | download | create | delete`: notes, links and files. `list`
+  numbers its rows (`show 2`, `download 2`, `delete 2`) and sends `--kind`, `--label`, `--search`
+  and `--limit` to the server as query parameters.
+- `pepper preferences show | edit`: the Calendar > Preferences values (timezone, addresses, work
+  days and hours, meals, workouts, weather switches). `edit` sends only the fields given; the
+  server checks the values.
+- `pepper --help` opens with a map from the question you have to the command that answers it.
+
 ### Changed
 
 - `pepper rooms create` now requires `--name`. Without one (or with a blank one) it fails locally,

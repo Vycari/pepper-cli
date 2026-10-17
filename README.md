@@ -156,6 +156,27 @@ pepper whoami
 
 ## 4. Commands
 
+### What do you want to know?
+
+`pepper --help` leads with this map; each question has one command that answers it.
+
+| Question | Command |
+| --- | --- |
+| What should I do now / today? | `pepper next` |
+| What did my morning brief say? | `pepper brief` |
+| What have I committed to? | `pepper calendar` |
+| What do I need to do? | `pepper todos` |
+| What's new in things I follow? | `pepper feed` (manage with `pepper following`) |
+| What's going on in my rooms? | `pepper rooms` / `messages` (`rooms watch` to stream) |
+| What have I written down? | `pepper notes` |
+| What have I saved (notes, links, files)? | `pepper artifacts` |
+| My timezone, work hours, meals | `pepper preferences` |
+| What runs without me? | `pepper scheduled-tasks` / `skills` |
+| Ask Pepper anything | `pepper <message>` (or `chat`) |
+| What did Pepper do, and why? | `pepper trajectories` |
+
+### Every command
+
 Every command except `login` and the interactive REPL takes `--json`, and also switches to JSON output when the environment variable `PEPPER_JSON` is exactly `1`, so an agent can export it once; `--json` on the command line always wins, any other value (or unset) leaves the human output, and `login` and the interactive REPL ignore it. List commands answer `{"items": [...], "next_before": CURSOR-or-null}` (unpaged lists always have `null`); a failure under `--json` is one line on stderr, `{"error": {"code", "status", "message"}}`, with stdout empty. In JSON mode nothing prompts or opens an editor: pass `--yes` to destructive commands and `--file` to `notes`/`skills` create and edit, or the command exits 2.
 
 | Command | What it does |
@@ -187,6 +208,13 @@ Every command except `login` and the interactive REPL takes `--json`, and also s
 | `pepper skills delete <name> [--yes]` | Delete one of your skills; asks for confirmation unless `--yes`. |
 | `pepper skills share <name> --room R` / `revoke <name> --room R [--yes]` | Share one of your skills with a room, or stop sharing one there. |
 | `pepper next [--room R] [--source PREFIX] [--all] [--json]` | What is on now, today's calendar, and your open todos in the order Pepper returns them (top 10; `--all` for every todo). GETs only. `--room` takes a room name or UUID, must resolve to exactly one room, and reads that room's todos; `--source` narrows todos by a case-insensitive prefix of their source. |
+| `pepper brief [--date YYYY-MM-DD] [--now] [--json]` | Your morning brief, readably. It reads the Brief app's document and shows its first edition, which is the latest because the server sends them newest first (the CLI does no sorting). `--date` shows the edition whose `date` is that day (the app keeps about a month). `--now` asks the server to run and deliver a fresh brief: a write that queues a real run (about a minute; it arrives where your brief is delivered and the command does not wait). A view, so the run is a flag rather than a `run` verb. |
+| `pepper following list [--group G] [--json]` | What you follow, by group (Sports, Shows, Reading, Podcasts, Events), with the latest line, LIVE and new markers, and a short id. Read-only. |
+| `pepper following show ITEM [--json]` | One followed thing and its recent items. `ITEM` is the short id from `list`, a full ref, or a name prefix; an ambiguous one exits 2. |
+| `pepper following search QUERY… [--json]` | Find something to follow: a team (`utah utes`), show, podcast, or a website's address (`https://simonwillison.net`). Prints numbered matches, what you already follow first; the numbers are saved per profile for `following create N`. |
+| `pepper following create N [--json]` | Follow number N from your last `following search`. It only takes a number: search first, even for a web address (`following search https://example.com`, then `following create 1`). The CLI never picks a match for typed text. |
+| `pepper following delete ITEM [--yes] [--json]` | Stop following `ITEM` (the app keeps it, with Follow again). Asks on a terminal unless `--yes`; `--yes` is required under `--json`. |
+| `pepper feed [N] [--limit N] [--group G] [--transcript] [--read [--full]] [--json]` | What's new in everything you follow, as the Pepper server ranks it (best first; the CLI does no ranking, folding or scoring of its own). Without `N`: the server's list, numbered, each row tagged by type (sports, podcast, article, show, event) with its summary and a server-written fold line ("+2 more"). `--limit` shows the first N (20), `--group` keeps one group. With `N`: item N of the last list in full (found again by source, link and title, not rank; says so if it is gone): its summary, exact time in your timezone, what the server folded under it, and its link. `--transcript` prints a podcast's transcript (the show notes, labelled, until one exists; it only reads, never starts transcription). `--read` fetches the article from its own site (plain GET, no Pepper token or cookies, 15 s, 2 MB, 5 redirects) and prints its title, description, author, date and the first 12 paragraphs; `--full` all. A server that does not rank yet (before pepper#4852) gets one line, `this Pepper server doesn't rank the feed yet`, and an empty list (`--json`: `{"items": [], "next_before": null, "note": ...}`). |
 | `pepper todos list [--status S] [--room R] [--json]` | List your todos, or a room's with `--room`. |
 | `pepper todos create <title…> [--details D] [--priority P] [--due D] [--room R]` | Create a todo. With `--room`, `--due` is a `YYYY-MM-DD` date. |
 | `pepper todos done\|reopen <id> [--room R]` | Tick a todo as Schedule does (closes it in your or the room's list and releases the rest of its held time), or put it back. |
@@ -227,6 +255,13 @@ Every command except `login` and the interactive REPL takes `--json`, and also s
 | `pepper notes create "<name>" [--room <group>] [--file PATH \| -]` | Create a note. Body from `$EDITOR`, or `--file PATH`/`--file -` for stdin. |
 | `pepper notes edit <note> [--room <group>] [--file PATH \| -] [--name NAME] [--if-match ETAG \| --force]` | Edit a note; sends nothing when the text is unchanged. |
 | `pepper notes delete <note> [--room <group>] [--yes]` | Delete a note; asks for confirmation unless `--yes` (off a terminal, `--yes` is required). |
+| `pepper artifacts list [--kind note\|link\|file] [--label L] [--search TEXT] [--limit N] [--room R] [--json]` | Everything you have asked Pepper to keep, of any kind (pictures, PDFs, recordings and recipe photos are files; reports and recipes are notes), newest first, numbered. `--kind`, `--label` and `--search` go to the server as query parameters (`--search` is its substring match over names and note bodies); the CLI filters nothing. The numbers are saved per profile (`artifacts-view.json`, next to the credentials) for `show`/`download`/`delete N`; in `--json` each item carries `n`. `--room` lists a room's. |
+| `pepper artifacts show ARTIFACT [--json]` | One artifact: kind, type, size, labels, and its text if it has any (a note's body, a text file's preview). `ARTIFACT` is a number from the last `list` or a full id. `--json` is the server's detail (minus the rendered `body_html`). |
+| `pepper artifacts download ARTIFACT [--out PATH\|DIR\|-] [--force] [--json]` | Save a file artifact's bytes: here under its name (an extension is added from its type when the name has none), to `--out`, or to stdout with `-`. Will not overwrite without `--force`. A note or a link has no file (use `show`). `--json` emits `{"path", "bytes", "id", "name"}`. |
+| `pepper artifacts create --file PATH [--name N] [--summary S] [--label L]... [--room R] [--json]` | Upload a file as a new artifact. The server accepts pictures, PDFs, plain text, audio clips and MP4 video up to its size limit (25 MiB by default) and checks the bytes against the declared type; anything else is refused (415/413). To write a note, use `notes create`. |
+| `pepper artifacts delete ARTIFACT [--room R] [--yes] [--json]` | Delete an artifact of any kind (the server keeps it for a retention window; the CLI has no restore). Asks on a terminal; needs `--yes` otherwise. A number from a `--room` listing deletes in that room. |
+| `pepper preferences show [--json]` | Calendar > Preferences: home and work address, the account timezone, work days and hours, meals, workout time, weather switches. |
+| `pepper preferences edit [--timezone ZONE] [--home-address T] [--work-address T] [--work-days D] [--work-start HH:MM] [--work-end HH:MM] [--show N] [--hide N] [--meal NAME=HH:MM[,MIN]]... [--workout-at HH:MM] [--workout-minutes N] [--json]` | Change only the fields given; the server keeps the rest and refuses an unknown timezone or an address it cannot place. `--work-days` takes `mon,wed-fri`, `weekdays`, `weekend` or `all`; `--show`/`--hide` take `weather,commute,precip-amount,humidity,wind,uv,severe`. Moving the timezone also moves your scheduled tasks that follow it. Times, zones and addresses are sent as typed and the server checks them (a 422 is shown). A `--meal` or `--workout-*` flag that gives only half a pair is completed from your current values, because the server takes a meal's start and minutes together. |
 | `pepper login` / `pepper logout` | Store / delete credentials. |
 
 **For agents.** `pepper agents guide` prints a skill document (frontmatter plus

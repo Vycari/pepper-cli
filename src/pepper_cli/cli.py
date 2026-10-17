@@ -59,6 +59,14 @@ Subcommands:
   ``edit`` sends nothing when the text is unchanged and runs the
   conflict flow (save + diff + re-open/overwrite/quit) on a stale
   ``If-Match``. ``delete`` asks before deleting unless ``--yes``.
+- ``pepper brief [--date YYYY-MM-DD | --now]`` — your morning brief, read from the server's
+  Brief document in the order it sends; ``--now`` runs a fresh one.
+- ``pepper feed [N]`` and ``pepper following list | show | search | create | delete`` — the
+  server's ranked stream of what you follow (``N`` shows one item in full), and managing the
+  follows; ``following create N`` follows a number from the last ``following search``.
+- ``pepper artifacts list | show | download | create | delete`` — everything you saved: notes,
+  links and files. ``create`` uploads a file; to edit a note's text use ``notes``.
+- ``pepper preferences show | edit`` — the Calendar > Preferences values.
 - ``pepper takeout [--out FILE]`` — download a zip archive of everything
   Pepper holds about your account.
 - ``pepper logout`` — delete the credentials file.
@@ -94,10 +102,21 @@ import httpx
 
 from pepper_cli import (
     __version__,
+    account_render,
     agent_skill,
     api_client,
+    article_reader,
+    artifacts_view,
+    brief_view,
     credentials,
+    feed,
+    feed_detail_render,
+    following_render,
+    following_search,
+    following_view,
     next_view,
+    numbered_view,
+    preferences_view,
     proctitle,
     render,
     skill_doc,
@@ -406,6 +425,173 @@ def _reject_command_typo(first: str, subcommand_names: frozenset[str]) -> int | 
     return 2
 
 
+# What a person wants to know -> the command that answers it. The top-level
+# help leads with this, and the agent skill and README repeat it, so a new
+# command earns a row here rather than only a line in the command list.
+INTENT_MAP: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    (
+        "What do you want to know?",
+        (
+            ("What should I do now / today?", "next"),
+            ("What did my morning brief say?", "brief"),
+            ("What have I committed to?", "calendar"),
+            ("What do I need to do?", "todos"),
+            ("What's new in things I follow?", "feed  (manage: following)"),
+            ("What's going on in my rooms?", "rooms / messages  (rooms watch to stream)"),
+            ("What have I written down?", "notes"),
+            ("What have I saved (notes, links, files)?", "artifacts"),
+            ("My timezone, work hours, meals", "preferences"),
+            ("What runs without me?", "scheduled-tasks / skills"),
+            ("Ask Pepper anything", "<message>  (or chat)"),
+            ("What did Pepper do, and why?", "trajectories"),
+            ("Account", "login / whoami / logout / takeout"),
+        ),
+    ),
+    (
+        "In a room",
+        (
+            ("Its topics, people and apps", "topics / members / apps"),
+            ("What it sees of your calendars", "sharing"),
+            ("A message's files", "attachments"),
+            ("Taking part as an agent", "agents guide"),
+        ),
+    ),
+)
+
+
+def _intent_map_text() -> str:
+    width = max(len(q) for _, rows in INTENT_MAP for q, _ in rows) + 3
+    lines: list[str] = []
+    for heading, rows in INTENT_MAP:
+        if lines:
+            lines.append("")
+        lines.append(f"{heading}")
+        lines.extend(f"  {q:<{width}}pepper {cmd}" for q, cmd in rows)
+    return "\n".join(lines)
+
+
+def _register_account_commands(sub: Any) -> None:
+    """``artifacts`` and ``preferences``."""
+    # -- artifacts ----------------------------------------------------------
+    p_art = sub.add_parser(
+        "artifacts",
+        help=(
+            "Everything you've asked Pepper to keep: notes, links and files (pictures, PDFs, "
+            "recordings). ``list``/``show``/``download``/``create`` (uploads a file)/``delete``; "
+            "to edit a note's text use ``notes``."
+        ),
+    )
+    sub_art = p_art.add_subparsers(dest="artifacts_action", required=True)
+
+    p = sub_art.add_parser(
+        "list",
+        help="List your artifacts, numbered (or a room's, with --room).",
+        parents=[_json_parent, _room_parent(omitted="Omit for your own artifacts.")],
+    )
+    p.add_argument("--kind", choices=sorted(artifacts_view.KINDS), help="Only this kind.")
+    p.add_argument("--label", help="Only artifacts carrying this label.")
+    p.add_argument(
+        "--search",
+        metavar="TEXT",
+        help="Case-insensitive substring match over names and note bodies.",
+    )
+    p.add_argument(
+        "--limit", type=int, metavar="N", help="At most N (1-200; the server's default is 50)."
+    )
+    p.set_defaults(handler=cmd_artifacts_list)
+
+    p = sub_art.add_parser(
+        "show",
+        help="One artifact: its details, and its text if it has any (--json: the full detail).",
+        parents=[_json_parent],
+    )
+    p.add_argument("artifact", help=_ARTIFACT_REF_HELP)
+    p.set_defaults(handler=cmd_artifacts_show)
+
+    p = sub_art.add_parser(
+        "download",
+        help="Save a file artifact's bytes (--out PATH, a directory, or - for stdout).",
+        parents=[_json_parent],
+    )
+    p.add_argument("artifact", help=_ARTIFACT_REF_HELP)
+    p.add_argument(
+        "--out",
+        metavar="PATH",
+        help="File or directory to write; '-' for stdout. Default: the artifact's name here.",
+    )
+    p.add_argument("--force", action="store_true", help="Overwrite an existing file.")
+    p.set_defaults(handler=cmd_artifacts_download)
+
+    p = sub_art.add_parser(
+        "create",
+        help=(
+            "Upload a file as a new artifact (pictures, PDFs, plain text, audio, MP4 video; "
+            "the server refuses other types and large files)."
+        ),
+        parents=[_json_parent, _room_parent(omitted="Omit to save into your own artifacts.")],
+    )
+    p.add_argument("--file", required=True, metavar="PATH", help="The file to upload.")
+    p.add_argument("--name", help="Name for the artifact. Default: the file's name.")
+    p.add_argument("--summary", help="A one-line summary.")
+    p.add_argument(
+        "--label", action="append", metavar="LABEL", help="A label to file it under; repeatable."
+    )
+    p.set_defaults(handler=cmd_artifacts_create)
+
+    p = sub_art.add_parser(
+        "delete",
+        help="Delete an artifact of any kind (kept for a while by the server, then gone).",
+        parents=[_json_parent, _yes_parent, _room_parent(omitted="Omit for your own.")],
+    )
+    p.add_argument("artifact", help=_ARTIFACT_REF_HELP)
+    p.set_defaults(handler=cmd_artifacts_delete)
+
+    # -- preferences --------------------------------------------------------
+    p_prefs = sub.add_parser(
+        "preferences",
+        help=(
+            "Calendar > Preferences: addresses, the account timezone, work days and hours, "
+            "meals, workouts and weather switches. ``show`` / ``edit``."
+        ),
+    )
+    sub_prefs = p_prefs.add_subparsers(dest="preferences_action", required=True)
+    p = sub_prefs.add_parser("show", help="Show your preferences.", parents=[_json_parent])
+    p.set_defaults(handler=cmd_preferences_show)
+    p = sub_prefs.add_parser(
+        "edit",
+        help="Change only the preferences given.",
+        parents=[_json_parent],
+        epilog=(
+            "Changing the timezone also moves your scheduled tasks that follow the account's "
+            "zone. An address the server cannot place is refused."
+        ),
+    )
+    p.add_argument("--timezone", metavar="ZONE", help="An IANA zone name, e.g. America/Chicago.")
+    p.add_argument("--home-address", metavar="TEXT", help="Home address ('' clears it).")
+    p.add_argument("--work-address", metavar="TEXT", help="Work address ('' clears it).")
+    p.add_argument(
+        "--work-days",
+        metavar="DAYS",
+        help="Work days: names (mon,wed-fri) or weekdays, weekend, all.",
+    )
+    p.add_argument("--work-start", metavar="HH:MM", help="Work day starts (24-hour).")
+    p.add_argument("--work-end", metavar="HH:MM", help="Work day ends (24-hour).")
+    switches = ", ".join(preferences_view.SWITCHES)
+    p.add_argument("--show", metavar="NAMES", help=f"Switch on (comma-separated): {switches}.")
+    p.add_argument("--hide", metavar="NAMES", help="Switch off (same names as --show).")
+    p.add_argument(
+        "--meal",
+        action="append",
+        metavar="NAME=HH:MM[,MIN]",
+        help="Set a meal's start and/or length, e.g. lunch=12:30,45; repeatable.",
+    )
+    p.add_argument("--workout-at", metavar="HH:MM", help="When you usually train.")
+    p.add_argument("--workout-minutes", type=int, metavar="MIN", help="Length of a session.")
+    p.add_argument("--run-minutes", type=int, metavar="MIN", help="Schedule: minutes of work run.")
+    p.add_argument("--break-minutes", type=int, metavar="MIN", help="Schedule: minutes of break.")
+    p.set_defaults(handler=cmd_preferences_edit)
+
+
 def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     """Construct the argparse parser and return it alongside the
     frozen set of subcommand names registered on it.
@@ -418,14 +604,11 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     """
     parser = argparse.ArgumentParser(
         prog="pepper",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
-            "Pepper CLI — chat with your agent over /api/v1. "
-            "Bare ``pepper`` opens the REPL; ``pepper <message>`` is shorthand "
-            "for ``pepper chat <message>``. Use a subcommand "
-            "(login / whoami / chat / trajectories / calendar / next / todos / "
-            "scheduled-tasks / skills / rooms / topics / messages / attachments / "
-            "members / sharing / apps / notes / takeout / agents / logout) "
-            "for everything else."
+            "Pepper CLI — talk to your agent and read what it holds for you.\n"
+            "Bare `pepper` opens the REPL; `pepper <message>` is shorthand for "
+            "`pepper chat <message>`.\n\n" + _intent_map_text()
         ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -587,6 +770,26 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_traj_list.set_defaults(handler=cmd_trajectory_list)
     _add_renamed_stub(sub, "trajectory", "see 'pepper trajectories --help'")
 
+    p_brief = sub.add_parser(
+        "brief",
+        help="Your morning brief: the latest, or an older day. --now runs a fresh one.",
+        description=(
+            "Print the latest edition of your brief readably (dateline, lede, the day's events, "
+            "feeds). --date YYYY-MM-DD reads an older one (the app keeps about a month). "
+            "--now asks the server to run and deliver a fresh brief, which takes about a minute "
+            "and arrives where your brief is delivered; it prints the server's answer and does "
+            "not wait."
+        ),
+        parents=[_json_parent],
+    )
+    p_brief.add_argument("--date", metavar="YYYY-MM-DD", help="An older edition.")
+    p_brief.add_argument(
+        "--now",
+        action="store_true",
+        help="Run and deliver a fresh brief now (a write; not with --date).",
+    )
+    p_brief.set_defaults(handler=cmd_brief)
+
     p_cal = sub.add_parser(
         "calendar",
         help="Read-only agenda: today, a week, or any window.",
@@ -635,6 +838,102 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_next.add_argument("--all", action="store_true", help="List every todo, not just the top 10.")
     p_next.add_argument("--json", action="store_true", help="Emit the assembled result as JSON.")
     p_next.set_defaults(handler=cmd_next)
+
+    p_following = sub.add_parser(
+        "following",
+        help="Teams, shows, podcasts and websites you follow: search, follow, unfollow.",
+        description=(
+            "Following is two steps: 'following search QUERY' lists numbered matches, then "
+            "'following create N' follows number N. 'create' only takes a number; it never "
+            "picks a match for typed text. For a website, search its address, then create "
+            "from the result (e.g. 'following search https://simonwillison.net', then "
+            "'following create 1'); for a team, search its name (e.g. 'following search utah "
+            "utes') and pick the sport. 'following delete' stops following."
+        ),
+    )
+    sub_following = p_following.add_subparsers(dest="following_action", required=True)
+    p = sub_following.add_parser(
+        "list",
+        parents=[_json_parent],
+        help="List what you follow, by group, with each one's latest line.",
+    )
+    p.add_argument(
+        "--group", metavar="GROUP", help="Only Sports, Shows, Reading, Podcasts or Events."
+    )
+    p.set_defaults(handler=cmd_following_list)
+    p = sub_following.add_parser(
+        "show", parents=[_json_parent], help="One followed thing and its recent items."
+    )
+    p.add_argument("item", metavar="ITEM", help="Its id from `following list`, or a name prefix.")
+    p.set_defaults(handler=cmd_following_show)
+
+    p = sub_following.add_parser(
+        "search",
+        parents=[_json_parent],
+        help="Find something to follow: a team, show, podcast, or a website's address. "
+        "Prints numbered matches for 'following create N'.",
+    )
+    p.add_argument(
+        "query",
+        nargs="+",
+        metavar="QUERY",
+        help="A name (e.g. 'utah utes', 'the moth') or a web address.",
+    )
+    p.set_defaults(handler=cmd_following_search)
+    p = sub_following.add_parser(
+        "create",
+        parents=[_json_parent],
+        help="Follow number N from your last 'following search' (search first, even for a "
+        "web address).",
+    )
+    p.add_argument(
+        "number",
+        metavar="N",
+        help="A number from the last 'following search'.",
+    )
+    p.set_defaults(handler=cmd_following_create)
+    p = sub_following.add_parser(
+        "delete",
+        parents=[_json_parent, _yes_parent],
+        help="Stop following something (the app keeps it, with Follow again). Asks first.",
+    )
+    p.add_argument("item", metavar="ITEM", help="Its id from `following list`, or a name prefix.")
+    p.set_defaults(handler=cmd_following_delete)
+
+    p_feed = sub.add_parser(
+        "feed",
+        parents=[_json_parent],
+        help="What's new in everything you follow, as the server ranks it; N shows one in full.",
+        description=(
+            "The Pepper server's ranked list of the recent items of everything you follow "
+            "(best first), numbered. 'feed N' shows item N of the last list in full. The CLI "
+            "does no ranking of its own. Read-only; manage what you follow with 'following'."
+        ),
+    )
+    p_feed.add_argument(
+        "item",
+        nargs="?",
+        metavar="N",
+        help="Show item N of the last list in full (a number, up to 4 digits).",
+    )
+    p_feed.add_argument("--limit", type=int, default=20, metavar="N", help="At most N items (20).")
+    p_feed.add_argument(
+        "--group", metavar="GROUP", help="Only Sports, Shows, Reading, Podcasts or Events."
+    )
+    p_feed.add_argument(
+        "--transcript",
+        action="store_true",
+        help="With N: a podcast episode's transcript (its show notes until one exists).",
+    )
+    p_feed.add_argument(
+        "--read",
+        action="store_true",
+        help="With N: fetch the article's page from its own site and print its readable text.",
+    )
+    p_feed.add_argument(
+        "--full", action="store_true", help="With --read: every paragraph, not the first twelve."
+    )
+    p_feed.set_defaults(handler=cmd_feed)
 
     p_todos = sub.add_parser(
         "todos",
@@ -1564,6 +1863,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "--force", action="store_true", help="With --write: overwrite an existing SKILL.md."
     )
     p_agents_guide.set_defaults(handler=cmd_agents_guide)
+    _register_account_commands(sub)
     _add_renamed_stub(sub, "agent-skill", "see 'pepper agents guide'")
 
     # ``sub.choices`` is the public mapping of subparser name → parser
@@ -6829,6 +7129,609 @@ def _prompt_secret(prompt: str) -> str:
         return getpass.getpass(prompt).strip()
     except EOFError:
         return ""
+
+
+def cmd_brief(args: argparse.Namespace) -> int:
+    """``pepper brief [--date YYYY-MM-DD | --now] [--json]``.
+
+    Renders the Brief document's first edition (the server orders them newest first) or the one
+    whose ``date`` field equals ``--date``. ``--now`` runs the owner-scoped ``brief.run_now``
+    action, which queues a real delivery; it is the only write here.
+    """
+    if args.now and args.date:
+        _emit_error(args, "usage", "--now runs a fresh brief; it takes no --date.")
+        return 2
+    date = args.date.strip() if args.date else None
+
+    def run(api: api_client.ApiClient) -> int:
+        if args.now:
+            result = api.run_app_action("brief", "run_now", {}).get("result") or {}
+            _emit(
+                result,
+                args,
+                lambda: render.info(
+                    sanitize_line(str(result.get("message") or "Asked for a fresh brief."))
+                ),
+            )
+            return 0 if result.get("started", True) else 1
+        try:
+            brief = brief_view.pick(api.get_app_data("brief"), date)
+        except brief_view.BriefError as exc:
+            _emit_error(args, exc.code, str(exc))
+            return 1
+        _emit(brief, args, lambda: brief_view.render_brief(brief))
+        return 0
+
+    return _run_personal(args, run)
+
+
+def _following_items(
+    api: api_client.ApiClient, args: argparse.Namespace
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | int:
+    """The Following document and its items (narrowed by ``--group``), or an exit code."""
+    data = following_view.data_of(api.get_app_data("following"))
+    items = following_view.items_of(data)
+    try:
+        group = following_view.resolve_group(data, args.group) if args.group else None
+    except following_view.LookupFailure as exc:
+        _emit_error(args, exc.code, exc.message)
+        return 2
+    return data, following_view.filter_group(items, group)
+
+
+def cmd_following_list(args: argparse.Namespace) -> int:
+    """``pepper following list [--group G] [--json]``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        got = _following_items(api, args)
+        if isinstance(got, int):
+            return got
+        data, items = got
+        counts = data.get("counts") or {}
+        _emit_list(
+            items,
+            args,
+            lambda: following_render.render_following_list(items, counts),
+            counts=counts,
+        )
+        return 0
+
+    return _run_personal(args, run)
+
+
+def cmd_following_show(args: argparse.Namespace) -> int:
+    """``pepper following show ITEM [--json]``: ITEM is an id, ref, or name prefix."""
+
+    def run(api: api_client.ApiClient) -> int:
+        items = following_view.items_of(following_view.data_of(api.get_app_data("following")))
+        try:
+            item = following_view.resolve_item(items, args.item)
+        except following_view.LookupFailure as exc:
+            _emit_error(args, exc.code, exc.message)
+            return 2
+        _emit(item, args, lambda: following_render.render_following_show(item))
+        return 0
+
+    return _run_personal(args, run)
+
+
+def _following_action(
+    api: api_client.ApiClient, action: str, params: dict[str, Any]
+) -> dict[str, Any]:
+    """Run one Following action over the PAT route; its ``{"result": ...}`` body's result."""
+    result = api.run_app_action("following", action, params).get("result")
+    return result if isinstance(result, dict) else {}
+
+
+def cmd_following_search(args: argparse.Namespace) -> int:
+    """``pepper following search QUERY… [--json]``: numbered candidates, saved for ``create N``."""
+    query = " ".join(args.query)
+
+    def run(api: api_client.ApiClient) -> int:
+        found = following_search.numbered(_following_action(api, "search", {"q": query}))
+        following_search.save(query, found)
+        _emit_list(found, args, lambda: following_render.render_candidates(found))
+        return 0
+
+    return _run_personal(args, run)
+
+
+def cmd_following_create(args: argparse.Namespace) -> int:
+    """``pepper following create N [--json]``: follow candidate N of the last ``following search``.
+
+    The CLI never chooses a result for typed text: the person picks the number, and the Following
+    app's ``follow`` action is sent that candidate's own ``ref`` and ``payload``.
+    """
+    if not args.number.isdigit():
+        _emit_error(
+            args,
+            "usage",
+            f"create takes a number from `pepper following search`, not {args.number!r}. "
+            "Search first (a name or a web address), then `pepper following create N`.",
+        )
+        return 2
+    n = int(args.number)
+
+    def run(api: api_client.ApiClient) -> int:
+        saved = following_search.load()
+        chosen = following_search.pick(saved[1], n) if saved else None
+        if chosen is None:
+            _emit_error(
+                args,
+                "not_found",
+                f"No candidate {n} in the last search; run `pepper following search QUERY` first.",
+            )
+            return 2
+        if chosen.get("following"):
+            msg = f"Already following {chosen.get('name')}."
+            _emit({"ok": True, "message": msg}, args, lambda: render.info(msg))
+            return 0
+        result = _following_action(
+            api, "follow", {"ref": chosen["ref"], "payload": chosen.get("payload") or {}}
+        )
+        _emit(result, args, lambda: render.info(str(result.get("message") or "Followed.")))
+        return 0
+
+    return _run_personal(args, run)
+
+
+def cmd_following_delete(args: argparse.Namespace) -> int:
+    """``pepper following delete ITEM [--yes] [--json]``: the app's ``unfollow`` for one follow."""
+
+    def run(api: api_client.ApiClient) -> int:
+        items = following_view.items_of(following_view.data_of(api.get_app_data("following")))
+        try:
+            item = following_view.resolve_item(items, args.item)
+        except following_view.LookupFailure as exc:
+            _emit_error(args, exc.code, exc.message)
+            return 2
+        if (
+            rc := _confirm_destructive(args, f"Stop following {item.get('name')}?", yes=args.yes)
+        ) is not None:
+            return rc
+        result = _following_action(api, "unfollow", {"ref": item["ref"]})
+        _emit(result, args, lambda: render.info(str(result.get("message") or "Unfollowed.")))
+        return 0
+
+    return _run_personal(args, run)
+
+
+def _feed_unranked(args: argparse.Namespace) -> int:
+    """The server sent no ``data.feed``: say so; never rank on this side."""
+    note = feed.NOT_RANKED_NOTE
+    if _json_mode(args):
+        _write_json({"items": [], "next_before": None, "note": note})
+    else:
+        following_render.render_feed([], note=note)
+    return 0
+
+
+def cmd_feed(args: argparse.Namespace) -> int:
+    """``pepper feed [N] [--limit N] [--group G] [--transcript] [--read [--full]] [--json]``.
+
+    Without N, the server's ranked ``data.feed`` in the server's order, numbered; the items'
+    identities are remembered (``feed-view.json`` next to the credentials) for ``feed N``. With
+    N, item N in full. The server ranks and folds; this only fetches and renders.
+    """
+    detail_flags = (args.transcript, args.read, args.full)
+    if args.item is None and any(detail_flags):
+        _emit_error(args, "usage", "--transcript, --read and --full go with an item number")
+        return 2
+    if args.full and not args.read:
+        _emit_error(args, "usage", "--full goes with --read")
+        return 2
+    if args.limit < 1:
+        _emit_error(args, "usage", "--limit must be at least 1")
+        return 2
+    if args.item is not None and not numbered_view.NumberedView.is_number(args.item):
+        _emit_error(
+            args, "usage", f"feed takes an item number from `pepper feed`, not {args.item!r}"
+        )
+        return 2
+    row: dict[str, Any] | None = None
+    if args.item is not None:
+        try:
+            _, row, _meta = feed.VIEW.resolve(args.item)
+        except numbered_view.RefError as exc:
+            _emit_error(args, exc.code, str(exc))
+            return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        data = following_view.data_of(api.get_app_data("following"))
+        entries = feed.server_feed(data)
+        if entries is None:
+            return _feed_unranked(args)
+        if row is None:
+            try:
+                group = following_view.resolve_group(data, args.group) if args.group else None
+            except following_view.LookupFailure as exc:
+                _emit_error(args, exc.code, exc.message)
+                return 2
+            shown = feed.only_group(entries, group)[: args.limit]
+            feed.VIEW.save([feed.identity(e) for e in shown], {"group": args.group})
+            _emit_list(
+                numbered_view.number(shown),
+                args,
+                lambda: following_render.render_feed(shown),
+            )
+            return 0
+        entry = feed.find(entries, row)
+        if entry is None:
+            _emit_error(
+                args,
+                "not_found",
+                f"item {args.item} of the last `pepper feed` ({row.get('title')!r}) is gone: "
+                "the server no longer lists it. Run `pepper feed` again.",
+            )
+            return 2
+        moment = feed.exact_time(entry, next_view.user_now(api).tzinfo)
+        detail: dict[str, Any] = {
+            "n": int(args.item),
+            **entry,
+            "when": moment.isoformat() if moment else None,
+            "when_zone": moment.tzname() if moment else None,
+        }
+        if args.transcript:
+            detail["transcript"] = _feed_transcript(api, detail)
+        if args.read:
+            detail["article"] = _feed_article(detail, full=args.full)
+        _emit(detail, args, lambda: feed_detail_render.render_detail(detail))
+        return 0
+
+    return _run_personal(args, run)
+
+
+def _feed_transcript(api: api_client.ApiClient, detail: dict[str, Any]) -> dict[str, Any]:
+    """The Following app's ``episode_transcript`` for a podcast entry, by the ``episode_id`` the
+    server puts on it. It is a pure read on the server (it never starts a transcription), and
+    it answers with the show notes, labelled, while no transcript exists.
+
+    No matching or joining here: a podcast entry without ``episode_id`` came from a server too
+    old to send it."""
+    if detail.get("kind") != "podcast":
+        return {"error": "this item has no podcast episode, so there is no transcript."}
+    if not detail.get("episode_id"):
+        return {"error": "the transcript needs a newer server (this entry carries no episode_id)."}
+    try:
+        result = _following_action(
+            api, "episode_transcript", {"ref": detail["ref"], "item_id": detail["episode_id"]}
+        )
+    except api_client.ApiError as exc:
+        return {"error": f"the transcript is not available ({exc.detail or exc.status})."}
+    keep = ("kind", "status", "text", "note")
+    return {k: result.get(k) for k in keep}
+
+
+def _feed_article(detail: dict[str, Any], *, full: bool) -> dict[str, Any]:
+    """The item's page, fetched from its own site (no Pepper credentials go there)."""
+    url = detail.get("url")
+    if not url:
+        return {"url": None, "error": "this item has no link to read.", "paragraphs": []}
+    art = article_reader.fetch(str(url))
+    return art.as_json(limit=None if full else article_reader.DEFAULT_PARAGRAPHS)
+
+
+# artifacts / preferences (the account commands)
+
+_ARTIFACT_REF_HELP = "Number from the last 'artifacts list', or an artifact id (or unique prefix)."
+#: A file this big is refused before it is read; the server's own cap is lower
+#: (``artifact_max_blob_bytes``, 25 MiB by default) and its 413 is the real answer.
+_UPLOAD_READ_LIMIT = 100 * 1024 * 1024
+
+
+def _report_artifacts_error(
+    exc: api_client.ApiError, args: argparse.Namespace | None = None
+) -> int:
+    """404 is the server's uniform "missing, deleted or not yours"; 415/413/400 are an
+    upload it refused; the rest is :func:`_report_api_error`."""
+    if exc.status == 404:
+        _emit_error(args, "not_found", "no such artifact, or you cannot see it", status=404)
+        return 2
+    if exc.status == 503:
+        _emit_error(args, "server", "membership check unavailable, try again", status=503)
+        return 1
+    if exc.status in (400, 413, 415, 422):
+        hint = f" Pepper accepts {artifacts_view.UPLOAD_TYPES_HINT}." if exc.status == 415 else ""
+        _emit_error(
+            args,
+            "validation",
+            f"the server refused that: {exc.detail or exc.status}.{hint}",
+            status=exc.status,
+        )
+        return 1
+    return _report_api_error(exc, args)
+
+
+def _artifact_ref(
+    args: argparse.Namespace,
+) -> tuple[str, dict[str, Any] | None, dict[str, Any]] | None:
+    try:
+        found = artifacts_view.VIEW.resolve(args.artifact)
+    except numbered_view.RefError as exc:
+        _emit_error(args, exc.code, str(exc))
+        return None
+    if found[1] is None and not _valid_uuid(found[0]):
+        _emit_error(
+            args,
+            "not_found",
+            f"no artifact {args.artifact!r} in the last 'pepper artifacts list'; "
+            "use its number or its full id",
+        )
+        return None
+    return found
+
+
+def cmd_artifacts_list(args: argparse.Namespace) -> int:
+    """``pepper artifacts list [--kind K] [--label L] [--search Q] [--room R] [--limit N]``.
+
+    Numbers what it prints and remembers them (``artifacts-view.json`` next to the credentials)
+    for ``show``/``download``/``delete N``; JSON items carry ``n``.
+    """
+    import dataclasses
+
+    # --kind, --label and --search go to the server as query params (kind, label, q); nothing is
+    # filtered here. --kind only translates the CLI's word to the stored value the route takes.
+    kind = artifacts_view.KINDS[args.kind] if args.kind else None
+
+    def run(api: api_client.ApiClient) -> int:
+        principal = _opt_group(api, args.room, args=args)
+        result = api.list_artifacts(
+            principal=principal, kind=kind, q=args.search, label=args.label, limit=args.limit
+        )
+        rows = [dataclasses.asdict(item) for item in result.items]
+        artifacts_view.VIEW.save(
+            [artifacts_view.listing_row(r) for r in rows], {"principal": principal}
+        )
+        numbered = numbered_view.number(rows)
+        _emit_list(
+            numbered,
+            args,
+            lambda: account_render.artifacts_list(numbered, truncated=result.truncated),
+            truncated=result.truncated,
+        )
+        return 0
+
+    return _with_api(run, _report_artifacts_error, args)
+
+
+def cmd_artifacts_show(args: argparse.Namespace) -> int:
+    """``pepper artifacts show ARTIFACT [--json]``: metadata, and the text of a note or a text
+    file. ``--json`` is the server's detail (minus ``body_html``, the rendered duplicate of
+    ``body``)."""
+    ref = _artifact_ref(args)
+    if ref is None:
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        detail = api.get_artifact_detail_raw(ref[0])
+        detail.pop("body_html", None)
+        _emit(detail, args, lambda: account_render.artifact_detail(detail))
+        return 0
+
+    return _with_api(run, _report_artifacts_error, args)
+
+
+def cmd_artifacts_download(args: argparse.Namespace) -> int:
+    """``pepper artifacts download ARTIFACT [--out PATH] [--force] [--json]``: a file's bytes.
+
+    ``--out`` is a file, a directory (the artifact's name goes inside), or ``-`` for stdout.
+    Without it the file is written here under the artifact's name. An existing file is not
+    overwritten without ``--force``. ``--json`` emits ``{"path", "bytes", "id", "name"}``.
+    """
+    from pathlib import Path
+
+    if args.out == "-" and _json_mode(args):
+        _emit_error(args, "usage", "--out - writes the file to stdout; use a path with --json")
+        return 2
+    ref = _artifact_ref(args)
+    if ref is None:
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        detail = api.get_artifact_detail_raw(ref[0])
+        if detail.get("kind") != "blob":
+            what = artifacts_view.kind_label(str(detail.get("kind")))
+            _emit_error(
+                args,
+                "usage",
+                f"a {what.lower()} has no file to download; 'pepper artifacts show' prints it",
+            )
+            return 2
+        content = api.download_artifact(ref[0])
+        name = artifacts_view.download_name(detail.get("name"), detail.get("mime_type"))
+        if args.out == "-":
+            sys.stdout.buffer.write(content)
+            return 0
+        target = Path(args.out) if args.out else Path.cwd()
+        if args.out is None or target.is_dir():
+            target = target / name
+        if target.exists() and not args.force:
+            _emit_error(args, "usage", f"{str(target)!r} already exists; use --force to overwrite")
+            return 2
+        try:
+            part = target.with_name(target.name + ".part")
+            part.write_bytes(content)
+            part.replace(target)
+        except OSError as exc:
+            _emit_error(args, "usage", f"couldn't write {str(target)!r}: {exc.strerror or exc}")
+            return 2
+        _emit(
+            {
+                "path": str(target),
+                "bytes": len(content),
+                "id": detail.get("id"),
+                "name": detail.get("name"),
+            },
+            args,
+            lambda: render.info(f"Saved {len(content)} bytes to {target}."),
+        )
+        return 0
+
+    return _with_api(run, _report_artifacts_error, args)
+
+
+def cmd_artifacts_create(args: argparse.Namespace) -> int:
+    """``pepper artifacts create --file PATH [--name N] [--summary S] [--label L]… [--room R]``.
+
+    Uploads one file as a file artifact (``POST /api/v1/artifacts/upload``). The server accepts
+    pictures, PDFs, plain text, audio and MP4 video up to ``artifact_max_blob_bytes``, checks
+    the bytes against the declared type, and answers ``{id, name, mime_type, byte_size}``.
+    """
+    from pathlib import Path
+
+    path = Path(args.file)
+    try:
+        size = path.stat().st_size
+        if size > _UPLOAD_READ_LIMIT:
+            _emit_error(args, "usage", f"{args.file!r} is {size} bytes; far over the upload limit")
+            return 2
+        content = path.read_bytes()
+    except OSError as exc:
+        _emit_error(args, "usage", f"couldn't read {args.file!r}: {exc.strerror or exc}")
+        return 2
+    if not content:
+        _emit_error(args, "usage", f"{args.file!r} is empty")
+        return 2
+    content_type = artifacts_view.guess_mime(path.name)
+
+    def run(api: api_client.ApiClient) -> int:
+        principal = _opt_group(api, args.room, args=args)
+        result = api.upload_artifact(
+            filename=path.name,
+            content=content,
+            content_type=content_type,
+            name=args.name or "",
+            summary=args.summary or "",
+            labels=",".join(args.label or []),
+            principal=principal,
+        )
+        _emit(
+            result,
+            args,
+            lambda: render.info(
+                f"Uploaded {result.get('name')!r} ({result.get('mime_type')}, "
+                f"{result.get('byte_size')} bytes): {result.get('id')}",
+                soft_wrap=True,
+            ),
+        )
+        return 0
+
+    return _with_api(run, _report_artifacts_error, args)
+
+
+def cmd_artifacts_delete(args: argparse.Namespace) -> int:
+    """``pepper artifacts delete ARTIFACT [--room R] [--yes] [--json]``: any kind.
+
+    The server soft-deletes (``artifacts`` app ``delete``) and keeps the row for a retention
+    window; there is no CLI restore. A number from a ``--room`` listing deletes in that room.
+    """
+    ref = _artifact_ref(args)
+    if ref is None:
+        return 2
+    artifact_id, _row, meta = ref
+
+    def run(api: api_client.ApiClient) -> int:
+        principal = _opt_group(api, args.room, args=args) or meta.get("principal")
+        detail = api.get_artifact_detail_raw(artifact_id)
+        label = artifacts_view.kind_label(str(detail.get("kind"))).lower()
+        gate = _confirm_destructive(
+            args, f"Delete the {label} {detail.get('name')!r}?", yes=args.yes
+        )
+        if gate is not None:
+            return gate
+        try:
+            name = api.delete_artifact(artifact_id, principal=principal, app="artifacts")
+        except api_client.ApiError as exc:
+            if exc.status != 422:  # 422: not in that owner's collection
+                raise
+            _emit_error(args, "not_found", "no such artifact in that collection", status=422)
+            return 2
+        _emit(
+            _mutation_result(None, artifact_id),
+            args,
+            lambda: render.info(f"Deleted {name or detail.get('name')!r}."),
+        )
+        return 0
+
+    return _with_api(run, _report_artifacts_error, args)
+
+
+def _report_account_error(args: argparse.Namespace, exc: api_client.ApiError) -> int:
+    """:func:`_fail_api`, but a 400/422 is the server declining the value: say why."""
+    if exc.status in (400, 422):
+        _emit_error(args, "validation", exc.detail or "the server refused that", status=exc.status)
+        return 1
+    return _fail_api(args, exc)
+
+
+def cmd_preferences_show(args: argparse.Namespace) -> int:
+    """``pepper preferences show [--json]``: ``GET /api/v1/calendars/preferences`` without the
+    page's own ``timezones`` menu and ``maps`` flag."""
+
+    def run(api: api_client.ApiClient) -> int:
+        prefs = preferences_view.public(api.get_calendar_preferences())
+        _emit(prefs, args, lambda: account_render.preferences(prefs))
+        return 0
+
+    return _run_personal(args, run, _report_account_error)
+
+
+def _names(value: str | None, flag: str) -> list[str]:
+    names = [n.strip().lower() for n in (value or "").split(",") if n.strip()]
+    unknown = [n for n in names if n not in preferences_view.SWITCHES]
+    if unknown:
+        raise preferences_view.PrefsError(
+            f"{flag}: unknown {', '.join(unknown)}; use {', '.join(preferences_view.SWITCHES)}"
+        )
+    return names
+
+
+def cmd_preferences_edit(args: argparse.Namespace) -> int:
+    """``pepper preferences edit [--timezone Z] [--home-address T] [--work-address T]
+    [--work-days D] [--work-start T] [--work-end T] [--show N] [--hide N] [--meal M]…
+    [--workout-at T] [--workout-minutes N] [--json]``: ``POST /api/v1/calendars/preferences``
+    with only the fields given (the server keeps the rest). Answers the saved preferences.
+    Times, zones and addresses are sent as typed; the server checks them and its 422 is shown."""
+    pv = preferences_view
+    try:
+        parsed: dict[str, Any] = {
+            "timezone": args.timezone,
+            "home_address": args.home_address,
+            "work_address": args.work_address,
+            "work_days": pv.parse_days(args.work_days) if args.work_days is not None else None,
+            "work_start": args.work_start,
+            "work_end": args.work_end,
+            "show": _names(args.show, "--show"),
+            "hide": _names(args.hide, "--hide"),
+            "meals": [pv.parse_meal(m) for m in args.meal or []],
+            "workout_at": args.workout_at,
+            "workout_minutes": args.workout_minutes,
+            "run_minutes": args.run_minutes,
+            "break_minutes": args.break_minutes,
+        }
+        both = set(parsed["show"]) & set(parsed["hide"])
+        if both:
+            raise pv.PrefsError(f"--show and --hide both name {', '.join(sorted(both))}")
+    except pv.PrefsError as exc:
+        _emit_error(args, "usage", str(exc))
+        return 2
+    if all(v is None or v == [] for v in parsed.values()):
+        _emit_error(args, "usage", "nothing to change: give at least one flag (see --help)")
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        needs_current = bool(parsed["meals"]) or parsed["workout_at"] or parsed["workout_minutes"]
+        current = api.get_calendar_preferences() if needs_current else {}
+        try:
+            changes = pv.build_changes(current, **parsed)
+        except pv.PrefsError as exc:
+            _emit_error(args, "usage", str(exc))
+            return 2
+        saved = pv.public(api.set_calendar_preferences(changes))
+        _emit(saved, args, lambda: account_render.preferences(saved))
+        return 0
+
+    return _run_personal(args, run, _report_account_error)
 
 
 if __name__ == "__main__":

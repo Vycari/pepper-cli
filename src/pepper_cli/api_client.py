@@ -2728,8 +2728,13 @@ class ApiClient:
             ) from exc
         return _artifact_detail_from_dict(resp["artifact"])
 
-    def delete_artifact(self, artifact_id: str, *, principal: str | None = None) -> str:
+    def delete_artifact(
+        self, artifact_id: str, *, principal: str | None = None, app: str = "notes"
+    ) -> str:
         """``POST /api/v1/apps/notes/actions/delete`` — soft-delete a note.
+
+        ``app="artifacts"`` is the same action under the generic Artifacts app, which is what
+        ``pepper artifacts delete`` calls; both delete any artifact kind.
 
         The notes applet's declared ``delete`` action
         (``pepper.agent.artifacts.actions``), not a bespoke artifacts route:
@@ -2743,7 +2748,7 @@ class ApiClient:
             params["principal"] = principal
         resp = self._request(
             "POST",
-            "/api/v1/apps/notes/actions/delete",
+            f"/api/v1/apps/{app}/actions/delete",
             json={"params": {"id": artifact_id}},
             params=params or None,
         ).json()
@@ -2758,6 +2763,75 @@ class ApiClient:
         if not isinstance(body, list):
             raise ApiError(status=200, body=str(body), detail="malformed response")
         return [row for row in body if isinstance(row, dict)]
+
+    def get_artifact_detail_raw(self, artifact_id: str) -> dict[str, Any]:
+        """``GET /api/v1/artifacts/{id}/detail`` as the server's own dict (``kind_label``,
+        ``mime_type``, ``size_label``, ``text_body``, ``link``, ``viewer``, ... for every kind),
+        where :meth:`get_artifact_detail` keeps only the note fields."""
+        body = self._request("GET", f"/api/v1/artifacts/{artifact_id}/detail").json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return body
+
+    def download_artifact(self, artifact_id: str) -> bytes:
+        """``GET /api/v1/artifacts/{id}/raw``: a file artifact's bytes. 404 for a missing,
+        deleted or inaccessible artifact, and for one that is not a file (notes and links have
+        no bytes). The server caps a file at ``artifact_max_blob_bytes`` (25 MiB by default),
+        so the body is read whole."""
+        return self._request("GET", f"/api/v1/artifacts/{artifact_id}/raw").content
+
+    def upload_artifact(
+        self,
+        *,
+        filename: str,
+        content: bytes,
+        content_type: str,
+        name: str = "",
+        summary: str = "",
+        labels: str = "",
+        principal: str | None = None,
+    ) -> dict[str, Any]:
+        """``POST /api/v1/artifacts/upload`` (multipart): store a file as a ``blob`` artifact.
+
+        Answers ``{id, name, mime_type, byte_size}``. 415 for a type off the server's
+        allowlist (or bytes that do not match the declared type), 413 over the size cap, 400
+        for an empty file. ``labels`` is the form field's comma-separated string. The
+        answer's ``id`` is also what :meth:`chat_send_stream` takes in ``attachment_ids``.
+        """
+        params = {"principal": principal} if principal is not None else None
+        resp = self._request(
+            "POST",
+            "/api/v1/artifacts/upload",
+            files={
+                "file": (filename, content, content_type),
+                "name": (None, name),
+                "summary": (None, summary),
+                "labels": (None, labels),
+            },
+            params=params,
+        ).json()
+        if not isinstance(resp, dict) or not resp.get("id"):
+            raise ApiError(status=200, body=str(resp), detail="malformed response")
+        return resp
+
+    def get_calendar_preferences(self) -> dict[str, Any]:
+        """``GET /api/v1/calendars/preferences``: the Calendar > Preferences page's values
+        (addresses, timezone, work days and hours, meals, workout, weather switches) plus
+        two page helpers, ``timezones`` (the allowed zone names) and ``maps``."""
+        body = self._request("GET", "/api/v1/calendars/preferences").json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return body
+
+    def set_calendar_preferences(self, changes: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/v1/calendars/preferences`` with only the keys given: the server keeps
+        every field the body leaves out (``PreferencesIn.model_fields_set``). Answers the
+        saved values. 422 for a value it refuses (unknown timezone, an address Maps cannot
+        place, a bad time)."""
+        body = self._request("POST", "/api/v1/calendars/preferences", json=changes).json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return body
 
     def get_app_data(self, slug: str, *, principal: str | None = None) -> dict[str, Any]:
         """``GET /api/v1/apps/{slug}/data[?principal=]``: ``{"rev": int, "data": {...}}``,

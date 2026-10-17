@@ -31,7 +31,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from pepper_cli import api_client, cli, credentials
+from pepper_cli import api_client, cli, credentials, feed, following_search
 from pepper_cli.secret import SecretStr
 
 # ---------------------------------------------------------------------------
@@ -52,9 +52,19 @@ NOUNS = frozenset(
         "scheduled-tasks",
         "skills",
         "notes",
+        # `artifacts` and `preferences` are the product's own words "Artifacts" and "Preferences"
+        # (planning/cli-information-architecture.md §2).
+        "artifacts",
+        "preferences",
         "agents",
         "calendar",
         "next",
+        # `brief` is a view (IA §3 rule 4): a daily read, like `next`.
+        "brief",
+        # `following` is the product app's noun (list/show/search/create/delete). `feed` is a
+        # view (IA §3 rule 4): the server's ranked stream of what you follow, `feed [N]`.
+        "feed",
+        "following",
         "chat",
         "login",
         "logout",
@@ -131,6 +141,17 @@ ROOM_NA = {
     "rooms leave": "a room is the object, not a scope",
     "rooms mute": "a room is the object, not a scope",
     "rooms unmute": "a room is the object, not a scope",
+    "following list": "your follows are account-wide; a room's follows live on its own page",
+    "following show": "your follows are account-wide; a room's follows live on its own page",
+    "following search": "your follows are account-wide; a room's follows live on its own page",
+    "following create": "your follows are account-wide; a room's follows live on its own page",
+    "following delete": "your follows are account-wide; a room's follows live on its own page",
+    "feed": "the server ranks your own follows; a room's follows are not part of it",
+    "brief": "your own morning brief; the server exposes no room's brief to a PAT here",
+    "artifacts show": "reads any artifact the viewer can see; the id carries the room",
+    "artifacts download": "reads any artifact the viewer can see; the id carries the room",
+    "preferences show": "your own account's Calendar preferences",
+    "preferences edit": "your own account's Calendar preferences",
     "login": "session command",
     "logout": "session command",
     "whoami": "session command",
@@ -165,6 +186,9 @@ GROUP_POSITIONAL_PENDING = frozenset({})
 #: Leaves under a ``RENAMED`` noun are not checked; their whole noun goes away.
 WORDING_PENDING = frozenset(
     {
+        # `--group` is the Following app's own filter chip (Sports, Shows, ...), not a room.
+        "following list",
+        "feed",
         "notes edit",
         "notes list",
         "notes create",
@@ -478,6 +502,7 @@ _TASK_ROW = {
     "next_run_at": "2026-10-02T08:00:00+00:00",
 }
 
+_BLOB = "00000000-0000-0000-0000-0000000000e2"
 _TODO = "00000000-0000-0000-0000-0000000000a7"
 _GRANT = "00000000-0000-0000-0000-0000000000a6"
 _TODO_ROW = {
@@ -549,6 +574,67 @@ ROUTES: dict[str, object] = {
         {"slug": "notes", "title": "Notes", "description": "", "owner_scoped_actions": ["delete"]}
     ],
     "/api/v1/apps/notes/data": {"rev": 2, "data": {"k": "v"}},
+    "/api/v1/apps/brief/data": {
+        "rev": 1,
+        "data": {
+            "configured": True,
+            "briefs": [
+                {
+                    "id": "b1",
+                    "date": "2026-10-16",
+                    "dateline": "Friday, October 16",
+                    "delivered_at": "6:16 AM",
+                    "text": "Early start.",
+                    "sections": {"structured": True, "lede": "Early start.", "events": []},
+                }
+            ],
+        },
+    },
+    "/api/v1/apps/following/data": {
+        "rev": 1,
+        "data": {
+            "items": [
+                {
+                    "ref": "feeds:feed:11111111-2222-3333-4444-555555555555",
+                    "kind": "feed",
+                    "group": "Reading",
+                    "name": "Example Weekly",
+                    "latest": "A post",
+                    "latest_at": "2026-10-16T17:00:00Z",
+                    "when_label": "Today",
+                    "live": False,
+                    "state": "ok",
+                    "recent": {
+                        "label": "Recent posts",
+                        "items": [
+                            {
+                                "title": "A post",
+                                "url": "https://example.com/a",
+                                "when_label": "Today",
+                                "new": True,
+                                "upcoming": False,
+                            }
+                        ],
+                    },
+                }
+            ],
+            "counts": {"unread": 1, "live": 0, "by_group": {"Reading": 1}},
+            "feed": [
+                {
+                    "source": "Example Weekly",
+                    "ref": "feeds:feed:11111111-2222-3333-4444-555555555555",
+                    "group": "Reading",
+                    "kind": "feed",
+                    "title": "A post",
+                    "url": "https://example.com/a",
+                    "when_label": "Today",
+                    "new": True,
+                    "more": [],
+                    "fold": None,
+                }
+            ],
+        },
+    },
     "/api/v1/groups": {
         "enabled": True,
         "degraded": False,
@@ -582,6 +668,31 @@ ROUTES: dict[str, object] = {
         "topics": [{"group_name": "Trip", "name": "General", "topic_id": _T}]
     },
     "/api/v1/artifacts": {"truncated": False, "items": [_NOTE_ROW]},
+    f"/api/v1/artifacts/{_BLOB}/detail": {
+        **_NOTE_ROW,
+        "id": _BLOB,
+        "name": "Receipt",
+        "kind": "blob",
+        "shared": False,
+        "body": None,
+        "mime_type": "image/png",
+        "size_label": "2 KB",
+    },
+    f"/api/v1/artifacts/{_BLOB}/raw": {"png": "bytes"},
+    "/api/v1/calendars/preferences": {
+        "timezones": ["UTC"],
+        "maps": False,
+        "timezone": "UTC",
+        "location": None,
+        "work_location": None,
+        "work_days": [0, 1, 2, 3, 4],
+        "work_start": "09:00",
+        "work_end": "17:00",
+        "show_commute": True,
+        "show_weather": True,
+        "meals": {},
+        "workout": {"at": "07:00", "minutes": 45},
+    },
     f"/api/v1/artifacts/{_NOTE}/detail": {**_NOTE_ROW, "shared": False, "body": "hello note"},
 }
 
@@ -603,6 +714,34 @@ POST_ROUTES: dict[str, object] = {
         "artifact": {**_NOTE_ROW, "shared": False, "body": "changed"}
     },
     "/api/v1/apps/notes/actions/delete": {"result": {"name": "Runbook"}},
+    "/api/v1/apps/artifacts/actions/delete": {"result": {"name": "Receipt"}},
+    "/api/v1/artifacts/upload": {
+        "id": _BLOB,
+        "name": "pic.png",
+        "mime_type": "image/png",
+        "byte_size": 4,
+    },
+    "/api/v1/calendars/preferences": {"timezone": "America/Chicago", "work_days": [0, 1]},
+    "/api/v1/apps/brief/actions/run_now": {"result": {"started": True, "message": "Running."}},
+    "/api/v1/apps/following/actions/search": {
+        "result": {
+            "yours": [],
+            "new": [
+                {
+                    "ref": "sports:team:mlb:19",
+                    "payload": {},
+                    "kind": "team",
+                    "name": "Los Angeles Dodgers",
+                    "detail": "Team · MLB",
+                    "following": False,
+                }
+            ],
+        }
+    },
+    "/api/v1/apps/following/actions/follow": {
+        "result": {"ok": True, "message": "Now following Los Angeles Dodgers.", "item": None}
+    },
+    "/api/v1/apps/following/actions/unfollow": {"result": {"ok": True, "message": "Unfollowed."}},
     "/api/v1/apps/notes/actions/archive": {"result": {"ok": True}},
     "/api/v1/skills": _SKILL_FULL,
     "/api/v1/skills/triage": _SKILL_FULL,
@@ -659,6 +798,22 @@ def _env(tmp_path, monkeypatch) -> _Server:
     monkeypatch.delenv("PEPPER_JSON", raising=False)
     monkeypatch.chdir(tmp_path)
     credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
+    # `feed N` follows the last `feed`, `following create N` the last `following search`; seed
+    # the one item and candidate ROUTES' documents hold.
+    feed.VIEW.save(
+        [
+            {
+                "id": "x",
+                "ref": "feeds:feed:11111111-2222-3333-4444-555555555555",
+                "url": "https://example.com/a",
+                "title": "A post",
+            }
+        ]
+    )
+    following_search.save(
+        "dodgers",
+        [{"n": 1, "ref": "sports:team:mlb:19", "payload": {}, "name": "Los Angeles Dodgers"}],
+    )
     server = _Server()
     real = httpx.Client
 
@@ -694,10 +849,17 @@ def _watch_one_event(monkeypatch) -> None:
 JSON_CASES: dict[str, list[str]] = {
     "trajectories show": ["trajectories", "show", _TRAJ],
     "trajectories list": ["trajectories", "list"],
+    "brief": ["brief"],
     "agents guide": ["agents", "guide"],
     "scheduled-tasks renew": ["scheduled-tasks", "renew", _TASK],
     "calendar": ["calendar"],
     "next": ["next"],
+    "following list": ["following", "list"],
+    "following show": ["following", "show", "example"],
+    "following search": ["following", "search", "dodgers"],
+    "following create": ["following", "create", "1"],
+    "following delete": ["following", "delete", "example", "--yes"],
+    "feed": ["feed"],
     "todos list": ["todos", "list"],
     "rooms list": ["rooms", "list"],
     "rooms show": ["rooms", "show", _G],
@@ -738,6 +900,13 @@ JSON_CASES: dict[str, list[str]] = {
     "notes create": ["notes", "create", "Runbook", "--file", "body.md"],
     "notes edit": ["notes", "edit", _NOTE, "--file", "body.md"],
     "notes delete": ["notes", "delete", _NOTE, "--yes"],
+    "artifacts list": ["artifacts", "list", "--kind", "file"],
+    "artifacts show": ["artifacts", "show", _BLOB],
+    "artifacts download": ["artifacts", "download", _BLOB, "--out", "got.png", "--force"],
+    "artifacts create": ["artifacts", "create", "--file", "pic.png"],
+    "artifacts delete": ["artifacts", "delete", _BLOB, "--yes"],
+    "preferences show": ["preferences", "show"],
+    "preferences edit": ["preferences", "edit", "--timezone", "America/Chicago"],
     "todos create": ["todos", "create", "Buy milk"],
     "todos done": ["todos", "done", _TODO],
     "todos dismiss": ["todos", "dismiss", _TODO],
@@ -861,6 +1030,7 @@ def _run_fresh(argv: list[str], capsys) -> tuple[int, str, str]:
 def test_pepper_json_switches_json_mode(leaf, _env, monkeypatch, capsys) -> None:
     argv = JSON_CASES[leaf]
     Path("body.md").write_text("hello\n")
+    Path("pic.png").write_bytes(b"\x89PNG")
     Path("triage.md").write_text(
         "---\nname: triage\ndescription: Sort the inbox\n---\nDo the thing.\n"
     )

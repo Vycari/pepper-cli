@@ -3,7 +3,7 @@
 **Status:** Accepted 2026-10-14. The maintainer decided §10 A–F; the `groups` → `rooms` rename was
 decided earlier. Lands as one coordinated breaking release, **0.2.0** (§7).
 **Author:** drafted with Claude Code for the maintainer
-**Last updated:** 2026-10-14
+**Last updated:** 2026-10-17
 **Tracked by:** #20
 **Related:** pepper-cli#17 (scheduled-task renew), pepper-cli#18 (generic `pepper apps`); server
 pepper#4311 (room tasks, join links, GitHub), pepper#4556 (room skills), pepper#4557 (skill-backed
@@ -56,7 +56,11 @@ picks one and names the evidence on both sides. Paths are in the pepper server r
 | `trajectory` | "Trajectories", "Activity history" | `trajectories_list.html` | **`trajectories`** |
 | `scheduled-tasks`, `runs`, `thread`, `destinations` | "Scheduled tasks", "Pause task", "Resume task", "Keep it going", "Run history", "Thread", "Delivery" | `scheduled_tasks_list.html`, `scheduled_task_detail.html`, `settings/_scheduled_tasks.html` | `scheduled-tasks`; `runs`, `thread` kept; `destinations` folds into `edit --to` (the product has one "Delivery" setting, not a separate object); `renew` for "Keep it going" |
 | `skills` | "Skills"; "Sharing a skill with a group" | `settings/_skills.html`, `reference/skills.md` | `skills` with `share`/`revoke` |
-| `notes` (kind `inline_text`) | "Notes" (sidebar, room "Notes board"); "Artifacts" on the settings page | `_sidebar.html`, `reference/artifacts.md`, `settings/_artifacts.html` | `notes`. Never "artifacts" in the CLI: the CLI only touches the note kind |
+| `notes` (kind `inline_text`) | "Notes" (sidebar, room "Notes board"); "Artifacts" on the settings page | `_sidebar.html`, `reference/artifacts.md`, `settings/_artifacts.html` | `notes`, the text-editing surface: `notes edit` takes the body (`$EDITOR`, `--file`, `If-Match`), which no other kind has. It is not the whole collection: see the `artifacts` row |
+| `artifacts` (every kind: `inline_text`, `external_url`, `blob`) | "Artifacts": the app is titled "Artifacts" (`agent/apps/registry.py` `ARTIFACTS_APP`), as are the room page surface (`features/groups/surfaces.py`, `key="artifacts"`), the settings section ("The notes, links and files you've asked Pepper to keep", `settings/_artifacts.html`) and the help topic (`features/help/content.py`, `reference/artifacts.md`). The kinds are "Note", "Link", "File" (`KIND_LABELS`, `agent/artifacts/applet.py`); images, PDFs, recordings, recipe photos are Files, a research report or a recipe is a Note. The iOS app has `ArtifactDetail.swift` | as cited | **`artifacts`** with `list` (`--kind note\|link\|file`, `--label`, `--search`, `--limit`, `--room`; the server filters, the CLI never does), `show`, `download`, `create` (uploads a file), `delete`. Replaces the earlier "never `artifacts`" rule (maintainer, 2026-10-16: all kinds are supported). `notes` stays for writing note text; `artifacts` is for finding, reading, fetching, uploading and deleting anything. Text search is `artifacts list --search` (the maintainer's spelling), not a separate `search` leaf. Routes: `GET /api/v1/artifacts`, `/{id}/detail`, `/{id}/raw`, `POST /upload`, and the `artifacts` app's `delete` action |
+| timezone, calendar preferences | "Preferences" (Calendar sub-page, gear titled "Preferences", `<h1>Preferences</h1>`) holds Home address, Work address, **Timezone** ("The same timezone as in Settings."), work days, hours, meals, workouts, weather (`web/apps/defaults/calendar.html`); Settings > Profile also has "Timezone" (`settings/_profile.html`) | as cited | **`preferences`** with `show` and `edit` (`--timezone`, `--home-address`, `--work-days`, ...). No `timezone` noun: the Preferences route takes the account timezone and the page says it is the same one, so one noun covers both. `whoami` keeps printing the timezone as a read. Which calendars count as busy is not on this route (it is per booking page, `booking.set_conflicts`) and is not covered |
+| `feed` (the ranked stream of what you follow) | The Following app (`agent/follows/app.py`, `title="Following"`) draws a "Recent" timeline per followed thing (`web/apps/defaults/following.html`) and the Reading filter has a "Daily feed briefing"; no screen is titled "Feed". "Feed" is the word Chris used for the combined stream ("pp feed"), so this is a requested word, not a UI word, and the maintainer decides whether it stays | as cited | **`feed`**, a view (§3 rule 4), not a noun: `feed [N] [--limit] [--group] [--transcript] [--read] [--full]`. The server ranks, folds and decides (`data.feed` of the Following document, pepper#4852); the CLI fetches and renders, with no business logic of its own. Without `N` it lists the server's order, numbered; with `N` it shows that item. Managing what you follow stays under `following` |
+| `following` (the Following app) | "Following": the app is titled "Following" (`agent/follows/app.py`, `title="Following"`), and its page lists what you follow by group (Sports, Shows, Reading, Podcasts, Events) with a Follow / "Follow again" button per thing (`web/apps/defaults/following.html`) | as cited | **`following`** with `list`, `show`, `search`, `create`, `delete`. `search QUERY` runs the app's `search` action and numbers the matches; `create N` follows number N of the last search (saved per profile) and takes nothing else, because choosing a match for typed text is the server `search` action's job, not the CLI's (no business logic in the CLI, Vycari/pepper-cli#61 §6). `delete` is the app's `unfollow` (the app keeps the thing, with Follow again). Actions through the PAT route `POST /api/v1/apps/following/actions/{name}` |
 | `todos` | "Todos", "Add a todo"; "to-do" in prose | `reference/todos.md`, iOS | `todos` |
 | `calendar`, `--planning` | "Calendar", "Planning" | `_sidebar.html` | unchanged |
 | `agent-skill` | "agent member" | cli: `SKILL.md` §1 | **`agents guide`** — frees `skill` for the `skills` noun; leaves room for sponsored-agent commands |
@@ -82,8 +86,11 @@ pepper [--profile P] <noun> <verb> [--room ROOM [--topic TOPIC]] [OBJECT…] [fl
    (`Bash(pepper --profile claude-code messages post --room <room-id>:*)`), so the room must come
    before anything variable. Other orders still parse; they just don't match a pinned rule and get
    prompted, which fails safe. Pin by UUID, not name.
-4. **Views and session commands are not noun–verb**: `calendar [WINDOW]`, `next`, `chat`, `login`,
-   `logout`, `whoami`, `takeout`. That set is closed; anything new is a noun.
+4. **Views and session commands are not noun–verb**: `calendar [WINDOW]`, `next`, `brief`, `feed [N]`, `chat`, `login`,
+   `logout`, `whoami`, `takeout`. That set is closed; anything new is a noun. (`brief` joined it as a
+   view: it is a daily read like `next` with no managed collection behind it; `--date` picks an older
+   edition and `--now` runs a fresh one, because a view takes flags, not verbs. `feed` is a view so an
+   agent asking what is new runs one word.)
 
 ### 3.1 Verbs
 
@@ -98,6 +105,7 @@ pepper [--profile P] <noun> <verb> [--room ROOM [--topic TOPIC]] [OBJECT…] [fl
 `uninstall`, `leave`, and `members edit --role`. They prompt on a TTY; off a TTY or under `--json`
 they need `--yes` or exit 2. `archive` is not destructive (your view only) and keeps accepting
 `--yes` as a no-op.
+`following delete` and `artifacts delete` are destructive and take the same prompt / `--yes` rule (the server keeps a deleted artifact for a retention window, but the CLI has no restore).
 
 ### 3.2 Create
 
@@ -175,6 +183,7 @@ pepper-cli issue that lands there. Every leaf gets `--json` (§5).
 | `agent-skill [--write DIR]` | `agents guide [--write DIR]` | #10 |
 | `next --room PREFIX` | `next [--room R] [--source PREFIX]` | `--room` resolves strictly like everywhere else; prefix filtering moves to `--source`. Behavior change on an existing flag, in the 0.2.0 notes |
 | `calendar`, `chat`, `login`, `logout`, `whoami`, `takeout` | unchanged | views/session (§3 rule 4) |
+| (new) `brief` | a view | a daily read like `next`, and the product has no "briefs" noun to manage: one edition is read, `--date` picks another, `--now` runs one (a view takes a flag, not a verb) |
 
 ## 5. The `--json` contract
 
@@ -269,6 +278,10 @@ today); **S** needs a server change (or verification first); **N** a room is not
 | `calendar --planning` | optional | C | `/calendars/planning?principal=` |
 | `calendar` (range) | optional | S | `/calendars/range` has no `principal`; or defer to `apps show calendar --room` |
 | `next` | optional | C | strict resolve, filter by room id (§4) |
+| `brief` | — | N | your own brief; no room's brief is read here |
+| `feed`, `following *`, `preferences *` | — | N | your own follows and your own account's preferences; a room has neither |
+| `artifacts list/create/delete` | optional | R | `/artifacts?principal=`, `/artifacts/upload?principal=`, the `artifacts` app's `delete` (owner-scoped) |
+| `artifacts show/download` | — | N | the id carries the room; the viewer route reads any artifact the caller can see |
 | `chat`, `login`, `logout`, `whoami`, `takeout`, `agents guide` | — | N | talking to Pepper in a room is `messages post --mention` |
 
 ### 6.1 Server needs (not filed; for the maintainer to file or fold in)
