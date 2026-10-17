@@ -521,6 +521,16 @@ def test_preferences_edit_fills_the_other_half_of_a_meal(server, capsys) -> None
     assert "no stored time" in _err(capsys)["message"]  # nothing sent for a half-known meal
 
 
+def test_preferences_edit_sends_an_explicit_zero(server, capsys) -> None:
+    assert cli.main(["preferences", "edit", "--meal", "lunch=12:30,0", "--json"]) == 0
+    sent = json.loads(server.to("POST", "/api/v1/calendars/preferences")[0].content)
+    assert sent == {"meals": {"lunch": {"start": "12:30", "minutes": 0}}}
+    assert cli.main(["preferences", "edit", "--workout-minutes", "0", "--json"]) == 0
+    assert len(server.to("GET", "/api/v1/calendars/preferences")) == 2  # fetched for the time
+    sent = json.loads(server.to("POST", "/api/v1/calendars/preferences")[1].content)
+    assert sent == {"workout": {"at": "07:30", "minutes": 0}}
+
+
 def test_preferences_edit_work_days_none_clears_them(server, capsys) -> None:
     assert cli.main(["preferences", "edit", "--work-days", "none", "--json"]) == 0
     sent = json.loads(server.to("POST", "/api/v1/calendars/preferences")[0].content)

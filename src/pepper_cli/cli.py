@@ -7775,7 +7775,11 @@ def cmd_preferences_edit(args: argparse.Namespace) -> int:
         return 2
 
     def run(api: api_client.ApiClient) -> int:
-        needs_current = bool(parsed["meals"]) or parsed["workout_at"] or parsed["workout_minutes"]
+        needs_current = (
+            bool(parsed["meals"])
+            or parsed["workout_at"] is not None
+            or parsed["workout_minutes"] is not None
+        )
         current = api.get_calendar_preferences() if needs_current else {}
         try:
             changes = pv.build_changes(current, **parsed)

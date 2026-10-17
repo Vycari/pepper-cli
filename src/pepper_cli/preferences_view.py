@@ -130,15 +130,17 @@ def build_changes(
             body[SWITCHES[name]] = value
     for name, start, minutes in meals or []:
         have = (current.get("meals") or {}).get(name) or {}
-        start = start or have.get("start")
-        minutes = minutes or have.get("minutes")
-        if not start or not minutes:
+        # Only a half that was not typed is completed; a typed 0 goes to the server as is.
+        start = start if start is not None else have.get("start")
+        minutes = minutes if minutes is not None else have.get("minutes")
+        if start is None or minutes is None:
             raise PrefsError(f"--meal {name} has no stored time yet: give HH:MM,MINUTES")
         body.setdefault("meals", {})[name] = {"start": start, "minutes": minutes}
     if workout_at is not None or workout_minutes is not None:
         have = current.get("workout") or {}
-        at, minutes = workout_at or have.get("at"), workout_minutes or have.get("minutes")
-        if not at or not minutes:
+        at = workout_at if workout_at is not None else have.get("at")
+        minutes = workout_minutes if workout_minutes is not None else have.get("minutes")
+        if at is None or minutes is None:
             raise PrefsError("the workout has no stored time yet: give --workout-at and minutes")
         body["workout"] = {"at": at, "minutes": minutes}
     if run_minutes is not None:
