@@ -680,3 +680,29 @@ def test_feed_json_has_no_hyperlink_escapes(server, capsys) -> None:
     rc, out, _ = _run(capsys, "feed", "list", "--json")
     assert rc == 0
     assert "\x1b" not in out
+
+
+def test_a_malformed_url_is_no_link_rather_than_a_crash(monkeypatch) -> None:
+    from pepper_cli import feed_detail_render, following_render
+
+    bad = "https://[broken/a"
+    assert following_render.web_link(bad) is None
+    buf = _terminal(monkeypatch, tty=True)
+    following_render.render_feed([_entry("Broken", url=bad)])
+    feed_detail_render.render_detail({"n": 1, **_entry("Broken", url=bad)})
+    out = buf.getvalue()
+    assert out.count("Broken") == 2
+    assert _link_targets(out) == []
+
+
+def test_open_on_a_malformed_url_exits_2_with_a_json_error(server, browser, capsys) -> None:
+    server.routes["/api/v1/apps/following/data"] = httpx.Response(
+        200, json=_doc_with_url("https://[broken/a")
+    )
+    n = _numbers(capsys)["Rock & Roll"]
+    rc, out, err = _run(capsys, "feed", "show", str(n), "--open", "--json")
+    assert rc == 2
+    assert browser.calls == []
+    assert out == ""
+    error = json.loads(err.strip().splitlines()[-1])
+    assert "not_found" in json.dumps(error) and "no web link" in json.dumps(error)

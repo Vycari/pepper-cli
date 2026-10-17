@@ -36,7 +36,10 @@ def web_link(url: object) -> str | None:
     if not isinstance(url, str):
         return None
     text = sanitize_line(html.unescape(url)).strip()
-    parts = urlsplit(text)
+    try:
+        parts = urlsplit(text)
+    except ValueError:  # "https://[broken": one bad link must not stop the feed rendering
+        return None
     if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
         return None
     return quote(text, safe="!#$&'()*+,/:;=?@~%-._")
