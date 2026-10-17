@@ -1209,7 +1209,10 @@ class PepperApp(App[None]):
     def on_thread_scroll_edit(self, _event: ThreadScroll.Edit) -> None:
         if (message := self._own_message("edit")) is None:
             return
-        if self.composer.read_only:
+        # One change at a time: Esc leaves edit mode while a save carries on, and a new edit
+        # opened before its reply lands would be ended by that reply (``_mutated``), its
+        # text lost. Wait for the save, which also starts the new edit from the saved text.
+        if self.composer.read_only or self._loops["mutate"].busy:
             self.notify("Still saving the last change.", timeout=2)
             return
         draft = self._draft()

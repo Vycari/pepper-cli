@@ -963,7 +963,12 @@ def is_own_editable(message: GroupMessage) -> bool:
     return message.is_you and not message.is_deleted and not message.is_broken
 
 
-_URL_IN_TEXT = re.compile(r"""https?://[^\s<>"')\]]+""")
+# A bare link in a body. A ``(...)`` or ``[...]`` pair inside it is kept (Wikipedia's
+# ``Pixel_(computer)``, an IPv6 host ``[::1]``), one level deep; an unmatched closer ends it,
+# so ``(see https://x.com/a)`` and markdown's ``[text](https://x.com/a)`` stop before the
+# ``)``. Sentence punctuation after it is trimmed separately (``_URL_TRAILING``).
+_URL_IN_TEXT = re.compile(r"""https?://(?:[^\s<>"'()\[\]]|\([^\s<>"'()]*\)|\[[^\s<>"'\[\]]*\])+""")
+_URL_TRAILING = ".,;:!?"
 
 
 def safe_http_url(url: str | None, *, base: str) -> str | None:
@@ -990,7 +995,9 @@ def message_urls(message: GroupMessage, *, base: str) -> list[str]:
     """Every openable URL of a message: links (previews, then bare links in the body), then
     attachments, then card urls, in that order, each at most once."""
     candidates: list[object] = [p.get("url") for p in message.link_previews]
-    candidates.extend(_URL_IN_TEXT.findall(message.raw_body or ""))
+    candidates.extend(
+        url.rstrip(_URL_TRAILING) for url in _URL_IN_TEXT.findall(message.raw_body or "")
+    )
     candidates.extend(a.get("url") for a in message.attachments)
     candidates.extend(c.url for c in message.cards)
     found: list[str] = []

@@ -198,6 +198,24 @@ def test_a_malformed_address_is_skipped_not_raised() -> None:
     assert state.first_url(_over(raw_body="only https://["), base=BASE) is None
 
 
+def test_a_bare_link_keeps_balanced_brackets_and_drops_the_punctuation_around_it() -> None:
+    def urls(body: str) -> list[str]:
+        return state.message_urls(_over(raw_body=body), base=BASE)
+
+    wiki = "https://en.wikipedia.org/wiki/Pixel_(computer)"
+    assert urls(f"see {wiki} for more") == [wiki]
+    assert urls(f"see {wiki}.") == [wiki]
+    assert urls("local http://[::1]:8080/path here") == ["http://[::1]:8080/path"]
+    assert urls("(see https://x.com/a)") == ["https://x.com/a"]
+    assert urls("(see https://x.com/a.)") == ["https://x.com/a"]
+    assert urls("it is at https://x.com/a. Then https://y.com/b, and!") == [
+        "https://x.com/a",
+        "https://y.com/b",
+    ]
+    assert urls("[text](https://x.com/a)") == ["https://x.com/a"]
+    assert urls("[https://x.com](https://y.com)") == ["https://x.com", "https://y.com"]
+
+
 def test_first_url_orders_links_then_attachments_then_cards() -> None:
     card = {
         "kind": "card",
