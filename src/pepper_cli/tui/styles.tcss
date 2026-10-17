@@ -105,6 +105,11 @@ ModalScreen {
     background: $surface;
 }
 
+#info-body {
+    height: auto;
+    max-height: 60vh;
+}
+
 #picker-list, #jump-list {
     height: auto;
     max-height: 14;

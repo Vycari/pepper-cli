@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.text import Text
 from textual.binding import Binding, BindingType
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
@@ -222,7 +222,10 @@ class InfoScreen(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog"):
-            yield Static(self._body)
+            # A big room's member list is taller than the screen: the body scrolls (↑/↓,
+            # PgUp/PgDn, the wheel) and the closing hint stays in view under it.
+            with VerticalScroll(id="info-body"):
+                yield Static(self._body)
             yield Static(Text("Esc closes", style="dim"))
 
     def action_close(self) -> None:

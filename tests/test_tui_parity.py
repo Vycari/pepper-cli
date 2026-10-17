@@ -457,6 +457,26 @@ async def test_i_shows_the_room_info_card() -> None:
         await until(pilot, lambda: not isinstance(app.screen, InfoScreen))
 
 
+@pytest.mark.parametrize("close", ["escape", "q", "enter"])
+async def test_a_long_room_info_card_scrolls_and_still_closes(close: str) -> None:
+    members = [{"display_name": f"Member {i:02d}"} for i in range(50)]
+    server = ts.standard_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        app.push_screen(InfoScreen(room_info_text({"display_name": "Big", "members": members})))
+        await until(pilot, lambda: isinstance(app.screen, InfoScreen))
+        await pilot.pause()
+        body = app.screen.query_one("#info-body")
+        hint = app.screen.query("Static").last()
+        assert body.max_scroll_y > 0  # taller than the screen: it scrolls, not clips
+        assert hint.region.bottom <= SIZE[1]  # the closing hint is on screen
+        await pilot.press("pagedown", "end")
+        await until(pilot, lambda: body.scroll_y == body.max_scroll_y)
+        await pilot.press(close)
+        await until(pilot, lambda: not isinstance(app.screen, InfoScreen))
+
+
 def test_room_info_text_survives_odd_and_hostile_values() -> None:
     out = room_info_text(
         {
