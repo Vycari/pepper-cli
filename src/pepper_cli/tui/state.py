@@ -811,9 +811,13 @@ def safe_http_url(url: str | None, *, base: str) -> str | None:
     """
     if not url or not url.strip():
         return None
-    absolute = urljoin(base.rstrip("/") + "/", url.strip())
-    parts = urlsplit(absolute)
-    if parts.scheme not in ("http", "https") or not parts.hostname:
+    try:
+        absolute = urljoin(base.rstrip("/") + "/", url.strip())
+        parts = urlsplit(absolute)
+        host = parts.hostname
+    except ValueError:  # a malformed address ("https://[") is not a link
+        return None
+    if parts.scheme not in ("http", "https") or not host:
         return None
     return absolute
 
@@ -840,8 +844,11 @@ def first_url(message: GroupMessage, *, base: str) -> str | None:
 
 
 def url_domain(url: str) -> str:
-    """The host of a link, without ``www.`` (empty when it has none)."""
-    host = urlsplit(url).hostname or ""
+    """The host of a link, without ``www.`` (empty when it has none or cannot be parsed)."""
+    try:
+        host = urlsplit(url).hostname or ""
+    except ValueError:
+        return ""
     return host.removeprefix("www.")
 
 

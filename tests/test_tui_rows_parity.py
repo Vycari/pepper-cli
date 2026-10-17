@@ -103,6 +103,12 @@ def test_preview_text_is_sanitized_and_never_markup() -> None:
     assert "\x1b" not in out
 
 
+def test_a_preview_with_a_malformed_url_still_draws() -> None:
+    bad = {"url": "https://[", "title": "Broken link"}
+    out = _text(rows.message_renderable(_m(raw_body="hi", link_previews=[bad])))
+    assert "Broken link" in out
+
+
 def test_app_card_is_a_box_with_title_summary_and_the_open_hint() -> None:
     out = _text(rows.message_renderable(_m(raw_body="see", cards=[CARD])))
     lines = out.splitlines()

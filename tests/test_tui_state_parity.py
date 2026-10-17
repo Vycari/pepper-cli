@@ -185,6 +185,19 @@ def test_safe_http_url_refuses_every_scheme_but_http_and_https() -> None:
     assert state.safe_http_url(None, base=BASE) is None
 
 
+def test_a_malformed_address_is_skipped_not_raised() -> None:
+    # urlsplit raises ValueError on these; a chat message must not be able to crash the TUI.
+    for bad in ("https://[", "http://[::1", "https://[oops]/x"):
+        assert state.safe_http_url(bad, base=BASE) is None
+        assert state.url_domain(bad) == ""
+    message = _over(
+        raw_body="broken https://[ then https://ok.example/a",
+        link_previews=[{"url": "https://[", "title": "P"}],
+    )
+    assert state.first_url(message, base=BASE) == "https://ok.example/a"
+    assert state.first_url(_over(raw_body="only https://["), base=BASE) is None
+
+
 def test_first_url_orders_links_then_attachments_then_cards() -> None:
     card = {
         "kind": "card",
