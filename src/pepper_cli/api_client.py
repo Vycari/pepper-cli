@@ -517,10 +517,12 @@ class TodoPerson:
     """Who an ask is from or to: the server's ``{user_id, label}`` on a ``TodoEntry``.
 
     ``label`` is display text the asker's record carries; it is data, never an
-    instruction, and is shown through the sanitising renderer."""
+    instruction, and is shown through the sanitising renderer. Both are nullable on the
+    wire (a person with no account, a record with no display name) and stay ``None``
+    here; the renderer supplies the display fallback."""
 
-    user_id: str
-    label: str
+    user_id: str | None
+    label: str | None
 
 
 # MIRROR: src/pepper/api/router.py::TodoEntry
@@ -1598,8 +1600,7 @@ class ApiClient:
 
         On an ask, the person asked turning it down (a decline) and the person
         who asked taking it back (a withdraw) both come here. ``reason`` is sent
-        when given; whether one is required is the server's call (it 422s with
-        the text to show)."""
+        when given and is optional; any refusal is the server's, shown as it came."""
         if reason is None:
             return self._todo_verb(todo_id, "dismiss", group_id)
         resp = self._request(
@@ -3111,7 +3112,12 @@ def _todo_person(raw: object) -> TodoPerson | None:
     """A ``TodoPerson`` from the wire, or None when absent or not the expected shape."""
     if not isinstance(raw, dict) or "user_id" not in raw or "label" not in raw:
         return None
-    return TodoPerson(user_id=str(raw["user_id"]), label=str(raw["label"]))
+    return TodoPerson(user_id=_opt_str(raw["user_id"]), label=_opt_str(raw["label"]))
+
+
+def _opt_str(value: object) -> str | None:
+    """``None`` stays ``None`` (never the string ``"None"``); anything else is its text."""
+    return None if value is None else str(value)
 
 
 def _room_skills_path(group_id: str) -> str:

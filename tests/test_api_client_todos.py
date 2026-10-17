@@ -229,6 +229,18 @@ def test_assigned_todo_parses_people_and_ignores_a_malformed_one() -> None:
     assert second.requested_by is None
 
 
+def test_todo_person_keeps_null_fields_null() -> None:
+    row = _todo_json(
+        assignee={"user_id": None, "label": None},
+        requested_by={"user_id": "u1", "label": None},
+    )
+    _, handler = _recording(httpx.Response(200, json=[row]))
+    with _client(handler) as api:
+        (todo,) = api.list_todos(group_id=_G)
+    assert todo.assignee == api_client.TodoPerson(user_id=None, label=None)
+    assert todo.requested_by == api_client.TodoPerson(user_id="u1", label=None)
+
+
 def test_create_todo_sends_assignee_person_id_only_when_given() -> None:
     seen, handler = _recording(httpx.Response(200, json=_todo_json()))
     with _client(handler) as api:

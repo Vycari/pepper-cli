@@ -17,7 +17,7 @@ Todo assignees (streams-to-pepper-room P2b, Vycari/vycari#143): a room todo can 
 - `pepper todos edit <id>` changes title, details, due, priority or assignee; `--clear` removes a
   field. A todo has no version token, so there is no `--if-match`; the server's 409 is shown with a
   pointer to `todos list`.
-- `pepper todos dismiss --reason TEXT`, sent as given. The server decides when a reason is required.
+- `pepper todos dismiss --reason TEXT`: an optional reason, sent as given.
 - The vendored `/api/v1` contract is refreshed to pepper f48317b.
 
 Part of the groups simplification (vycari/groups#249, phase 5).

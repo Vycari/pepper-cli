@@ -394,6 +394,20 @@ def test_list_shows_who_asked_whom_and_the_state(tmp_home, patch_api, capsys) ->
     assert "declined: out of town" in out
 
 
+def test_list_shows_a_person_with_no_label_as_unnamed(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    row = _todo(
+        requested_by=api_client.TodoPerson(user_id=None, label=None),
+        assignee=api_client.TodoPerson(user_id="u2", label=None),
+    )
+    patch_api(todo_list=[row])
+    assert cli.main(["todos", "list", "--room", _ROOM]) == 0
+    out = capsys.readouterr().out
+    assert "from (unnamed)" in out
+    assert "→ (unnamed)" in out
+    assert "None" not in out
+
+
 def test_create_assignee_resolves_the_name_through_the_roster(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(todo_created=_todo(assignee=api_client.TodoPerson(user_id="u2", label="Bob Stone")))
@@ -425,10 +439,10 @@ def test_dismiss_sends_the_reason_only_when_given(tmp_home, patch_api) -> None:
 def test_dismiss_surfaces_a_server_refusal_as_it_came(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(
-        todo_dismissed=api_client.ApiError(status=422, body="", detail="a reason is required")
+        todo_dismissed=api_client.ApiError(status=422, body="", detail="this ask is already done")
     )
     assert cli.main(["todos", "dismiss", _TID, "--room", _ROOM]) == 1
-    assert "a reason is required" in capsys.readouterr().err
+    assert "this ask is already done" in capsys.readouterr().err
 
 
 def test_edit_sends_only_what_was_given(tmp_home, patch_api, capsys) -> None:
@@ -481,3 +495,22 @@ def test_edit_conflict_prints_the_server_text_and_a_next_step(tmp_home, patch_ap
     err = capsys.readouterr().err
     assert "Server returned 409: the ask has changed" in err
     assert "pepper todos list" in err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["edit", _TID, "--title", "x", "--json"],
+        ["dismiss", _TID, "--json"],
+    ],
+)
+def test_conflict_in_json_mode_is_one_error_document(tmp_home, patch_api, capsys, argv) -> None:
+    _login(tmp_home)
+    conflict = api_client.ApiError(status=409, body="", detail="the ask has changed")
+    patch_api(todo_edited=conflict, todo_dismissed=conflict)
+    assert cli.main(["todos", *argv]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    doc = json.loads(captured.err)
+    assert doc["error"]["status"] == 409
+    assert doc["error"]["message"] == "Server returned 409: the ask has changed"

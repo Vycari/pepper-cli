@@ -994,7 +994,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         p_todo.set_defaults(handler=handler)
     sub_todos.choices["dismiss"].add_argument(
         "--reason",
-        help="Why. On an ask made of you, declining may need one: the server says so.",
+        help="Optional. Why you are dismissing it, sent with the dismissal as given.",
     )
     for name in ("list", "create", "edit", "done", "dismiss", "reopen"):
         sub_todos.choices[name].add_argument(
@@ -2995,7 +2995,7 @@ def cmd_todo_create(args: argparse.Namespace) -> int:
         def human() -> None:
             render.info(f"Added todo {todo.id}")
             if todo.assignee is not None:
-                render.info(f"Asked {todo.assignee.label}.")
+                render.info(f"Asked {render.person_label(todo.assignee)}.")
             if not args.room:
                 render.render_todo_list([todo])
 
@@ -3040,8 +3040,8 @@ def cmd_todo_dismiss(args: argparse.Namespace) -> int:
     """``pepper todos dismiss <id> [--room ROOM] [--reason TEXT]``.
 
     On an ask, the person asked dismissing it is declining and the person who asked is
-    withdrawing. ``--reason`` is sent when given; whether a decline needs one is the
-    server's call, and its refusal text is shown as it came."""
+    withdrawing. ``--reason`` is optional and sent when given; any refusal from the
+    server is shown as it came."""
     if not _valid_uuid(args.todo_id):
         _emit_error(args, "usage", f"todo id must be a UUID (got: {args.todo_id})")
         return 2
@@ -3139,7 +3139,7 @@ def cmd_todo_edit(args: argparse.Namespace) -> int:
         def human() -> None:
             render.info(f"Updated todo {todo.id}")
             if todo.assignee is not None:
-                render.info(f"Asked {todo.assignee.label}.")
+                render.info(f"Asked {render.person_label(todo.assignee)}.")
 
         _emit(todo, args, human)
         return 0
@@ -3152,10 +3152,11 @@ def _report_todo_error(exc: api_client.ApiError, args: argparse.Namespace | None
 
     A 409 on a todo is the server saying the todo (or the ask behind it) is not as it was
     when you looked, or is not in a state that takes this change. Its text is shown as it
-    came; the CLI adds only what to do next. 403 and 422 texts (not your ask, a decline
-    that needs a reason, a title that is too long) need no addition."""
+    came; the CLI adds only what to do next. 403 and 422 texts (not your ask, a title that
+    is too long) need no addition. In JSON mode the pointer is left out, so stderr stays the
+    one J8 error document."""
     code = _report_api_error(exc, args)
-    if exc.status == 409:
+    if exc.status == 409 and not (args is not None and _json_mode(args)):
         render.info("Run 'pepper todos list' to see it as it is now, then try again.")
     return code
 

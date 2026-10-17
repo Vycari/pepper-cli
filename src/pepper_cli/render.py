@@ -57,6 +57,7 @@ if TYPE_CHECKING:
         ScheduledTaskRunEntry,
         ScheduledTaskSummary,
         TodoEntry,
+        TodoPerson,
         TrajectoryDetail,
         TrajectoryListEntry,
     )
@@ -414,6 +415,17 @@ def render_todo_list(rows: list[TodoEntry]) -> None:
         _stdout.print(line)
 
 
+#: What a person with no display name on the wire is shown as.
+UNNAMED_PERSON = "(unnamed)"
+
+
+def person_label(person: TodoPerson) -> str:
+    """A todo person's display name, or :data:`UNNAMED_PERSON` when the server sent none.
+
+    Not escaped: callers printing through markup pass it through ``_s``."""
+    return person.label or UNNAMED_PERSON
+
+
 def _ask_suffix(row: TodoEntry) -> str:
     """``from Allen``, ``→ Chris`` and an ask's state, for a todo that was asked of someone.
 
@@ -422,9 +434,9 @@ def _ask_suffix(row: TodoEntry) -> str:
     (or absent), so a plain todo and a fresh ask read the same as before."""
     parts: list[str] = []
     if row.requested_by is not None:
-        parts.append(f"from {_s(row.requested_by.label)}")
+        parts.append(f"from {_s(person_label(row.requested_by))}")
     if row.assignee is not None:
-        parts.append(f"→ {_s(row.assignee.label)}")
+        parts.append(f"→ {_s(person_label(row.assignee))}")
     ref = row.source_ref if isinstance(row.source_ref, dict) else {}
     state = ref.get("state")
     if isinstance(state, str) and state and state != "pending" and parts:
