@@ -1107,6 +1107,10 @@ def render_next(result: dict[str, Any]) -> None:
         out(f"  {_s(now.get('title') or '')}  [dim]{_s(_event_when(now))}, {left} left[/dim]")
         if now.get("detail"):
             out(f"  [dim]@ {_s(now['detail'])}[/dim]")
+    elif result.get("note"):
+        # The calendar was not read: say so here, where "(no event right now)" would read as an
+        # answer about a calendar nobody looked at.
+        out(f"  [dim]{_s(result['note'])}[/dim]")
     else:
         out("  [dim](no event right now)[/dim]")
     if nxt:
@@ -1123,8 +1127,6 @@ def render_next(result: dict[str, Any]) -> None:
         out(f"  {_s(_event_when(row)):<16} {_s(row.get('title') or '')}{meta}")
     todos = result["todos"]
     out(f"\n[bold]Todos[/bold] [dim]({todos['count']})[/dim]")
-    if result.get("note"):
-        out(f"  [dim]{_s(result['note'])}[/dim]")
     for n, item in enumerate(todos["items"], 1):
         line = f"{n:>2}. {_s(item.get('title') or '(untitled)')}"
         labels = [_todo_due_label(item, clock)]

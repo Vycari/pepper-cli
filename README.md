@@ -388,8 +388,8 @@ todos whose `source` (`user`, or a producer name) starts with `PREFIX`, case-ins
 narrow todos only; Now and the calendar are never filtered.
 
 Today's events come from the schedule plan (`GET /api/v1/calendars/schedule-plan`, `your_day`); when
-the plan is unavailable it reads the calendar range instead, and when that fails too it prints a
-note and shows the todos alone. "Today" is in your account's timezone, never the machine's.
+the plan is unavailable it reads the calendar range instead, and when that fails too it says
+`calendar unavailable` under Now and shows the todos alone. "Today" is in your account's timezone, never the machine's.
 
 Every request is a GET; `next` never calls `schedule-now`. Your token has no scopes, so the server
 doesn't enforce this, and a few of those GETs update server-side caches (the requests document, a
@@ -398,7 +398,8 @@ Google token refresh).
 `--json` prints `{"generated_at", "source": "todos", "note", "now", "next_event", "calendar":
 [event], "todos": {"count", "items": [todo]}}`:
 
-- `note` is a string when the calendar could not be read, else null.
+- `note` is a string when the calendar could not be read, else null. When it is set, `now`,
+  `next_event` and `calendar` are empty because nothing was read, not because the day is free.
 - `now` is the live event, or null: `{"id", "title", "start", "end", "start_label", "end_label",
   "detail", "minutes_left"}`.
 - `next_event` is null, or the next upcoming event: the same fields as `now` with `in_minutes` in

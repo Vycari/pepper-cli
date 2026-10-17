@@ -272,6 +272,14 @@ def test_calendar_down_still_shows_todos_with_a_note(server, capsys) -> None:
     assert _titles(data) == ["A"]
 
 
+def test_calendar_down_is_said_under_now_not_shown_as_a_free_slot(server, capsys) -> None:
+    server.add("/api/v1/calendars/range", {"detail": "boom"}, 500)
+    _mock(server, [_todo("A")], plan=False)
+    out = _run(capsys)
+    assert "(no event right now)" not in out
+    assert out.index("Now") < out.index(next_view.NO_CALENDAR_NOTE) < out.index("Todos")
+
+
 def test_next_never_writes(server, capsys) -> None:
     _json(server, capsys, todos=[_todo("A")], events=[_event("E", 5, 30)])
     # _Server asserts every request is a GET; schedule-now is not registered either.
