@@ -572,7 +572,7 @@ def _register_account_commands(sub: Any) -> None:
     p.add_argument(
         "--work-days",
         metavar="DAYS",
-        help="Work days: names (mon,wed-fri) or weekdays, weekend, all.",
+        help="Work days: names (mon,wed-fri) or weekdays, weekend, all; none clears them.",
     )
     p.add_argument("--work-start", metavar="HH:MM", help="Work day starts (24-hour).")
     p.add_argument("--work-end", metavar="HH:MM", help="Work day ends (24-hour).")
