@@ -378,3 +378,15 @@ def test_room_info_text_survives_odd_and_hostile_values() -> None:
     assert "Notes" in out
     assert "unavailable right now" in room_info_text({"apps": {"unavailable": True}}).plain
     assert "none installed" in room_info_text({}).plain
+
+
+async def test_typing_the_app_shortcut_letters_in_the_composer_types_them() -> None:
+    server = ts.standard_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await _open_a1(app, pilot, "flight options")
+        app.composer.focus()
+        await pilot.press("h", "i", "o", "e", "d", "plus")
+        await pilot.pause()
+        assert app.composer.text == "hioed+"
+        assert not isinstance(app.screen, InfoScreen)
