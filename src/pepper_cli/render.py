@@ -1002,7 +1002,7 @@ def _format_stamp(iso: str) -> str:
     return f"{rendered} {label}" if label else rendered
 
 
-def _format_due(iso: str, date_only: bool | None = None) -> str:
+def _format_due(iso: str, date_only: bool | None = None, tz: tzinfo | None = None) -> str:
     """Render a UTC ISO-8601 due date for display.
 
     When ``date_only`` is ``True`` the server stored midnight UTC on a
@@ -1010,9 +1010,9 @@ def _format_due(iso: str, date_only: bool | None = None) -> str:
     off the UTC value with no zone conversion, exactly as the web
     applet's ``fmtDue`` does, or a client east of UTC renders a clock
     that was never there and a client west of UTC shows the wrong day.
-    Otherwise localize to the machine's own zone: ``YYYY-MM-DD`` for a
-    deadline that happens to land on local midnight, ``YYYY-MM-DD HH:MM``
-    otherwise. Falls back to the raw string if it can't be parsed —
+    Otherwise localize to ``tz``, or the machine's own zone when it is
+    ``None``: ``YYYY-MM-DD`` for a deadline that happens to land on local
+    midnight, ``YYYY-MM-DD HH:MM`` otherwise. Falls back to the raw string if it can't be parsed —
     better a verbatim timestamp than a crashed listing.
     """
     import datetime as dt
@@ -1023,7 +1023,7 @@ def _format_due(iso: str, date_only: bool | None = None) -> str:
         return iso
     if date_only:
         return parsed_utc.strftime("%Y-%m-%d")
-    parsed = parsed_utc.astimezone(_local_tz())
+    parsed = parsed_utc.astimezone(tz if tz is not None else _local_tz())
     if (parsed.hour, parsed.minute) == (0, 0):
         return parsed.strftime("%Y-%m-%d")
     return parsed.strftime("%Y-%m-%d %H:%M")
@@ -1072,12 +1072,13 @@ def _event_when(row: dict[str, Any]) -> str:
 def _todo_due_label(item: dict[str, Any], now: datetime | None) -> str:
     """The server's due field as text, tagged "overdue" once it is behind ``now``.
 
-    Presentation only: the tag never moves or hides a todo."""
+    A timed due is shown on ``now``'s clock, the account's zone the event labels in the same view
+    use, not the machine's. Presentation only: the tag never moves or hides a todo."""
     raw = item.get("due")
     if not raw:
         return ""
     date_only = item.get("due_is_date_only")
-    text = f"due {_format_due(raw, date_only)}"
+    text = f"due {_format_due(raw, date_only, now.tzinfo if now is not None else None)}"
     if now is not None:
         try:
             due = datetime.fromisoformat(raw)

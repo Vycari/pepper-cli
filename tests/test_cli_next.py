@@ -333,6 +333,22 @@ def test_text_view_reads_in_sections_and_labels_the_servers_fields(server, capsy
     assert "(overdue)" in lines["Timed"] and "(overdue)" not in lines["Later"]
 
 
+def test_timed_due_reads_on_the_accounts_clock_not_the_machines(
+    server, capsys, monkeypatch
+) -> None:
+    """Events are labelled in the account's zone; a timed due beside them must be too."""
+    from zoneinfo import ZoneInfo
+
+    from pepper_cli import render
+
+    monkeypatch.setattr(render, "_local_tz", lambda: UTC)  # the machine says UTC
+    pacific = NOW.astimezone(ZoneInfo("America/Los_Angeles"))
+    server.add("/api/v1/calendars/schedule-plan", {**_plan(), "now": pacific.isoformat()})
+    server.add("/api/v1/todos", [_todo("Call", at="2026-10-02T18:00:00+00:00")])
+    out = _run(capsys)
+    assert "due 2026-10-02 11:00" in out and "18:00" not in out
+
+
 def test_text_view_when_empty(server, capsys) -> None:
     _mock(server)
     out = _run(capsys)
