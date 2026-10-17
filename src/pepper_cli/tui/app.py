@@ -575,7 +575,9 @@ class PepperApp(App[None]):
             you_id=self.you_person_id,
             mark=self.marks.marks.get(topic.topic_id),
         )
-        if found and self._bell:
+        # A topic opened while this check was in flight has not raised its read mark yet
+        # (its page is still loading), so ``record`` can call it new: no bell for it.
+        if found and self._bell and topic.topic_id != self.current.topic_id:
             self.bell()
         self._run("mentions")
 

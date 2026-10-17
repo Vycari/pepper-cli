@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import threading
 
 import pytest
 from rich.console import Console
@@ -153,6 +154,43 @@ async def test_the_bell_rings_once_per_new_mention_and_only_when_asked(enabled) 
         await until(pilot, lambda: ts.TOPIC_B1 in app.mentions.hits)
         await pilot.pause(0.3)
         assert len(rings) == (1 if enabled else 0)
+
+
+class _FirstThenRest(threading.Event):
+    """A gate that holds the first request on ``first`` and every later one on ``rest``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.first, self.rest = threading.Event(), threading.Event()
+        self._lock = threading.Lock()
+        self._seen = 0
+
+    def wait(self, timeout: float | None = None) -> bool:
+        with self._lock:
+            gate = self.first if self._seen == 0 else self.rest
+            self._seen += 1
+        return gate.wait(timeout)
+
+
+async def test_the_bell_stays_quiet_for_a_topic_opened_while_its_check_was_in_flight() -> None:
+    server = ts.standard_server()
+    gate = _FirstThenRest()
+    server.gates[f"GET /api/v1/groups/{ts.ROOM_B}/topics/{ts.TOPIC_B1}/messages"] = gate
+    app = tui_app.PepperApp(server.client(), bell=True)
+    rings: list[int] = []
+    app.bell = lambda: rings.append(1)  # type: ignore[method-assign]
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        _activity(server, ts.TOPIC_B1, 1, mentions=[ts.ME_PERSON])
+        await until(pilot, lambda: _fetches(server, ts.TOPIC_B1) == 1)  # the mention check
+        # Opened before the check answers; its own page (and read mark) is still on the way.
+        app.open_conversation(state.Conversation(ts.ROOM_B, ts.TOPIC_B1))
+        await until(pilot, lambda: _fetches(server, ts.TOPIC_B1) == 2)
+        gate.first.set()
+        await until(pilot, lambda: ts.TOPIC_B1 in app.mentions.checked)
+        gate.rest.set()
+        await until(pilot, lambda: "ping" in ts.body_text(app))
+        assert rings == []
 
 
 def test_bell_env_flag(monkeypatch) -> None:
