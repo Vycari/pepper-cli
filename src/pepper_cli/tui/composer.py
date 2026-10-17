@@ -105,7 +105,8 @@ class Composer(TextArea):
         if event.key in ("alt+enter", "ctrl+j"):
             event.stop()
             event.prevent_default()
-            self.insert("\n")
+            if not self.read_only:  # insert() is programmatic and would ignore read_only
+                self.insert("\n")
             return
         if event.key == "escape":
             event.stop()

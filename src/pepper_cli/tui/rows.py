@@ -12,24 +12,37 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+from rich.box import ROUNDED
 from rich.console import Group
+from rich.markdown import Markdown
+from rich.padding import Padding
+from rich.panel import Panel
 from rich.styled import Styled
 from rich.table import Table
 from rich.text import Text
 
 from pepper_cli import render
 from pepper_cli.terminal_text import sanitize_line, sanitize_text
-from pepper_cli.tui.state import parse_ts
+from pepper_cli.tui.state import parse_ts, url_domain
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from rich.console import RenderableType
 
-    from pepper_cli.api_client import ChatHistoryEntry, GroupMessage
+    from pepper_cli.api_client import ChatHistoryEntry, GroupCard, GroupMessage
     from pepper_cli.tui.state import PendingSend
 
 _HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
+#: Text that reads as markdown: emphasis, code, a heading, list or quote marker at the start of
+#: a line, a link, or a table row. A message without any of these stays plain text, so its line
+#: breaks and its @mention highlighting are kept exactly as typed.
+_MARKDOWN_HINT = re.compile(
+    r"\*\*|__|`|\[[^\]\n]+\]\([^)\n]+\)"
+    r"|^[ ]{0,3}(?:#{1,6}|[-*+]|\d{1,9}[.)]|>)[ \t]"
+    r"|^[ ]{0,3}\|.*\|[ \t]*$",
+    re.MULTILINE,
+)
 #: Style of a message that mentions the viewer (the web's accent treatment).
 ACCENT = "bold yellow"
 DELETED = "Message deleted"
@@ -86,17 +99,47 @@ def _attachment_lines(attachments: Iterable[dict[str, Any]]) -> list[Text]:
 
 
 def _reaction_line(reactions: Iterable[dict[str, Any]]) -> Text | None:
-    chips = [sanitize_line(f"{r.get('emoji', '')} {r.get('count', '')}".strip()) for r in reactions]
-    chips = [c for c in chips if c]
-    return Text(INDENT + "  ".join(chips)) if chips else None
+    """``👍 2  ❤️ 1`` — a chip you have added is bold, the server's ``mine`` being the word."""
+    line = Text(INDENT)
+    count = 0
+    for chip in reactions:
+        label = sanitize_line(f"{chip.get('emoji', '')} {chip.get('count', '')}".strip())
+        if not label:
+            continue
+        if count:
+            line.append("  ")
+        line.append(label, style="bold" if chip.get("mine") is True else "")
+        count += 1
+    return line if count else None
 
 
-def _body(m: GroupMessage, *, mentions_you: bool) -> Text:
+def looks_like_markdown(text: str) -> bool:
+    """Whether a (sanitized) body uses markdown syntax worth rendering."""
+    return _MARKDOWN_HINT.search(text) is not None
+
+
+def _markdown_body(text: str) -> RenderableType | None:
+    """The body as Rich ``Markdown`` with its links shown as text, never as terminal
+    hyperlinks, or ``None`` when it cannot be built (the caller falls back to plain text)."""
+    try:
+        return Padding(Markdown(text, hyperlinks=False), (0, 0, 0, len(INDENT)))
+    except (ValueError, TypeError, RecursionError):
+        return None
+
+
+def _body(m: GroupMessage, *, mentions_you: bool) -> RenderableType:
     if m.is_deleted:
         return Text(INDENT + DELETED, style="dim")
     if m.is_broken:
         return Text(INDENT + BROKEN, style="dim")
-    body = Text(sanitize_text(m.raw_body), style=ACCENT if mentions_you else "")
+    clean = sanitize_text(m.raw_body)
+    if looks_like_markdown(clean) and (rendered := _markdown_body(clean)) is not None:
+        # Markdown loses the @mention highlighting (it is not Text), and "(edited)" cannot
+        # share its last line.
+        if m.is_edited:
+            return Group(rendered, Text(INDENT + "(edited)", style="dim"))
+        return rendered
+    body = Text(clean, style=ACCENT if mentions_you else "")
     body.highlight_words(
         [f"@{sanitize_line(n)}" for n in m.mention_names if sanitize_line(n)], style="bold"
     )
@@ -109,6 +152,35 @@ def _body(m: GroupMessage, *, mentions_you: bool) -> Text:
     if m.is_edited:
         indented.append(" (edited)", style="dim")
     return indented
+
+
+def _preview_lines(previews: Iterable[dict[str, Any]]) -> list[Text]:
+    """``↗ title — domain`` per link preview, on one line each. A preview a card already
+    covers (``covered_by_card``) is left out, and an empty title falls back to the URL."""
+    lines = []
+    for preview in previews:
+        if preview.get("covered_by_card"):
+            continue
+        url = str(preview.get("url") or "")
+        title = sanitize_line(str(preview.get("title") or "")) or sanitize_line(url)
+        if not title:
+            continue
+        domain = sanitize_line(url_domain(url))
+        label = f"↗ {title}" + (f" — {domain}" if domain and domain != title else "")
+        lines.append(Text(INDENT + label, style="cyan", no_wrap=True, overflow="ellipsis"))
+    return lines
+
+
+def _card_panel(card: GroupCard) -> RenderableType:
+    """A boxed app card: bold title, its summary lines, and the way to open it."""
+    body = Text(sanitize_line(card.title) or sanitize_line(card.app_key), style="bold")
+    for line in card.summary_lines:
+        body.append("\n" + sanitize_line(str(line)))
+    body.append("\nopen in web (o)", style="dim")
+    return Padding(
+        Panel(body, box=ROUNDED, border_style="dim", expand=False, padding=(0, 1)),
+        (0, 0, 0, len(INDENT)),
+    )
 
 
 def _quote_line(quote: object) -> Text | None:
@@ -147,6 +219,8 @@ def message_renderable(
         if line := _quote_line(m.quote):
             parts.append(line)
         parts.append(_body(m, mentions_you=mentions_you))
+        parts.extend(_preview_lines(m.link_previews))
+        parts.extend(_card_panel(c) for c in m.cards)
         parts.extend(_attachment_lines(m.attachments))
         if m.reactions and (line := _reaction_line(m.reactions)):
             parts.append(line)

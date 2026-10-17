@@ -25,7 +25,7 @@ def row_label(row: SidebarRow, *, current: bool) -> Text:
     if row.kind == "room":
         label.append("■ ", style=safe_color(row.color) or "")
     name = sanitize_line(row.label)
-    if row.kind == "more":
+    if row.kind in ("more", "archived", "newtopic", "inactive"):
         label.append(name, style="dim italic")
     else:
         label.append(name, style="bold reverse" if current else "bold" if row.unread else "")
@@ -57,6 +57,9 @@ class Sidebar(Tree[SidebarRow]):
         self.guide_depth = 2
         self._signature: tuple[object, ...] = ()
         self._by_key: dict[str, TreeNode[SidebarRow]] = {}
+        #: A row the app asked for by key; a redraw still waiting to restore the old cursor
+        #: yields to it.
+        self._wanted: str | None = None
 
     @property
     def highlighted_row(self) -> SidebarRow | None:
@@ -79,7 +82,7 @@ class Sidebar(Tree[SidebarRow]):
             if row.kind == "room":
                 node = self.root.add(label, data=row, expand=row.expanded)
                 parent = node
-            elif row.kind == "pepper":
+            elif row.kind in ("pepper", "inactive"):
                 node = self.root.add_leaf(label, data=row)
             else:
                 node = parent.add_leaf(label, data=row)
@@ -87,6 +90,7 @@ class Sidebar(Tree[SidebarRow]):
         self.call_after_refresh(self._restore_cursor, keep)
 
     def _restore_cursor(self, key: str | None) -> None:
+        key = self._wanted or key
         node = self._by_key.get(key) if key else None
         if node is None:
             node = next(iter(self._by_key.values()), None)
@@ -95,8 +99,13 @@ class Sidebar(Tree[SidebarRow]):
 
     def select_key(self, key: str) -> None:
         """Move the cursor to a row by key (used by next-unread)."""
+        self._wanted = key
+        self.call_after_refresh(self._forget_wanted)
         if (node := self._by_key.get(key)) is not None:
             self.move_cursor(node)
+
+    def _forget_wanted(self) -> None:
+        self._wanted = None
 
     def action_expand_room(self) -> None:
         row = self.highlighted_row

@@ -755,6 +755,7 @@ def test_messages_list_renders_attachments_reactions_edits_and_deletes(
                 reactions=[{"emoji": "🎉", "count": 2, "mine": True}],
                 is_edited=True,
                 via_display_name="#general",
+                is_bridged=True,
             ),
             _message(id="m2", is_deleted=True, raw_body=""),
         )
@@ -767,6 +768,16 @@ def test_messages_list_renders_attachments_reactions_edits_and_deletes(
     assert "edited" in out
     assert "via #general" in out
     assert "deleted" in out
+
+
+def test_messages_list_hides_the_via_audit_marker_of_an_unbridged_post(
+    tmp_home, patch_api, capsys
+) -> None:
+    _login(tmp_home)
+    patch_api(messages_page=_page(_message(id="m1", via_display_name="Pepper")))
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP, "--topic", _TID_GENERAL])
+    assert rc == 0
+    assert "via Pepper" not in capsys.readouterr().out
 
 
 def test_messages_list_help_describes_omitted_topic(capsys) -> None:

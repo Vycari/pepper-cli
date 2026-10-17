@@ -23,6 +23,10 @@ class ThreadScroll(VerticalScroll):
         Binding("up", "select(-1)", "Select", show=False),
         Binding("down", "select(1)", "Select", show=False),
         Binding("r", "reply", "Reply / retry"),
+        Binding("plus", "react", "React"),
+        Binding("e", "edit", "Edit"),
+        Binding("d", "delete", "Delete"),
+        Binding("o", "open_link", "Open link"),
         Binding("escape", "unselect", "Unselect", show=False),
     ]
 
@@ -39,6 +43,18 @@ class ThreadScroll(VerticalScroll):
     class Unselect(Message):
         """Esc in the thread."""
 
+    class React(Message):
+        """``+``: pick an emoji for the selected message."""
+
+    class Edit(Message):
+        """``e``: edit the selected message (your own)."""
+
+    class Delete(Message):
+        """``d``: delete the selected message (your own), after a confirmation."""
+
+    class Open(Message):
+        """``o``: open the first link, attachment or card of the selected message."""
+
     def action_select(self, step: int) -> None:
         self.post_message(self.Select(step))
 
@@ -48,9 +64,24 @@ class ThreadScroll(VerticalScroll):
     def action_unselect(self) -> None:
         self.post_message(self.Unselect())
 
+    def action_react(self) -> None:
+        self.post_message(self.React())
+
+    def action_edit(self) -> None:
+        self.post_message(self.Edit())
+
+    def action_delete(self) -> None:
+        self.post_message(self.Delete())
+
+    def action_open_link(self) -> None:
+        self.post_message(self.Open())
+
 
 class ThreadView(Vertical):
     """Messages plus a "N new" marker when rows arrive while you are reading further up."""
+
+    class AtTop(Message):
+        """The view reached its first line: the cue to load an older page."""
 
     def __init__(self) -> None:
         super().__init__(id="thread")
@@ -70,10 +101,30 @@ class ThreadView(Vertical):
         scroller = self.scroller
         return scroller.scroll_y >= scroller.max_scroll_y - 1
 
-    def show(self, body: RenderableType, *, new_rows: int = 0, reset: bool = False) -> None:
-        """Replace the content. ``reset`` (a different conversation) always lands at the end."""
-        stick = reset or self.pinned
+    def show(
+        self,
+        body: RenderableType,
+        *,
+        new_rows: int = 0,
+        reset: bool = False,
+        prepended: bool = False,
+    ) -> None:
+        """Replace the content. ``reset`` (a different conversation) always lands at the end.
+
+        ``prepended`` says rows were added above what was shown (an older page): the view
+        keeps showing the same lines, so the added height is scrolled past.
+        """
+        stick = reset or (self.pinned and not prepended)
+        scroller = self.scroller
+        old_height, old_y = scroller.virtual_size.height, scroller.scroll_y
         self.query_one("#thread-body", Static).update(body)
+        if prepended and not reset:
+
+            def keep_place() -> None:
+                grown = scroller.virtual_size.height - old_height
+                scroller.scroll_to(y=old_y + max(grown, 0), animate=False)
+
+            scroller.call_after_refresh(keep_place)
         if stick:
             self._unseen = 0
             self.scroller.call_after_refresh(self.scroller.scroll_end, animate=False)
@@ -85,7 +136,9 @@ class ThreadView(Vertical):
         # However the bottom is reached (keys, wheel, scrollbar drag), the marker clears.
         self.watch(self.scroller, "scroll_y", self._scrolled, init=False)
 
-    def _scrolled(self, _old: float, _new: float) -> None:
+    def _scrolled(self, _old: float, new: float) -> None:
+        if new <= 0 and self.scroller.max_scroll_y > 0:
+            self.post_message(self.AtTop())
         if self._unseen and self.pinned:
             self._unseen = 0
             self._paint_marker()

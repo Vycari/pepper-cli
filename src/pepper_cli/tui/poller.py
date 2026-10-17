@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from pepper_cli.api_client import ApiError, group_message_from_dict
+from pepper_cli.api_client import ApiError, GroupMessagePage, group_message_from_dict
 
 if TYPE_CHECKING:
     from pepper_cli.api_client import (
@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         GroupMessage,
         GroupRosterMember,
         GroupSummary,
+        GroupTopicSummary,
     )
     from pepper_cli.tui.state import Conversation, PendingSend
 
@@ -126,11 +127,22 @@ class RailPoller:
             return None
 
 
-def fetch_topic(api: ApiClient, conv: Conversation, *, since: str | None) -> list[GroupMessage]:
-    """The open topic's rows: the newest page when ``since`` is ``None``, else the window."""
+def fetch_topic(api: ApiClient, conv: Conversation, *, since: str | None) -> GroupMessagePage:
+    """The open topic's page: the newest one when ``since`` is ``None``, else the window.
+
+    The whole page comes back (not just its rows) because ``next_before`` says whether older
+    messages exist.
+    """
     if conv.room_id is None or conv.topic_id is None:
-        return []
-    return api.list_group_messages(conv.room_id, conv.topic_id, since=since).messages
+        return GroupMessagePage()
+    return api.list_group_messages(conv.room_id, conv.topic_id, since=since)
+
+
+def fetch_older(api: ApiClient, conv: Conversation, *, before: str, limit: int) -> GroupMessagePage:
+    """The page older than ``before`` (an opaque ``next_before`` the server handed out)."""
+    if conv.room_id is None or conv.topic_id is None:
+        return GroupMessagePage()
+    return api.list_group_messages(conv.room_id, conv.topic_id, before=before, limit=limit)
 
 
 def fetch_dm(api: ApiClient) -> list[ChatHistoryEntry]:
@@ -170,3 +182,37 @@ def post_message(api: ApiClient, pending: PendingSend) -> GroupMessage:
 def fetch_roster(api: ApiClient, room_id: str) -> list[GroupRosterMember]:
     """The room's ``@``-mention roster (Pepper first)."""
     return api.group_roster(room_id)
+
+
+def react(
+    api: ApiClient, room_id: str, message_id: str, *, emoji: str, clear: bool
+) -> list[dict[str, Any]]:
+    """Add your ``emoji`` to a message, or take it back; the server's whole chip set."""
+    if clear:
+        return api.clear_group_reaction(room_id, message_id, emoji=emoji)
+    return api.react_to_group_message(room_id, message_id, emoji=emoji)
+
+
+def edit_message(api: ApiClient, room_id: str, message_id: str, *, body: str) -> dict[str, Any]:
+    """``POST .../edit`` on one of your own messages."""
+    return api.edit_group_message(room_id, message_id, body=body)
+
+
+def delete_message(api: ApiClient, room_id: str, message_id: str) -> dict[str, Any]:
+    """``DELETE`` one of your own messages (the server leaves a tombstone row)."""
+    return api.delete_group_message(room_id, message_id)
+
+
+def create_topic(api: ApiClient, room_id: str, *, name: str) -> dict[str, Any]:
+    """``POST .../topics``; the new topic as the server sends it."""
+    return api.create_group_topic(room_id, name=name)
+
+
+def fetch_room_info(api: ApiClient, room_id: str) -> dict[str, Any]:
+    """``GET /groups/{id}``: members, topics and apps for the room-info screen."""
+    return api.get_group(room_id)
+
+
+def fetch_topic_rail(api: ApiClient, room_id: str) -> list[GroupTopicSummary]:
+    """Every topic of a room, archived included (the rooms list may carry only live ones)."""
+    return api.list_group_topics(room_id)

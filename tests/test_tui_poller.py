@@ -138,9 +138,9 @@ def test_fetch_topic_sends_since_only_when_given() -> None:
     server = ts.standard_server()
     conv = state.Conversation(ts.ROOM_A, ts.TOPIC_A1)
     with server.client() as api:
-        assert len(poller.fetch_topic(api, conv, since=None)) == 1
-        assert poller.fetch_topic(api, conv, since="2026-09-16T17:30:00+00:00") == []
-        assert poller.fetch_topic(api, state.PEPPER, since=None) == []
+        assert len(poller.fetch_topic(api, conv, since=None).messages) == 1
+        assert poller.fetch_topic(api, conv, since="2026-09-16T17:30:00+00:00").messages == []
+        assert poller.fetch_topic(api, state.PEPPER, since=None).messages == []
     queries = [q for _, p, q in server.requests if p.endswith("/messages")]
     assert queries == [{}, {"since": "2026-09-16T17:30:00+00:00"}]
 

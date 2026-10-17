@@ -89,3 +89,28 @@ Screen {
     border: none;
     padding: 0 1;
 }
+
+ModalScreen {
+    layout: vertical;
+    align: center middle;
+}
+
+.dialog {
+    width: 64;
+    max-width: 95%;
+    height: auto;
+    max-height: 80%;
+    padding: 1 2;
+    border: thick $primary;
+    background: $surface;
+}
+
+#info-body {
+    height: auto;
+    max-height: 60vh;
+}
+
+#picker-list, #jump-list {
+    height: auto;
+    max-height: 14;
+}

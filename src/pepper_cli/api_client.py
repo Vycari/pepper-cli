@@ -936,7 +936,13 @@ class GroupMessage:
     day_label: str
     quote_excerpt: str
     picture_url: str | None = None
+    #: The bridge the message arrived through ("via X"). The server stamps Pepper here
+    #: on every ``/api/v1`` post as an audit marker, so a client shows the chip only when
+    #: ``is_bridged`` is also true — the web does the same.
     via_display_name: str | None = None
+    #: True when ``via_display_name`` names a real bridge (an email or chat mirror), not
+    #: the audit marker. ``False`` on rows from an older server that does not send it.
+    is_bridged: bool = False
     is_edited: bool = False
     edited_at: str | None = None
     deleted_at: str | None = None
@@ -1068,6 +1074,7 @@ def group_message_from_dict(row: dict[str, Any]) -> GroupMessage:
         quote_excerpt=row["quote_excerpt"],
         picture_url=row.get("picture_url"),
         via_display_name=row.get("via_display_name"),
+        is_bridged=bool(row.get("is_bridged", False)),
         is_edited=row.get("is_edited", False),
         edited_at=row.get("edited_at"),
         deleted_at=row.get("deleted_at"),
@@ -1291,6 +1298,12 @@ class ApiClient:
         # :meth:`_request` so the plaintext doesn't live on a long-
         # lived attribute that ``repr(api)`` could surface.
         self._token = token
+
+    @property
+    def server_url(self) -> str:
+        """The server's base URL, without a trailing slash (a client resolves the
+        server-relative links a message carries against it)."""
+        return self._server_url
 
     def __enter__(self) -> Self:
         return self

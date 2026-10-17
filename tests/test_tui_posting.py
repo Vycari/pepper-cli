@@ -41,6 +41,7 @@ def _fast_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(state, "DM_INTERVAL", 0.05)
     monkeypatch.setattr(state, "DM_RECONCILE_INTERVAL", 0.05)
     monkeypatch.setattr(state, "BACKOFF_STEPS", (0.05, 0.05, 0.05, 0.05))
+    monkeypatch.setattr(tui_app, "utcnow", lambda: ts.NOW)
 
 
 def server_with_roster() -> ts.FakeServer:
@@ -418,7 +419,9 @@ async def test_an_answered_turn_whose_user_row_never_shows_does_not_hold_the_que
 ) -> None:
     # The question was stored before midnight and the answer after it: today's history has
     # the answer but will never have the question.
-    monkeypatch.setattr(state, "DM_RECONCILE_WINDOW", 0.3)
+    # Long enough that turn 1 cannot age out before turn 2's rows are read back, even on a
+    # slow runner; short enough to watch it retire.
+    monkeypatch.setattr(state, "DM_RECONCILE_WINDOW", 1.0)
     server = ts.standard_server()
     gate = threading.Event()
     first = reply_turn("after midnight", 1, gates={1: gate})
@@ -433,6 +436,9 @@ async def test_an_answered_turn_whose_user_row_never_shows_does_not_hold_the_que
         gate.set()
         await until(pilot, lambda: len(server.turn_bodies) == 2)
         await until(pilot, lambda: "second" in body_text(app))
+        # "second" shows from the reply frame first; turn 2 retires once a history read has
+        # both its rows, and only then is the queue down to turn 1.
+        await until(pilot, lambda: {"u2", "a2"} <= app.dm.entries.keys())
         assert [t.text for t in app.turns] == ["question 1"]  # still shown, still waiting
         assert app.turns[0].phase == "done"
         await until(pilot, lambda: not app.turns)  # retired after the window
