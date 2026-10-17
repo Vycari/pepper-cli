@@ -61,41 +61,14 @@ rooms). The table lists what each core area has on `main` and what is still miss
 | People, preferences, booking | nothing | all of it | `/people/*`, `/calendars/preferences`, booking app actions |
 | `next` | present, but broken by pepper#4820: plans are always empty (pepper-cli#50) | a working view | `schedule-plan` keeps answering with no plans |
 
-## 3. The intent map
+## 3. The intent map (removed)
 
-`pepper --help` now opens with a map from the question a person (or an agent) has to the command
-that answers it, before argparse's alphabetical-ish command list. Chris approved the wording below
-as canonical on 2026-10-16. It lives in `cli.py` as `INTENT_MAP`, and `tests/test_cli_intent_map.py`
-checks that every command it names exists.
-
-```
-What do you want to know?
-  What should I do now / today?              pepper next
-  What did my morning brief say?             pepper brief
-  What have I committed to?                  pepper calendar
-  What's undecided, waiting on me?           pepper dash
-  What do I need to do?                      pepper todos
-  What's new in things I follow?             pepper feed  (manage: following)
-  What's going on in my rooms?               pepper rooms / messages  (rooms watch to stream)
-  What have I written down?                  pepper notes
-  What have I saved (notes, links, files)?   pepper artifacts
-  Who is this person?                        pepper people
-  My timezone, work hours, booking links     pepper preferences / booking-pages
-  What runs without me?                      pepper scheduled-tasks / skills
-  Ask Pepper anything                        pepper <message>  (or chat)
-  What did Pepper do, and why?               pepper trajectories
-  Account                                    pepper login / whoami / logout / takeout
-
-In a room
-  Its topics, people and apps                pepper topics / members / apps
-  What it sees of your calendars             pepper sharing
-  A message's files                          pepper attachments
-  Taking part as an agent                    pepper agents guide
-```
-
-One change since the approval: the "What's new" row points at `feed  (manage: following)` rather
-than at `following`, because the stream is what the question asks for; `following` is where the
-person changes what feeds it.
+An "intent map" (each question a person has, next to the command that answers it) led
+`pepper --help` for a short while: it was approved on 2026-10-16 and shipped in pepper-cli#71.
+It is removed again in pepper-cli#72 (decision 15). Agents, the CLI's main users, read the plain
+command list, and each command's one-line help already says what it answers. The map mostly
+restated those lines and pushed the list further down. The intent thinking stays useful for
+deciding what a command is for; it does not belong in `--help`.
 
 ## 4. New nouns and verbs
 
@@ -276,6 +249,7 @@ Client-side logic on `proto` removed under the no-business-logic rule:
 |---|---|
 | Client-side ranking, filtering and ordering (`feed`, `next`, `dash` and the rest of the §6 table) | Removed (Chris, 2026-10-17, following Allen's review): no business logic in the CLI (§6) |
 | `feed` as a noun (`feed list`, `feed show N`) | Rejected (Chris, 2026-10-17, following Allen's review): it makes an agent hunt for the verb. `feed` is a view (§4.3) |
+| The intent map at the top of `pepper --help` | Removed (Chris, 2026-10-17, following Allen's review): agents prefer the plain command list (§3) |
 | `todos signal` / `todos signals`: local hints an agent could give `next` about a todo ("started", "blocked") | Removed (Chris, 2026-10-16): no usage yet |
 | Fitting todos into time slots in `next` | Rejected: todos are never scheduled (§5). It matches pepper#4820, which stopped planning todos into the day |
 | Dedicated commands for calls (Answering), shopping, meals, recipes, workouts, journal, voice notes and images | Rejected (Chris, 2026-10-16): small features, or `artifacts` covers them. They stay reachable through chat and `pepper apps show/run` |
@@ -304,7 +278,7 @@ PRs. Phases without a dependency can run in parallel, kept file-disjoint where `
 
 | Phase | PR | Contents | Depends on |
 |---|---|---|---|
-| 1 | Intent map | `INTENT_MAP` at the top of `pepper --help` (§3), its test | — |
+| 1 | Intent map | Shipped in pepper-cli#71, removed in pepper-cli#72 (§3) | — |
 | 2 | `next` | §5, pepper-cli#62; refs pepper-cli#50. Listed under **Breaking** (`--first` removed) | — |
 | 3 | Dash | `dash list/show/do/dismiss/snooze/undo` (§4.1) | `inbox-pat-actions` deployed, snapshot refreshed |
 | 4 | Feed and following | `feed`, `feed N`, `following list/show/search/create/delete`, `article_reader.py` | pepper#4847 and pepper#4852 deployed |
@@ -324,7 +298,7 @@ the code stay in step.
 | | Decision |
 |---|---|
 | 1 | Goal: a CLI that can functionally do every core task Pepper does. New product ideas are prototyped on the CLI first. Agents are its main users (§1) |
-| 2 | The intent map in §3 is the canonical wording for the top of `pepper --help` |
+| 2 | The intent map in §3 is the canonical wording for the top of `pepper --help` (superseded by 15) |
 | 3 | The product goes back to the **Dash** name, so the noun is `dash`, not `inbox` |
 | 4 | `artifacts` covers every kind (note, link, file). This replaces the IA doc's "never artifacts" rule; `notes` stays the surface for editing note text |
 | 5 | `brief` joins the set of views; `--now` runs a fresh one, rather than a `brief run` verb |
@@ -342,6 +316,7 @@ the code stay in step.
 | 12 | Feed ranking and folding move to the server (`data.feed`, pepper#4852); `feed.py`'s `Weights` leave the CLI. `feed` is a view: `pepper feed` and `pepper feed N` (§4.3) |
 | 13 | `next` is presentation only: now and next event, today's calendar, todos in the server's order (pepper-cli#62). A server-ranked "what should I do now" list belongs with the Todos redesign (§5) |
 | 14 | `dash` reads the server's filtered `GET /api/v1/apps/dash/view` and drops its copy of the filters (§4.1, §6) |
+| 15 | The intent map is removed from `pepper --help` and the README (pepper-cli#72): agents prefer the plain command list (Allen's review), and Chris agreed it isn't useful (§3) |
 
 ## 11. Open questions
 
