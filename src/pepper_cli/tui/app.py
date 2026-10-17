@@ -412,7 +412,9 @@ class PepperApp(App[None]):
             reconcile = self.store.next_is_reconcile()
             since = None if reconcile else self.store.since()
             self._start(
-                kind, lambda: poller.fetch_topic(self._api, conv, since=since), self._on_topic
+                kind,
+                lambda: poller.fetch_topic(self._api, conv, since=since).messages,
+                self._on_topic,
             )
 
     def _poll_now(self) -> None:

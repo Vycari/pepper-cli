@@ -168,6 +168,15 @@ class FakeServer:
     turn_bodies: list[dict[str, Any]] = field(default_factory=list)
     #: The JSON body of each ``chat/tool-result`` received.
     tool_results: list[dict[str, Any]] = field(default_factory=list)
+    #: Newest-page size when the request names no ``limit`` (``None``: every row).
+    page_size: int | None = None
+    #: ``group_id -> GET /groups/{id}`` answer (a default is built from the rooms list).
+    infos: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: JSON bodies of the mutating message calls, in arrival order.
+    edits: list[dict[str, Any]] = field(default_factory=list)
+    reactions_sent: list[tuple[str, str, str]] = field(default_factory=list)
+    deleted: list[str] = field(default_factory=list)
+    created_topics: list[str] = field(default_factory=list)
     clock: int = 0
     rev: int = 1
     requests: list[tuple[str, str, dict[str, str]]] = field(default_factory=list)
@@ -223,6 +232,97 @@ class FakeServer:
             self.stored[key] = row
         self.messages.setdefault(topic_id, []).append(row)
         return httpx.Response(201, json={"message": row})
+
+    def _find_message(self, message_id: str) -> dict[str, Any] | None:
+        for rows in self.messages.values():
+            for row in rows:
+                if row["id"] == message_id:
+                    return row
+        return None
+
+    def _message_call(self, request: httpx.Request, parts: list[str]) -> httpx.Response:
+        """``.../messages/{mid}`` reactions, edit and delete."""
+        row = self._find_message(parts[5])
+        if row is None:
+            return httpx.Response(404, json={"detail": "no such message"})
+        tail = parts[6:]
+        if request.method == "DELETE" and not tail:
+            self.deleted.append(row["id"])
+            row.update(is_deleted=True, raw_body="", rendered_html="", deleted_at=self._next_at())
+            return httpx.Response(200, json={"message": row})
+        body = json.loads(request.content)
+        if tail == ["edit"]:
+            self.edits.append({"id": row["id"], **body})
+            row.update(
+                raw_body=body["body"],
+                rendered_html=f"<p>{body['body']}</p>",
+                is_edited=True,
+                edited_at=self._next_at(),
+            )
+            return httpx.Response(200, json={"body": body["body"], "edited_at": row["edited_at"]})
+        if tail in (["reactions"], ["reactions", "clear"]):
+            emoji = body["emoji"]
+            clearing = tail == ["reactions", "clear"]
+            self.reactions_sent.append(("clear" if clearing else "add", row["id"], emoji))
+            chips: list[dict[str, Any]] = row["reactions"]
+            chip = next((c for c in chips if c["emoji"] == emoji), None)
+            if clearing and chip is not None and chip["mine"]:
+                chip.update(count=chip["count"] - 1, mine=False)
+                if chip["count"] <= 0:
+                    chips.remove(chip)
+            elif not clearing and chip is None:
+                chips.append({"emoji": emoji, "count": 1, "mine": True})
+            elif not clearing and chip is not None and not chip["mine"]:
+                chip.update(count=chip["count"] + 1, mine=True)
+            return httpx.Response(200, json={"reactions": chips})
+        return httpx.Response(404, json={"detail": f"unmocked {request.method} {request.url.path}"})
+
+    def _create_topic(self, request: httpx.Request, group_id: str) -> httpx.Response:
+        name = json.loads(request.content)["name"]
+        self.created_topics.append(name)
+        topic_id = f"new-topic-{len(self.created_topics)}"
+        row = topic(topic_id, name, self._next_at())
+        for r in self.rooms:
+            if r["group_id"] == group_id:
+                r["topics"].insert(0, row)
+        self.messages[topic_id] = []
+        self.bump()
+        return httpx.Response(201, json={"topic": row})
+
+    def _list_messages(self, topic_id: str, query: dict[str, str]) -> httpx.Response:
+        rows = list(self.messages.get(topic_id, []))
+        next_before = None
+        if (since := query.get("since")) is not None:
+            from pepper_cli.tui.state import parse_ts
+
+            cutoff = parse_ts(since)
+            rows = [r for r in rows if parse_ts(r["created_at"]) > cutoff]
+        else:
+            # ``before`` is opaque to the client; here it is the index the page ends at.
+            limit = int(query["limit"]) if "limit" in query else self.page_size
+            end = int(query["before"]) if "before" in query else len(rows)
+            start = max(0, end - limit) if limit else 0
+            next_before = str(start) if start > 0 else None
+            rows = rows[start:end]
+        return httpx.Response(
+            200,
+            json={"messages": rows, "next_before": next_before, "permalink_target_missing": False},
+        )
+
+    def _room_info(self, group_id: str) -> dict[str, Any]:
+        if group_id in self.infos:
+            return self.infos[group_id]
+        row = next(r for r in self.rooms if r["group_id"] == group_id)
+        return {
+            "group_id": group_id,
+            "display_name": row["display_name"],
+            "kind": "group",
+            "members": [{"display_name": "Me", "role": "owner", "is_you": True}],
+            "topics": [
+                {"name": t["name"], "archived": bool(t["archived_at"])} for t in row["topics"]
+            ],
+            "apps": {"installed": []},
+        }
 
     def _chat_send(self, request: httpx.Request) -> httpx.Response:
         self.turn_bodies.append(json.loads(request.content))
@@ -290,20 +390,19 @@ class FakeServer:
                 return httpx.Response(200, json={"read_through": through})
             if len(parts) == 5 and parts[4] == "roster":
                 return httpx.Response(200, json={"members": self.rosters.get(parts[3], [])})
+            if len(parts) >= 6 and parts[4] == "messages":
+                return self._message_call(request, parts)
+            if len(parts) == 5 and parts[4] == "topics":
+                if request.method == "POST":
+                    return self._create_topic(request, parts[3])
+                room_row = next(r for r in self.rooms if r["group_id"] == parts[3])
+                return httpx.Response(200, json={"topics": room_row["topics"]})
             if len(parts) == 7 and parts[6] == "messages" and request.method == "POST":
                 return self._post_message(request, parts[5])
             if len(parts) == 7 and parts[6] == "messages":
-                rows = list(self.messages.get(parts[5], []))
-                since = query.get("since")
-                if since is not None:
-                    from pepper_cli.tui.state import parse_ts
-
-                    cutoff = parse_ts(since)
-                    rows = [r for r in rows if parse_ts(r["created_at"]) > cutoff]
-                return httpx.Response(
-                    200,
-                    json={"messages": rows, "next_before": None, "permalink_target_missing": False},
-                )
+                return self._list_messages(parts[5], query)
+        if parts[:3] == ["api", "v1", "groups"] and len(parts) == 4:
+            return httpx.Response(200, json=self._room_info(parts[3]))
         return httpx.Response(404, json={"detail": f"unmocked {request.method} {path}"})
 
     def client(self) -> api_client.ApiClient:
