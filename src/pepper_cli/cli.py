@@ -438,9 +438,11 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         prog="pepper",
         description=(
             "Pepper CLI — chat with your agent over /api/v1. "
-            "Bare ``pepper`` opens the REPL; ``pepper <message>`` is shorthand "
+            "Bare ``pepper`` opens the full-screen TUI on a terminal (the REPL when "
+            "stdin or stdout is piped; ``pepper chat`` always opens the REPL); "
+            "``pepper <message>`` is shorthand "
             "for ``pepper chat <message>``. Use a subcommand "
-            "(login / whoami / chat / trajectories / calendar / next / todos / "
+            "(login / whoami / tui / chat / trajectories / calendar / next / todos / "
             "scheduled-tasks / skills / rooms / topics / messages / attachments / "
             "members / sharing / apps / notes / takeout / agents / logout) "
             "for everything else."
