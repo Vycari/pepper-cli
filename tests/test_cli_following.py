@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import httpx
 import pytest
 
-from pepper_cli import api_client, cli, credentials, following_view
+from pepper_cli import api_client, cli, credentials, following_view, numbered_view
 from pepper_cli.secret import SecretStr
 
 FEED_A = "feeds:feed:aaaaaaaa-1111-4111-8111-111111111111"
@@ -291,6 +292,45 @@ def test_create_by_number_already_following_sends_nothing(server, capsys) -> Non
     server.bodies.clear()
     rc, _, err = _run(capsys, "following", "create", "1")
     assert rc == 0 and "Already following" in err and server.bodies == []
+
+
+def test_a_failed_search_save_drops_the_old_list_so_create_follows_nothing(
+    server, capsys, monkeypatch
+) -> None:
+    _search_returns(server, new=[OTHER])
+    _run(capsys, "following", "search", "other")
+
+    def refuse(*a, **k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(numbered_view.tempfile, "mkstemp", refuse)
+    _search_returns(server, new=[DODGERS])
+    rc, out, err = _run(capsys, "following", "search", "dodgers")
+    assert rc == 0 and "Los Angeles Dodgers" in out
+    assert "couldn't save" in err and "won't work" in err
+    rc, out, _ = _run(capsys, "following", "search", "dodgers", "--json")
+    assert rc == 0 and "numbers were not saved" in json.loads(out)["note"]
+    server.bodies.clear()
+    rc, _, err = _run(capsys, "following", "create", "1")
+    assert rc == 2 and "No candidate 1" in err
+    assert server.bodies == []  # never OTHER, the old list's candidate 1
+
+
+def test_a_stale_search_list_that_cannot_be_removed_is_not_shown(
+    server, capsys, monkeypatch
+) -> None:
+    _search_returns(server, new=[OTHER])
+    _run(capsys, "following", "search", "other")
+
+    def refuse(*a, **k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(numbered_view.tempfile, "mkstemp", refuse)
+    monkeypatch.setattr(Path, "unlink", refuse)
+    _search_returns(server, new=[DODGERS])
+    rc, out, err = _run(capsys, "following", "search", "dodgers", "--json")
+    assert rc == 1 and out == ""
+    assert "could not be removed" in json.loads(err)["error"]["message"]
 
 
 def test_delete_unfollows_the_resolved_ref(server, capsys) -> None:

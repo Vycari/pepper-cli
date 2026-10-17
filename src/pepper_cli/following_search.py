@@ -9,14 +9,12 @@ a candidate for typed text: ``create`` takes the number the person chose.
 
 from __future__ import annotations
 
-import contextlib
 import json
-import os
-import tempfile
 from pathlib import Path
 from typing import Any
 
 from pepper_cli import credentials
+from pepper_cli.numbered_view import SaveProblem, write_state
 
 STATE_NAME = "following-search.json"
 
@@ -36,27 +34,16 @@ def numbered(result: dict[str, Any]) -> list[dict[str, Any]]:
     return [{"n": n, **c} for n, c in enumerate(rows, 1)]
 
 
-def save(query: str, candidates: list[dict[str, Any]]) -> None:
-    """Write the list atomically with owner-only permissions; failure to save is not fatal."""
-    path = state_path()
-    tmp: str | None = None
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=STATE_NAME, suffix=".tmp")
-        with os.fdopen(fd, "w") as fh:
-            json.dump({"query": query, "candidates": candidates}, fh)
-        Path(tmp).chmod(0o600)
-        Path(tmp).replace(path)
-    except OSError:
-        if tmp:
-            with contextlib.suppress(OSError):
-                Path(tmp).unlink()
+def save(query: str, candidates: list[dict[str, Any]]) -> SaveProblem | None:
+    """Write the list atomically with owner-only permissions; a failure removes the previous
+    list (see :func:`~pepper_cli.numbered_view.write_state`) and is returned, not raised."""
+    return write_state(state_path(), {"query": query, "candidates": candidates})
 
 
 def load() -> tuple[str, list[dict[str, Any]]] | None:
     """The saved ``(query, candidates)``, or ``None`` when absent or unreadable."""
     try:
-        doc = json.loads(state_path().read_text())
+        doc = json.loads(state_path().read_text(encoding="utf-8"))
         rows = [c for c in doc["candidates"] if isinstance(c, dict) and c.get("n")]
         return str(doc.get("query") or ""), rows
     except (OSError, ValueError, KeyError, TypeError):

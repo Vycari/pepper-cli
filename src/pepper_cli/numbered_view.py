@@ -10,9 +10,12 @@ a slug; an id the listing never held is passed through as given.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from pepper_cli import credentials
 
@@ -27,6 +30,39 @@ class RefError(Exception):
         self.code = code
 
 
+class SaveProblem(NamedTuple):
+    """A listing that could not be saved. ``stale`` is True when an older listing is still on
+    disk (it could not be removed either), so a number would resolve against that one."""
+
+    message: str
+    stale: bool
+
+
+def write_state(path: Path, doc: dict[str, Any]) -> SaveProblem | None:
+    """Write ``doc`` to ``path`` atomically, owner-only, through a temp file no other process
+    shares. On failure the previous file is removed, so a later number cannot resolve against
+    a list that was not the one just shown; ``None`` means saved."""
+    tmp: str | None = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        Path(tmp).chmod(0o600)
+        Path(tmp).replace(path)
+        return None
+    except OSError as exc:
+        if tmp:
+            with contextlib.suppress(OSError):
+                Path(tmp).unlink()
+        why = f"couldn't save the numbered list to {path} ({exc.strerror or exc})"
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            return SaveProblem(f"{why}, and the previous list there could not be removed", True)
+        return SaveProblem(why, False)
+
+
 class NumberedView:
     def __init__(self, state_name: str, noun: str, list_command: str) -> None:
         self.state_name = state_name
@@ -36,20 +72,16 @@ class NumberedView:
     def state_path(self) -> Path:
         return credentials.credentials_path().with_name(self.state_name)
 
-    def save(self, rows: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> None:
-        """Remember ``rows`` (each with an ``id``) and ``meta`` (what the listing was scoped to)."""
-        try:
-            path = self.state_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"rows": rows, "meta": meta or {}}))
-            tmp.replace(path)
-        except OSError:
-            pass  # numbers then just don't resolve; never fail a read over it
+    def save(
+        self, rows: list[dict[str, Any]], meta: dict[str, Any] | None = None
+    ) -> SaveProblem | None:
+        """Remember ``rows`` (each with an ``id``) and ``meta`` (what the listing was scoped to).
+        See :func:`write_state` for what a failure leaves behind."""
+        return write_state(self.state_path(), {"rows": rows, "meta": meta or {}})
 
     def load(self) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
         try:
-            state = json.loads(self.state_path().read_text())
+            state = json.loads(self.state_path().read_text(encoding="utf-8"))
             rows, meta = state["rows"], state.get("meta") or {}
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             return None

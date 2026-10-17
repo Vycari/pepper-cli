@@ -30,6 +30,7 @@ USER_AGENT = (
 #: Tests inject a ``httpx.MockTransport`` here; production leaves it ``None``.
 _transport: httpx.BaseTransport | None = None
 
+
 _SKIP = frozenset(
     {"script", "style", "noscript", "nav", "footer", "aside", "form", "svg", "iframe", "template"}
     | {"button", "select"}

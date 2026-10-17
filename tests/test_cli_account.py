@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
 import httpx
 import pytest
 
-from pepper_cli import api_client, artifacts_view, cli, credentials, preferences_view
+from pepper_cli import (
+    api_client,
+    artifacts_view,
+    cli,
+    credentials,
+    numbered_view,
+    preferences_view,
+)
 from pepper_cli.numbered_view import NumberedView, RefError
 from pepper_cli.secret import SecretStr
 
@@ -339,6 +348,53 @@ def test_numbered_view_resolution(tmp_path, monkeypatch) -> None:
     assert view.resolve("other") == ("other", None, {})
     with pytest.raises(RefError, match="listed 2"):
         view.resolve("3")
+
+
+def _refuse(*a, **k):
+    raise PermissionError(13, "Permission denied")
+
+
+def test_a_failed_listing_save_drops_the_old_numbers(server, capsys, monkeypatch) -> None:
+    assert cli.main(["artifacts", "list", "--json"]) == 0
+    capsys.readouterr()
+    monkeypatch.setattr(numbered_view.tempfile, "mkstemp", _refuse)
+    assert cli.main(["artifacts", "list"]) == 0
+    cap = capsys.readouterr()
+    assert "Receipt" in cap.out and "won't work in later commands" in cap.err
+    assert not artifacts_view.VIEW.state_path().exists()
+    assert cli.main(["artifacts", "delete", "2", "--yes", "--json"]) == 2
+    assert _err(capsys)["code"] == "not_found"
+    assert not server.to("POST", "/api/v1/apps/artifacts/actions/delete")
+
+
+def test_a_stale_listing_that_cannot_be_removed_is_not_shown(server, capsys, monkeypatch) -> None:
+    assert cli.main(["artifacts", "list", "--json"]) == 0
+    capsys.readouterr()
+    monkeypatch.setattr(numbered_view.tempfile, "mkstemp", _refuse)
+    monkeypatch.setattr(Path, "unlink", _refuse)
+    assert cli.main(["artifacts", "list"]) == 1
+    cap = capsys.readouterr()
+    assert cap.out == "" and "could not be removed" in cap.err
+
+
+def test_listing_save_uses_a_private_unshared_temp_file(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    view = NumberedView("v.json", "thing", "pepper things list")
+    names: list[str] = []
+    real = numbered_view.tempfile.mkstemp
+
+    def spy(**kw):
+        fd, name = real(**kw)
+        names.append(name)
+        return fd, name
+
+    monkeypatch.setattr(numbered_view.tempfile, "mkstemp", spy)
+    assert view.save([{"id": "a"}]) is None and view.save([{"id": "b"}]) is None
+    assert len(set(names)) == 2  # two writers never share one temp file
+    assert [p.name for p in view.state_path().parent.iterdir() if p.suffix == ".tmp"] == []
+    if os.name == "posix":
+        assert view.state_path().stat().st_mode & 0o777 == 0o600
 
 
 # ---------------------------------------------------------------------------

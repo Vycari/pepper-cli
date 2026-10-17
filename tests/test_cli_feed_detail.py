@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import html
 import json
+from pathlib import Path
 
 import httpx
 import pytest
 
-from pepper_cli import api_client, article_reader, cli, credentials, feed
+from pepper_cli import api_client, article_reader, cli, credentials, feed, numbered_view
 from pepper_cli.secret import SecretStr
 
 SITE = "feeds:feed:aaaaaaaa-1111-4111-8111-111111111111"
@@ -451,3 +452,20 @@ def test_server_error_is_reported(server, capsys) -> None:
     server.routes["/api/v1/apps/following/data"] = httpx.Response(500, json={"detail": "boom"})
     rc, _, err = _run(capsys, "feed")
     assert rc == 1 and "boom" in err
+
+
+def test_a_failed_feed_save_drops_the_old_numbers(server, capsys, monkeypatch) -> None:
+    _numbers(capsys)
+
+    def refuse(*a, **k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(numbered_view.tempfile, "mkstemp", refuse)
+    rc, out, _ = _run(capsys, "feed", "--json")
+    assert rc == 0 and "numbers were not saved" in json.loads(out)["note"]
+    rc, _, err = _run(capsys, "feed", "1")
+    assert rc == 2 and "run 'pepper feed' first" in err
+    monkeypatch.setattr(Path, "unlink", refuse)
+    feed.VIEW.state_path().write_text('{"rows": [], "meta": {}}')
+    rc, out, err = _run(capsys, "feed")
+    assert rc == 1 and out == "" and "could not be removed" in err

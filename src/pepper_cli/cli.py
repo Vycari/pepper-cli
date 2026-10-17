@@ -7223,14 +7223,48 @@ def _following_action(
     return result if isinstance(result, dict) else {}
 
 
+def _listing_unusable(args: argparse.Namespace, problem: numbered_view.SaveProblem | None) -> bool:
+    """After saving a numbered listing: True when an older listing is still on disk and would
+    answer for these numbers, so the listing must not be shown (the error is reported here)."""
+    if problem is None or not problem.stale:
+        return False
+    _emit_error(
+        args,
+        "usage",
+        f"{problem.message}. Its numbers would answer for this list, so it is not shown; "
+        "remove that file or fix the folder's permissions.",
+        soft_wrap=True,
+    )
+    return True
+
+
+def _warn_unsaved(args: argparse.Namespace, problem: numbered_view.SaveProblem | None) -> None:
+    """Say, after a listing is shown, that its numbers were not saved (and so won't resolve)."""
+    if problem is not None and not _json_mode(args):
+        render.error(
+            f"{problem.message}; numbers from this list won't work in later commands.",
+            soft_wrap=True,
+        )
+
+
+def _unsaved_meta(problem: numbered_view.SaveProblem | None) -> dict[str, str]:
+    """The ``--json`` list envelope's note when the numbers were not saved."""
+    return {} if problem is None else {"note": f"{problem.message}; numbers were not saved"}
+
+
 def cmd_following_search(args: argparse.Namespace) -> int:
     """``pepper following search QUERY… [--json]``: numbered candidates, saved for ``create N``."""
     query = " ".join(args.query)
 
     def run(api: api_client.ApiClient) -> int:
         found = following_search.numbered(_following_action(api, "search", {"q": query}))
-        following_search.save(query, found)
-        _emit_list(found, args, lambda: following_render.render_candidates(found))
+        problem = following_search.save(query, found)
+        if _listing_unusable(args, problem):
+            return 1
+        _emit_list(
+            found, args, lambda: following_render.render_candidates(found), **_unsaved_meta(problem)
+        )
+        _warn_unsaved(args, problem)
         return 0
 
     return _run_personal(args, run)
@@ -7348,12 +7382,16 @@ def cmd_feed(args: argparse.Namespace) -> int:
                 _emit_error(args, exc.code, exc.message)
                 return 2
             shown = feed.only_group(entries, group)[: args.limit]
-            feed.VIEW.save([feed.identity(e) for e in shown], {"group": args.group})
+            problem = feed.VIEW.save([feed.identity(e) for e in shown], {"group": args.group})
+            if _listing_unusable(args, problem):
+                return 1
             _emit_list(
                 numbered_view.number(shown),
                 args,
                 lambda: following_render.render_feed(shown),
+                **_unsaved_meta(problem),
             )
+            _warn_unsaved(args, problem)
             return 0
         entry = feed.find(entries, row)
         if entry is None:
@@ -7479,16 +7517,20 @@ def cmd_artifacts_list(args: argparse.Namespace) -> int:
             principal=principal, kind=kind, q=args.search, label=args.label, limit=args.limit
         )
         rows = [dataclasses.asdict(item) for item in result.items]
-        artifacts_view.VIEW.save(
+        problem = artifacts_view.VIEW.save(
             [artifacts_view.listing_row(r) for r in rows], {"principal": principal}
         )
+        if _listing_unusable(args, problem):
+            return 1
         numbered = numbered_view.number(rows)
         _emit_list(
             numbered,
             args,
             lambda: account_render.artifacts_list(numbered, truncated=result.truncated),
             truncated=result.truncated,
+            **_unsaved_meta(problem),
         )
+        _warn_unsaved(args, problem)
         return 0
 
     return _with_api(run, _report_artifacts_error, args)
