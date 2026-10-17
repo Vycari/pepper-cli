@@ -292,6 +292,13 @@ def test_a_non_json_plan_body_falls_back_instead_of_aborting(server, capsys) -> 
     assert "/api/v1/calendars/range" in server.seen
 
 
+def test_plan_and_whoami_both_down_still_shows_the_todos(server, capsys) -> None:
+    server.add("/api/v1/whoami", {"detail": "unavailable"}, 503)
+    data = _json(server, capsys, todos=[_todo("A")], plan=False)
+    assert data["note"] == next_view.NO_CALENDAR_NOTE and _titles(data) == ["A"]
+    assert "/api/v1/calendars/range" not in server.seen
+
+
 def test_next_never_writes(server, capsys) -> None:
     _json(server, capsys, todos=[_todo("A")], events=[_event("E", 5, 30)])
     # _Server asserts every request is a GET; schedule-now is not registered either.

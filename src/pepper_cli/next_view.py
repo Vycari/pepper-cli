@@ -210,8 +210,14 @@ def assemble(api: Any, *, scope: Scope | None = None, show_all: bool = False) ->
         now = datetime.fromisoformat(plan["now"])
         events: list[dict[str, Any]] | None = _plan_events(plan, now)
     else:
-        now = user_now(api)
-        events = _todays_events(api, now)
+        try:
+            now = user_now(api)
+        except _READ_FAILED:
+            # No account zone to say what "today" is: skip the calendar (the note says so) and
+            # still show the todos, on the machine's clock.
+            now, events = _clock(UTC).astimezone(), None
+        else:
+            events = _todays_events(api, now)
     todos = [
         t for t in api.list_todos(status="open", group_id=scope.room_id) if _source_ok(t, scope)
     ]
