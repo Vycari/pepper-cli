@@ -1065,24 +1065,41 @@ def _countdown(minutes: int) -> str:
     return f"{hours}h {mins}m" if hours and mins else f"{hours}h" if hours else f"{mins}m"
 
 
-def _deadline_word(row: dict[str, Any]) -> str:
-    """The word before a deadline row's title: due or remind; nothing for an event."""
-    if row.get("kind") != "deadline":
-        return ""
-    return "remind: " if row.get("source_time") == "remind" else "due: "
-
-
 def _event_when(row: dict[str, Any]) -> str:
     return f"{row.get('start_label') or ''}-{row.get('end_label') or ''}".strip("-")
 
 
+def _todo_due_label(item: dict[str, Any], now: datetime | None) -> str:
+    """The server's due field as text, tagged "overdue" once it is behind ``now``.
+
+    Presentation only: the tag never moves or hides a todo."""
+    raw = item.get("due")
+    if not raw:
+        return ""
+    date_only = item.get("due_is_date_only")
+    text = f"due {_format_due(raw, date_only)}"
+    if now is not None:
+        try:
+            due = datetime.fromisoformat(raw)
+            late = due.date() < now.date() if date_only else due <= now
+        except ValueError:
+            late = False
+        if late:
+            text += " (overdue)"
+    return text
+
+
 def render_next(result: dict[str, Any]) -> None:
-    """Print a ``pepper next`` result: Now, today's calendar, and the ranked todos."""
+    """Print a ``pepper next`` result: Now, today's calendar, and the todos in server order."""
 
     def out(text: str = "") -> None:
         _stdout.print(text, soft_wrap=not _stdout.is_terminal)
 
-    now, nxt = result.get("now"), result.get("next_commitment")
+    now, nxt = result.get("now"), result.get("next_event")
+    try:
+        clock: datetime | None = datetime.fromisoformat(result["generated_at"])
+    except (KeyError, ValueError):
+        clock = None
     out("[bold]Now[/bold]")
     if now:
         left = _countdown(now["minutes_left"])
@@ -1093,38 +1110,31 @@ def render_next(result: dict[str, Any]) -> None:
         out("  [dim](no event right now)[/dim]")
     if nxt:
         out(
-            f"  [dim]next: {_deadline_word(nxt)}"
-            f"{_s(nxt['title'])} at {_s(nxt['start_label'] or '')}, "
+            f"  [dim]next: {_s(nxt['title'])} at {_s(nxt['start_label'] or '')}, "
             f"in {_countdown(nxt['in_minutes'])}[/dim]"
         )
     elif now:
         out("  [dim]nothing else on the calendar today[/dim]")
-    cal, due_today = result["calendar"], result.get("due_today") or []
-    if cal or due_today:
+    if result["calendar"]:
         out("\n[bold]Today's calendar[/bold]")
-    if due_today:
-        out(f"  due today: {_s('; '.join(r['title'] or '' for r in due_today))}")
-    for row in cal:
-        if row.get("kind") == "deadline":
-            if row.get("passed"):
-                label = _s(row["start_label"] or "")
-                out(f"  [dim]{label:<16} {_deadline_word(row)}{_s(row['title'] or '')}[/dim]")
-            else:
-                when = f"[yellow]{_s(row['start_label'] or ''):<16}[/yellow]"
-                out(f"  {when} {_deadline_word(row)}{_s(row['title'] or '')}")
-            continue
+    for row in result["calendar"]:
         meta = f"  [dim]@ {_s(row['detail'])}[/dim]" if row.get("detail") else ""
         out(f"  {_s(_event_when(row)):<16} {_s(row.get('title') or '')}{meta}")
     todos = result["todos"]
-    out(f"\n[bold]Todos, prioritized[/bold] [dim]({todos['count']})[/dim]")
+    out(f"\n[bold]Todos[/bold] [dim]({todos['count']})[/dim]")
     if result.get("note"):
         out(f"  [dim]{_s(result['note'])}[/dim]")
     for n, item in enumerate(todos["items"], 1):
-        source = item.get("source")
-        meta = f"  [dim]({_s(source)})[/dim]" if source and source != "user" else ""
-        out(f"{n:>2}. {_s(item.get('title') or '(untitled)')}{meta}")
-        if item.get("reasons"):
-            out(f"      [dim]{_s(', '.join(item['reasons']))}[/dim]")
+        line = f"{n:>2}. {_s(item.get('title') or '(untitled)')}"
+        labels = [_todo_due_label(item, clock)]
+        if item.get("priority"):
+            labels.append(f"priority {item['priority']}")
+        if item.get("source") and item["source"] != "user":
+            labels.append(f"from {item['source']}")
+        labels = [x for x in labels if x]
+        if labels:
+            line += f"  [dim]{_s(', '.join(labels))}[/dim]"
+        out(line)
     if not todos["items"]:
         out("  [dim](nothing open)[/dim]")
     if todos["count"] > len(todos["items"]):

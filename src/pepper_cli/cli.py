@@ -595,11 +595,10 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
 
     p_next = sub.add_parser(
         "next",
-        help="What to do next: Now, today's calendar, your todos prioritized (read-only).",
+        help="What is on now, today's calendar, your open todos in Pepper's order (read-only).",
         description=(
-            "Now (the live event and the next commitment), today's calendar with todo "
-            "deadlines and reminders, and your open todos ranked by overdue, due today, priority "
-            "and due date. Reads only; no time slots are assigned."
+            "Now (the live event and the next upcoming event), today's calendar, and your open "
+            "todos in the order Pepper returns them. Reads only; the CLI does no ranking."
         ),
     )
     p_next.add_argument(

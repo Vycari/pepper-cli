@@ -185,7 +185,7 @@ Every command except `login` and the interactive REPL takes `--json`, and also s
 | `pepper skills create\|edit <name> [--file PATH \| -]` | Author one of your own skills in `$EDITOR`, or from a SKILL.md file. Never takes `--room`. |
 | `pepper skills delete <name> [--yes]` | Delete one of your skills; asks for confirmation unless `--yes`. |
 | `pepper skills share <name> --room R` / `revoke <name> --room R [--yes]` | Share one of your skills with a room, or stop sharing one there. |
-| `pepper next [--room R] [--source PREFIX] [--all] [--json]` | What to do next: Now, today's calendar, and your open todos in priority order (top 10; `--all` for every todo). GETs only. `--room` takes a room name or UUID, must resolve to exactly one room, and reads that room's todos; `--source` narrows todos by a case-insensitive prefix of their source. |
+| `pepper next [--room R] [--source PREFIX] [--all] [--json]` | What is on now, today's calendar, and your open todos in the order Pepper returns them (top 10; `--all` for every todo). GETs only. `--room` takes a room name or UUID, must resolve to exactly one room, and reads that room's todos; `--source` narrows todos by a case-insensitive prefix of their source. |
 | `pepper todos list [--status S] [--room R] [--json]` | List your todos, or a room's with `--room`. |
 | `pepper todos create <title…> [--details D] [--priority P] [--due D] [--room R]` | Create a todo. With `--room`, `--due` is a `YYYY-MM-DD` date. |
 | `pepper todos done\|reopen <id> [--room R]` | Tick a todo as Schedule does (closes it in your or the room's list and releases the rest of its held time), or put it back. |
@@ -372,26 +372,20 @@ Notes:
 
 ## `pepper next`
 
-What you are doing now, what is on today's calendar, and your open todos in priority order. Three
-sections:
+What you are doing now, what is on today's calendar, and your open todos. `next` only fetches and
+renders: it does no ranking, and the server decides the order. Three sections:
 
-- **Now**: the live calendar event with the time left, and the next commitment: the earliest
-  upcoming event, or todo deadline or reminder, labelled `due:` or `remind:`.
-- **Today's calendar**: the events still ahead today, plus todos due at a time today as deadline
-  rows (`due:`) and reminders (`remind:`). Todos due today with no time go on one `due today:` line.
-  A timed deadline or reminder that has passed stays for 24 hours, dimmed and marked `was due` or
-  `reminded`, is never the next commitment and gets no ranking boost, then disappears.
-- **Todos, prioritized**: one ranked list, no time slots, with a short reason on each line. Overdue
-  (date-only) first, then due today, then the todo's own high priority plus a due-date term that
-  halves every 4 days (so a high-priority todo due in three months sits mid-list); a high-priority
-  todo with no due date gets a flat moderate boost. The weights are constants in
-  `src/pepper_cli/next_view.py`. The top 10 show; `--all` lists every todo.
+- **Now**: the live calendar event with the time left, and the next upcoming event.
+- **Today's calendar**: the events still ahead today.
+- **Todos**: your open todos in the order Pepper returns them: due date soonest first, undated
+  last, then creation order. The top 10 show; `--all` lists every todo. Each line shows the
+  server's own fields: the due date or time (tagged `(overdue)` once it is behind you; that label
+  never changes a todo's position), the priority, and the source when it is not `user`.
 
-The todos come from your open todo list (`GET /api/v1/todos`), or from a room's own list with
-`--room R` (a room name or UUID, resolved to exactly one room). `--source PREFIX` keeps todos whose
-source (`user`, or a producer name) starts with `PREFIX`, case-insensitively. Both narrow todos
-only; Now and the calendar are never filtered. The todo list carries no estimates, so ranking does
-not use them.
+The todos come from your open todo list (`GET /api/v1/todos?status=open`), or from a room's own
+list with `--room R` (a room name or UUID, resolved to exactly one room). `--source PREFIX` keeps
+todos whose `source` (`user`, or a producer name) starts with `PREFIX`, case-insensitively. Both
+narrow todos only; Now and the calendar are never filtered.
 
 Today's events come from the schedule plan (`GET /api/v1/calendars/schedule-plan`, `your_day`); when
 the plan is unavailable it reads the calendar range instead, and when that fails too it prints a
@@ -401,19 +395,19 @@ Every request is a GET; `next` never calls `schedule-now`. Your token has no sco
 doesn't enforce this, and a few of those GETs update server-side caches (the requests document, a
 Google token refresh).
 
-`--json` prints `{"generated_at", "source": "todos", "note", "now", "next_commitment",
-"calendar": [row], "due_today": [{"id", "title"}], "todos": {"count", "items": [todo]}}`:
+`--json` prints `{"generated_at", "source": "todos", "note", "now", "next_event", "calendar":
+[event], "todos": {"count", "items": [todo]}}`:
 
 - `note` is a string when the calendar could not be read, else null.
-- `now` is the live event, or null: `{"kind": "event", "id", "title", "start", "end",
-  "start_label", "end_label", "detail", "live": true, "minutes_left"}`.
-- `next_commitment` is null, or a calendar row plus `in_minutes`.
-- `calendar` rows are events (`kind: "event"`, as `now` without `minutes_left`) and deadlines
-  (`kind: "deadline"`, `source_time` `due` or `remind`, `start`, `start_label`, `passed`, and a null
-  `end` and `end_label`).
-- `todos.count` is the total after `--room` and `--source`; `todos.items` is the ranked slice, each
-  `{"id", "title", "due", "remind_at", "source", "high_priority", "score", "reasons", "passed",
-  "source_time"}`. `due` is a `YYYY-MM-DD` day, a UTC instant for a timed due, or null.
+- `now` is the live event, or null: `{"id", "title", "start", "end", "start_label", "end_label",
+  "detail", "minutes_left"}`.
+- `next_event` is null, or the next upcoming event: the same fields as `now` with `in_minutes` in
+  place of `minutes_left`.
+- `calendar` is the events still ahead today (as `now` without `minutes_left`).
+- `todos.count` is the total after `--room` and `--source`; `todos.items` is that list in the order
+  Pepper returns it, cut to 10 unless `--all`, each `{"id", "title", "due", "due_is_date_only",
+  "remind_at", "priority", "source"}`: the server's fields as returned. `due` is the server's
+  `due_date` (a UTC instant; midnight UTC on a named day when `due_is_date_only` is true) or null.
 
 ## Troubleshooting
 
