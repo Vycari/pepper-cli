@@ -436,6 +436,42 @@ async def test_a_refused_turn_puts_the_text_back_in_the_composer() -> None:
         assert not app.turns
 
 
+async def test_a_refused_turn_keeps_a_draft_typed_while_it_was_sending() -> None:
+    server = ts.standard_server()
+    server.fail["/api/v1/chat/send"] = 503
+    gate = threading.Event()
+    server.gates["/api/v1/chat/send"] = gate
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.dm.entries) == 2)
+        await send(pilot, app, "try this")
+        await until(pilot, lambda: "Sending" in status_line(app))
+        app.composer.insert("and then this")
+        gate.set()
+        await until(pilot, lambda: "Couldn't send (HTTP 503)" in status_line(app))
+        assert app.composer.text == "try this\n\nand then this"
+        assert not app.turns
+
+
+async def test_a_turn_refused_while_a_room_is_open_keeps_the_pepper_draft() -> None:
+    server = ts.standard_server()
+    server.fail["/api/v1/chat/send"] = 503
+    gate = threading.Event()
+    server.gates["/api/v1/chat/send"] = gate
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.dm.entries) == 2)
+        await send(pilot, app, "try this")
+        app.composer.insert("half typed")
+        await open_topic(pilot, app)
+        gate.set()
+        await until(pilot, lambda: not app.turns)
+        assert app.drafts[state.PEPPER].text == "try this\n\nhalf typed"
+        assert app.composer.text == ""  # the room's own draft is untouched
+        app.open_conversation(state.PEPPER)
+        assert app.composer.text == "try this\n\nhalf typed"
+
+
 async def test_a_401_on_a_turn_is_fatal() -> None:
     server = ts.standard_server()
     app = tui_app.PepperApp(server.client())

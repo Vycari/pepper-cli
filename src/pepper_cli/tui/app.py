@@ -1030,14 +1030,15 @@ class PepperApp(App[None]):
         self._run("dm")
 
     def _give_back(self, text: str) -> None:
+        """Put a refused turn's text back in the Pepper draft. A draft typed since is kept:
+        the refused text goes above it, a blank line between, so neither is lost."""
         draft = self.drafts.setdefault(state.PEPPER, state.Draft())
         if self.current.is_pepper:
             draft.text = self.composer.text
-        if not draft.text.strip():
-            draft.text = text
-            if self.current.is_pepper:
-                self.composer.load_text(text)
-                self.composer.move_cursor(self.composer.document.end)
+        draft.text = f"{text}\n\n{draft.text}" if draft.text.strip() else text
+        if self.current.is_pepper:
+            self.composer.load_text(draft.text)
+            self.composer.move_cursor(self.composer.document.end)
 
     def _settle_turns(self) -> None:
         """Retire turns whose rows history now shows, give up on a lost one past its
