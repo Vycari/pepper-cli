@@ -34,8 +34,8 @@ urgency, so every client shows the same order. Ordering belongs to the server.
   calendar: [event], todos: {count, items: [todo]}}`. `now` is one event object or null (it was a
   list), `plan`, `do_next`, `due_soon` and `later` are gone, and `source` is always `"todos"` (it
   was `"schedule-plan"` or `"fallback"`). Each todo item is `{id, title, due, due_is_date_only,
-  remind_at, priority, source}`, the server's fields unchanged, in the server's order; the exact
-  fields are in the README.
+  remind_at, priority, source}`, a subset of the server's todo fields with values unchanged
+  (`due` is the server's `due_date`), in the server's order; the README has the details.
 
 ### Changed
 

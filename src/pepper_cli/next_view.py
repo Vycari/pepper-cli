@@ -110,7 +110,7 @@ CAP = 10
 
 
 def _todo_row(t: api_client.TodoEntry) -> dict[str, Any]:
-    """The server's own fields for one todo, unchanged."""
+    """A subset of the server's fields for one todo, values unchanged; ``due`` is ``due_date``."""
     return {
         "id": t.id,
         "title": t.title,

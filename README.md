@@ -409,8 +409,10 @@ Google token refresh).
   as `now` (as `now` without `minutes_left`).
 - `todos.count` is the total after `--room` and `--source`; `todos.items` is that list in the order
   Pepper returns it, cut to 10 unless `--all`, each `{"id", "title", "due", "due_is_date_only",
-  "remind_at", "priority", "source"}`: the server's fields as returned. `due` is the server's
-  `due_date` (a UTC instant; midnight UTC on a named day when `due_is_date_only` is true) or null.
+  "remind_at", "priority", "source"}`. These are a subset of the server's todo fields with values
+  passed through unchanged; one is renamed: `due` is the server's `due_date` (a UTC instant;
+  midnight UTC on a named day when `due_is_date_only` is true) or null. `pepper todos list --json`
+  has the full rows.
 
 ## Troubleshooting
 
