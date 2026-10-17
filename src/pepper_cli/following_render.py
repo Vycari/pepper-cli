@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import html
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 
 from rich.console import Console
 from rich.markup import escape
+from rich.style import Style
+from rich.text import Text
 
 from pepper_cli import following_view
 from pepper_cli.terminal_text import sanitize_line
@@ -26,36 +28,43 @@ def _s(value: object) -> str:
 
 
 def web_link(url: object) -> str | None:
-    """The server's ``url`` as one safe ``http(s)`` link, or None when it is not one.
+    """The server's ``url``, unchanged, when it is a usable ``http(s)`` link; else None.
 
-    Control characters and escape sequences are gone and every character that could end a
-    rich markup tag or an OSC 8 sequence (``[``, ``]``, a backslash, a quote, space) is
-    percent-encoded, so the result is safe inside ``[link=...]`` and to hand to a browser.
-    Anything but ``http`` or ``https`` with a host (``file:``, ``javascript:``) is refused.
+    Only ``http`` or ``https`` with a host is a link (``file:``, ``javascript:`` are refused).
+    A URL that does not parse, or that carries whitespace, a control character, an escape
+    sequence or an invisible format character, is refused rather than repaired, so whatever
+    comes back is exactly what the server sent: nothing is HTML-decoded or percent-encoded,
+    and IPv6 brackets stay as they are. Markup safety is not this function's job: ``linked``
+    attaches the URL as a style, never as markup text.
     """
     if not isinstance(url, str):
         return None
-    text = sanitize_line(html.unescape(url)).strip()
+    text = url.strip()
+    if not text or text != sanitize_line(text) or any(c.isspace() for c in text):
+        return None
     try:
         parts = urlsplit(text)
+        host = parts.hostname
     except ValueError:  # "https://[broken": one bad link must not stop the feed rendering
         return None
-    if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+    if parts.scheme.lower() not in ("http", "https") or not host:
         return None
-    return quote(text, safe="!#$&'()*+,/:;=?@~%-._")
+    return text
 
 
-def linked(label: str, url: object) -> str:
-    """``label`` (markup already escaped) as a terminal hyperlink to ``url``.
+def linked(label: str, url: object, *, style: str = "") -> Text:
+    """``label`` (markup already escaped) in ``style``, as a terminal hyperlink to ``url``.
 
-    Only when stdout is a terminal and ``url`` is an ``http(s)`` link; otherwise the label
-    comes back unchanged, so pipes and ``--json`` never see an escape sequence.
+    The link is a ``Style(link=...)`` on the text, not a ``[link=...]`` markup tag, so no
+    character in the URL can end a tag. Only when stdout is a terminal and ``url`` is an
+    ``http(s)`` link; otherwise there is no link, so pipes and ``--json`` never see an
+    escape sequence.
     """
     target = web_link(url) if _console.is_terminal else None
-    return f"[link={target}]{label}[/link]" if target else label
+    return Text.from_markup(label, style=Style.parse(style) + Style(link=target))
 
 
-def _out(text: str = "") -> None:
+def _out(text: str | Text = "") -> None:
     _console.print(text, soft_wrap=not _console.is_terminal)
 
 
@@ -188,8 +197,8 @@ def render_feed(entries: list[dict[str, Any]], *, note: str | None = None) -> No
         _out("(nothing in your feed yet; follow something with `pepper following create`)")
         return
     for n, e in enumerate(entries, 1):
-        title = linked(_s(e["title"]), e.get("url"))
-        _out(f"[dim]{n:>2}.[/dim] {group_tag(e['group'])} [bold]{title}[/bold]")
+        prefix = Text.from_markup(f"[dim]{n:>2}.[/dim] {group_tag(e['group'])} ")
+        _out(prefix + linked(_s(e["title"]), e.get("url"), style="bold"))
         source = str(e.get("source") or "")
         meta = f"{source} · {e['when_label']}" if e["when_label"] else source
         _out(f"             [dim]{_s(meta)}[/dim]  " + " ".join(_flags(e)))

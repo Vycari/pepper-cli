@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any
 
 from rich.markup import escape
+from rich.text import Text
 
 from pepper_cli.following_render import _out, _s, linked
 from pepper_cli.terminal_text import sanitize_text
@@ -50,7 +51,12 @@ def _flags(d: dict[str, Any]) -> str:
 
 def render_detail(d: dict[str, Any]) -> None:
     n = f"{d['n']}. " if d.get("n") else ""
-    _out(f"[bold]{n}{linked(_s(d.get('title') or '?'), d.get('url'))}[/bold]  {_flags(d)}".rstrip())
+    head = Text.from_markup(f"[bold]{n}[/bold]") + linked(
+        _s(d.get("title") or "?"), d.get("url"), style="bold"
+    )
+    head.append_text(Text.from_markup(f"  {_flags(d)}"))
+    head.rstrip()
+    _out(head)
     kind = " · ".join(str(x) for x in (d.get("group"), d.get("kind")) if x)
     _out(f"  [dim]from[/dim]      {_s(d.get('source') or '?')}  [dim]{_s(kind)}[/dim]")
     _out(f"  [dim]when[/dim]      {_s(_when(d))}")

@@ -536,13 +536,17 @@ def browser(monkeypatch):
     return type("Browser", (), {"calls": calls, "result": result})
 
 
+_ROCK = "https://news.example/rock-and-roll?a=1&b=2"
+
+
 def test_open_calls_webbrowser_with_the_url_and_prints_it(server, browser, capsys) -> None:
+    server.routes["/api/v1/apps/following/data"] = httpx.Response(200, json=_doc_with_url(_ROCK))
     n = _numbers(capsys)["Rock & Roll"]
     rc, out, err = _run(capsys, "feed", "show", str(n), "--open")
     assert rc == 0
-    assert browser.calls == ["https://news.example/Rock-&-Roll"]
-    assert "https://news.example/Rock-&-Roll" in out  # the detail's url line
-    assert "opened https://news.example/Rock-&-Roll" in err
+    assert browser.calls == [_ROCK]
+    assert _ROCK in out  # the detail's url line
+    assert f"opened {_ROCK}" in err
 
 
 def test_open_keeps_json_on_stdout_and_still_opens(server, browser, capsys) -> None:
@@ -558,11 +562,12 @@ def test_open_without_a_usable_browser_prints_the_url_and_exits_zero(
     server, browser, capsys
 ) -> None:
     browser.result["ok"] = False
+    server.routes["/api/v1/apps/following/data"] = httpx.Response(200, json=_doc_with_url(_ROCK))
     n = _numbers(capsys)["Rock & Roll"]
     rc, _, err = _run(capsys, "feed", "show", str(n), "--open")
     assert rc == 0
     assert "no browser could be opened" in err
-    assert "https://news.example/Rock-&-Roll" in err
+    assert _ROCK in err.replace("\n", "")
 
 
 def test_open_over_ssh_never_launches_a_browser(server, browser, monkeypatch, capsys) -> None:
@@ -665,15 +670,62 @@ def test_a_non_http_url_gets_no_link(monkeypatch) -> None:
 def test_a_url_cannot_break_out_of_the_link_markup(monkeypatch) -> None:
     from pepper_cli import following_render
 
-    nasty = "https://x.example/a]b[bold]c d\\e\x1b]8;;evil\x07"
-    target = following_render.web_link(nasty)
-    assert target is not None
-    assert not set(target) & set("[] \\\x1b\x07")
+    tricky = "https://x.example/a]b[bold]c\\e'\"[/link]"
+    assert following_render.web_link(tricky) == tricky  # passed through, not encoded
     buf = _terminal(monkeypatch, tty=True)
-    following_render.render_feed([_entry("T", url=nasty)])
+    following_render.render_feed([_entry("T", url=tricky)])
     out = buf.getvalue()
-    assert _link_targets(out) == [target]  # one link, and no stray OSC sequence of its own
+    assert _link_targets(out) == [tricky]  # one link, the server's url exactly
     assert out.count("\x1b]") == 2  # its open and its close
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://x.example/a\x1b]8;;https://evil.example\x07",
+        "https://x.example/a\x07b",
+        "https://x.example/a b",
+        "https://x.example/\u202eexe.txt",
+        "https://x.example/a\x9cb",
+        "https:///no-host",
+        "",
+    ],
+)
+def test_a_url_with_control_characters_or_no_host_is_no_link(url) -> None:
+    from pepper_cli import following_render
+
+    assert following_render.web_link(url) is None
+
+
+_IPV6 = "https://[2606:4700:4700::1111]/a?b=1"
+
+
+def test_an_ipv6_title_link_keeps_its_brackets(monkeypatch) -> None:
+    from pepper_cli import following_render
+
+    assert following_render.web_link(_IPV6) == _IPV6
+    buf = _terminal(monkeypatch, tty=True)
+    following_render.render_feed([_entry("V6", url=_IPV6)])
+    assert _link_targets(buf.getvalue()) == [_IPV6]
+
+
+def test_open_passes_an_ipv6_link_unchanged(server, browser, capsys) -> None:
+    url = _IPV6
+    server.routes["/api/v1/apps/following/data"] = httpx.Response(200, json=_doc_with_url(url))
+    n = _numbers(capsys)["Rock & Roll"]
+    rc, _, _ = _run(capsys, "feed", "show", str(n), "--open")
+    assert rc == 0
+    assert browser.calls == [url]
+
+
+def test_a_link_is_not_html_decoded(server, browser, capsys) -> None:
+    url = "https://x.example/p?x=1&copy=2&amp;y=3"
+    server.routes["/api/v1/apps/following/data"] = httpx.Response(200, json=_doc_with_url(url))
+    n = _numbers(capsys)["Rock & Roll"]
+    rc, _, err = _run(capsys, "feed", "show", str(n), "--open")
+    assert rc == 0
+    assert browser.calls == [url]
+    assert f"opened {url}" in err
 
 
 def test_feed_json_has_no_hyperlink_escapes(server, capsys) -> None:
