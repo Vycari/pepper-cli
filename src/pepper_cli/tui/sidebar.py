@@ -57,6 +57,9 @@ class Sidebar(Tree[SidebarRow]):
         self.guide_depth = 2
         self._signature: tuple[object, ...] = ()
         self._by_key: dict[str, TreeNode[SidebarRow]] = {}
+        #: A row the app asked for by key; a redraw still waiting to restore the old cursor
+        #: yields to it.
+        self._wanted: str | None = None
 
     @property
     def highlighted_row(self) -> SidebarRow | None:
@@ -87,6 +90,7 @@ class Sidebar(Tree[SidebarRow]):
         self.call_after_refresh(self._restore_cursor, keep)
 
     def _restore_cursor(self, key: str | None) -> None:
+        key = self._wanted or key
         node = self._by_key.get(key) if key else None
         if node is None:
             node = next(iter(self._by_key.values()), None)
@@ -95,8 +99,13 @@ class Sidebar(Tree[SidebarRow]):
 
     def select_key(self, key: str) -> None:
         """Move the cursor to a row by key (used by next-unread)."""
+        self._wanted = key
+        self.call_after_refresh(self._forget_wanted)
         if (node := self._by_key.get(key)) is not None:
             self.move_cursor(node)
+
+    def _forget_wanted(self) -> None:
+        self._wanted = None
 
     def action_expand_room(self) -> None:
         row = self.highlighted_row
