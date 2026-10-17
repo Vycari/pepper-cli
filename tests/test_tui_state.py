@@ -436,10 +436,27 @@ def test_mentions_without_an_identity_never_match_and_skip_stops_asking() -> Non
         )
         is False
     )
-    mentions.hits.add("t1")
+    mentions.hits["t1"] = state.parse_ts("2026-02-01T00:00:00Z")
     mentions.skip(topic)
     assert "t1" not in mentions.hits
     assert mentions.due([room], marks, open_topic_id=None) == []
+
+
+def test_a_mention_after_the_topic_was_read_is_new_again_and_an_old_hit_retires() -> None:
+    room, marks = _unread_room()
+    topic = room.topics[0]
+    mentions = state.Mentions()
+    first = "2026-02-01T00:00:00+00:00"
+    assert mentions.record(topic, [_mention_msg("hit", first)], you_id=ts.ME, mark=None)
+    # The topic is read past the mention; the cached hit no longer shows.
+    marks.merge("t1", state.parse_ts(first))
+    (later,) = _rooms(ts.room(ts.ROOM_A, "A", [ts.topic("t1", "One", "2026-02-03T00:00:00Z")]))
+    assert not mentions.topic_mentioned(later.topics[0], marks, open_topic_id=None)
+    # A second mention after that read is new (the bell rings again).
+    second = _mention_msg("hit2", "2026-02-03T00:00:00+00:00")
+    mark = marks.marks["t1"]
+    assert mentions.record(later.topics[0], [second], you_id=ts.ME, mark=mark) is True
+    assert mentions.topic_mentioned(later.topics[0], marks, open_topic_id=None)
 
 
 def test_sidebar_rows_carry_the_mention_on_topic_and_collapsed_room() -> None:

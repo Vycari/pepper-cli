@@ -172,7 +172,9 @@ class Mentions:
 
     #: ``topic_id -> last_activity_at`` the topic was last asked about.
     checked: dict[str, datetime] = field(default_factory=dict)
-    hits: set[str] = field(default_factory=set)
+    #: ``topic_id -> created_at`` of the newest unread message found that mentions you. A hit
+    #: shows only while the read mark is before it, so reading the topic retires it.
+    hits: dict[str, datetime] = field(default_factory=dict)
 
     def due(
         self, rooms: Iterable[GroupSummary], marks: ReadMarks, *, open_topic_id: str | None
@@ -196,35 +198,41 @@ class Mentions:
         you_id: str | None,
         mark: datetime | None,
     ) -> bool:
-        """Take the answer for ``topic``; True when it newly holds a mention of you."""
-        activity = parse_ts(topic.last_activity_at)
-        if activity is not None:
-            self.checked[topic.topic_id] = activity
-        hit = bool(you_id) and any(
-            you_id in m.mentions
-            and not m.is_you
-            and not m.is_deleted
-            and (mark is None or (parse_ts(m.created_at) or _EPOCH) > mark)
-            for m in messages
-        )
-        was = topic.topic_id in self.hits
-        if hit:
-            self.hits.add(topic.topic_id)
-        else:
-            self.hits.discard(topic.topic_id)
-        return hit and not was
+        """Take the answer for ``topic``; True when it holds a mention newer than any known."""
+        self._answered(topic)
+        newest: datetime | None = None
+        if you_id:
+            for m in messages:
+                if you_id not in m.mentions or m.is_you or m.is_deleted:
+                    continue
+                at = parse_ts(m.created_at) or _EPOCH
+                if (mark is None or at > mark) and (newest is None or at > newest):
+                    newest = at
+        if newest is None:
+            self.hits.pop(topic.topic_id, None)
+            return False
+        was = self.hits.get(topic.topic_id)
+        self.hits[topic.topic_id] = newest
+        return was is None or newest > was
 
     def skip(self, topic: GroupTopicSummary) -> None:
         """The topic cannot be read (no access, gone): stop asking about this activity."""
+        self._answered(topic)
+        self.hits.pop(topic.topic_id, None)
+
+    def _answered(self, topic: GroupTopicSummary) -> None:
         activity = parse_ts(topic.last_activity_at)
         if activity is not None:
             self.checked[topic.topic_id] = activity
-        self.hits.discard(topic.topic_id)
 
     def topic_mentioned(
         self, topic: GroupTopicSummary, marks: ReadMarks, *, open_topic_id: str | None
     ) -> bool:
-        return topic.topic_id in self.hits and marks.is_unread(topic, open_topic_id=open_topic_id)
+        at = self.hits.get(topic.topic_id)
+        if at is None or not marks.is_unread(topic, open_topic_id=open_topic_id):
+            return False
+        mark = marks.marks.get(topic.topic_id)
+        return mark is None or at > mark
 
     def room_mentioned(
         self, room: GroupSummary, marks: ReadMarks, *, open_topic_id: str | None
