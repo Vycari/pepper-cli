@@ -210,6 +210,15 @@ def test_message_row_ids_parse_and_old_rows_without_them_default() -> None:
     assert old.mentions == []
 
 
+def test_is_bridged_parses_and_old_rows_default_to_unbridged() -> None:
+    new = api_client.group_message_from_dict(
+        _message_json(via_display_name="Pepper", is_bridged=True)
+    )
+    old = api_client.group_message_from_dict(_message_json(via_display_name="Pepper"))
+    assert new.is_bridged is True
+    assert old.is_bridged is False
+
+
 def test_agent_rows_parse_and_old_rows_default_to_a_person() -> None:
     """``is_agent`` / ``for_display_name`` ("*agent* · for *requester*")
     parse off a new server and default off an old one."""

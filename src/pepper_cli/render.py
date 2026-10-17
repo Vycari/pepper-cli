@@ -878,8 +878,12 @@ def render_note_list(result: ArtifactListResponse) -> None:
 def group_message_tags(m: GroupMessage) -> tuple[str, str]:
     """The plain ``(via X)`` and ``(agent, for X)`` tags of a room message; ``""`` for each
     that does not apply. Shared by this module and the terminal UI so both say it the same
-    way. The strings carry participant text: escape or sanitize before styling them."""
-    via = f"(via {m.via_display_name})" if m.via_display_name else ""
+    way. The strings carry participant text: escape or sanitize before styling them.
+
+    ``(via X)`` needs ``is_bridged`` as well as a name: the server stamps Pepper as the via
+    of every ``/api/v1`` post as an audit marker, and the web shows the chip only for a
+    bridged message."""
+    via = f"(via {m.via_display_name})" if m.is_bridged and m.via_display_name else ""
     if not m.is_agent:
         return via, ""
     agent = f"(agent, for {m.for_display_name})" if m.for_display_name else "(agent)"

@@ -98,6 +98,7 @@ def message(mid: str, at: str, body: str = "hello", **over: Any) -> dict[str, An
         "day_heading": "September 16, 2026",
         "day_label": "Today",
         "via_display_name": None,
+        "is_bridged": False,
         "is_edited": False,
         "edited_at": None,
         "deleted_at": None,

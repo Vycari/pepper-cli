@@ -46,10 +46,20 @@ def test_tombstone_and_broken_rows_are_a_dim_sentence() -> None:
     assert "Couldn't show this message" in _text(rows.message_renderable(_m(is_broken=True)))
 
 
+def test_via_tag_needs_a_bridged_message() -> None:
+    """The server stamps Pepper as ``via`` on every API post; only a bridge shows the chip."""
+    audit = _m(via_display_name="Pepper")
+    assert "(via" not in _text(rows.message_renderable(audit, you_id=ts.ME))
+    bridged = _m(via_display_name="Pepper", is_bridged=True)
+    assert "(via Pepper)" in _text(rows.message_renderable(bridged, you_id=ts.ME))
+    assert "(via" not in _text(rows.message_renderable(_m(is_bridged=True), you_id=ts.ME))
+
+
 def test_tags_edited_quote_mentions_attachments_and_reactions() -> None:
     m = _m(
         raw_body="hi @Bob",
         via_display_name="Pepper",
+        is_bridged=True,
         is_edited=True,
         quote_excerpt="hi @Bob",
         quote={"id": "p1", "author": "Ada", "excerpt": "earlier words", "deleted": False},
