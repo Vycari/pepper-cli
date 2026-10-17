@@ -53,8 +53,9 @@ def test_edit_and_delete_change_the_row_the_server_holds() -> None:
     server = ts.standard_server()
     with server.client() as api:
         answer = poller.edit_message(api, ts.ROOM_A, "m1", body="new words")
-        assert answer["body"] == "new words"
-        poller.delete_message(api, ts.ROOM_A, "m1")
+        assert (answer["raw_body"], answer["is_edited"]) == ("new words", True)
+        gone = poller.delete_message(api, ts.ROOM_A, "m1")
+        assert gone["deleted"] is True
     row = server.messages[ts.TOPIC_A1][0]
     assert (row["is_edited"], row["is_deleted"]) == (True, True)
     assert server.edits == [{"id": "m1", "body": "new words"}]
