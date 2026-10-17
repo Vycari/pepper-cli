@@ -116,11 +116,6 @@ def _run(capsys, *argv: str) -> str:
     return capsys.readouterr().out
 
 
-def _run(capsys, *argv: str) -> str:
-    assert cli.main(["next", *argv]) == 0
-    return capsys.readouterr().out
-
-
 def _mock(server, todos=(), events=(), plan: bool = True) -> None:
     if plan:
         server.add("/api/v1/calendars/schedule-plan", _plan(events))
