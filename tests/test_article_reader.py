@@ -176,3 +176,12 @@ def test_as_json_limits_paragraphs_but_counts_all() -> None:
     data = art.as_json(limit=2)
     assert data["paragraphs"] == ["a", "b"] and data["paragraph_count"] == 3
     assert json.loads(json.dumps(art.as_json()))["paragraphs"] == ["a", "b", "c"]
+
+
+def test_a_page_that_trickles_past_the_deadline_is_cut_off(web, monkeypatch) -> None:
+    monkeypatch.setattr(article_reader, "DEADLINE_SECONDS", -1.0)
+    web.state["handler"] = lambda req: httpx.Response(
+        200, content=iter([b"<p>a</p>", b"<p>b</p>"]), headers={"content-type": "text/html"}
+    )
+    art = article_reader.fetch("https://slow.example/")
+    assert art.error and "took longer than" in art.error

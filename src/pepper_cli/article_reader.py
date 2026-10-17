@@ -1,10 +1,11 @@
 """``pepper feed N --read``: fetch an article's page and pull out its readable text.
 
 Pepper keeps only a feed item's title and url, so the CLI fetches the page itself. This is a
-plain third-party GET: a browser-like ``User-Agent``, a timeout, a redirect cap and a byte cap,
-and never the Pepper token, cookies or any other credential (the client is built here, apart
-from the API client). Parsing is the stdlib ``html.parser``: no new dependency, and no attempt
-at JavaScript or paywalls; a page that will not read degrades to :attr:`Article.error`, one line.
+plain third-party GET: a browser-like ``User-Agent``, a per-read timeout and an overall
+deadline, a redirect cap and a byte cap, and never the Pepper token, cookies or any other
+credential (the client is built here, apart from the API client). Parsing is the stdlib
+``html.parser``: no new dependency, and no attempt at JavaScript or paywalls; a page that
+will not read degrades to :attr:`Article.error`, one line.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import contextlib
 import dataclasses
 import json
 import re
+import time
 from html.parser import HTMLParser
 from typing import Any
 
@@ -21,6 +23,9 @@ import httpx
 MAX_BYTES = 2_000_000
 MAX_REDIRECTS = 5
 TIMEOUT_SECONDS = 15.0
+#: The whole fetch, body included: the per-read timeout alone lets a page that sends a byte
+#: every few seconds run on indefinitely.
+DEADLINE_SECONDS = 45.0
 DEFAULT_PARAGRAPHS = 12
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -29,6 +34,10 @@ USER_AGENT = (
 
 #: Tests inject a ``httpx.MockTransport`` here; production leaves it ``None``.
 _transport: httpx.BaseTransport | None = None
+
+
+class _TooSlow(Exception):
+    """The page took longer than :data:`DEADLINE_SECONDS` to arrive."""
 
 
 _SKIP = frozenset(
@@ -224,6 +233,7 @@ def fetch(url: str) -> Article:
     if not re.match(r"^https?://", url, re.IGNORECASE):
         art.error = "this item's link is not a web page (http or https) I can fetch"
         return art
+    deadline = time.monotonic() + DEADLINE_SECONDS
     try:
         with (
             httpx.Client(
@@ -249,6 +259,11 @@ def fetch(url: str) -> Article:
                 body.extend(chunk)
                 if len(body) >= MAX_BYTES:
                     break
+                if time.monotonic() > deadline:
+                    raise _TooSlow
+    except _TooSlow:
+        art.error = f"the site took longer than {DEADLINE_SECONDS:.0f} seconds to send the page"
+        return art
     except httpx.TooManyRedirects:
         art.error = f"too many redirects (more than {MAX_REDIRECTS})"
         return art
