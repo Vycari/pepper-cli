@@ -37,10 +37,15 @@ def user_now(api: Any) -> datetime:
     return _clock(zone)
 
 
+#: A calendar read that failed: an error status, no connection, or a 200 whose body is not JSON
+#: (a captive portal's HTML page, say), which ``resp.json()`` raises as ``ValueError``.
+_READ_FAILED = (api_client.ApiError, httpx.RequestError, ValueError)
+
+
 def _tolerate(call: Any) -> Any:
     try:
         return call()
-    except (api_client.ApiError, httpx.RequestError):
+    except _READ_FAILED:
         return None
 
 

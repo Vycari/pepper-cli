@@ -280,6 +280,18 @@ def test_calendar_down_is_said_under_now_not_shown_as_a_free_slot(server, capsys
     assert out.index("Now") < out.index(next_view.NO_CALENDAR_NOTE) < out.index("Todos")
 
 
+def test_a_non_json_plan_body_falls_back_instead_of_aborting(server, capsys) -> None:
+    """A captive portal answers 200 with HTML; that is a failed read, not a crash."""
+    server.add("/api/v1/calendars/range", {"days": [], "calendars": []})
+    _mock(server, [_todo("A")])
+    server.routes["/api/v1/calendars/schedule-plan"] = httpx.Response(
+        200, text="<html>login</html>"
+    )
+    data = json.loads(_run(capsys, "--json"))
+    assert _titles(data) == ["A"] and data["note"] is None
+    assert "/api/v1/calendars/range" in server.seen
+
+
 def test_next_never_writes(server, capsys) -> None:
     _json(server, capsys, todos=[_todo("A")], events=[_event("E", 5, 30)])
     # _Server asserts every request is a GET; schedule-now is not registered either.
