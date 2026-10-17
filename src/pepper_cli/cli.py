@@ -7452,9 +7452,14 @@ def _feed_transcript(api: api_client.ApiClient, detail: dict[str, Any]) -> dict[
         )
     except api_client.ApiError as exc:
         return {"error": f"the transcript is not available ({exc.detail or exc.status})."}
-    if not (result.get("text") or result.get("note")):
-        return {"error": "the server returned no transcript for this episode."}
     keep = ("kind", "status", "text", "note")
+    if not (result.get("text") or result.get("note")):
+        # the server's own kind and status stay in the answer (a script can tell "pending")
+        return {
+            "kind": result.get("kind"),
+            "status": result.get("status"),
+            "error": "the server returned no transcript for this episode.",
+        }
     return {k: result.get(k) for k in keep}
 
 

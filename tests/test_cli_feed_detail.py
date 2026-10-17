@@ -361,6 +361,17 @@ def test_an_empty_transcript_answer_says_the_server_returned_none(server, capsys
     assert rc == 0 and "server returned no transcript" in out and "no transcript yet" not in out
 
 
+def test_an_empty_transcript_answer_keeps_the_servers_kind_and_status(server, capsys) -> None:
+    server.routes["/api/v1/apps/following/actions/episode_transcript"] = httpx.Response(
+        200, json={"result": {"kind": "notes", "status": "pending"}}
+    )
+    n = _numbers(capsys)["Ep 1"]
+    rc, out, _ = _run(capsys, "feed", str(n), "--transcript", "--json")
+    transcript = json.loads(out)["transcript"]
+    assert rc == 0 and transcript["kind"] == "notes" and transcript["status"] == "pending"
+    assert "no transcript" in transcript["error"]
+
+
 def test_transcript_on_a_non_podcast_is_a_line_not_a_failure(server, capsys) -> None:
     n = _numbers(capsys)["Rock & Roll"]
     rc, out, _ = _run(capsys, "feed", str(n), "--transcript")
