@@ -1299,6 +1299,12 @@ class ApiClient:
         # lived attribute that ``repr(api)`` could surface.
         self._token = token
 
+    @property
+    def server_url(self) -> str:
+        """The server's base URL, without a trailing slash (a client resolves the
+        server-relative links a message carries against it)."""
+        return self._server_url
+
     def __enter__(self) -> Self:
         return self
 

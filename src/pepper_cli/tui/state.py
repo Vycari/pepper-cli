@@ -13,12 +13,14 @@ disagree with comparing the moments.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urljoin, urlsplit
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Set as AbstractSet
 
     from pepper_cli.api_client import (
         ChatHistoryEntry,
@@ -53,6 +55,14 @@ BACKOFF_STEPS = (3.0, 6.0, 12.0, 30.0)
 DM_RECONCILE_WINDOW = 120.0
 #: History cadence while waiting for a dropped turn's reply.
 DM_RECONCILE_INTERVAL = 3.0
+#: A room whose newest topic activity is older than this folds under "Show inactive (N)".
+#: The server's own rail default (``groups_rail_inactive_after_days``); ``/api/v1/groups`` does
+#: not send the ``inactive`` flag, so the client computes it from ``topics[].last_activity_at``.
+INACTIVE_AFTER = timedelta(days=7)
+#: The reaction picker: key ``1``..``6`` picks the matching emoji.
+EMOJI_CHOICES = ("👍", "❤️", "😂", "🎉", "😮", "🙏")
+#: Messages asked for in a "load older" page (the server caps it at 100).
+OLDER_PAGE = 50
 #: Longest quote snippet shown above the composer and on a pending row (local, from the
 #: quoted message's own body; never the server's ``quote_excerpt``).
 QUOTE_SNIPPET_CHARS = 80
@@ -164,7 +174,7 @@ class SidebarRow:
     """One line of the Messages tree. ``key`` is stable across rebuilds."""
 
     key: str
-    kind: str  # "pepper" | "room" | "topic" | "more"
+    kind: str  # "pepper" | "room" | "topic" | "more" | "archived" | "newtopic" | "inactive"
     label: str
     depth: int
     room_id: str | None = None
@@ -184,6 +194,42 @@ class SidebarRow:
         return None
 
 
+def room_recency(room: GroupSummary) -> datetime | None:
+    """The newest live-topic activity of a room, or ``None`` when it has none to go by."""
+    stamps = [parse_ts(t.last_activity_at) for t in room.topics if not t.archived_at]
+    return max((s for s in stamps if s is not None), default=None)
+
+
+def room_inactive(room: GroupSummary, *, now: datetime) -> bool:
+    """Whether a room has been quiet longer than :data:`INACTIVE_AFTER`.
+
+    A room with no dated topic is not called inactive: the server also falls back to the
+    room's creation time, which ``/api/v1/groups`` does not send, so this errs toward showing.
+    """
+    recency = room_recency(room)
+    return recency is not None and now - recency > INACTIVE_AFTER
+
+
+def archived_topics(
+    room: GroupSummary, fetched: Sequence[GroupTopicSummary] = ()
+) -> list[GroupTopicSummary]:
+    """A room's archived topics, newest first: those the rooms list carries plus ``fetched``
+    (the full topic rail, read when the room is opened), deduped by id."""
+    found = {t.topic_id: t for t in room.topics if t.archived_at}
+    found.update({t.topic_id: t for t in fetched if t.archived_at})
+    return sorted(found.values(), key=lambda t: _ts_or_epoch(t.last_activity_at), reverse=True)
+
+
+@dataclass(frozen=True)
+class SidebarFolds:
+    """What the user has unfolded: archived topics per room, and the inactive rooms."""
+
+    archived: AbstractSet[str] = frozenset()
+    inactive: bool = False
+    #: Archived topics read from the topic rail, per room (the rooms list may omit them).
+    fetched: Mapping[str, Sequence[GroupTopicSummary]] = field(default_factory=dict)
+
+
 def build_sidebar(
     rooms: list[GroupSummary],
     marks: ReadMarks,
@@ -192,16 +238,32 @@ def build_sidebar(
     manual: dict[str, bool],
     show_all: set[str],
     pepper_dot: bool,
+    folds: SidebarFolds | None = None,
+    now: datetime | None = None,
 ) -> list[SidebarRow]:
     """The Messages tree as flat rows: Pepper first, then rooms in server (recency) order.
 
     A room is expanded when the user said so by hand (``manual``), else when it is the open
     room. An expanded room lists its 5 most recent topics plus a "Show more (N)" row (the
-    open topic stays visible even past the fifth).
+    open topic stays visible even past the fifth), then "Show archived (N)" and "+ New topic".
+    With ``now`` given, rooms quiet for over a week fold behind "Show inactive (N)" at the end
+    (never the open room, nor one with something unread); without it nothing folds.
     """
+    folds = folds or SidebarFolds()
     open_topic_id = current.topic_id
     rows = [SidebarRow(key="pepper", kind="pepper", label="Pepper", depth=0, unread=pepper_dot)]
+    folded: set[str] = set()
+    if now is not None:
+        folded = {
+            r.group_id
+            for r in rooms
+            if room_inactive(r, now=now)
+            and r.group_id != current.room_id
+            and not marks.room_unread(r, open_topic_id=open_topic_id)
+        }
     for room in rooms:
+        if room.group_id in folded and not folds.inactive:
+            continue
         expanded = manual.get(room.group_id, room.group_id == current.room_id)
         rows.append(
             SidebarRow(
@@ -216,38 +278,102 @@ def build_sidebar(
                 expanded=expanded,
             )
         )
-        if not expanded:
-            continue
-        topics = topics_by_recency(room)
-        shown = topics if room.group_id in show_all else topics[:TOPIC_LIMIT]
-        if open_topic_id and current.room_id == room.group_id and shown != topics:
-            extra = next((t for t in topics if t.topic_id == open_topic_id), None)
-            if extra is not None and extra not in shown:
-                shown = [*shown, extra]
-        rows.extend(
-            SidebarRow(
-                key=f"topic:{t.topic_id}",
-                kind="topic",
-                label=t.name,
-                depth=1,
-                room_id=room.group_id,
-                topic_id=t.topic_id,
-                unread=marks.is_unread(t, open_topic_id=open_topic_id),
-            )
-            for t in shown
-        )
-        if (hidden := len(topics) - len(shown)) > 0:
-            rows.append(
-                SidebarRow(
-                    key=f"more:{room.group_id}",
-                    kind="more",
-                    label=f"Show more ({hidden})",
-                    depth=1,
-                    room_id=room.group_id,
-                    hidden_count=hidden,
+        if expanded:
+            rows.extend(
+                _room_children(
+                    room, marks, current=current, folds=folds, show_all=room.group_id in show_all
                 )
             )
+    if folded:
+        verb = "Hide" if folds.inactive else "Show"
+        rows.append(
+            SidebarRow(
+                key="inactive",
+                kind="inactive",
+                label=f"{verb} inactive ({len(folded)})",
+                depth=0,
+                expanded=folds.inactive,
+                hidden_count=len(folded),
+            )
+        )
     return rows
+
+
+def _room_children(
+    room: GroupSummary,
+    marks: ReadMarks,
+    *,
+    current: Conversation,
+    folds: SidebarFolds,
+    show_all: bool,
+) -> list[SidebarRow]:
+    open_topic_id = current.topic_id
+    topics = topics_by_recency(room)
+    shown = topics if show_all else topics[:TOPIC_LIMIT]
+    if open_topic_id and current.room_id == room.group_id and shown != topics:
+        extra = next((t for t in topics if t.topic_id == open_topic_id), None)
+        if extra is not None and extra not in shown:
+            shown = [*shown, extra]
+    out = [
+        SidebarRow(
+            key=f"topic:{t.topic_id}",
+            kind="topic",
+            label=t.name,
+            depth=1,
+            room_id=room.group_id,
+            topic_id=t.topic_id,
+            unread=marks.is_unread(t, open_topic_id=open_topic_id),
+        )
+        for t in shown
+    ]
+    if (hidden := len(topics) - len(shown)) > 0:
+        out.append(
+            SidebarRow(
+                key=f"more:{room.group_id}",
+                kind="more",
+                label=f"Show more ({hidden})",
+                depth=1,
+                room_id=room.group_id,
+                hidden_count=hidden,
+            )
+        )
+    archived = archived_topics(room, folds.fetched.get(room.group_id, ()))
+    unfolded = room.group_id in folds.archived
+    if archived:
+        verb = "Hide" if unfolded else "Show"
+        out.append(
+            SidebarRow(
+                key=f"archived:{room.group_id}",
+                kind="archived",
+                label=f"{verb} archived ({len(archived)})",
+                depth=1,
+                room_id=room.group_id,
+                expanded=unfolded,
+                hidden_count=len(archived),
+            )
+        )
+        if unfolded:
+            out.extend(
+                SidebarRow(
+                    key=f"topic:{t.topic_id}",
+                    kind="topic",
+                    label=t.name,
+                    depth=1,
+                    room_id=room.group_id,
+                    topic_id=t.topic_id,
+                )
+                for t in archived
+            )
+    out.append(
+        SidebarRow(
+            key=f"newtopic:{room.group_id}",
+            kind="newtopic",
+            label="+ New topic",
+            depth=1,
+            room_id=room.group_id,
+        )
+    )
+    return out
 
 
 def unread_conversations(
@@ -328,6 +454,11 @@ class MessageStore:
     rows: dict[str, GroupMessage] = field(default_factory=dict)
     cursor: datetime | None = None
     ticks: int = 0
+    #: The ``next_before`` of the oldest page held: what "load older" asks for next. ``None``
+    #: means nothing is older (or the first page has not landed yet).
+    older: str | None = None
+    #: A "load older" page has been merged, so the newest page's cursor no longer applies.
+    paged_back: bool = False
 
     def add(self, incoming: Iterable[GroupMessage]) -> list[str]:
         """Merge server rows. Returns the ids that are new (an edit replaces, it is not new)."""
@@ -341,8 +472,31 @@ class MessageStore:
                 self.cursor = stamp
         return new_ids
 
+    def note_newest_page(self, next_before: str | None) -> None:
+        """A read of the newest page told us where the older ones start. Once the user has
+        paged back, a later reconcile read of the newest page must not move that cursor."""
+        if not self.paged_back:
+            self.older = next_before
+
+    def add_older(self, incoming: Iterable[GroupMessage], next_before: str | None) -> list[str]:
+        """Merge a "load older" page. Rows are deduped by id; the poll cursor is untouched
+        because older rows are never newer than it. Returns the ids that are new."""
+        new_ids = self.add(incoming)
+        self.older = next_before
+        self.paged_back = True
+        return new_ids
+
+    @property
+    def has_older(self) -> bool:
+        return self.older is not None
+
     def ordered(self) -> list[GroupMessage]:
         return sorted(self.rows.values(), key=lambda m: (_ts_or_epoch(m.created_at), m.id))
+
+    def set_reactions(self, message_id: str, reactions: list[dict[str, Any]]) -> None:
+        """Adopt the server's chip set for a message (it is authoritative, ``mine`` included)."""
+        if (row := self.rows.get(message_id)) is not None:
+            self.rows[message_id] = replace(row, reactions=list(reactions))
 
     def newest_created_at(self) -> str | None:
         """The ``created_at`` to publish as the read mark: the newest row's own spelling."""
@@ -617,3 +771,126 @@ class DmTurn:
         :data:`DM_RECONCILE_WINDOW`."""
         since = {"checking": self.lost_at, "done": self.done_at}.get(self.phase)
         return since is not None and now - since >= DM_RECONCILE_WINDOW
+
+
+# ---------------------------------------------------------------------------
+# Parity (P3): reactions, own messages, links, jump
+
+
+def reaction_action(reactions: Iterable[dict[str, Any]], emoji: str) -> Literal["add", "clear"]:
+    """What picking ``emoji`` does: take your own back when the chip is already yours, else add.
+
+    ``mine`` is the server's word, never computed here. Reactions are per emoji, so picking a
+    different one adds a second chip rather than swapping the first.
+    """
+    for chip in reactions:
+        if chip.get("emoji") == emoji and chip.get("mine") is True:
+            return "clear"
+    return "add"
+
+
+def is_own_editable(message: GroupMessage) -> bool:
+    """Whether ``e``/``d`` apply: the caller's own live message (the server enforces it too)."""
+    return message.is_you and not message.is_deleted and not message.is_broken
+
+
+_URL_IN_TEXT = re.compile(r"""https?://[^\s<>"')\]]+""")
+
+
+def safe_http_url(url: str | None, *, base: str) -> str | None:
+    """``url`` resolved against the server, or ``None`` unless it is http(s).
+
+    A message can carry any string as a link; handing a ``javascript:`` or ``file:`` URL to
+    the system browser is how a chat message becomes a local exploit, so only http and https
+    pass.
+    """
+    if not url or not url.strip():
+        return None
+    absolute = urljoin(base.rstrip("/") + "/", url.strip())
+    parts = urlsplit(absolute)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return None
+    return absolute
+
+
+def message_urls(message: GroupMessage, *, base: str) -> list[str]:
+    """Every openable URL of a message: links (previews, then bare links in the body), then
+    attachments, then card urls, in that order, each at most once."""
+    candidates: list[object] = [p.get("url") for p in message.link_previews]
+    candidates.extend(_URL_IN_TEXT.findall(message.raw_body or ""))
+    candidates.extend(a.get("url") for a in message.attachments)
+    candidates.extend(c.url for c in message.cards)
+    found: list[str] = []
+    for raw in candidates:
+        url = safe_http_url(raw if isinstance(raw, str) else None, base=base)
+        if url is not None and url not in found:
+            found.append(url)
+    return found
+
+
+def first_url(message: GroupMessage, *, base: str) -> str | None:
+    """The URL ``o`` opens, or ``None`` when the message has none."""
+    urls = message_urls(message, base=base)
+    return urls[0] if urls else None
+
+
+def url_domain(url: str) -> str:
+    """The host of a link, without ``www.`` (empty when it has none)."""
+    host = urlsplit(url).hostname or ""
+    return host.removeprefix("www.")
+
+
+@dataclass(frozen=True)
+class JumpTarget:
+    """One entry of the ``Ctrl+K`` list: a label and the conversation it opens."""
+
+    label: str
+    conversation: Conversation
+
+
+def jump_targets(rooms: list[GroupSummary]) -> list[JumpTarget]:
+    """Pepper, every room (opens its newest topic) and every live topic, in sidebar order."""
+    targets = [JumpTarget("Pepper", PEPPER)]
+    for room in rooms:
+        topics = topics_by_recency(room)
+        if topics:
+            newest = Conversation(room.group_id, topics[0].topic_id)
+            targets.append(JumpTarget(room.display_name, newest))
+        targets.extend(
+            JumpTarget(f"{room.display_name} › {t.name}", Conversation(room.group_id, t.topic_id))
+            for t in topics
+        )
+    return targets
+
+
+def fuzzy_score(query: str, text: str) -> int | None:
+    """How well ``query`` matches ``text`` as an in-order subsequence, or ``None`` if it does
+    not. Higher is better: consecutive letters and word starts count extra, and a shorter
+    haystack beats a longer one with the same hits."""
+    needle = query.casefold().replace(" ", "")
+    hay = text.casefold()
+    if not needle:
+        return 0
+    score = 0
+    position = 0
+    previous = -2
+    for ch in needle:
+        found = hay.find(ch, position)
+        if found < 0:
+            return None
+        score += 10
+        if found == previous + 1:
+            score += 15
+        if found == 0 or not hay[found - 1].isalnum():
+            score += 12
+        position = found + 1
+        previous = found
+    return score - len(hay)
+
+
+def fuzzy_filter(query: str, targets: Sequence[JumpTarget]) -> list[JumpTarget]:
+    """Targets matching ``query``, best first (stable on ties); all of them for an empty query."""
+    scored = [(fuzzy_score(query, t.label), i, t) for i, t in enumerate(targets)]
+    hits = [(sc, i, t) for sc, i, t in scored if sc is not None]
+    hits.sort(key=lambda h: (-h[0], h[1]))
+    return [t for _, _, t in hits]
