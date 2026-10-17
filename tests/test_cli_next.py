@@ -243,8 +243,25 @@ def test_missing_plan_falls_back_to_the_calendar_range(server, capsys) -> None:
     )
     data = _json(server, capsys, todos=[_todo("A")], plan=False)
     assert [r["title"] for r in data["calendar"]] == ["Lunch"]
+    # The range rows carry no labels, so the CLI formats them (the Windows crash path).
+    assert data["calendar"][0]["start_label"] == "4:30pm"
+    assert data["calendar"][0]["end_label"] == "5:30pm"
     assert data["note"] is None and _titles(data) == ["A"]
     assert "/api/v1/calendars/schedule-plan" in server.seen
+
+
+@pytest.mark.parametrize(
+    ("iso", "label"),
+    [
+        ("2026-10-02T00:05:00+00:00", "12:05am"),
+        ("2026-10-02T09:30:00+00:00", "9:30am"),
+        ("2026-10-02T12:00:00+00:00", "12:00pm"),
+        ("2026-10-02T23:59:00+00:00", "11:59pm"),
+    ],
+)
+def test_clock_label_has_no_platform_specific_strftime(iso: str, label: str) -> None:
+    """``%-I`` raises on Windows; the label is built by hand and reads the same everywhere."""
+    assert next_view._label(iso, UTC) == label
 
 
 def test_calendar_down_still_shows_todos_with_a_note(server, capsys) -> None:

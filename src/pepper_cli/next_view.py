@@ -70,12 +70,16 @@ def _minutes(delta_seconds: float) -> int:
 
 
 def _label(iso: str | None, tz: tzinfo | None) -> str | None:
-    """A clock time like "2:30pm" for an ISO instant, in ``tz``; one style for events and todos."""
+    """A clock time like "2:30pm" for an ISO instant, in ``tz``.
+
+    Built by hand rather than with ``%-I``: that no-padding flag is glibc's, and Windows'
+    ``strftime`` rejects it with ``ValueError``.
+    """
     if not iso:
         return None
     t = datetime.fromisoformat(iso)
     t = t.astimezone(tz) if tz else t
-    return t.strftime("%-I:%M%p").lower()
+    return f"{t.hour % 12 or 12}:{t.minute:02d}{'am' if t.hour < 12 else 'pm'}"
 
 
 def _venue(place: str | None) -> str | None:
