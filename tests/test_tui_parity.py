@@ -206,6 +206,47 @@ async def test_scrolling_up_past_the_first_row_loads_the_page_before_it(
         assert not app.store.has_older
 
 
+async def test_editing_and_deleting_a_row_from_an_older_page_shows_the_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The newest page does not hold these rows, so the reconcile re-read cannot fix them:
+    # the edit/delete reply has to.
+    monkeypatch.setattr(state, "OLDER_PAGE", 4)
+    server = ts.standard_server()
+    server.page_size = 4
+    _a1(
+        server,
+        *(
+            ts.message(f"m{i:02d}", f"2026-09-16T10:{i:02d}:00+00:00", f"body {i}", is_you=True)
+            for i in range(8)
+        ),
+    )
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await _open_a1(app, pilot, "body 7")
+        for _ in range(5):
+            await pilot.press("up")
+        await until(pilot, lambda: "body 2" in body_text(app))
+        app.selected = "msg:m02"
+        await pilot.press("e")
+        await until(pilot, lambda: app.editing is not None)
+        app.composer.load_text("rewritten")
+        await pilot.press("enter")
+        await until(pilot, lambda: "rewritten" in body_text(app))
+        assert "body 2" not in body_text(app)
+        assert app.store.rows["m02"].is_edited
+        app.thread.focus_scroller()
+        app.selected = "msg:m01"
+        await pilot.press("d")
+        await until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+        await pilot.press("y")
+        await until(pilot, lambda: app.store.rows["m01"].is_deleted)
+        await pilot.pause(0.2)  # later polls and the reconcile do not bring either back
+        assert "body 1" not in body_text(app)
+        assert rows.DELETED in body_text(app)
+        assert "rewritten" in body_text(app)
+
+
 async def test_older_rows_keep_the_view_where_it_was() -> None:
     server = ts.standard_server()
     server.page_size = 6

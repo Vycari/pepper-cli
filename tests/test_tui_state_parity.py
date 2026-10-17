@@ -282,3 +282,49 @@ def test_expect_reconcile_makes_the_next_poll_a_full_read() -> None:
     store.expect_reconcile()
     assert store.next_is_reconcile() is True
     assert store.next_is_reconcile() is False
+
+
+def _store_with(*messages: api_client.GroupMessage) -> state.MessageStore:
+    store = state.MessageStore()
+    store.add(messages)
+    return store
+
+
+def test_an_edit_reply_patches_the_row_and_a_stale_copy_does_not_undo_it() -> None:
+    before = _over(raw_body="old", is_you=True)
+    store = _store_with(before)
+    store.apply_edit(
+        "m1",
+        {"raw_body": "new", "rendered_html": "<p>new</p>", "edited_at": "2026-09-16T18:00:00Z"},
+    )
+    row = store.rows["m1"]
+    assert (row.raw_body, row.rendered_html, row.is_edited) == ("new", "<p>new</p>", True)
+    store.add([before])  # a poll that started before the edit landed
+    assert store.rows["m1"].raw_body == "new"
+    older_edit = _over(raw_body="mid", is_edited=True, edited_at="2026-09-16T17:59:00Z")
+    store.add([older_edit])
+    assert store.rows["m1"].raw_body == "new"
+    newer = _over(raw_body="newer", is_edited=True, edited_at="2026-09-16T18:05:00+00:00")
+    store.add([newer])
+    assert store.rows["m1"].raw_body == "newer"
+    store.apply_edit("missing", {"raw_body": "x"})  # a row no longer held: nothing happens
+    assert "missing" not in store.rows
+
+
+def test_an_edit_reply_missing_fields_keeps_what_the_row_had() -> None:
+    store = _store_with(_over(raw_body="old"))
+    store.apply_edit("m1", {"raw_body": None})
+    assert store.rows["m1"].raw_body == "old"
+    assert store.rows["m1"].is_edited
+
+
+def test_a_delete_reply_leaves_a_tombstone_a_stale_copy_cannot_revive() -> None:
+    live = _over(raw_body="oops")
+    store = _store_with(live)
+    store.apply_delete("m1", {"deleted": True, "deleted_at": "2026-09-16T18:00:00Z"})
+    row = store.rows["m1"]
+    assert (row.is_deleted, row.raw_body, row.deleted_at) == (True, "", "2026-09-16T18:00:00Z")
+    store.add([live])
+    assert store.rows["m1"].is_deleted
+    store.apply_delete("missing", {})
+    assert "missing" not in store.rows

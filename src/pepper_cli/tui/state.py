@@ -464,9 +464,11 @@ class MessageStore:
         """Merge server rows. Returns the ids that are new (an edit replaces, it is not new)."""
         new_ids: list[str] = []
         for message in incoming:
-            if message.id not in self.rows:
+            held = self.rows.get(message.id)
+            if held is None:
                 new_ids.append(message.id)
-            self.rows[message.id] = message
+            if held is None or not _is_stale_copy(message, held):
+                self.rows[message.id] = message
             stamp = parse_ts(message.created_at)
             if stamp is not None and (self.cursor is None or stamp > self.cursor):
                 self.cursor = stamp
@@ -498,6 +500,41 @@ class MessageStore:
         if (row := self.rows.get(message_id)) is not None:
             self.rows[message_id] = replace(row, reactions=list(reactions))
 
+    def apply_edit(self, message_id: str, answer: dict[str, Any]) -> None:
+        """Swap in the body the server answered an edit with.
+
+        The row may be on an older page that no poll re-reads, so the reply is what puts the
+        server's version on screen. Its ``edited_at`` is the version marker that stops a poll
+        already in flight (carrying the row as it was) from undoing this (see :meth:`add`).
+        """
+        row = self.rows.get(message_id)
+        if row is None:
+            return
+        raw_body = answer.get("raw_body")
+        rendered = answer.get("rendered_html")
+        edited_at = answer.get("edited_at")
+        self.rows[message_id] = replace(
+            row,
+            raw_body=raw_body if isinstance(raw_body, str) else row.raw_body,
+            rendered_html=rendered if isinstance(rendered, str) else row.rendered_html,
+            is_edited=True,
+            edited_at=edited_at if isinstance(edited_at, str) else row.edited_at,
+        )
+
+    def apply_delete(self, message_id: str, answer: dict[str, Any]) -> None:
+        """Turn a row the server confirmed deleted into its tombstone (as a poll would show it)."""
+        row = self.rows.get(message_id)
+        if row is None:
+            return
+        deleted_at = answer.get("deleted_at")
+        self.rows[message_id] = replace(
+            row,
+            is_deleted=True,
+            raw_body="",
+            rendered_html="",
+            deleted_at=deleted_at if isinstance(deleted_at, str) else row.deleted_at,
+        )
+
     def newest_created_at(self) -> str | None:
         """The ``created_at`` to publish as the read mark: the newest row's own spelling."""
         rows = self.ordered()
@@ -511,14 +548,29 @@ class MessageStore:
         return (self.cursor - LOOKBACK).isoformat()
 
     def expect_reconcile(self) -> None:
-        """Make the next poll a full re-read (after an edit or delete, whose result is the
-        server's row, not something to patch in here)."""
+        """Make the next poll a full re-read (after an edit or delete: the newest page comes
+        back as the server holds it, whatever was patched in from the reply)."""
         self.ticks = RECONCILE_EVERY - 1
 
     def next_is_reconcile(self) -> bool:
         """Count a poll tick; True on every ``RECONCILE_EVERY``-th one."""
         self.ticks += 1
         return self.ticks % RECONCILE_EVERY == 0
+
+
+def _is_stale_copy(incoming: GroupMessage, held: GroupMessage) -> bool:
+    """Whether ``incoming`` is an older version of ``held`` than the one already shown.
+
+    Edits only move forward and a delete is final, so a read that started before the change
+    landed (and carries the row as it was) must not put the old text back.
+    """
+    if held.is_deleted and not incoming.is_deleted:
+        return True
+    held_at = parse_ts(held.edited_at)
+    if held_at is None:
+        return False
+    incoming_at = parse_ts(incoming.edited_at)
+    return incoming_at is None or incoming_at < held_at
 
 
 # ---------------------------------------------------------------------------

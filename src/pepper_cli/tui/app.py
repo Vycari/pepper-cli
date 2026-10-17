@@ -1145,7 +1145,7 @@ class PepperApp(App[None]):
         self._start(
             "mutate",
             lambda: poller.edit_message(self._api, room, message_id, body=text),
-            lambda _answer: self._mutated(edited=message_id),
+            lambda answer: self._mutated(message_id, answer, deleted=False),
             on_error=lambda exc: self._action_failed("save your edit", exc),
         )
 
@@ -1168,15 +1168,22 @@ class PepperApp(App[None]):
         self._start(
             "mutate",
             lambda: poller.delete_message(self._api, room, message_id),
-            lambda _answer: self._mutated(edited=None),
+            lambda answer: self._mutated(message_id, answer, deleted=True),
             on_error=lambda exc: self._action_failed("delete the message", exc),
         )
 
-    def _mutated(self, *, edited: str | None) -> None:
-        """The server took an edit or delete: leave edit mode and re-read the topic, so the
-        row on screen is the server's own."""
-        if edited is not None and self.editing is not None and self.editing[1] == edited:
-            self._end_edit()
+    def _mutated(self, message_id: str, answer: object, *, deleted: bool) -> None:
+        """The server took an edit or delete: patch the row from its reply (it may be on an
+        older page no poll re-reads), leave edit mode, and re-read the newest page."""
+        reply = answer if isinstance(answer, dict) else {}
+        if deleted:
+            self.store.apply_delete(message_id, reply)
+        else:
+            self.store.apply_edit(message_id, reply)
+            if self.editing is not None and self.editing[1] == message_id:
+                self._end_edit()
+        if not self.current.is_pepper:
+            self._render_topic(new_rows=0, reset=False)
         self.store.expect_reconcile()
         self._run("topic")
 

@@ -253,7 +253,11 @@ class FakeServer:
         if request.method == "DELETE" and not tail:
             self.deleted.append(row["id"])
             row.update(is_deleted=True, raw_body="", rendered_html="", deleted_at=self._next_at())
-            return httpx.Response(200, json={"message": row})
+            # The real reply (pepper ``contract.delete_message``): a confirmation, no row.
+            return httpx.Response(
+                200,
+                json={"message_id": row["id"], "deleted": True, "deleted_at": row["deleted_at"]},
+            )
         body = json.loads(request.content)
         if tail == ["edit"]:
             self.edits.append({"id": row["id"], **body})
@@ -263,7 +267,17 @@ class FakeServer:
                 is_edited=True,
                 edited_at=self._next_at(),
             )
-            return httpx.Response(200, json={"body": body["body"], "edited_at": row["edited_at"]})
+            # The real reply (pepper ``contract.edit_message``): the re-rendered body.
+            return httpx.Response(
+                200,
+                json={
+                    "message_id": row["id"],
+                    "raw_body": row["raw_body"],
+                    "rendered_html": row["rendered_html"],
+                    "is_edited": True,
+                    "edited_at": row["edited_at"],
+                },
+            )
         if tail in (["reactions"], ["reactions", "clear"]):
             emoji = body["emoji"]
             clearing = tail == ["reactions", "clear"]
