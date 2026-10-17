@@ -78,7 +78,7 @@ def message(mid: str, at: str, body: str = "hello", **over: Any) -> dict[str, An
         "attachments": [],
         "mention_names": [],
         "quote": None,
-        "quote_excerpt": "",
+        "quote_excerpt": body,  # live servers fill this with the message's own text
         "cards": [],
         "is_permalink_target": False,
         **over,

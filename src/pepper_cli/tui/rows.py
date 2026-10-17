@@ -100,6 +100,23 @@ def _body(m: GroupMessage, *, mentions_you: bool) -> Text:
     return indented
 
 
+def _quote_line(quote: object) -> Text | None:
+    """The quoted parent as ``┃ Author: excerpt``, or ``None`` when the message quotes nothing.
+
+    Reads ``quote`` (the parent this message replies to), never ``quote_excerpt``: the
+    server fills that on every message with its *own* text, for when someone else quotes it.
+    """
+    if not isinstance(quote, dict):
+        return None
+    if quote.get("deleted"):
+        return Text(f"{INDENT}┃ (deleted message)", style="dim")
+    author = sanitize_line(str(quote.get("author") or ""))
+    excerpt = sanitize_line(str(quote.get("excerpt") or ""))
+    if not (author or excerpt):
+        return None
+    return Text(f"{INDENT}┃ {author + ': ' if author else ''}{excerpt}", style="dim")
+
+
 def message_renderable(
     m: GroupMessage, *, you_id: str | None = None, show_name: bool | None = None
 ) -> RenderableType:
@@ -116,8 +133,8 @@ def message_renderable(
             name.append(" @", style=ACCENT)
         parts.append(_header(name, m.created_at_display))
     if not (m.is_deleted or m.is_broken):
-        if m.quote_excerpt:
-            parts.append(Text(f"{INDENT}┃ {sanitize_line(m.quote_excerpt)}", style="dim"))
+        if line := _quote_line(m.quote):
+            parts.append(line)
         parts.append(_body(m, mentions_you=mentions_you))
         parts.extend(_attachment_lines(m.attachments))
         if m.reactions and (line := _reaction_line(m.reactions)):

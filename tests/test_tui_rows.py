@@ -51,7 +51,8 @@ def test_tags_edited_quote_mentions_attachments_and_reactions() -> None:
         raw_body="hi @Bob",
         via_display_name="Pepper",
         is_edited=True,
-        quote_excerpt="earlier words",
+        quote_excerpt="hi @Bob",
+        quote={"id": "p1", "author": "Ada", "excerpt": "earlier words", "deleted": False},
         mention_names=["Bob"],
         mentions=[ts.ME],
         attachments=[{"filename": "plan.pdf", "size_bytes": 2048}, {"id": "x", "size": "?"}],
@@ -60,7 +61,8 @@ def test_tags_edited_quote_mentions_attachments_and_reactions() -> None:
     out = _text(rows.message_renderable(m, you_id=ts.ME))
     assert "(via Pepper)" in out
     assert "(edited)" in out
-    assert "┃ earlier words" in out
+    assert "┃ Ada: earlier words" in out
+    assert "┃ hi" not in out  # its own quote_excerpt is not a quote
     assert "@Bob" in out
     assert "📎 plan.pdf (2.0 KB)" in out
     assert "📎 x" in out
@@ -138,3 +140,20 @@ def test_local_clock_formats_without_platform_specific_directives(machine_zone) 
     moment = datetime(2026, 1, 1, 0, 5, tzinfo=UTC)
     assert render.local_clock(moment) == "5:35 AM"
     assert render.local_clock(datetime(2026, 1, 1, 12, 0, tzinfo=UTC), hour24=True) == "17:30"
+
+
+def test_own_quote_excerpt_is_not_rendered_as_a_quote() -> None:
+    # The server fills quote_excerpt with the message's own text on every row.
+    out = _text(rows.message_renderable(_m(raw_body="same words", quote_excerpt="same words")))
+    assert "┃" not in out
+    assert out.count("same words") == 1
+
+
+def test_quote_edge_cases() -> None:
+    deleted = _m(quote={"id": "p", "author": "Ada", "excerpt": "gone", "deleted": True})
+    assert "┃ (deleted message)" in _text(rows.message_renderable(deleted))
+    assert "gone" not in _text(rows.message_renderable(deleted))
+    no_author = _text(rows.message_renderable(_m(quote={"excerpt": "words"})))
+    assert "┃ words" in no_author
+    for junk in ({}, {"author": "", "excerpt": ""}, "not a dict"):
+        assert "┃" not in _text(rows.message_renderable(_m(quote=junk)))
