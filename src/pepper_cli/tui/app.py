@@ -157,8 +157,12 @@ class PepperApp(App[None]):
         self.rosters: dict[str, list[GroupRosterMember]] = {}
         #: The selected thread row (``msg:<id>`` or ``pending:<key>``), the target of ``r``.
         self.selected: str | None = None
-        #: Pepper turns, oldest first. Only the first is ever streaming or being checked.
+        #: Pepper turns, oldest first. At most one is streaming or being checked at a time.
         self.turns: list[state.DmTurn] = []
+        #: Every history id a reply frame has named this session. Each new turn's snapshot
+        #: holds them, so a dropped turn never takes an earlier turn's reply for its own,
+        #: even once that turn is retired before a history read has caught up with it.
+        self._answered_ids: set[str] = set()
         #: The DM status line when no turn is running (an error, "no reply yet").
         self.dm_note = ""
         #: Set once quitting starts; workers and the turn thread then post nothing back.
@@ -954,9 +958,8 @@ class PepperApp(App[None]):
         loop.generation += 1
         generation = loop.generation
         loop.in_flight = generation
-        # An answered turn's rows may not be in history yet; they are not this turn's.
-        earlier = set().union(*(t.known_ids() for t in self.turns if t.phase == "done"))
-        turn.snapshot = frozenset(self.dm.entries) | earlier
+        # An earlier answered turn's rows may not be in history yet; they are not this turn's.
+        turn.snapshot = frozenset(self.dm.entries) | self._answered_ids
         turn.phase, turn.status = "streaming", "Sending…"
         self._loops["dm"].stop_timer()
         self._paint_dm_status()
@@ -1017,6 +1020,7 @@ class PepperApp(App[None]):
             turn.reply = str(payload.get("reply") or "")
             turn.user_id = _str_or_none(payload.get("user_message_id"))
             turn.assistant_id = _str_or_none(payload.get("assistant_message_id"))
+            self._answered_ids |= turn.known_ids()
         elif outcome == "error" and error is None:
             self.turns.remove(turn)
             message = sanitize_line(str(payload.get("message") or "model service unavailable"))

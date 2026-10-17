@@ -440,6 +440,37 @@ async def test_an_answered_turn_whose_user_row_never_shows_does_not_hold_the_que
         assert "after midnight" in body_text(app)
 
 
+async def test_a_dropped_turn_never_takes_a_retired_earlier_turns_reply(monkeypatch) -> None:
+    # Turn 1 is answered; turn 2 streams past the window, so turn 1 is retired before any
+    # history read has shown its rows; turn 3 then drops. Turn 1's reply, which the next
+    # history read returns, is not turn 3's: turn 3 waits out its window instead.
+    monkeypatch.setattr(state, "DM_RECONCILE_WINDOW", 0.2)
+    server = ts.standard_server()
+    first, second = threading.Event(), threading.Event()
+    server.turns = [
+        reply_turn("first", 1, gates={1: first}),
+        reply_turn("second", 2, gates={1: second}),
+        ts.ScriptedTurn(drop=True),
+    ]
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.dm.entries) == 2)
+        await send(pilot, app, "question 1")
+        await until(pilot, lambda: "Thinking" in status_line(app))
+        await send(pilot, app, "question 2")
+        await send(pilot, app, "question 3")
+        first.set()  # turn 2 starts at once: no history read in between
+        await until(pilot, lambda: len(server.turn_bodies) == 2)
+        assert "a1" not in app.dm.entries
+        await pilot.pause(0.4)
+        second.set()
+        await until(pilot, lambda: len(server.turn_bodies) == 3)
+        # Taken for turn 1's reply, turn 3 would be retired quietly with no note.
+        await until(pilot, lambda: "No reply yet" in status_line(app))
+        assert not app.turns
+        assert len(server.turn_bodies) == 3
+
+
 async def test_an_error_frame_shows_in_the_status_line() -> None:
     server = ts.standard_server()
     server.turns = [ts.ScriptedTurn(frames=[("error", {"kind": "model", "message": "busy"})])]
