@@ -188,6 +188,7 @@ class PepperApp(App[None]):
         open_url: Callable[[str], object] = webbrowser.open,
         now: Callable[[], datetime] | None = None,
         bell: bool = False,
+        update_checker: Callable[[], str | None] | None = None,
     ) -> None:
         super().__init__()
         self._api = api
@@ -250,6 +251,9 @@ class PepperApp(App[None]):
         self._answered_ids: set[str] = set()
         #: The DM status line when no turn is running (an error, "no reply yet").
         self.dm_note = ""
+        self.update_version: str | None = None
+        self.upgrade_requested: bool = False
+        self._update_checker = update_checker
         #: Set once quitting starts; workers and the turn thread then post nothing back.
         self._quitting = False
 
@@ -287,6 +291,7 @@ class PepperApp(App[None]):
         self.refresh_chrome()
         self.sidebar.focus()
         self._run("startup")
+        self._start_update_check()
 
     # ------------------------------------------------------------------ workers
 
@@ -837,6 +842,53 @@ class PepperApp(App[None]):
 
     def action_quit_app(self) -> None:
         self.exit(return_code=0)
+
+    def action_upgrade(self) -> None:
+        """``Ctrl+U``: show confirmation to exit and upgrade Pepper."""
+        if not self.update_version or self.fatal or isinstance(self.screen, ModalScreen):
+            return
+        self.push_screen(
+            ConfirmScreen(
+                f"Upgrade Pepper to v{self.update_version}?",
+                "Pepper will exit and run 'uv tool upgrade vycari-pepper' in your terminal.",
+            ),
+            self._on_confirm_upgrade,
+        )
+
+    def _on_confirm_upgrade(self, confirmed: bool | None) -> None:
+        if confirmed:
+            self.upgrade_requested = True
+            self.exit(return_code=0)
+
+    def _start_update_check(self) -> None:
+        """Query for new releases in the background."""
+        checker = self._update_checker
+        if checker is None:
+            from pepper_cli import _version
+
+            checker = _version.check_latest_version
+
+        def run() -> None:
+            try:
+                latest = checker()
+            except Exception:
+                return
+            if latest:
+                self._post(self._on_update_available, latest)
+
+        self.run_worker(run, thread=True, group="update_check", exit_on_error=False)
+
+    def _on_update_available(self, version: str) -> None:
+        """Surface available update in footer."""
+        if self._quitting or not self._mounted():
+            return
+        self.update_version = version
+        self._bindings.bind(
+            "ctrl+u", "upgrade", description=f"Update (v{version})", show=True, priority=True
+        )
+        if hasattr(self, "screen") and self.screen is not None:
+            self.screen.bindings_updated_signal.publish(self.screen)
+        self.refresh_chrome()
 
     def action_focus_composer(self) -> None:
         self.composer.focus()

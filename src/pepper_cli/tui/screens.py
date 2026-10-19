@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.text import Text
 from textual.binding import Binding, BindingType
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import Button, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from pepper_cli.terminal_text import sanitize_line
@@ -71,6 +71,8 @@ class PickerScreen(ModalScreen[str | None]):
 class ConfirmScreen(ModalScreen[bool]):
     """A yes/no question. ``y`` confirms; ``n`` or Esc backs out."""
 
+    AUTO_FOCUS = "#confirm-yes"
+
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("y", "yes", "Yes"),
         Binding("n,escape", "no", "No"),
@@ -83,16 +85,52 @@ class ConfirmScreen(ModalScreen[bool]):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog"):
-            yield Static(Text(self._question, style="bold"))
+            yield Static(Text(self._question, style="bold"), classes="dialog-title")
             if self._detail:
-                yield Static(Text(sanitize_line(self._detail), style="dim"))
-            yield Static(Text("y confirms · n or Esc cancels", style="dim"))
+                yield Static(Text(sanitize_line(self._detail)), classes="dialog-detail")
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Yes (y)", variant="primary", id="confirm-yes")
+                yield Button("Cancel (n)", variant="default", id="confirm-no")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        if event.button.id == "confirm-yes":
+            self.dismiss(True)
+        else:
+            self.dismiss(False)
 
     def action_yes(self) -> None:
         self.dismiss(True)
 
     def action_no(self) -> None:
         self.dismiss(False)
+
+
+class NoticeScreen(ModalScreen[None]):
+    """An informational notice card. Esc, Enter, or clicking OK closes it."""
+
+    AUTO_FOCUS = "#notice-ok"
+
+    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape,enter,space", "close", "Close")]
+
+    def __init__(self, title: str, message: str) -> None:
+        super().__init__()
+        self._title = title
+        self._message = message
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Static(Text(self._title, style="bold"), classes="dialog-title")
+            yield Static(Text(sanitize_line(self._message)), classes="dialog-detail")
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("OK", variant="primary", id="notice-ok")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.dismiss(None)
+
+    def action_close(self) -> None:
+        self.dismiss(None)
 
 
 class PromptScreen(ModalScreen[str | None]):

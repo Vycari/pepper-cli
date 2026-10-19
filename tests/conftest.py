@@ -26,6 +26,7 @@ def _no_pepper_json(monkeypatch: pytest.MonkeyPatch):
     command to JSON; tests that want it set it themselves."""
     monkeypatch.delenv("PEPPER_JSON", raising=False)
     monkeypatch.delenv("PEPPER_CONFLICT_DIR", raising=False)
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "1")
 
 
 @pytest.fixture(autouse=True)

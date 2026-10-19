@@ -23,11 +23,51 @@ def get_version() -> str:
     shaped like a version, so the value is always safe in a header.
     """
     try:
-        found = version(DISTRIBUTION)
+        _found = version(DISTRIBUTION)
     except PackageNotFoundError:
         return UNKNOWN_VERSION
-    return found if _VERSION_RE.fullmatch(found) else UNKNOWN_VERSION
+    return _found if _VERSION_RE.fullmatch(_found) else UNKNOWN_VERSION
 
 
 #: Sent as ``User-Agent`` on every HTTP request the CLI makes.
 USER_AGENT = f"pepper-cli/{get_version()}"
+
+
+def parse_version(v: str) -> tuple[int, ...]:
+    """Extract integer version components for tuple comparison."""
+    parts = [int(p) for p in re.findall(r"\d+", v)]
+    return tuple(parts) if parts else (0,)
+
+
+def check_latest_version(*, timeout: float = 3.0) -> str | None:
+    """Check PyPI for the latest release of ``vycari-pepper``.
+
+    Returns the latest version string if newer than current, else ``None``.
+    Never raises: network failures, timeouts, and unexpected responses return ``None``.
+    """
+    import os
+
+    if os.environ.get("PEPPER_NO_UPDATE_CHECK", "").strip().lower() in ("1", "true", "yes"):
+        return None
+    current = os.environ.get("PEPPER_FORCE_CURRENT_VERSION") or get_version()
+    if current == UNKNOWN_VERSION:
+        return None
+    try:
+        import httpx
+
+        resp = httpx.get(
+            f"https://pypi.org/pypi/{DISTRIBUTION}/json",
+            timeout=timeout,
+            headers={"User-Agent": USER_AGENT},
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        latest = str(data.get("info", {}).get("version") or "")
+        if not latest:
+            return None
+        if parse_version(latest) > parse_version(current):
+            return latest
+    except Exception:
+        return None
+    return None

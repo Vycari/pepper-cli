@@ -288,3 +288,58 @@ def test_cli_prints_upgrade_message_to_stderr_and_exits_nonzero_without_retry(
     assert "Traceback" not in captured.err
     assert "pep_pat_abc" not in captured.out + captured.err
     assert len(seen) == 1
+
+
+# ---------------------------------------------------------------------------
+# check_latest_version / parse_version
+
+
+def test_parse_version() -> None:
+    assert _version.parse_version("0.3.0") == (0, 3, 0)
+    assert _version.parse_version("0.4.0") == (0, 4, 0)
+    assert _version.parse_version("0.4.0") > _version.parse_version("0.3.0")
+    assert _version.parse_version("0.3.1") > _version.parse_version("0.3.0")
+    assert _version.parse_version("0.3.0") == _version.parse_version("0.3.0")
+    assert _version.parse_version("0.2.0") < _version.parse_version("0.3.0")
+    assert _version.parse_version("invalid") == (0,)
+
+
+def test_check_latest_version_pypi_newer(monkeypatch, httpx_mock) -> None:
+    monkeypatch.setattr(_version, "get_version", lambda: "0.3.0")
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "")
+    httpx_mock.add_response(
+        url="https://pypi.org/pypi/vycari-pepper/json",
+        json={"info": {"version": "0.4.0"}},
+    )
+    assert _version.check_latest_version() == "0.4.0"
+
+
+def test_check_latest_version_pypi_same_or_older(monkeypatch, httpx_mock) -> None:
+    monkeypatch.setattr(_version, "get_version", lambda: "0.3.0")
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "")
+    httpx_mock.add_response(
+        url="https://pypi.org/pypi/vycari-pepper/json",
+        json={"info": {"version": "0.3.0"}},
+    )
+    assert _version.check_latest_version() is None
+
+
+def test_check_latest_version_pypi_error(monkeypatch, httpx_mock) -> None:
+    monkeypatch.setattr(_version, "get_version", lambda: "0.3.0")
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "")
+    httpx_mock.add_response(
+        url="https://pypi.org/pypi/vycari-pepper/json",
+        status_code=500,
+    )
+    assert _version.check_latest_version() is None
+
+
+def test_check_latest_version_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "1")
+    assert _version.check_latest_version() is None
+
+
+def test_check_latest_version_unknown_version(monkeypatch) -> None:
+    monkeypatch.setattr(_version, "get_version", lambda: _version.UNKNOWN_VERSION)
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "")
+    assert _version.check_latest_version() is None
