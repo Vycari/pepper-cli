@@ -277,7 +277,7 @@ route takes; help says so.
 | `messages list` | server cursor | yes | yes |
 | `trajectories list` | offset, as cursor | yes | no |
 | `scheduled-tasks runs/thread` | server `before`/`before_id` | yes | no |
-| `research-projects runs`, `research-items list` | server cursor (pending pepper `planning/research-projects-api.md`) | yes | no |
+| `research-projects runs`, `research-items list` | server opaque cursor (`runs` = iterations) / `seq` cursor (items), pepper#5028 §4.3 | yes | no |
 | `rooms watch` | event cursor | no | yes (+ `--cursor-file`) |
 | `rooms activity` | time | no | yes (time) |
 
@@ -320,7 +320,7 @@ today); **S** needs a server change (or verification first); **N** a room is not
 | `calendar` (range) | optional | S | `/calendars/range` has no `principal`; or defer to `apps show calendar --room` |
 | `next` | optional | C | strict resolve, filter by room id (§4) |
 | `brief` | — | N | your own brief; no room's brief is read here |
-| `research-projects *`, `research-items *` | optional | S | `/research-projects/...` and `/groups/{gid}/research-projects/...` (pepper `planning/research-projects-api.md`, pending); without `--room` your own projects only; room projects behind `research_group_projects_enabled`. `planning/research-projects.md` §9 |
+| `research-projects *`, `research-items *` | optional | S | `/research-projects/...` and `/groups/{gid}/research-projects/...` (pepper `planning/research-projects-api.md`, pepper#5028); without `--room` your own projects only; room projects behind `research_group_projects_enabled`; in a room any member reads, steers, takes and reconsiders, and the owner role creates, edits, runs, pauses, resumes and schedules. `planning/research-projects.md` §9 |
 | `feed list/show`, `following *`, `preferences *` | — | N | your own follows and your own account's preferences; a room has neither |
 | `artifacts list/create/delete` | optional | R | `/artifacts?principal=`, `/artifacts/upload?principal=`, the `artifacts` app's `delete` (owner-scoped) |
 | `artifacts show/download` | — | N | the id carries the room; the viewer route reads any artifact the caller can see |
@@ -340,7 +340,7 @@ today); **S** needs a server change (or verification first); **N** a room is not
 | 8 | Join links (would land as `rooms links …`, spelled when the route exists) | pepper#4311 |
 | 9 | Typed response models for groups routes — lets the J3 `items` be checked against the contract | pepper#4673 |
 | 10 | `whoami` returns 401 for agent tokens, so `whoami --json` cannot be the agent login check | note only |
-| 11 | Research project routes, personal and room, with receipts, structured "What's new" and flag-off answers (`planning/research-projects.md` §10 R1–R14) | pepper `planning/research-projects-api.md` |
+| 11 | Research project routes, personal and room, with receipts, iterations, report and flag-off codes. Still open: the schedule-detach route path, an iteration id on report changelog entries, the pressing member on iterations, and the `web-research` default skill (`planning/research-projects.md` §10) | pepper `planning/research-projects-api.md` (pepper#5028) |
 
 Order per `CLAUDE.md`: server lands → weekly snapshot refresh of `contracts/api-v1.openapi.json`
 (never hand-edited) → CLI.
