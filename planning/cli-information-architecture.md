@@ -162,8 +162,9 @@ ends:
   through the leaf's normal error path.
 
 First user: `research-projects run`. `brief --now` may adopt it once the brief returns a receipt.
-The two J8 codes and exit 4 are `planning/research-projects.md` decision B (recommended there; the
-alternative is no new codes).
+The two J8 codes and exit 4 are `planning/research-projects.md` decision B, taken 2026-10-20 (the
+rejected alternative added no codes). If the server answers a start request by naming work already
+in flight, `--wait` waits on that work instead (`planning/research-projects.md` §6.2).
 
 ## 4. Old → new
 
