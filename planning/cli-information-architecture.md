@@ -3,12 +3,14 @@
 **Status:** Accepted 2026-10-14. The maintainer decided §10 A–F; the `groups` → `rooms` rename was
 decided earlier. Lands as one coordinated breaking release, **0.2.0** (§7).
 **Author:** drafted with Claude Code for the maintainer
-**Last updated:** 2026-10-17
+**Last updated:** 2026-10-20 (research projects: §2, §3 rules 2–3, §3.1, §3.5, §5, §6, §8;
+`planning/research-projects.md`)
 **Tracked by:** #20
 **Related:** pepper-cli#17 (scheduled-task renew), pepper-cli#18 (generic `pepper apps`); server
 pepper#4311 (room tasks, join links, GitHub), pepper#4556 (room skills), pepper#4557 (skill-backed
 room tasks), pepper#4673 (response models for groups routes), pepper#2740 (session-only routes);
-pepper `planning/naming-strategy.md`, pepper `planning/cli-artifacts.md`
+pepper `planning/naming-strategy.md`, pepper `planning/cli-artifacts.md`;
+`planning/research-projects.md` (the `--project` container flag, `--wait`, research nouns)
 
 ## 1. Problem
 
@@ -61,6 +63,8 @@ picks one and names the evidence on both sides. Paths are in the pepper server r
 | timezone, calendar preferences | "Preferences" (Calendar sub-page, gear titled "Preferences", `<h1>Preferences</h1>`) holds Home address, Work address, **Timezone** ("The same timezone as in Settings."), work days, hours, meals, workouts, weather (`web/apps/defaults/calendar.html`); Settings > Profile also has "Timezone" (`settings/_profile.html`) | as cited | **`preferences`** with `show` and `edit` (`--timezone`, `--home-address`, `--work-days`, ...). No `timezone` noun: the Preferences route takes the account timezone and the page says it is the same one, so one noun covers both. `whoami` keeps printing the timezone as a read. Which calendars count as busy is not on this route (it is per booking page, `booking.set_conflicts`) and is not covered |
 | `feed` (the ranked stream of what you follow) | The Following app (`agent/follows/app.py`, `title="Following"`) draws a "Recent" timeline per followed thing (`web/apps/defaults/following.html`) and the Reading filter has a "Daily feed briefing"; no screen is titled "Feed". "Feed" is the word Chris used for the combined stream ("pp feed"), so this is a requested word, not a UI word, and the maintainer decides whether it stays | as cited | **`feed`**, a noun with verbs `list` and `show`: `feed list [--limit] [--group]` and `feed show N [--transcript] [--read] [--full] [--open]`. The server ranks, folds and decides (`data.feed` of the Following document, pepper#4852); the CLI fetches and renders, with no business logic of its own. `list` prints the server's order, numbered and saved per profile; `show N` shows that item, and `--open` sends its link to the default browser. It is a noun like `following`, `todos` and `artifacts`, not a view, so an agent learns one shape. Managing what you follow stays under `following` |
 | `following` (the Following app) | "Following": the app is titled "Following" (`agent/follows/app.py`, `title="Following"`), and its page lists what you follow by group (Sports, Shows, Reading, Podcasts, Events) with a Follow / "Follow again" button per thing (`web/apps/defaults/following.html`) | as cited | **`following`** with `list`, `show`, `search`, `create`, `delete`. `search QUERY` runs the app's `search` action and numbers the matches; `create N` follows number N of the last search (saved per profile) and takes nothing else, because choosing a match for typed text is the server `search` action's job, not the CLI's (no business logic in the CLI, Vycari/pepper-cli#61 §6). `delete` is the app's `unfollow` (the app keeps the thing, with Follow again). Actions through the PAT route `POST /api/v1/apps/following/actions/{name}` |
+| (new) research projects | "Research projects": the help guide's own section (`features/help/skills/pepper-guide/reference/skills.md` "## Research projects": "A research project keeps a brief, a ledger of what Pepper found, a report, and your steering notes across one or more runs … it gives you a receipt"); Dash: "A research project gets one card whenever anything in it is new" (`reference/dash.md`); the chat tool "Create, run, steer, pause or resume a research project" (`agent/tools/research_projects.py`). No web or iOS screen names them yet (chat-only today) | as cited | **`research-projects`** with `list`, `show` (`--report` reads the report artifact), `create`, `edit`, `run` (`--wait`, §3.5), `steer`, `pause`/`resume`, `runs`. No `delete`/`stop` in v1. `planning/research-projects.md` |
+| (new) research ledger items | "a ledger of what Pepper found", "a per-item ledger" (`reference/skills.md`); the tool's `item` ("the rejected item", "the delivered item the person says they had"), `mark_taken`, `reconsider` ("it goes back on the list to be considered again") | as cited | **`research-items`**, scoped by the container flag `--project` (§3 rule 2): `list`, `show`, `take` (state `taken`), `reconsider`. Prefixed because "items" alone is too generic for a top-level noun, as `scheduled-tasks` is qualified |
 | `todos` | "Todos", "Add a todo"; "to-do" in prose | `reference/todos.md`, iOS | `todos` |
 | `calendar`, `--planning` | "Calendar", "Planning" | `_sidebar.html` | unchanged |
 | `agent-skill` | "agent member" | cli: `SKILL.md` §1 | **`agents guide`** — frees `skill` for the `skills` noun; leaves room for sponsored-agent commands |
@@ -72,7 +76,7 @@ above; every noun is a word on a product screen.
 ## 3. Command grammar
 
 ```
-pepper [--profile P] <noun> <verb> [--room ROOM [--topic TOPIC]] [OBJECT…] [flags]
+pepper [--profile P] <noun> <verb> [--room ROOM [--topic TOPIC]] [--<container> C] [OBJECT…] [flags]
 ```
 
 1. **Nouns are plural** and come from §2. Sub-nouns are not used: every child object (topic,
@@ -82,10 +86,19 @@ pepper [--profile P] <noun> <verb> [--room ROOM [--topic TOPIC]] [OBJECT…] [fl
    (the room is the object) but `topics list --room ROOM` (the room is the container). No positional
    `GROUP` survives. `--room` is required when the verb acts inside a room and optional when
    omitting it means "yours"; §6 is authoritative per command.
+   **Other containers** (added 2026-10-20, `planning/research-projects.md` §3.1). A non-room
+   container flag is allowed only when the object is addressable solely through a parent that is
+   itself a §2 noun (a research item exists only inside a research project). It is spelled
+   `--<parent noun, singular>` (`--project`), takes what the parent noun's positional takes
+   (name, unique prefix, UUID), is resolved by the parent noun's own resolver, and is required on
+   every verb of the child noun: a container has no "yours" default. With `--room` the container
+   is resolved inside that room; without it, among your own. `--room` scopes the container, never
+   the child directly. Nested sub-nouns stay rejected (§10 A).
 3. **Canonical order puts `--room` right after the verb.** Harness allow rules are prefix matches
    (`Bash(pepper --profile claude-code messages post --room <room-id>:*)`), so the room must come
    before anything variable. Other orders still parse; they just don't match a pinned rule and get
-   prompted, which fails safe. Pin by UUID, not name.
+   prompted, which fails safe. Pin by UUID, not name. A non-room container flag (rule 2) comes
+   right after `--room`: `<noun> <verb> [--room R] [--project P] [OBJECT…] [flags]`.
 4. **Views and session commands are not noun–verb**: `calendar [WINDOW]`, `next`, `brief`, `chat`, `login`,
    `logout`, `whoami`, `takeout`. That set is closed; anything new is a noun. (`brief` joined it as a
    view: it is a daily read like `next` with no managed collection behind it; `--date` picks an older
@@ -96,16 +109,20 @@ pepper [--profile P] <noun> <verb> [--room ROOM [--topic TOPIC]] [OBJECT…] [fl
 
 | Kind | Verbs | Meaning |
 |---|---|---|
-| Read | `list`, `show`, `search`, `watch`, `activity` | `list` = many, filterable; `show OBJECT` = one; `search QUERY` = list by text (help names the fields matched); `watch` = stream |
+| Read | `list`, `show`, `search`, `watch`, `activity`, `runs` | `list` = many, filterable; `show OBJECT` = one; `search QUERY` = list by text (help names the fields matched); `watch` = stream; `runs OBJECT` = the run history of an object that runs (`scheduled-tasks`, `research-projects`), a J3 list paged with `--before` |
 | Write | `create`, `edit`, `delete` | `create` makes, `edit` changes fields, `delete` destroys the object |
 | Association | `invite`/`remove`, `share`/`revoke`, `install`/`uninstall`, `leave` | break a link, never destroy the object |
-| Domain | `post`, `react`/`unreact`, `archive`/`unarchive`, `mute`/`unmute`, `pause`/`resume`/`renew`, `done`/`dismiss`/`reopen`, `download`, `run`, `guide` | one each, product-named |
+| Domain | `post`, `react`/`unreact`, `archive`/`unarchive`, `mute`/`unmute`, `pause`/`resume`/`renew`, `done`/`dismiss`/`reopen`, `download`, `run`, `guide`, `steer`, `take`, `reconsider` | one each, product-named. `run` starts work and returns its receipt (J5); `--wait` waits for it (§3.5). `steer OBJECT [TEXT…\|-]` queues guidance the object's next run reads (research projects). `take ITEM` marks a delivered item as taken; `reconsider ITEM [--reason]` puts a rejected item back as a candidate (research items) |
 
 `rename` is gone as a verb: it is `edit --name`. Destructive = `delete`, `remove`, `revoke`,
 `uninstall`, `leave`, and `members edit --role`. They prompt on a TTY; off a TTY or under `--json`
 they need `--yes` or exit 2. `archive` is not destructive (your view only) and keeps accepting
 `--yes` as a no-op.
 `following delete` and `artifacts delete` are destructive and take the same prompt / `--yes` rule (the server keeps a deleted artifact for a retention window, but the CLI has no restore).
+A non-destructive leaf that prompts only in some cases (a room write that reaches other people,
+or enabling a recurring schedule: `research-projects create/run/steer --room`, `research-projects
+edit --cron`) accepts `--yes` always and requires it only in those cases; elsewhere it is a no-op,
+as on `archive` (`planning/research-projects.md` §7, §9.2).
 
 ### 3.2 Create
 
@@ -126,6 +143,27 @@ body (skills, notes, scheduled-task prompt, message text); otherwise exit 2 with
 `topics search QUERY [--room]` matches topic names (the server's `/groups/topics/search` does no
 more); `notes search` matches names and bodies. Each help line states its fields. Message-body
 search does not exist on the server and is not proposed here.
+
+### 3.5 Waiting on asynchronous work (`--wait`)
+
+Added 2026-10-20 (`planning/research-projects.md` §6.1). A verb that starts asynchronous server
+work returns the receipt at once (J5) and exits 0. `--wait` makes it poll the receipt until it
+ends:
+
+- Poll at 2 s, ×1.5 per poll to a 15 s cap, reset on a status change; a server `Retry-After` wins.
+- `--timeout SECONDS` bounds the wait (default 900, `0` = none). On expiry it stops waiting; the
+  work goes on.
+- Progress goes to stderr in human mode only. JSON mode prints nothing until the end and then
+  exactly one document, the final receipt (J2); `--wait` is never a J6 stream.
+- Succeeded: exit 0. Failed (`error`, `interrupted`): receipt on stdout, J8 `run_failed` on stderr,
+  exit 1. Timed out: last receipt on stdout, J8 `timeout` on stderr, exit 4. Ctrl-C: stop waiting,
+  never cancel, stdout empty, exit 130.
+- A network error or 5xx while polling is retried within the bound; 401/403/404 ends the wait
+  through the leaf's normal error path.
+
+First user: `research-projects run`. `brief --now` may adopt it once the brief returns a receipt.
+The two J8 codes and exit 4 are `planning/research-projects.md` decision B (recommended there; the
+alternative is no new codes).
 
 ## 4. Old → new
 
@@ -197,13 +235,13 @@ deliberate break, made once, in 0.2.0, alongside the renames (§10 D).
 |---|---|
 | J1 | Every leaf except `chat` with no message (the REPL) and `login` accepts `--json` and honours `PEPPER_JSON` (J10). `logout` emits `{"ok": true}`; `agents guide` without `--write` emits `{"markdown": "..."}`. |
 | J2 | In JSON mode (`--json` or `PEPPER_JSON=1`), stdout carries exactly one JSON document (or JSON lines for a stream, J6) and nothing else: no colour, no prose, no progress. Prompts never happen (destructive verbs need `--yes`, else exit 2). |
-| J3 | **One list envelope, everywhere.** Every `list`, `search` and `activity` leaf, plus `scheduled-tasks runs/thread`, emits `{"items": [...], "next_before": str\|null}`. `next_before` is always present: `null` on the last page and on unpaged lists. List-level metadata the server returns sits beside them as extra top-level keys, never instead of them: `rooms list` adds `enabled`, `degraded`, `total`, `archived_total`; `notes list/search` add `truncated`. This replaces every 0.1.0 list shape: `groups list` (`groups` key), `groups read` (`messages` key), and the bare arrays of `todos list`, `groups topics/roster/apps/activity/search`. |
+| J3 | **One list envelope, everywhere.** Every `list`, `search` and `activity` leaf, plus `scheduled-tasks runs/thread` and `research-projects runs`, emits `{"items": [...], "next_before": str\|null}`. `next_before` is always present: `null` on the last page and on unpaged lists. List-level metadata the server returns sits beside them as extra top-level keys, never instead of them: `rooms list` adds `enabled`, `degraded`, `total`, `archived_total`; `notes list/search` add `truncated`. This replaces every 0.1.0 list shape: `groups list` (`groups` key), `groups read` (`messages` key), and the bare arrays of `todos list`, `groups topics/roster/apps/activity/search`. |
 | J4 | Views are not lists: `next` and `calendar` emit objects shaped as in 0.1.0 (`calendar --planning` keeps `{"range", "planning"}`). |
 | J5 | `show` emits the object. Mutations emit the resulting object as the server returns it; for a 204 route, `{"ok": true, "id": "<id acted on>"}`. `takeout` emits `{"path", "bytes"}`. `agents guide --write` emits `{"path"}`. |
 | J6 | Streams emit JSON lines: `rooms watch` (unchanged, incl. `{"kind":"cursor","cursor":N}` frames) and one-shot `chat MESSAGE --json` (one line per streamed event, final line the reply). |
 | J7 | Field names are the server's, passed through. Unknown server fields are kept, not dropped (the CLI already tolerates them). |
-| J8 | **Errors** in JSON mode write one line to **stderr**: `{"error": {"code": "...", "status": <http int or null>, "message": "..."}}`. `code` ∈ `auth`, `forbidden`, `not_found`, `conflict`, `validation`, `ambiguous`, `usage`, `upgrade_required`, `server`, `network`, `gap`. stdout stays empty. Outside JSON mode, errors stay `pepper: …` text. |
-| J9 | Exit codes unchanged: 0 ok, 1 auth/API/network (incl. 426), 2 usage/resolution/refused-without-`--yes`/renamed noun (§7), 3 watch replay gap, 130 interrupt. |
+| J8 | **Errors** in JSON mode write one line to **stderr**: `{"error": {"code": "...", "status": <http int or null>, "message": "..."}}`. `code` ∈ `auth`, `forbidden`, `not_found`, `conflict`, `validation`, `ambiguous`, `usage`, `upgrade_required`, `server`, `network`, `gap`, `timeout`, `run_failed`. stdout stays empty, except under `--wait` (§3.5), where the final receipt is the result and goes to stdout beside the stderr line. `timeout` and `run_failed` are `--wait` only. Outside JSON mode, errors stay `pepper: …` text. |
+| J9 | Exit codes unchanged: 0 ok, 1 auth/API/network (incl. 426), 2 usage/resolution/refused-without-`--yes`/renamed noun (§7), 3 watch replay gap, 4 `--wait` timed out with the work still going (§3.5), 130 interrupt. |
 | J10 | **`PEPPER_JSON=1`** turns JSON mode on for every leaf that accepts `--json`. Precedence: `--json` on the command line → on; else `PEPPER_JSON` exactly `1` → on; any other value, or unset → off. There is no `--no-json`; `PEPPER_JSON= pepper …` switches it off for one command. The J1 exemptions ignore it (the REPL and `login` stay interactive). There is no root `pepper --json` (§10 F). |
 
 ### 5.2 Mechanism
@@ -218,6 +256,8 @@ and tracked in pepper-cli#21; nothing in this contract depends on argparse.
 | `_json_parent` | `--json`; JSON mode resolved once by `_json_mode(args)` = `args.json or os.environ.get("PEPPER_JSON") == "1"` (J10) | every leaf except J1's two |
 | `_room_parent(required)` | `--room ROOM` (UUID or case-insensitive unique name prefix, resolved by `_resolve_group`) | per §6 |
 | `_topic_parent` | `--topic TOPIC` | `messages list/post`, `rooms watch` |
+| `_project_parent` | `--project PROJECT`, required (§3 rule 2 container) | every `research-items` leaf |
+| `_wait_parent` | `--wait`, `--timeout SECONDS` (§3.5) | `research-projects run` |
 | `_yes_parent` | `--yes` | destructive verbs (§3.1) |
 | `_page_parent` | `--limit N`, `--before CURSOR`, `--since CURSOR` | paged lists |
 
@@ -237,6 +277,7 @@ route takes; help says so.
 | `messages list` | server cursor | yes | yes |
 | `trajectories list` | offset, as cursor | yes | no |
 | `scheduled-tasks runs/thread` | server `before`/`before_id` | yes | no |
+| `research-projects runs`, `research-items list` | server cursor (pending pepper `planning/research-projects-api.md`) | yes | no |
 | `rooms watch` | event cursor | no | yes (+ `--cursor-file`) |
 | `rooms activity` | time | no | yes (time) |
 
@@ -279,6 +320,7 @@ today); **S** needs a server change (or verification first); **N** a room is not
 | `calendar` (range) | optional | S | `/calendars/range` has no `principal`; or defer to `apps show calendar --room` |
 | `next` | optional | C | strict resolve, filter by room id (§4) |
 | `brief` | — | N | your own brief; no room's brief is read here |
+| `research-projects *`, `research-items *` | optional | S | `/research-projects/...` and `/groups/{gid}/research-projects/...` (pepper `planning/research-projects-api.md`, pending); without `--room` your own projects only; room projects behind `research_group_projects_enabled`. `planning/research-projects.md` §9 |
 | `feed list/show`, `following *`, `preferences *` | — | N | your own follows and your own account's preferences; a room has neither |
 | `artifacts list/create/delete` | optional | R | `/artifacts?principal=`, `/artifacts/upload?principal=`, the `artifacts` app's `delete` (owner-scoped) |
 | `artifacts show/download` | — | N | the id carries the room; the viewer route reads any artifact the caller can see |
@@ -298,6 +340,7 @@ today); **S** needs a server change (or verification first); **N** a room is not
 | 8 | Join links (would land as `rooms links …`, spelled when the route exists) | pepper#4311 |
 | 9 | Typed response models for groups routes — lets the J3 `items` be checked against the contract | pepper#4673 |
 | 10 | `whoami` returns 401 for agent tokens, so `whoami --json` cannot be the agent login check | note only |
+| 11 | Research project routes, personal and room, with receipts, structured "What's new" and flag-off answers (`planning/research-projects.md` §10 R1–R14) | pepper `planning/research-projects-api.md` |
 
 Order per `CLAUDE.md`: server lands → weekly snapshot refresh of `contracts/api-v1.openapi.json`
 (never hand-edited) → CLI.
@@ -331,7 +374,8 @@ argparse private attributes.
 | `PEPPER_JSON` | for every non-exempt leaf, stdout is JSON with `PEPPER_JSON=1` and no flag, human text with `PEPPER_JSON=0` or unset, JSON with `--json` regardless of the variable; exempt leaves are unaffected by it |
 | Envelope | for every list leaf (J3), stdout under a faked client parses to an object with `items` (array) and `next_before` keys |
 | `--room` | present, unless in `ROOM_NA` (reason string) or `ROOM_PENDING` (server issue link) |
-| `--yes` | present on every destructive verb |
+| `--yes` | present on every destructive verb, and on each leaf that prompts only in some cases (§3.1) |
+| Container | every leaf of a noun in `CONTAINER` has its container flag (`research-items`: `--project`), required, and its usage line prints `--room` before it (§3 rules 2–3) |
 | No `GROUP` | no positional dest/metavar `group`; no help string containing "group" or "channel" outside `RENAMED`. `--to` help lists `room`; the wire value `groups_service` is an accepted hidden choice and allowlisted |
 | Renamed | each `RENAMED` stub exits 2 with one stderr line, empty stdout, and never reaches chat or the API |
 
@@ -345,6 +389,9 @@ argparse private attributes.
 3. Build the leaf with `parents=[_json_parent, …]`; add `_room_parent` (§6 class), `_yes_parent`
    if destructive, `_page_parent` if paged.
 4. Room is a flag unless the room is the object. Canonical order in help/examples: `--room` first.
+   A child noun whose objects live only inside another noun's object takes that parent as a
+   required container flag (`--project`, §3 rule 2), after `--room`; add it to `CONTAINER`.
+   A verb that starts asynchronous work takes `_wait_parent` (§3.5).
 5. Output through `_emit` / `_emit_list`; the shape follows J3–J5. Changing a shipped shape is a
    breaking change (invariant 4) — separate PR, release note.
 6. If the route is new: server PR first, wait for the snapshot refresh, then the CLI.
