@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import threading
+from typing import cast
 
 import pytest
 from textual import events
+from textual.drivers.linux_driver import LinuxDriver
 from textual.widgets import Static
 
 from pepper_cli.tui import app as tui_app
@@ -437,3 +439,20 @@ async def test_a_result_that_lands_after_quit_is_ignored() -> None:
     app._failed("dm", ValueError("late"), generation, None)
     app._update_subline()
     assert app.return_code == 0
+
+
+async def test_terminal_app_keeps_the_mouse_in_cells(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Terminal.app gets no in-band resize query, so Textual never turns on pixel mice."""
+    server = ts.standard_server()
+
+    def query_written(term_program: str) -> list[str]:
+        monkeypatch.setenv("TERM_PROGRAM", term_program)
+        app = tui_app.PepperApp(server.client())
+        driver = cast("LinuxDriver", app.get_driver_class()(app))
+        written: list[str] = []
+        monkeypatch.setattr(driver, "write", written.append)
+        driver._query_in_band_window_resize()
+        return written
+
+    assert query_written("Apple_Terminal") == []
+    assert query_written("ghostty") == ["\x1b[?2048$p"]

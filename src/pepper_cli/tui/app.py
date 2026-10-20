@@ -29,6 +29,7 @@ everything once the app is closing), and is simply abandoned on quit. It never r
 from __future__ import annotations
 
 import contextlib
+import os
 import threading
 import time
 import uuid
@@ -66,6 +67,7 @@ from pepper_cli.tui.thread import ThreadScroll, ThreadView
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from textual.driver import Driver
     from textual.timer import Timer
     from textual.widgets import Tree
 
@@ -154,6 +156,29 @@ class PepperApp(App[None]):
         Binding("i", "room_info", "Room info"),
         Binding("ctrl+q", "quit_app", "Quit", priority=True),
     ]
+
+    def get_driver_class(self) -> type[Driver]:
+        """Textual's driver, except under macOS Terminal.app.
+
+        Terminal.app answers the in-band resize query (mode 2048), which Textual takes as
+        leave to switch the mouse to pixel coordinates (mode 1016). Terminal.app ignores 1016
+        and keeps reporting cells, so Textual divides cell numbers by the cell's pixel size and
+        every click lands near the top-left corner: the composer cannot be clicked. Skipping
+        the query keeps the mouse in cells; resizes still arrive by SIGWINCH.
+        """
+        driver = super().get_driver_class()
+        if os.environ.get("TERM_PROGRAM") != "Apple_Terminal":
+            return driver
+        from textual.drivers.linux_driver import LinuxDriver  # imports termios: POSIX only
+
+        if driver is not LinuxDriver:
+            return driver
+
+        class CellMouseDriver(LinuxDriver):
+            def _query_in_band_window_resize(self) -> None:
+                pass
+
+        return CellMouseDriver
 
     def __init__(
         self,
