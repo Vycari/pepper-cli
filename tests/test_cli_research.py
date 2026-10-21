@@ -1504,7 +1504,7 @@ def test_wait_attaches_to_a_run_in_flight_without_a_second_post(server, capsys, 
     rc, _out, err = _run(["research-projects", "run", "robot-vacuums", "--wait"], capsys)
     assert rc == 0
     assert (
-        f"A run of robot-vacuums is already running ({RUN}); waiting on it instead of starting "
+        f"A run of robot-vacuums is already in flight ({RUN}); waiting on it instead of starting "
         "another." in " ".join(err.split())
     )
     assert [r.method for r in server.requests].count("POST") == 1
@@ -1519,6 +1519,99 @@ def test_wait_on_an_attached_run_that_failed_exits_1(server, capsys, clock) -> N
     assert rc == 1
     assert json.loads(out)["status"] == "error"
     assert _error(err)["code"] == "run_failed"
+
+
+def _attach_routes(server, *polls) -> None:
+    server.routes[f"POST {BASE}/{P1}/runs"] = httpx.Response(
+        409, json={"detail": "in flight", "run_id": RUN}
+    )
+    server.routes[f"{BASE}/{P1}/runs/{RUN}"] = list(polls)
+
+
+def _dropped(request: httpx.Request) -> httpx.Response:
+    raise httpx.ConnectError("reset", request=request)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        httpx.Response(503, json={"detail": "busy"}),
+        httpx.Response(429, json={"detail": "slow down"}),
+        _dropped,
+    ],
+    ids=["503", "429", "dropped"],
+)
+def test_wait_retries_the_lookup_of_an_attached_run(server, capsys, clock, failure) -> None:
+    _attach_routes(server, failure, _poll("running"), _poll("succeeded"))
+    rc, out, err = _run(["research-projects", "run", P1, "--wait", "--json"], capsys)
+    assert (rc, err) == (0, "")
+    assert json.loads(out)["status"] == "succeeded"
+    assert [r.method for r in server.requests].count("POST") == 1
+
+
+def test_wait_honours_retry_after_on_the_lookup_of_an_attached_run(server, capsys, clock) -> None:
+    _attach_routes(
+        server,
+        httpx.Response(200, json=_run_detail("running"), headers={"Retry-After": "7"}),
+        _poll("succeeded"),
+    )
+    rc, _, _ = _run(["research-projects", "run", P1, "--wait", "--json"], capsys)
+    assert rc == 0
+    assert clock.slept == [7]  # the lookup is not slept before, and its Retry-After wins
+
+
+def test_wait_an_attached_run_that_never_answers_times_out_with_empty_stdout(
+    server, capsys, clock
+) -> None:
+    _attach_routes(server, httpx.Response(503, json={"detail": "busy"}))
+    rc, out, err = _run(
+        ["research-projects", "run", P1, "--wait", "--timeout", "5", "--json"], capsys
+    )
+    assert (rc, out) == (4, "")  # no receipt was ever seen, so there is none to print
+    error = _error(err)
+    assert error["code"] == "timeout"
+    assert RUN in error["message"]
+
+
+def _timeouts(server) -> list[float]:
+    return [
+        r.extensions["timeout"]["read"]
+        for r in server.requests
+        if r.method == "GET" and r.url.path.endswith(f"/runs/{RUN}")
+    ]
+
+
+def test_wait_bounds_each_poll_request_by_the_time_left(server, capsys, clock) -> None:
+    _wait_routes(server, _poll("running"))
+    rc, _, _ = _run(["research-projects", "run", P1, "--wait", "--timeout", "10", "--json"], capsys)
+    assert rc == 4
+    # Polls at 2 s, 4 s ("queued" -> "running" reset the gap) and 7 s, then one at the deadline:
+    # each request may take only the time left, and the one at the deadline gets the floor.
+    assert _timeouts(server) == pytest.approx([8, 6, 3, cli._WAIT_MIN_REQUEST_TIMEOUT])
+
+
+def test_wait_without_a_bound_polls_with_the_normal_request_timeout(server, capsys, clock) -> None:
+    _wait_routes(server, _poll("running"), _poll("succeeded"))
+    rc, _, _ = _run(["research-projects", "run", P1, "--wait", "--timeout", "0", "--json"], capsys)
+    assert rc == 0
+    assert _timeouts(server) == [5.0, 5.0]  # the test client's own (httpx's default)
+
+
+def test_wait_a_poll_that_times_out_at_the_deadline_is_a_wait_timeout(
+    server, capsys, clock
+) -> None:
+    def slow(request: httpx.Request) -> httpx.Response:
+        clock.now += request.extensions["timeout"]["read"]
+        raise httpx.ReadTimeout("slow", request=request)
+
+    _wait_routes(server, _poll("running"), slow)
+    rc, out, err = _run(
+        ["research-projects", "run", P1, "--wait", "--timeout", "3", "--json"], capsys
+    )
+    assert rc == 4
+    assert json.loads(out)["status"] == "running"
+    assert _error(err)["code"] == "timeout"
+    assert clock.now <= 1003.0 + cli._WAIT_MIN_REQUEST_TIMEOUT
 
 
 # --- research-items take and reconsider ------------------------------------

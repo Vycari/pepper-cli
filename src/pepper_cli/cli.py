@@ -4351,6 +4351,9 @@ _WAIT_DEFAULT_TIMEOUT = 900.0
 _WAIT_FIRST_INTERVAL = 2.0
 _WAIT_GROWTH = 1.5
 _WAIT_MAX_INTERVAL = 15.0
+#: The shortest a ``--wait`` poll's request may take: one sent at the deadline gets this much
+#: rather than none, so a bounded wait ends at most this long after ``--timeout``.
+_WAIT_MIN_REQUEST_TIMEOUT = 1.0
 
 
 def _build_wait_parent() -> argparse.ArgumentParser:
@@ -8663,25 +8666,30 @@ def cmd_research_projects_run(args: argparse.Namespace) -> int:
         if project_id is None:
             return 2
         ref = shlex.quote(args.project)
+        receipt: api_client.ResearchRunReceipt | api_client.ResearchRunDetail | None
         try:
-            receipt: api_client.ResearchRunReceipt | api_client.ResearchRunDetail
             receipt = api.run_research_project(project_id)
-            already = False
         except api_client.ResearchRunInFlightError as exc:
+            if args.wait:
+                # The lookup is the wait's first poll, under its retries and Retry-After.
+                if not _json_mode(args):
+                    render.info(
+                        f"A run of {args.project} is already in flight ({exc.run_id}); "
+                        "waiting on it instead of starting another.",
+                        soft_wrap=True,
+                    )
+                return _wait_for_research_run(api, args, project_id, exc.run_id, None)
             receipt = api.get_research_run(project_id, exc.run_id)
-            already = True
-        run_id = _research_run_id(receipt)
-        if already:
-            note = f"A run of {args.project} is already {receipt.status} ({run_id}); " + (
-                "waiting on it instead of starting another."
-                if args.wait
-                else "not starting another."
+            note = (
+                f"A run of {args.project} is already {receipt.status} "
+                f"({exc.run_id}); not starting another."
             )
         else:
             note = (
-                f"Queued run {run_id} for {args.project}. "
+                f"Queued run {receipt.run_id} for {args.project}. "
                 f"Check it with: pepper research-projects show {ref}"
             )
+        run_id = _research_run_id(receipt)
         if not args.wait:
 
             def human() -> None:
@@ -8692,7 +8700,7 @@ def cmd_research_projects_run(args: argparse.Namespace) -> int:
             return 0
         if not _json_mode(args):
             render.info(note, soft_wrap=True)
-        return _wait_for_research_run(api, args, project_id, receipt)
+        return _wait_for_research_run(api, args, project_id, run_id, receipt)
 
     return _with_api(run, _report_research_error, args)
 
@@ -8724,40 +8732,53 @@ def _wait_for_research_run(
     api: api_client.ApiClient,
     args: argparse.Namespace,
     project_id: str,
-    first: api_client.ResearchRunReceipt | api_client.ResearchRunDetail,
+    run_id: str,
+    first: api_client.ResearchRunReceipt | api_client.ResearchRunDetail | None,
 ) -> int:
     """Poll one run to its end under the IA §3.5 rules and exit accordingly.
 
     Polls at 2 s, x1.5 a poll to a 15 s cap, back to 2 s when the status changes; a server
     ``Retry-After`` replaces the next gap. A network error, a 5xx or a 429 is retried inside
     the bound; any other error ends the wait through the leaf's error path. ``--timeout``
-    bounds it (default 900 s, 0 = no bound); on expiry the run is left going (exit 4).
+    bounds it (default 900 s, 0 = no bound), and each poll's request is bounded by the time
+    left (at least :data:`_WAIT_MIN_REQUEST_TIMEOUT`); on expiry the run is left going
+    (exit 4). ``first`` is ``None`` for a run joined after a 409: the first poll then goes
+    out at once, as the lookup, under the same retries.
     """
     timeout = _WAIT_DEFAULT_TIMEOUT if args.timeout is None else args.timeout
-    run_id = _research_run_id(first)
     ref = shlex.quote(args.project)
     start = _monotonic()
     deadline = None if timeout == 0 else start + timeout
-    last: api_client.ResearchRunReceipt | api_client.ResearchRunDetail = first
+    last = first
     interval = _WAIT_FIRST_INTERVAL
     hint: float | None = None
     rewrite = sys.stderr.isatty()
     shown_status: str | None = None
+    polled = first is not None  # a joined run's lookup is a poll with no sleep before it
 
     def unfinished_hint() -> str:
         return f"still running — check 'pepper research-projects show {ref}'"
 
     try:
         while True:
-            if last.status in api_client.RESEARCH_RUN_TERMINAL:
+            if last is not None and last.status in api_client.RESEARCH_RUN_TERMINAL:
                 break
-            if last.status != shown_status:
+            if last is not None and last.status != shown_status:
                 shown_status = last.status
                 _wait_progress(args, last.status, _monotonic() - start, rewrite=rewrite)
             now = _monotonic()
             if deadline is not None and now >= deadline:
-                if rewrite and not _json_mode(args):
+                if rewrite and not _json_mode(args) and shown_status is not None:
                     sys.stderr.write("\n")
+                waited = render.format_duration(timeout)
+                if last is None:  # the run never answered: there is no receipt to print
+                    _emit_error(
+                        args,
+                        "timeout",
+                        f"stopped waiting after {waited}; run {run_id} did not answer — "
+                        f"check 'pepper research-projects show {ref}'",
+                    )
+                    return 4
                 _emit(
                     last,
                     args,
@@ -8766,17 +8787,25 @@ def _wait_for_research_run(
                 _emit_error(
                     args,
                     "timeout",
-                    f"stopped waiting after {render.format_duration(timeout)}; run {run_id} is "
+                    f"stopped waiting after {waited}; run {run_id} is "
                     f"still {last.status} — check 'pepper research-projects show {ref}'",
                 )
                 return 4
-            delay = interval if hint is None else hint
-            if deadline is not None:
-                delay = min(delay, deadline - now)
-            _sleep(max(delay, 0.0))
+            if polled:
+                delay = interval if hint is None else hint
+                if deadline is not None:
+                    delay = min(delay, deadline - now)
+                _sleep(max(delay, 0.0))
+            polled = True
             hint = None
+            request_timeout: float | None = None
+            if deadline is not None:
+                left = deadline - _monotonic()
+                request_timeout = min(
+                    max(left, _WAIT_MIN_REQUEST_TIMEOUT), api_client.DEFAULT_TIMEOUT
+                )
             try:
-                detail, hint = api.poll_research_run(project_id, run_id)
+                detail, hint = api.poll_research_run(project_id, run_id, timeout=request_timeout)
             except api_client.ApiError as exc:
                 if exc.status < 500 and exc.status != 429:
                     raise
@@ -8784,9 +8813,10 @@ def _wait_for_research_run(
                 interval = min(interval * _WAIT_GROWTH, _WAIT_MAX_INTERVAL)
                 continue
             except httpx.RequestError:
+                # A request cut off at the deadline lands here too: the check above ends it.
                 interval = min(interval * _WAIT_GROWTH, _WAIT_MAX_INTERVAL)
                 continue
-            if detail.status != last.status:
+            if last is None or detail.status != last.status:
                 interval = _WAIT_FIRST_INTERVAL
             else:
                 interval = min(interval * _WAIT_GROWTH, _WAIT_MAX_INTERVAL)

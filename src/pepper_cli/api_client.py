@@ -2627,11 +2627,15 @@ class ApiClient:
         return self.poll_research_run(project_id, run_id)[0]
 
     def poll_research_run(
-        self, project_id: str, run_id: str
+        self, project_id: str, run_id: str, *, timeout: float | None = None
     ) -> tuple[ResearchRunDetail, float | None]:
-        """:meth:`get_research_run` plus the seconds a ``Retry-After`` header asked for."""
+        """:meth:`get_research_run` plus the seconds a ``Retry-After`` header asked for.
+
+        ``timeout`` bounds this one request in seconds (``None``: the client's own), so a
+        ``--wait`` poll near its deadline cannot run a full :data:`DEFAULT_TIMEOUT` past it.
+        """
         path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/runs/{run_id}"
-        resp = self._request("GET", path)
+        resp = self._request("GET", path, timeout=timeout)
         body = resp.json()
         if not isinstance(body, dict):
             raise ApiError(status=200, body=str(body)[:200], detail="malformed response")
@@ -3450,6 +3454,7 @@ class ApiClient:
         params: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
         files: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> httpx.Response:
         """Issue one request with the bearer header. Raises
         :class:`ApiError` on a non-2xx response; lets transport-level
@@ -3460,7 +3465,8 @@ class ApiClient:
         bearer (``Idempotency-Key`` is the only caller today), and ``files``
         is a multipart body for the one upload endpoint. All three exist
         because ``/api/v1/groups`` needs them; they default to ``None`` so
-        every caller written before them is untouched.
+        every caller written before them is untouched. ``timeout`` overrides the client's
+        timeout for this request only; ``None`` keeps the client's (never "no timeout").
         """
         url = f"{self._server_url}{path}"
         # Build the Authorization header from the wrapped token on
@@ -3473,7 +3479,13 @@ class ApiClient:
         if extra_headers:
             headers.update(extra_headers)
         resp = self._client.request(
-            method, url, json=json, params=params, files=files, headers=headers
+            method,
+            url,
+            json=json,
+            params=params,
+            files=files,
+            headers=headers,
+            timeout=httpx.USE_CLIENT_DEFAULT if timeout is None else timeout,
         )
         if resp.status_code >= 400:
             _raise_for_error(resp)
