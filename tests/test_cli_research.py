@@ -557,6 +557,35 @@ def test_items_show_by_id_prefix_of_a_listed_item(server, capsys) -> None:
     assert out.startswith("Item 2")
 
 
+@pytest.mark.parametrize(
+    ("list_ref", "show_ref"), [("robot-vacuums", P1.upper()), (P1, P1.upper()), (P1.upper(), P1)]
+)
+def test_the_same_project_in_another_case_is_not_another_project(
+    server, capsys, list_ref, show_ref
+) -> None:
+    items = [_item(1, id="0000000a-0000-0000-0000-00000000e000")]
+    _items_route(server, items)
+    _show_route(server, items[0])
+    _run(["research-items", "list", "--project", list_ref], capsys)
+    _, meta = research_view.VIEW.load()  # ty: ignore[not-iterable]
+    assert meta["project_id"] == P1
+    rc, out, _ = _run(["research-items", "show", "--project", show_ref, "1"], capsys)
+    assert rc == 0
+    assert out.startswith("Item 1")
+    assert server.requests[-1].url.path == f"{BASE}/{P1}/items/{items[0]['id']}"
+
+
+@pytest.mark.parametrize("ref", ["0000000A-0000-0000-0000-00000000E000", "0000000A"])
+def test_an_item_id_or_prefix_matches_in_any_case(server, capsys, ref) -> None:
+    items = [_item(1, id="0000000a-0000-0000-0000-00000000e000")]
+    _items_route(server, items)
+    _show_route(server, items[0])
+    _run(["research-items", "list", "--project", P1], capsys)
+    rc, out, _ = _run(["research-items", "show", "--project", P1, ref], capsys)
+    assert rc == 0
+    assert out.startswith("Item 1")
+
+
 def test_a_number_from_another_projects_listing_is_refused(server, capsys) -> None:
     _items_route(server, [_item(1)])
     _run(["research-items", "list", "--project", P1], capsys)

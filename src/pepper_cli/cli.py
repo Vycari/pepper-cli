@@ -8145,9 +8145,12 @@ def _resolve_research_project(
 ) -> str | None:
     """A project's id from a name, a unique case-insensitive name prefix or a UUID (which passes
     straight through; the server refuses one that is not yours). The lookup lists projects of
-    every status. ``None`` after the error is reported (exit 2)."""
+    every status. ``None`` after the error is reported (exit 2).
+
+    A UUID comes back in its canonical lowercase form, the form the server's ids take, so the
+    project a listing is saved under compares equal however the id was typed."""
     if _valid_uuid(ref):
-        return ref
+        return ref.lower()
     match, candidates = _match_by_name(
         ref, api.list_research_projects().items, name_of=lambda p: p.name
     )
@@ -8282,9 +8285,10 @@ def _research_item_id(args: argparse.Namespace, project_id: str) -> str | None:
 
     A number resolves only against a listing of this very project (and personal scope), so it
     never lands on another ledger. An id, or a prefix of one the listing held, is passed on:
-    the server refuses an item that is not in the project."""
+    the server refuses an item that is not in the project. Ids are hex, so ``ITEM`` is matched
+    in lowercase, the form the listing saved them in."""
     try:
-        item_id, _row, meta = research_view.VIEW.resolve(args.item)
+        item_id, _row, meta = research_view.VIEW.resolve(args.item.lower())
     except numbered_view.RefError as exc:
         _emit_error(args, exc.code, str(exc))
         return None
