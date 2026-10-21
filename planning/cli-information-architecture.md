@@ -375,7 +375,7 @@ argparse private attributes.
 | `PEPPER_JSON` | for every non-exempt leaf, stdout is JSON with `PEPPER_JSON=1` and no flag, human text with `PEPPER_JSON=0` or unset, JSON with `--json` regardless of the variable; exempt leaves are unaffected by it |
 | Envelope | for every list leaf (J3), stdout under a faked client parses to an object with `items` (array) and `next_before` keys |
 | `--room` | present, unless in `ROOM_NA` (reason string) or `ROOM_PENDING` (server issue link) |
-| `--yes` | present on every destructive verb, and on each leaf that prompts only in some cases (§3.1) |
+| `--yes` | present on every destructive verb, and on each leaf that prompts only in some cases (§3.1). For those leaves the refusal without `--yes` is tested only in the prompting cases, and the other cases are tested to succeed without it (`planning/research-projects.md` §11) |
 | Container | every leaf of a noun in `CONTAINER` has its container flag (`research-items`: `--project`), required, and its usage line prints `--room` before it (§3 rules 2–3) |
 | No `GROUP` | no positional dest/metavar `group`; no help string containing "group" or "channel" outside `RENAMED`. `--to` help lists `room`; the wire value `groups_service` is an accepted hidden choice and allowlisted |
 | Renamed | each `RENAMED` stub exits 2 with one stderr line, empty stdout, and never reaches chat or the API |

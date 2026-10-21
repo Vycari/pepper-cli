@@ -203,8 +203,8 @@ Report      pepper research-projects show robot-vacuums --report
 ```
 
 JSON (J5): the server's `ProjectDetail`. When a manual run is queued or running
-(`inflight_run_id` is set), `show` adds a `Run` line, `queued 7f3a… (pepper research-projects runs
-P)` (decision F: queued receipts appear here, not in `runs`). `show --report` reads `GET
+(`inflight_run_id` is set), `show` adds a `Run` line, `queued 7f3a… (pepper research-projects show
+[--room R] P)` (decision F: queued receipts appear here, not in `runs`). `show --report` reads `GET
 …/{pid}/report` and prints its `body` raw to stdout, as `notes show` does. Under `--json` it emits
 the `Report` object as the server returns it. The open questions (`qN` ids), ledger counts and
 pending steering count are fields of `ProjectDetail` and `Report`, and the CLI never parses them
@@ -305,8 +305,9 @@ run today and does not wait; it would need a receipt to poll first). The rules:
 | Progress | Human mode: one status line on stderr (`queued` → `running`, elapsed time), rewritten in place on a terminal, one line per change off a terminal. JSON mode: nothing at all until the end (J2), and never JSON lines: `--wait` is not a stream (J6) |
 | End: succeeded | exit 0. stdout: the final receipt (JSON), or in human mode the receipt line and then the run's "What's new" lines (§6.3) |
 | End: run failed (`error`, `interrupted`) | stdout: the final receipt, the same document as on success (it is the answer). stderr: a J8 line, code `run_failed`. exit 1 |
-| End: timeout | stdout: the last receipt seen (status `queued`/`running`). stderr: a J8 line, code `timeout`, message naming the receipt id and the `runs` command. exit 4 |
-| Ctrl-C | Stops waiting, never cancels the run. stderr: `pepper: still running — check 'pepper research-projects runs P'` (human mode) or a J8 line, code `timeout` (JSON mode). stdout empty. exit 130 (J9) |
+| End: timeout | stdout: the last receipt seen (status `queued`/`running`). stderr: a J8 line, code `timeout`, message naming the receipt id and `pepper research-projects show [--room R] P` (the run is still queued or running, so it is in `show`, not yet in `runs`, §4.3). exit 4 |
+| Ctrl-C | Stops waiting, never cancels the run. stderr: `pepper: still running — check 'pepper research-projects show [--room R] P'` (human mode) or a J8 line, code `timeout` (JSON mode). stdout empty. exit 130 (J9) |
+| Hints | Every recovery hint names `show`, never `runs`, while the run is unfinished, and repeats the `--room R` the command was given, so it can be pasted as is |
 | Poll errors | A network error or 5xx while polling is retried within the bound; a 401/403/404 ends the wait through the leaf's normal error path (exit per J9) |
 
 The J8 `code` list is closed today (`_ERROR_CODES` raises on an unknown one), and J9 has no "gave
@@ -509,8 +510,12 @@ Routes are relative to `/api/v1/research-projects`, and each has the room twin u
   `scheduled-tasks thread` stays pending.
 - A new `CONTAINER = {"research-items": "--project"}` map: every leaf of the noun has the flag,
   marked required in its usage line, and the usage string prints `--room` before `--project`.
-- A `CONFIRMS` set (`research-projects create/edit/run/steer`): each has `--yes`, and with
-  `--room`, no terminal and no `--yes` each exits 2 with a J8 `usage` line and makes no write.
+- A `CONFIRMS` set of the prompting cases (`research-projects create`, `run`, `steer` and
+  `edit --cron`): each leaf has `--yes`, and with `--room`, no terminal and no `--yes` each case
+  exits 2 with a J8 `usage` line and makes no write.
+- The non-prompting room edits (§9.2): `edit --room R P` with `--file`, `--filter`,
+  `--clear filters` or `--clear schedule`, with no terminal and no `--yes`, each succeeds (exit 0)
+  and sends its write.
 - `--room`: none of the new leaves goes in `ROOM_NA` or `ROOM_PENDING`.
 - Envelope: `research-projects list`, `research-projects runs`, `research-items list` emit J3.
 - `--wait`: a faked client that walks `queued → running → succeeded` exits 0 with one JSON document;
