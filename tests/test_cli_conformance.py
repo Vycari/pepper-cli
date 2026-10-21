@@ -52,6 +52,10 @@ NOUNS = frozenset(
         "scheduled-tasks",
         "skills",
         "notes",
+        # `research-projects` and `research-items` are the product's words "Research projects"
+        # and their ledger (planning/research-projects.md §2).
+        "research-projects",
+        "research-items",
         # `artifacts` and `preferences` are the product's own words "Artifacts" and "Preferences"
         # (planning/cli-information-architecture.md §2).
         "artifacts",
@@ -111,6 +115,8 @@ VERBS = frozenset(
         "reopen",
         "download",
         "run",
+        # `runs OBJECT` is the run history of an object that runs (IA §3.1).
+        "runs",
         "guide",
     }
 )
@@ -167,12 +173,21 @@ ROOM_NA = {
 
 #: Leaves that should take ``--room`` and do not yet. §6 is the per-command authority;
 #: the ``groups`` leaves take the room as a positional until phase 2a/2b.
-ROOM_PENDING: frozenset[str] = frozenset()
+ROOM_PENDING: frozenset[str] = frozenset(
+    {
+        # Personal reads only until the server ships the room twins (research-projects.md
+        # phase 3, tracked by #85); each of these takes --room then.
+        "research-projects list",
+        "research-projects show",
+        "research-projects runs",
+        "research-items list",
+        "research-items show",
+    }
+)
 
 #: Leaves whose verb is not in §3.1 yet (old spellings; phase 2a-2d renames them).
 VERB_PENDING = frozenset(
     {
-        "scheduled-tasks runs",
         "scheduled-tasks thread",
     }
 )
@@ -373,6 +388,21 @@ def test_room_is_a_flag_where_it_means_something() -> None:
     assert all(reason for reason in ROOM_NA.values())
 
 
+#: Nouns whose leaves each take a required container flag (IA §3 rule 2).
+CONTAINER = {"research-items": "--project"}
+
+
+def test_container_flag_is_required_on_every_leaf() -> None:
+    for leaf, text in LEAVES.items():
+        flag = CONTAINER.get(_noun(leaf))
+        if flag is None:
+            continue
+        usage = " ".join(text.split("\n\n", 1)[0].split())
+        assert flag in _flags(text), leaf
+        # Required options print bare in the usage line; optional ones are bracketed.
+        assert re.search(rf"(?<!\[){flag}\b", usage), (leaf, usage)
+
+
 def test_destructive_verbs_take_yes() -> None:
     failing = {
         leaf
@@ -451,6 +481,8 @@ _TRAJ = "00000000-0000-0000-0000-0000000000f1"
 _NOTE = "00000000-0000-0000-0000-0000000000e1"
 _TASK = "00000000-0000-0000-0000-0000000000a8"
 _A = "00000000-0000-0000-0000-0000000000a9"
+_RP = "00000000-0000-0000-0000-0000000000d3"
+_RI = "00000000-0000-0000-0000-0000000000d4"
 
 _TOPIC = {"topic_id": _T, "name": "General", "last_activity_at": "2026-10-01T12:00:00+00:00"}
 _MESSAGE = {
@@ -514,6 +546,35 @@ _TODO_ROW = {
     "source": "cli",
     "created_at": "2026-10-01T12:00:00+00:00",
 }
+_RESEARCH_PROJECT = {
+    "id": _RP,
+    "name": "robot-vacuums",
+    "status": "active",
+    "delivery_policy": "digest",
+    "brief_snippet": "Robot vacuums under $500",
+    "skill": "web-research",
+    "scheduled_task_id": None,
+    "schedule": None,
+    "last_iteration": {
+        "id": _RI,
+        "status": "succeeded",
+        "started_at": "2026-10-19T16:00:00+00:00",
+        "finished_at": "2026-10-19T16:03:00+00:00",
+    },
+    "inflight_run": None,
+    "created_at": "2026-10-01T12:00:00+00:00",
+}
+_RESEARCH_ITEM = {
+    "id": _RI,
+    "seq": 48213,
+    "title": "Roborock Q7 Max+",
+    "state": "candidate",
+    "state_reason": None,
+    "url": "https://roborock.com/q7",
+    "summary": "Strong suction",
+    "first_seen_at": "2026-10-19T16:00:00+00:00",
+    "state_changed_at": "2026-10-19T16:00:00+00:00",
+}
 _SKILL = {"name": "triage", "description": "Sort the inbox", "builtin": False}
 _SKILL_FULL = {**_SKILL, "body": "Do the thing.", "toolsets": []}
 _GRANT_ROW = {
@@ -571,6 +632,55 @@ ROUTES: dict[str, object] = {
             "created_at": "2026-10-01T08:00:05+00:00",
         }
     ],
+    "/api/v1/research-projects": {"items": [_RESEARCH_PROJECT], "next_before": None},
+    f"/api/v1/research-projects/{_RP}": {
+        **_RESEARCH_PROJECT,
+        "brief": "Robot vacuums under $500",
+        "source_url": None,
+        "filters": [],
+        "pending_steering_count": 0,
+        "item_counts": {"candidate": 2},
+        "report_artifact_id": None,
+        "open_questions": [],
+        "owner": {"kind": "user", "id": _P},
+    },
+    f"/api/v1/research-projects/{_RP}/report": {
+        "artifact_id": None,
+        "body": "# Report\n",
+        "summary": "",
+        "current_recommendation": "",
+        "open_questions": [],
+        "changelog": [],
+        "collapsed_changelog": 0,
+        "updated_at": None,
+    },
+    f"/api/v1/research-projects/{_RP}/iterations": {
+        "items": [
+            {
+                "id": _RI,
+                "occurrence_key": None,
+                "trigger": "scheduled",
+                "requested_by": None,
+                "run_id": None,
+                "status": "succeeded",
+                "started_at": "2026-10-19T16:00:00+00:00",
+                "finished_at": None,
+                "error": None,
+                "source_failures": None,
+            }
+        ],
+        "next_before": None,
+    },
+    f"/api/v1/research-projects/{_RP}/items": {"items": [_RESEARCH_ITEM], "next_before": None},
+    f"/api/v1/research-projects/{_RP}/items/{_RI}": {
+        **_RESEARCH_ITEM,
+        "source_type": "web",
+        "creator": None,
+        "year": None,
+        "published_at": None,
+        "citations": [],
+        "superseded_by": None,
+    },
     "/api/v1/takeout": {"archive": "bytes"},
     "/api/v1/apps": [
         {"slug": "notes", "title": "Notes", "description": "", "owner_scoped_actions": ["delete"]}
@@ -933,6 +1043,11 @@ JSON_CASES: dict[str, list[str]] = {
     "scheduled-tasks delete": ["scheduled-tasks", "delete", _TASK, "--yes"],
     "scheduled-tasks pause": ["scheduled-tasks", "pause", _TASK],
     "scheduled-tasks resume": ["scheduled-tasks", "resume", _TASK],
+    "research-projects list": ["research-projects", "list"],
+    "research-projects show": ["research-projects", "show", _RP],
+    "research-projects runs": ["research-projects", "runs", _RP],
+    "research-items list": ["research-items", "list", "--project", _RP],
+    "research-items show": ["research-items", "show", "--project", _RP, _RI],
     "skills list": ["skills", "list"],
     "skills show": ["skills", "show", "triage"],
     "skills create": ["skills", "create", "triage", "--file", "triage.md"],
@@ -1093,7 +1208,7 @@ def test_list_leaves_emit_the_envelope(monkeypatch, capsys) -> None:
         leaf
         for leaf in LEAVES
         if (" " in leaf and _verb(leaf) in {"list", "search", "activity"})
-        or leaf in {"scheduled-tasks runs", "scheduled-tasks thread"}
+        or leaf in {"scheduled-tasks runs", "scheduled-tasks thread", "research-projects runs"}
     }
     failing: set[str] = set()
     for leaf in is_list:

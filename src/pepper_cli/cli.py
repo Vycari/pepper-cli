@@ -68,6 +68,9 @@ Subcommands:
   ``following search``.
 - ``pepper artifacts list | show | download | create | delete`` — everything you saved: notes,
   links and files. ``create`` uploads a file; to edit a note's text use ``notes``.
+- ``pepper research-projects list | show [--report] | runs`` and ``pepper research-items list |
+  show --project P`` — read your research projects, their reports and run history, and each
+  project's ledger (numbered; ``show N`` follows the last ``list`` of that project).
 - ``pepper preferences show | edit`` — the Calendar > Preferences values.
 - ``pepper takeout [--out FILE]`` — download a zip archive of everything
   Pepper holds about your account.
@@ -121,6 +124,7 @@ from pepper_cli import (
     preferences_view,
     proctitle,
     render,
+    research_view,
     skill_doc,
     turn,
     window_title,
@@ -1902,6 +1906,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     )
     p_agents_guide.set_defaults(handler=cmd_agents_guide)
     _register_account_commands(sub)
+    _register_research_commands(sub)
     _add_renamed_stub(sub, "agent-skill", "see 'pepper agents guide'")
 
     # ``sub.choices`` is the public mapping of subparser name → parser
@@ -7429,6 +7434,7 @@ def _forget_listings() -> None:
     for path in (
         feed.VIEW.state_path(),
         artifacts_view.VIEW.state_path(),
+        research_view.VIEW.state_path(),
         following_search.state_path(),
     ):
         numbered_view.forget(path)
@@ -7986,6 +7992,333 @@ def cmd_preferences_edit(args: argparse.Namespace) -> int:
         return 0
 
     return _run_personal(args, run, _report_account_error)
+
+
+# ---------------------------------------------------------------------------
+# research-projects and research-items (planning/research-projects.md), read side
+
+
+def _project_parent() -> argparse.ArgumentParser:
+    """``--project PROJECT``, required: the container flag of a noun that exists only inside a
+    research project (IA §3 rule 2)."""
+    parent = argparse.ArgumentParser(add_help=False)
+    parent.add_argument(
+        "--project",
+        metavar="PROJECT",
+        required=True,
+        help="Research project: its name, a unique name prefix, or its UUID.",
+    )
+    return parent
+
+
+_RESEARCH_LIMIT_MAX = 200
+_RESEARCH_PROJECT_HELP = "Research project: its name, a unique name prefix, or its UUID."
+
+
+def _register_research_commands(sub: Any) -> None:
+    """``research-projects`` and ``research-items``: the read commands."""
+    p_proj = sub.add_parser(
+        "research-projects",
+        help=(
+            "Your research projects: a brief, a ledger of what Pepper found and a report. "
+            "``list``/``show`` (``--report`` for the report)/``runs`` to read them."
+        ),
+    )
+    sub_proj = p_proj.add_subparsers(dest="research_projects_action", required=True)
+
+    p = sub_proj.add_parser(
+        "list",
+        help="List your research projects (active ones unless --status says otherwise).",
+        parents=[_json_parent],
+    )
+    p.add_argument(
+        "--status",
+        choices=research_view.LIST_STATUSES,
+        default="active",
+        help="Which projects: active (default), paused, or all (also stopped ones).",
+    )
+    p.set_defaults(handler=cmd_research_projects_list)
+
+    p = sub_proj.add_parser(
+        "show",
+        help="One project: brief, schedule, last run, ledger counts and open questions.",
+        parents=[_json_parent],
+    )
+    p.add_argument("project", metavar="PROJECT", help=_RESEARCH_PROJECT_HELP)
+    p.add_argument(
+        "--report",
+        action="store_true",
+        help="Print the project's report (markdown) instead of its summary.",
+    )
+    p.set_defaults(handler=cmd_research_projects_show)
+
+    p = sub_proj.add_parser(
+        "runs",
+        help=(
+            "What a project has run, newest first, with what started each one (scheduled, "
+            "or manual and who pressed run)."
+        ),
+        parents=[_json_parent, _before_parent],
+    )
+    p.add_argument("project", metavar="PROJECT", help=_RESEARCH_PROJECT_HELP)
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        metavar="N",
+        help=f"Number of runs (default 50, max {_RESEARCH_LIMIT_MAX}).",
+    )
+    p.set_defaults(handler=cmd_research_projects_runs)
+
+    p_items = sub.add_parser(
+        "research-items",
+        help=(
+            "The ledger of one research project: what Pepper found. ``list`` it (numbered), "
+            "then ``show`` one by number. Every command takes --project."
+        ),
+    )
+    sub_items = p_items.add_subparsers(dest="research_items_action", required=True)
+
+    p = sub_items.add_parser(
+        "list",
+        help="List a project's ledger, numbered, newest first.",
+        parents=[_json_parent, _project_parent(), _before_parent],
+    )
+    p.add_argument(
+        "--state",
+        action="append",
+        choices=research_view.ITEM_STATES,
+        metavar="STATE",
+        help=(
+            "Only items in this state (repeat for several): "
+            f"{', '.join(research_view.ITEM_STATES)}."
+        ),
+    )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        metavar="N",
+        help=f"Number of items (default 50, max {_RESEARCH_LIMIT_MAX}).",
+    )
+    p.set_defaults(handler=cmd_research_items_list)
+
+    p = sub_items.add_parser(
+        "show",
+        help="One ledger item in full.",
+        parents=[_json_parent, _project_parent()],
+    )
+    p.add_argument(
+        "item",
+        metavar="ITEM",
+        help="A number from the last 'research-items list' of this project, or an item id.",
+    )
+    p.set_defaults(handler=cmd_research_items_show)
+
+
+def _report_research_error(exc: api_client.ApiError, args: argparse.Namespace | None = None) -> int:
+    """The research leaves' reporter. A 403 whose ``code`` says the feature is switched off is
+    a fact about the server, said in one sentence; every other failure (including a 404 for a
+    project that is not yours) is :func:`_report_api_error`."""
+    if exc.status == 403:
+        code = api_client.error_code(exc)
+        if code == "research_projects_disabled":
+            message = "Research projects are not enabled on this Pepper server."
+        elif code == "research_group_projects_disabled":
+            message = "Research projects in rooms are not enabled on this Pepper server."
+        else:
+            return _report_api_error(exc, args)
+        _emit_error(args, "forbidden", message, status=403)
+        return 1
+    return _report_api_error(exc, args)
+
+
+def _research_limit_ok(args: argparse.Namespace) -> bool:
+    if not 1 <= args.limit <= _RESEARCH_LIMIT_MAX:
+        _emit_error(args, "usage", f"--limit must be between 1 and {_RESEARCH_LIMIT_MAX}")
+        return False
+    return True
+
+
+def _resolve_research_project(
+    api: api_client.ApiClient, ref: str, *, args: argparse.Namespace
+) -> str | None:
+    """A project's id from a name, a unique case-insensitive name prefix or a UUID (which passes
+    straight through; the server refuses one that is not yours). The lookup lists projects of
+    every status. ``None`` after the error is reported (exit 2)."""
+    if _valid_uuid(ref):
+        return ref
+    match, candidates = _match_by_name(
+        ref, api.list_research_projects().items, name_of=lambda p: p.name
+    )
+    if match is not None:
+        return match.id
+    if candidates:
+        listing = ", ".join(f"{p.name!r} ({p.id})" for p in candidates)
+        _emit_error(
+            args,
+            "ambiguous",
+            f"{ref!r} matches more than one research project: {listing}",
+            soft_wrap=True,
+        )
+    else:
+        _emit_error(
+            args,
+            "not_found",
+            f"no research project named {ref!r} — run 'pepper research-projects list --status all'",
+        )
+    return None
+
+
+def cmd_research_projects_list(args: argparse.Namespace) -> int:
+    """``pepper research-projects list [--status active|paused|all] [--json]``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        page = api.list_research_projects(status=None if args.status == "all" else args.status)
+        _emit_list(
+            page.items,
+            args,
+            lambda: render.render_research_project_list(page.items),
+            page.next_before,
+        )
+        return 0
+
+    return _with_api(run, _report_research_error, args)
+
+
+def cmd_research_projects_show(args: argparse.Namespace) -> int:
+    """``pepper research-projects show PROJECT [--report] [--json]``.
+
+    ``--report`` prints the report document's markdown as it is stored (as ``notes show`` does),
+    or under ``--json`` the server's report object.
+    """
+
+    def run(api: api_client.ApiClient) -> int:
+        project_id = _resolve_research_project(api, args.project, args=args)
+        if project_id is None:
+            return 2
+        if args.report:
+            report = api.get_research_report(project_id)
+            _emit(report, args, lambda: render.render_markdown(report.body or ""))
+            return 0
+        detail = api.get_research_project(project_id)
+        _emit(detail, args, lambda: render.render_research_project(detail))
+        return 0
+
+    return _with_api(run, _report_research_error, args)
+
+
+def cmd_research_projects_runs(args: argparse.Namespace) -> int:
+    """``pepper research-projects runs PROJECT [--limit N] [--before CURSOR] [--json]``: the
+    project's iterations (what actually executed), newest first."""
+    if not _research_limit_ok(args):
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        project_id = _resolve_research_project(api, args.project, args=args)
+        if project_id is None:
+            return 2
+        page = api.list_research_iterations(project_id, limit=args.limit, before=args.before)
+        # "you" on a manual row needs the caller's id; skip the call when no row has one.
+        you = (
+            api.whoami().user_id
+            if not _json_mode(args) and any(r.requested_by for r in page.items)
+            else None
+        )
+        _emit_list(
+            page.items,
+            args,
+            lambda: render.render_research_runs(page.items, page.next_before, you=you),
+            page.next_before,
+        )
+        return 0
+
+    return _with_api(run, _report_research_error, args)
+
+
+def cmd_research_items_list(args: argparse.Namespace) -> int:
+    """``pepper research-items list --project P [--state S]… [--limit N] [--before C] [--json]``.
+
+    Numbers what it prints and remembers them (``research-items.json`` next to the credentials)
+    for ``show N``, along with the project they belong to. JSON items carry ``n``.
+    """
+    import dataclasses
+
+    if not _research_limit_ok(args):
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        project_id = _resolve_research_project(api, args.project, args=args)
+        if project_id is None:
+            return 2
+        page = api.list_research_items(
+            project_id, states=args.state, limit=args.limit, before=args.before
+        )
+        rows = [dataclasses.asdict(item) for item in page.items]
+        problem = research_view.VIEW.save(
+            [research_view.listing_row(r) for r in rows],
+            {"project_id": project_id, "room_id": None},
+        )
+        if _listing_unusable(args, problem):
+            return 1
+        numbered = numbered_view.number(rows)
+        _emit_list(
+            numbered,
+            args,
+            lambda: render.render_research_item_list(
+                numbered, page.next_before, project=args.project, states=args.state
+            ),
+            page.next_before,
+            **_unsaved_meta(problem),
+        )
+        _warn_unsaved(args, problem)
+        return 0
+
+    return _with_api(run, _report_research_error, args)
+
+
+def _research_item_id(args: argparse.Namespace, project_id: str) -> str | None:
+    """The item id ``ITEM`` names, or ``None`` after the error is reported (exit 2).
+
+    A number resolves only against a listing of this very project (and personal scope), so it
+    never lands on another ledger. An id, or a prefix of one the listing held, is passed on:
+    the server refuses an item that is not in the project."""
+    try:
+        item_id, _row, meta = research_view.VIEW.resolve(args.item)
+    except numbered_view.RefError as exc:
+        _emit_error(args, exc.code, str(exc))
+        return None
+    if numbered_view.NumberedView.is_number(args.item) and (
+        meta.get("project_id") != project_id or meta.get("room_id") is not None
+    ):
+        _emit_error(args, "usage", research_view.ANOTHER_PROJECT)
+        return None
+    if not _valid_uuid(item_id):
+        _emit_error(
+            args,
+            "not_found",
+            f"no research item {args.item!r} — use a number from "
+            "'pepper research-items list --project PROJECT', or an item id",
+        )
+        return None
+    return item_id
+
+
+def cmd_research_items_show(args: argparse.Namespace) -> int:
+    """``pepper research-items show --project P ITEM [--json]``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        project_id = _resolve_research_project(api, args.project, args=args)
+        if project_id is None:
+            return 2
+        item_id = _research_item_id(args, project_id)
+        if item_id is None:
+            return 2
+        detail = api.get_research_item(project_id, item_id)
+        _emit(detail, args, lambda: render.render_research_item(detail))
+        return 0
+
+    return _with_api(run, _report_research_error, args)
 
 
 if __name__ == "__main__":

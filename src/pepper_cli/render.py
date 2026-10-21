@@ -1252,3 +1252,241 @@ def local_stamp(iso: object) -> str:
 def one_line(value: object) -> str:
     """A server field made safe for one line of markup (``_s``)."""
     return _s(value)
+
+
+# ---------------------------------------------------------------------------
+# research projects and their ledger (``planning/research-projects.md`` §4)
+
+#: The order a ledger's counts are printed in (the item lifecycle); any other state follows.
+_LEDGER_ORDER = (
+    "candidate",
+    "accepted",
+    "rejected",
+    "delivered",
+    "taken",
+    "superseded",
+    "retracted",
+)
+
+
+def _plain_table(headers: list[str], rows: list[list[str]]) -> None:
+    """Print ``rows`` as left-aligned columns under ``headers``. Cells are server text, so each
+    is made one line of plain text first; nothing is parsed as markup. The last column is not
+    padded."""
+    clean = [[sanitize_line(str(c)) for c in row] for row in rows]
+    widths = [max([len(h), *(len(r[i]) for r in clean)]) for i, h in enumerate(headers)]
+
+    def line(cells: list[str]) -> str:
+        parts = [c.ljust(widths[i]) for i, c in enumerate(cells[:-1])] + [cells[-1]]
+        return "  ".join(parts).rstrip()
+
+    for text in (line(headers), *(line(r) for r in clean)):
+        _stdout.print(text, markup=False, highlight=False, soft_wrap=True)
+
+
+def _research_schedule(schedule: Any) -> str:
+    """``cron (timezone)``, or ``manual`` for a project with no schedule. The cron stays as the
+    server holds it: reading it as prose is the server's job, not the CLI's."""
+    if schedule is None or not schedule.cron:
+        return "manual"
+    text = schedule.cron + (f" ({schedule.timezone})" if schedule.timezone else "")
+    return text if schedule.active else f"{text}, off"
+
+
+def _research_last_run(summary: Any) -> str:
+    last = summary.last_iteration
+    text = f"{_format_stamp(last.started_at)} {last.status}" if last else "never run"
+    inflight = summary.inflight_run
+    return f"{text} · {inflight.status} run" if inflight else text
+
+
+def render_research_project_list(rows: list[Any]) -> None:
+    """``research-projects list``: name, status, policy, schedule and last run, one row each."""
+    if not rows:
+        _stdout.print("(no research projects)")
+        return
+    _plain_table(
+        ["NAME", "STATUS", "POLICY", "SCHEDULE", "LAST RUN"],
+        [
+            [
+                p.name,
+                p.status,
+                p.delivery_policy,
+                _research_schedule(p.schedule),
+                _research_last_run(p),
+            ]
+            for p in rows
+        ],
+    )
+
+
+def _labelled(label: str, text: str) -> None:
+    """``label`` and a (possibly multi-line) value, continuation lines under the value."""
+    pad = " " * 12
+    lines = sanitize_text(text).splitlines() or [""]
+    _stdout.print(f"{label:<12}{lines[0]}", markup=False, highlight=False, soft_wrap=True)
+    for extra in lines[1:]:
+        _stdout.print(f"{pad}{extra}", markup=False, highlight=False, soft_wrap=True)
+
+
+def _shell_ref(detail: Any) -> str:
+    """The name to paste into a follow-up command: the project's name, or its id when the name
+    has characters a shell would act on."""
+    import re
+
+    return detail.name if re.fullmatch(r"[\w.-]+", detail.name) else detail.id
+
+
+def render_research_project(detail: Any) -> None:
+    """``research-projects show``: the project, its ledger and what is waiting on the person."""
+    head = f"{sanitize_line(detail.name)}   {detail.status} · {detail.delivery_policy}"
+    _stdout.print(f"{head} · skill {sanitize_line(detail.skill)}", markup=False, highlight=False)
+    _labelled("Brief", detail.brief or "")
+    if detail.filters:
+        _labelled(
+            "Filters",
+            "   ".join(f"{i}. {sanitize_line(f.text)}" for i, f in enumerate(detail.filters, 1)),
+        )
+    _labelled("Schedule", _research_schedule(detail.schedule))
+    _labelled("Source", sanitize_line(detail.source_url) if detail.source_url else "(none)")
+    last = detail.last_iteration
+    _labelled(
+        "Last run",
+        f"{_format_stamp(last.started_at)} {last.status}" if last else "(never run)",
+    )
+    run = detail.inflight_run
+    if run is not None:
+        _labelled(
+            "Run",
+            f"{run.status} {run.id} (pepper research-projects show {_shell_ref(detail)})",
+        )
+    counts = detail.item_counts or {}
+    known = [s for s in _LEDGER_ORDER if counts.get(s)]
+    other = sorted(s for s in counts if s not in _LEDGER_ORDER and counts[s])
+    _labelled("Ledger", " · ".join(f"{counts[s]} {s}" for s in [*known, *other]) or "(empty)")
+    queued = detail.pending_steering_count or 0
+    if queued:
+        _labelled("Steering", f"{queued} note{'s' if queued != 1 else ''} queued for the next run")
+    for i, q in enumerate(detail.open_questions or []):
+        _labelled("Open" if i == 0 else "", f"{q.id}  {sanitize_line(q.text)}")
+    _labelled("Report", f"pepper research-projects show {_shell_ref(detail)} --report")
+
+
+def _more_hint(next_before: str | None) -> None:
+    if next_before:
+        # soft_wrap: the cursor is meant to be pasted into the next --before.
+        _stdout.print(f"[dim](more — pass --before {_s(next_before)})[/dim]", soft_wrap=True)
+
+
+def render_research_runs(
+    rows: list[Any], next_before: str | None, *, you: str | None = None
+) -> None:
+    """``research-projects runs``: iterations, newest first. A manual row names who pressed run
+    (``you`` when that was ``you``, the caller's user id)."""
+    if not rows:
+        _stdout.print("(no runs yet)")
+        return
+
+    def trigger(row: Any) -> str:
+        if row.trigger != "manual":
+            return row.trigger
+        who = row.requested_by
+        if who is None:
+            return "manual"
+        return f"manual · {'you' if you and who.user_id == you else who.name}"
+
+    def note(row: Any) -> str:
+        if row.error:
+            return _short(sanitize_line(row.error))
+        failed = sorted((row.source_failures or {}).keys())
+        return f"sources failed: {', '.join(failed)}" if failed else ""
+
+    _plain_table(
+        ["STARTED", "TRIGGER", "STATUS", "NOTE"],
+        [[_format_stamp(r.started_at), trigger(r), r.status, note(r)] for r in rows],
+    )
+    _more_hint(next_before)
+
+
+def render_research_item_list(
+    rows: list[dict[str, Any]],
+    next_before: str | None,
+    *,
+    project: str,
+    states: list[str] | None,
+) -> None:
+    """``research-items list``: ``rows`` are numbered (``n``) item dicts, in the server's order."""
+    shown = ", ".join(states) if states else "all"
+    _stdout.print(
+        f"{sanitize_line(project)} — {len(rows)} item{'s' if len(rows) != 1 else ''} "
+        f"(states: {shown})",
+        markup=False,
+        highlight=False,
+    )
+    if not rows:
+        return
+    width = len(str(len(rows)))
+    _plain_table(
+        ["#".rjust(width), "STATE", "TITLE", "LINK", "FIRST SEEN"],
+        [
+            [
+                str(r["n"]).rjust(width),
+                r.get("state") or "",
+                r.get("title") or "",
+                _link_host(r.get("url")),
+                _format_stamp(r["first_seen_at"])[:10] if r.get("first_seen_at") else "",
+            ]
+            for r in rows
+        ],
+    )
+    _more_hint(next_before)
+
+
+def _link_host(url: object) -> str:
+    """The site a link points at, for a narrow column; the whole link is in ``show``."""
+    from urllib.parse import urlsplit
+
+    if not isinstance(url, str) or not url:
+        return ""
+    try:
+        return urlsplit(url).hostname or ""
+    except ValueError:
+        return ""
+
+
+def render_research_item(detail: Any) -> None:
+    """``research-items show``: one ledger row in full."""
+    _stdout.print(sanitize_line(detail.title), markup=False, highlight=False)
+    state = detail.state + (f" — {detail.state_reason}" if detail.state_reason else "")
+    _labelled("State", sanitize_line(state))
+    if detail.url:
+        _labelled("Link", sanitize_line(detail.url))
+    if detail.summary:
+        _labelled("Summary", detail.summary)
+    meta = [
+        part
+        for part in (
+            detail.source_type,
+            detail.creator,
+            str(detail.year) if detail.year else None,
+        )
+        if part
+    ]
+    if meta:
+        _labelled("Source", sanitize_line(" · ".join(meta)))
+    for i, cite in enumerate(detail.citations or []):
+        _labelled("Citations" if i == 0 else "", sanitize_line(_citation(cite)))
+    _labelled("First seen", _format_stamp(detail.first_seen_at))
+    _labelled("Changed", _format_stamp(detail.state_changed_at))
+    if detail.published_at:
+        _labelled("Delivered", _format_stamp(detail.published_at))
+
+
+def _citation(cite: Any) -> str:
+    """One citation as a line. The server's shape is open (``list[Any]``), so a mapping shows its
+    title and link when it has them, and anything else is shown as it is."""
+    if isinstance(cite, dict):
+        parts = [str(cite[k]) for k in ("title", "url") if cite.get(k)]
+        if parts:
+            return " — ".join(parts)
+    return _short_json(cite, 200) if not isinstance(cite, str) else cite

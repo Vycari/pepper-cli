@@ -185,6 +185,11 @@ Every command except `login` and the interactive REPL takes `--json`, and also s
 | `pepper scheduled-tasks renew <task> [--room R] [--json]` | Renew a task that is about to lapse (a room's: owner only). |
 | `pepper scheduled-tasks delete <task> [--room R] [--yes] [--json]` | Delete a task (a room's with `--room`: owner only) and its history for good; `--yes` is required under `--json`. `pause` keeps one. |
 | `pepper scheduled-tasks pause\|resume <task> [--room R]` | Take a task off the schedule (history kept) and put it back. |
+| `pepper research-projects list [--status active\|paused\|all]` | Your research projects: name, status, delivery policy, schedule (the cron as the server holds it, or `manual`) and last run. Active ones unless `--status` says otherwise; `all` adds stopped ones. Your own projects only; `--room` comes with the server's room routes. |
+| `pepper research-projects show PROJECT [--report]` | One project: brief, filters, schedule, last run (and a queued or running manual run), ledger counts, queued steering and the report's open questions. `--report` prints the report document (markdown, byte-exact when piped); with `--json` it is the server's report object. `PROJECT` is a name, a unique name prefix, or a UUID. |
+| `pepper research-projects runs PROJECT [--limit N] [--before CURSOR]` | What the project has run, newest first (limit 1-200, default 50), with a TRIGGER column: `scheduled`, or `manual` and who pressed run (`you` when it was you). A manual run still queued has no row yet; it shows in `show`. Pages back with `--before` (the `next_before` of the previous page, an opaque cursor). |
+| `pepper research-items list --project P [--state S]… [--limit N] [--before CURSOR]` | A project's ledger of what Pepper found, newest first, numbered; `--state` (repeatable: candidate, accepted, rejected, delivered, taken, superseded, retracted) is the server's filter. The numbers and the project are saved per profile for `research-items show`; `--json` items carry `n`. |
+| `pepper research-items show --project P ITEM` | One ledger item in full. `ITEM` is a number from the last `research-items list` of the same project (another project's list is refused, exit 2), or an item id. |
 | `pepper skills list\|show <name> [--room R]` | Your skill library (yours, then the built-ins), or the skills shared with a room with `--room`. `show` prints SKILL.md. |
 | `pepper skills create\|edit <name> [--file PATH \| -]` | Author one of your own skills in `$EDITOR`, or from a SKILL.md file. Never takes `--room`. |
 | `pepper skills delete <name> [--yes]` | Delete one of your skills; asks for confirmation unless `--yes`. |
@@ -525,6 +530,9 @@ Google token refresh).
 - **`401` / "log in again"** → token revoked or missing; re-run `pepper login`.
 - **"couldn't reach" / transport error** → check the `--server` URL and your
   connection.
+- **"Research projects are not enabled on this Pepper server."** (exit 1, `forbidden`) → the
+  server's `research-projects` feature is switched off for the whole deployment, not for your
+  account; nothing to fix locally.
 - **"refusing to read credentials" permissions error** → `chmod 600
   ~/.config/pepper/credentials.toml`.
 

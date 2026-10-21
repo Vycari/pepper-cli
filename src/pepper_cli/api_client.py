@@ -21,12 +21,13 @@ Two design rules drove the shape:
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json as _json
 import os
 import re as _re
-from collections.abc import Generator, Iterator
+from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field
-from typing import Any, NoReturn, Self
+from typing import Any, NoReturn, Self, cast
 
 import httpx
 
@@ -663,6 +664,186 @@ class ScheduledTaskMessage:
     trajectory_id: str | None
     created_at: str
     attachments: list[dict[str, Any]] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Research projects (``/api/v1/research-projects``)
+#
+# Mirrors src/pepper/api/research_projects.py, the personal read routes
+# (``planning/research-projects.md``). Every shape is a typed response model, so the
+# contract test checks each field below against the snapshot. A field the server omits
+# reads as ``None`` (the parse tolerates a missing key); an unknown one is ignored.
+# ---------------------------------------------------------------------------
+
+
+# MIRROR: src/pepper/api/research_projects.py::ResearchPersonOut
+@dataclass(frozen=True)
+class ResearchPerson:
+    user_id: str
+    name: str
+
+
+# MIRROR: src/pepper/api/research_projects.py::ResearchScheduleOut
+@dataclass(frozen=True)
+class ResearchSchedule:
+    cron: str | None
+    timezone: str | None
+    active: bool
+
+
+# MIRROR: src/pepper/api/research_projects.py::ResearchLastIterationOut
+@dataclass(frozen=True)
+class ResearchLastIteration:
+    id: str
+    status: str
+    started_at: str
+    finished_at: str | None
+
+
+# MIRROR: src/pepper/api/research_projects.py::ResearchInflightRunOut
+@dataclass(frozen=True)
+class ResearchInflightRun:
+    id: str
+    status: str
+    requested_at: str
+    requested_by: ResearchPerson | None
+
+
+# MIRROR: src/pepper/api/research_projects.py::ResearchQuestionOut
+@dataclass(frozen=True)
+class ResearchQuestion:
+    id: str
+    text: str
+
+
+# MIRROR: src/pepper/api/research_projects.py::ResearchFilterOut
+@dataclass(frozen=True)
+class ResearchFilter:
+    text: str
+    author_user_id: str | None
+    author_name: str | None
+    set_at: str | None
+
+
+# MIRROR: src/pepper/api/research_projects.py::ResearchOwnerOut
+@dataclass(frozen=True)
+class ResearchOwner:
+    kind: str
+    id: str
+
+
+# MIRROR: src/pepper/api/research_projects.py::ResearchProjectSummary
+@dataclass(frozen=True)
+class ResearchProjectSummary:
+    """One row of ``GET /api/v1/research-projects``. A queued or running manual run is
+    ``inflight_run``; times are raw UTC ISO-8601 strings."""
+
+    id: str
+    name: str
+    status: str
+    delivery_policy: str
+    brief_snippet: str
+    skill: str
+    scheduled_task_id: str | None
+    schedule: ResearchSchedule | None
+    last_iteration: ResearchLastIteration | None
+    inflight_run: ResearchInflightRun | None
+    created_at: str
+
+
+# MIRROR: src/pepper/api/research_projects.py::ResearchProjectDetail
+@dataclass(frozen=True)
+class ResearchProjectDetail(ResearchProjectSummary):
+    """``GET /api/v1/research-projects/{id}``: the summary plus brief, filters, ledger
+    counts, pending steering and the report's open questions (``q1``..)."""
+
+    brief: str
+    source_url: str | None
+    filters: list[ResearchFilter]
+    pending_steering_count: int
+    item_counts: dict[str, int]
+    report_artifact_id: str | None
+    open_questions: list[ResearchQuestion]
+    owner: ResearchOwner | None
+
+
+# MIRROR: src/pepper/api/research_projects.py::ResearchIterationOut
+@dataclass(frozen=True)
+class ResearchIteration:
+    """One row of ``GET .../{id}/iterations``: what actually executed. ``trigger`` is
+    ``manual`` or ``scheduled``; ``requested_by`` names who pressed run (manual only)."""
+
+    id: str
+    occurrence_key: str | None
+    trigger: str
+    requested_by: ResearchPerson | None
+    run_id: str | None
+    status: str
+    started_at: str
+    finished_at: str | None
+    error: str | None
+    source_failures: dict[str, Any] | None
+
+
+# MIRROR: src/pepper/api/research_projects.py::ResearchChangelogOut
+@dataclass(frozen=True)
+class ResearchChangelogEntry:
+    day: str
+    text: str
+    evidence_ids: list[str]
+    iteration_id: str | None
+
+
+# MIRROR: src/pepper/api/research_projects.py::ResearchReport
+@dataclass(frozen=True)
+class ResearchReport:
+    """``GET .../{id}/report``: the report document (``body``, markdown) and the pieces
+    the server parsed out of it."""
+
+    artifact_id: str | None
+    body: str
+    summary: str
+    current_recommendation: str
+    open_questions: list[ResearchQuestion]
+    changelog: list[ResearchChangelogEntry]
+    collapsed_changelog: int
+    updated_at: str | None
+
+
+# MIRROR: src/pepper/api/research_projects.py::ResearchItemOut
+@dataclass(frozen=True)
+class ResearchItem:
+    """One ledger row. ``seq`` is globally monotonic, not a per-project counter, so the CLI
+    never shows it as a number to type (``planning/research-projects.md`` §5.2)."""
+
+    id: str
+    seq: int
+    title: str
+    state: str
+    state_reason: str | None
+    url: str | None
+    summary: str | None
+    first_seen_at: str
+    state_changed_at: str
+
+
+# MIRROR: src/pepper/api/research_projects.py::ResearchItemDetail
+@dataclass(frozen=True)
+class ResearchItemDetail(ResearchItem):
+    source_type: str
+    creator: str | None
+    year: int | None
+    published_at: str | None
+    citations: list[Any]
+    superseded_by: str | None
+
+
+@dataclass(frozen=True)
+class ResearchPage[T]:
+    """A ``{items, next_before}`` page; ``next_before`` is the server's opaque cursor."""
+
+    items: list[T]
+    next_before: str | None
 
 
 # MIRROR: src/pepper/web/auth/device_router.py::DeviceStartResponse
@@ -2262,6 +2443,70 @@ class ApiClient:
             yield from _iter_feed_frames(resp.iter_lines())
 
     # ------------------------------------------------------------------
+    # Research projects (``/api/v1/research-projects``)
+    #
+    # The personal read side. A project, run or item that is not yours is the
+    # same 404 as one that does not exist. With the feature switched off every
+    # route answers 403 with a ``code`` (see :func:`error_code`).
+
+    def list_research_projects(
+        self, *, status: str | None = None, limit: int = 200
+    ) -> ResearchPage[ResearchProjectSummary]:
+        """``GET /api/v1/research-projects``. Newest first; ``status`` (``active``,
+        ``paused``, ``stopped``) is the server's filter, and none means every status.
+        The server never issues a cursor here in v1 (a person has a handful)."""
+        params: dict[str, Any] = {"limit": limit}
+        if status is not None:
+            params["status"] = status
+        body = self._research_get(RESEARCH_PROJECTS_PATH, params)
+        return _research_page(body, _research_summary)
+
+    def get_research_project(self, project_id: str) -> ResearchProjectDetail:
+        """``GET /api/v1/research-projects/{id}``."""
+        return _research_detail(self._research_get(f"{RESEARCH_PROJECTS_PATH}/{project_id}"))
+
+    def get_research_report(self, project_id: str) -> ResearchReport:
+        """``GET /api/v1/research-projects/{id}/report``."""
+        return _research_report(self._research_get(f"{RESEARCH_PROJECTS_PATH}/{project_id}/report"))
+
+    def list_research_iterations(
+        self, project_id: str, *, limit: int = 50, before: str | None = None
+    ) -> ResearchPage[ResearchIteration]:
+        """``GET /api/v1/research-projects/{id}/iterations``. What executed, newest first;
+        ``before`` is a ``next_before`` the previous page returned."""
+        body = self._research_get(
+            f"{RESEARCH_PROJECTS_PATH}/{project_id}/iterations", _page_params(limit, before)
+        )
+        return _research_page(body, _research_iteration)
+
+    def list_research_items(
+        self,
+        project_id: str,
+        *,
+        states: list[str] | None = None,
+        limit: int = 50,
+        before: str | None = None,
+    ) -> ResearchPage[ResearchItem]:
+        """``GET /api/v1/research-projects/{id}/items``. Newest ``seq`` first; ``states``
+        repeats the ``state`` query parameter (any of them matches)."""
+        params = _page_params(limit, before)
+        if states:
+            params["state"] = list(states)
+        body = self._research_get(f"{RESEARCH_PROJECTS_PATH}/{project_id}/items", params)
+        return _research_page(body, _research_item)
+
+    def get_research_item(self, project_id: str, item_id: str) -> ResearchItemDetail:
+        """``GET /api/v1/research-projects/{id}/items/{item_id}``."""
+        body = self._research_get(f"{RESEARCH_PROJECTS_PATH}/{project_id}/items/{item_id}")
+        return _research_item_detail(body)
+
+    def _research_get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        body = self._request("GET", path, params=params).json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body)[:200], detail="malformed response")
+        return body
+
+    # ------------------------------------------------------------------
     # Groups (MIRROR: src/pepper/api/groups.py)
     #
     # One method per route of the groups API, so a native port can walk
@@ -3188,6 +3433,116 @@ def _keyset_params(limit: int, before: str | None, before_id: str | None) -> dic
     if before_id is not None:
         params["before_id"] = before_id
     return params
+
+
+#: Base path of the personal research-project routes.
+RESEARCH_PROJECTS_PATH = "/api/v1/research-projects"
+
+#: The 403 ``code`` values the server uses to say the feature is switched off, as opposed to
+#: a role 403 (``planning/research-projects.md`` §8).
+RESEARCH_DISABLED_CODES = frozenset(
+    {"research_projects_disabled", "research_group_projects_disabled"}
+)
+
+
+def error_code(exc: ApiError) -> str | None:
+    """The machine ``code`` an error body carries beside ``detail``, or ``None``."""
+    try:
+        body = _json.loads(exc.body)
+    except ValueError:
+        return None
+    code = body.get("code") if isinstance(body, dict) else None
+    return code if isinstance(code, str) else None
+
+
+def _page_params(limit: int, before: str | None) -> dict[str, Any]:
+    params: dict[str, Any] = {"limit": limit}
+    if before is not None:
+        params["before"] = before
+    return params
+
+
+def _fields[T](cls: type[T], row: dict[str, Any], **parsed: Any) -> T:
+    """``cls`` built from the keys of ``row`` it declares: a missing key is ``None``, an unknown
+    one is ignored (``/api/v1`` is additive-only). ``parsed`` overrides nested fields."""
+    names = (f.name for f in dataclasses.fields(cast("Any", cls)))
+    return cls(**{**{n: row.get(n) for n in names}, **parsed})
+
+
+def _nested[T](cls: type[T], row: object) -> T | None:
+    return _fields(cls, row) if isinstance(row, dict) else None
+
+
+def _nested_list[T](cls: type[T], rows: object) -> list[T]:
+    return [_fields(cls, r) for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
+def _research_summary_parts(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schedule": _nested(ResearchSchedule, row.get("schedule")),
+        "last_iteration": _nested(ResearchLastIteration, row.get("last_iteration")),
+        "inflight_run": _research_inflight(row.get("inflight_run")),
+    }
+
+
+def _research_inflight(row: object) -> ResearchInflightRun | None:
+    if not isinstance(row, dict):
+        return None
+    return _fields(
+        ResearchInflightRun, row, requested_by=_nested(ResearchPerson, row.get("requested_by"))
+    )
+
+
+def _research_summary(row: dict[str, Any]) -> ResearchProjectSummary:
+    return _fields(ResearchProjectSummary, row, **_research_summary_parts(row))
+
+
+def _research_detail(row: dict[str, Any]) -> ResearchProjectDetail:
+    return _fields(
+        ResearchProjectDetail,
+        row,
+        **_research_summary_parts(row),
+        filters=_nested_list(ResearchFilter, row.get("filters")),
+        open_questions=_nested_list(ResearchQuestion, row.get("open_questions")),
+        item_counts=row.get("item_counts") or {},
+        owner=_nested(ResearchOwner, row.get("owner")),
+    )
+
+
+def _research_iteration(row: dict[str, Any]) -> ResearchIteration:
+    return _fields(
+        ResearchIteration, row, requested_by=_nested(ResearchPerson, row.get("requested_by"))
+    )
+
+
+def _research_report(row: dict[str, Any]) -> ResearchReport:
+    return _fields(
+        ResearchReport,
+        row,
+        open_questions=_nested_list(ResearchQuestion, row.get("open_questions")),
+        changelog=_nested_list(ResearchChangelogEntry, row.get("changelog")),
+    )
+
+
+def _research_item(row: dict[str, Any]) -> ResearchItem:
+    return _fields(ResearchItem, row)
+
+
+def _research_item_detail(row: dict[str, Any]) -> ResearchItemDetail:
+    return _fields(ResearchItemDetail, row, citations=row.get("citations") or [])
+
+
+def _research_page[T](
+    body: dict[str, Any], parse: Callable[[dict[str, Any]], T]
+) -> ResearchPage[T]:
+    rows = body.get("items")
+    if not isinstance(rows, list):
+        raise ApiError(status=200, body=str(body)[:200], detail="malformed response")
+    cursor = body.get("next_before")
+    return ResearchPage(
+        items=[parse(r) for r in rows if isinstance(r, dict)],
+        next_before=cursor if isinstance(cursor, str) else None,
+    )
 
 
 def _scheduled_run_from_dict(row: dict[str, Any]) -> ScheduledTaskRunEntry:
