@@ -22,7 +22,10 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import datetime as dt
+import email.utils
 import json as _json
+import math
 import os
 import re as _re
 import uuid
@@ -3846,13 +3849,35 @@ def _raise_for_error(resp: httpx.Response) -> NoReturn:
     )
 
 
+def _utcnow() -> dt.datetime:
+    """The current UTC time, a seam for the ``Retry-After`` tests."""
+    return dt.datetime.now(dt.UTC)
+
+
 def _retry_after(resp: httpx.Response) -> float | None:
-    """The ``Retry-After`` header in seconds (the delay form only), or ``None``."""
-    try:
-        seconds = float(resp.headers.get("Retry-After", ""))
-    except ValueError:
+    """The ``Retry-After`` header as seconds to wait, or ``None`` when absent or unreadable.
+
+    Both forms RFC 9110 §10.2.3 allows: delta-seconds, and an HTTP date (IMF-fixdate, or the
+    obsolete RFC 850 and asctime forms), which is turned into the delay until then. A date
+    already past is ``0.0`` (retry now), never negative. A number that is negative or not
+    finite is not delta-seconds at all, so it is ``None``, like any other unreadable value.
+    """
+    value = resp.headers.get("Retry-After", "").strip()
+    if not value:
         return None
-    return seconds if 0 <= seconds < float("inf") else None
+    try:
+        seconds = float(value)
+    except ValueError:
+        pass
+    else:
+        return seconds if seconds >= 0 and math.isfinite(seconds) else None
+    try:
+        when = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:  # asctime carries no zone; HTTP dates are always GMT
+        when = when.replace(tzinfo=dt.UTC)
+    return max((when - _utcnow()).total_seconds(), 0.0)
 
 
 def _extract_detail(resp: httpx.Response) -> str | None:

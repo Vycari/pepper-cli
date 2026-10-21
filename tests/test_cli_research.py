@@ -7,6 +7,7 @@ code and J8 line for each failure in ``planning/research-projects.md`` §8.
 
 from __future__ import annotations
 
+import datetime as dt
 import io
 import json
 
@@ -1272,6 +1273,48 @@ def test_wait_a_retry_after_overrides_the_gap(server, capsys, clock) -> None:
     )
     _run(["research-projects", "run", P1, "--wait", "--json"], capsys)
     assert clock.slept == [2, 7]
+
+
+def test_wait_a_retry_after_date_is_the_delay_until_then(
+    server, capsys, clock, monkeypatch
+) -> None:
+    now = dt.datetime(2026, 10, 20, 10, 0, 0, tzinfo=dt.UTC)
+    monkeypatch.setattr(api_client, "_utcnow", lambda: now)
+    _wait_routes(
+        server,
+        httpx.Response(
+            503,
+            json={"detail": "busy"},
+            headers={"Retry-After": "Tue, 20 Oct 2026 10:00:30 GMT"},
+        ),
+        _poll("succeeded"),
+    )
+    rc, _, _ = _run(["research-projects", "run", P1, "--wait", "--json"], capsys)
+    assert rc == 0
+    assert clock.slept == [2, 30]
+
+
+@pytest.mark.parametrize(
+    ("header", "seconds"),
+    [
+        ("7", 7.0),
+        ("0", 0.0),
+        ("Tue, 20 Oct 2026 10:01:00 GMT", 60.0),
+        ("Tuesday, 20-Oct-26 10:01:00 GMT", 60.0),  # RFC 850, still valid to receive
+        ("Tue Oct 20 10:01:00 2026", 60.0),  # asctime
+        ("Tue, 20 Oct 2026 09:59:00 GMT", 0.0),  # already past: retry now, never negative
+        ("-3", None),
+        ("nan", None),
+        ("inf", None),
+        ("soon", None),
+        ("", None),
+    ],
+)
+def test_retry_after_reads_seconds_and_http_dates(monkeypatch, header, seconds) -> None:
+    now = dt.datetime(2026, 10, 20, 10, 0, 0, tzinfo=dt.UTC)
+    monkeypatch.setattr(api_client, "_utcnow", lambda: now)
+    headers = {"Retry-After": header} if header else {}
+    assert api_client._retry_after(httpx.Response(503, headers=headers)) == seconds
 
 
 def test_wait_human_output_has_progress_on_stderr_and_whats_new_on_stdout(
