@@ -1227,7 +1227,8 @@ def render_next(result: dict[str, Any]) -> None:
         # the same row (and the same server order).
         line = f"{n:>2}. {title}"
         if action:
-            line = f"{n:>2}. {_s(action['text'])}  [dim]for: {title}[/dim]"
+            by_pepper = " [dim](Pepper)[/dim]" if action.get("by") == "model" else ""
+            line = f"{n:>2}. {_s(action['text'])}{by_pepper}  [dim]for: {title}[/dim]"
         labels = [_todo_due_label(item, clock, zone)]
         if item.get("priority"):
             labels.append(f"priority {item['priority']}")
