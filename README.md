@@ -456,7 +456,8 @@ The composer at the bottom posts to whatever is open:
   per new activity, one at a time) and looks for your id. A topic with more unread messages than
   one page can miss an older mention. The open topic needs none of this: a message that mentions
   you shows in the accent colour. Set `PEPPER_TUI_BELL=1` to also ring the terminal bell when a
-  mention is first found in another topic; it is off by default.
+  mention is first found in another topic; it is off by default. Set `PEPPER_NO_UPDATE_CHECK=1` to
+  disable the background release check on startup.
 
 `pepper tui --root PATH` (repeatable; `--tools-root` is an alias) lets Pepper read files under
 `PATH` during chat turns, exactly as `pepper chat --root` does: read-only, enforced on this
@@ -474,6 +475,7 @@ machine, and only for this session. A path that is not a directory exits 2.
 | `+`, `e`, `d`, `o` | In the thread, on a selected message: react, edit, delete, open link. |
 | `i` | Room info (members, topics, apps) for the open room. |
 | Ctrl+K | Fuzzy jump to any room or topic. |
+| Ctrl+U | When an update is available: confirm to exit and upgrade. |
 | Esc | Cancel the quote or edit, then leave the composer. |
 | Ctrl+N / Ctrl+P | Jump to the next / previous unread conversation. |
 | PgUp / PgDn | Scroll the thread. |

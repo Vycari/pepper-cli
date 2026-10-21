@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 
 import pytest
@@ -29,8 +28,23 @@ async def test_tui_registers_upgrade_binding_when_update_available() -> None:
         await until(pilot, lambda: pilot.app.update_version == "0.4.0")
         binding = pilot.app.screen.active_bindings.get("ctrl+u")
         assert binding is not None
-        assert binding.binding.description == "Update (v0.4.0)"
+        assert binding.binding.description == "Update"
         assert binding.binding.show is True
+
+
+async def test_ctrl_u_deletes_to_start_of_line_in_composer() -> None:
+    server = ts.standard_server()
+    app = tui_app.PepperApp(server.client(), update_checker=lambda: "0.4.0")
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: pilot.app.update_version == "0.4.0")
+        pilot.app.composer.focus()
+        await pilot.pause()
+        await pilot.press("a", "b", "c")
+        # In composer, non-priority ctrl+u deletes to line start, does not open ConfirmScreen
+        await pilot.press("ctrl+u")
+        await pilot.pause()
+        assert not isinstance(pilot.app.screen, ConfirmScreen)
+        assert pilot.app.composer.text == ""
 
 
 async def test_tui_upgrade_action_cancel() -> None:
@@ -41,6 +55,20 @@ async def test_tui_upgrade_action_cancel() -> None:
         pilot.app.action_upgrade()
         await until(pilot, lambda: isinstance(pilot.app.screen, ConfirmScreen))
         await pilot.press("n")
+        await pilot.pause()
+        assert not isinstance(pilot.app.screen, ConfirmScreen)
+        assert pilot.app.upgrade_requested is False
+
+
+async def test_confirm_screen_enter_cancels_safely() -> None:
+    server = ts.standard_server()
+    app = tui_app.PepperApp(server.client(), update_checker=lambda: "0.4.0")
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: pilot.app.update_version == "0.4.0")
+        pilot.app.action_upgrade()
+        await until(pilot, lambda: isinstance(pilot.app.screen, ConfirmScreen))
+        # Pressing enter on focused #confirm-no dismisses False
+        await pilot.press("enter")
         await pilot.pause()
         assert not isinstance(pilot.app.screen, ConfirmScreen)
         assert pilot.app.upgrade_requested is False
@@ -85,7 +113,8 @@ async def test_tui_upgrade_mouse_click_confirm() -> None:
         assert pilot.app.upgrade_requested is True
 
 
-def test_perform_upgrade_success(monkeypatch, capsys) -> None:
+def test_perform_upgrade_non_windows_success(monkeypatch, capsys) -> None:
+    monkeypatch.setattr("sys.platform", "linux")
     monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/uv")
     ran = []
 
@@ -96,15 +125,21 @@ def test_perform_upgrade_success(monkeypatch, capsys) -> None:
     monkeypatch.setattr(subprocess, "run", fake_run)
     rc = tui._perform_upgrade("0.4.0")
     assert rc == 0
-    expected_cache = os.path.join(os.path.expanduser("~"), ".uv-upgrade-cache")
-    assert ran == [
-        ["/usr/bin/uv", "tool", "upgrade", "--cache-dir", expected_cache, "vycari-pepper"]
-    ]
+    assert ran == [["/usr/bin/uv", "tool", "upgrade", "vycari-pepper"]]
     captured = capsys.readouterr()
-    assert "Successfully upgraded to v0.4.0" in captured.err
+    assert "Upgrade command completed. Run 'pepper' to start." in captured.err
+
+
+def test_perform_upgrade_windows(monkeypatch, capsys) -> None:
+    monkeypatch.setattr("sys.platform", "win32")
+    rc = tui._perform_upgrade("0.4.0")
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "To upgrade to v0.4.0, run:\n  uv tool upgrade vycari-pepper" in captured.err
 
 
 def test_perform_upgrade_failure(monkeypatch, capsys) -> None:
+    monkeypatch.setattr("sys.platform", "linux")
     monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/uv")
 
     def fake_run(cmd, check=False):
@@ -118,6 +153,7 @@ def test_perform_upgrade_failure(monkeypatch, capsys) -> None:
 
 
 def test_perform_upgrade_missing_uv(monkeypatch, capsys) -> None:
+    monkeypatch.setattr("sys.platform", "linux")
     monkeypatch.setattr("shutil.which", lambda _name: None)
     rc = tui._perform_upgrade("0.4.0")
     assert rc == 1

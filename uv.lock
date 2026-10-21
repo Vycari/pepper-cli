@@ -1234,6 +1234,7 @@ source = { editable = "." }
 dependencies = [
     { name = "httpx" },
     { name = "mcp" },
+    { name = "packaging" },
     { name = "prompt-toolkit" },
     { name = "pyyaml" },
     { name = "rich" },
@@ -1257,6 +1258,7 @@ dev = [
 requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "mcp", specifier = ">=2.3,<3" },
+    { name = "packaging", specifier = ">=24.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.53" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },

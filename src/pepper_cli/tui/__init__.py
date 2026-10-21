@@ -27,8 +27,13 @@ def _perform_upgrade(target_version: str) -> int:
     """Run `uv tool upgrade vycari-pepper` after TUI exits cleanly."""
     import shutil
     import subprocess
+    import sys
 
     from pepper_cli import render
+
+    if sys.platform == "win32":
+        render.info(f"To upgrade to v{target_version}, run:\n  uv tool upgrade vycari-pepper")
+        return 0
 
     uv_bin = shutil.which("uv")
     if not uv_bin:
@@ -39,13 +44,12 @@ def _perform_upgrade(target_version: str) -> int:
         return 1
 
     render.info(f"Upgrading vycari-pepper to v{target_version}...")
-    cache_dir = os.path.join(os.path.expanduser("~"), ".uv-upgrade-cache")
     proc = subprocess.run(  # noqa: S603
-        [uv_bin, "tool", "upgrade", "--cache-dir", cache_dir, "vycari-pepper"],
+        [uv_bin, "tool", "upgrade", "vycari-pepper"],
         check=False,
     )
     if proc.returncode == 0:
-        render.info(f"Successfully upgraded to v{target_version}. Run 'pepper' to start.")
+        render.info("Upgrade command completed. Run 'pepper' to start.")
     else:
         render.error("Upgrade failed. Run manually: uv tool upgrade vycari-pepper")
     return proc.returncode
@@ -68,6 +72,9 @@ def run(
         app = PepperApp(api, provider=provider, bell=bell_enabled(), update_checker=update_checker)
         app.run()
         target_version = getattr(app, "update_version", None)
-        if getattr(app, "upgrade_requested", False) and target_version is not None:
-            return _perform_upgrade(target_version)
-        return app.return_code or 0
+        upgrade_requested = getattr(app, "upgrade_requested", False)
+        ret_code = app.return_code or 0
+
+    if upgrade_requested and target_version is not None:
+        return _perform_upgrade(target_version)
+    return ret_code

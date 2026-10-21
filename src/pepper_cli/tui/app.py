@@ -154,6 +154,7 @@ class PepperApp(App[None]):
         # Priority: a focused TextArea would otherwise take Ctrl+K as "delete to line end".
         Binding("ctrl+k", "jump", "Jump", priority=True),
         Binding("i", "room_info", "Room info"),
+        Binding("ctrl+u", "upgrade", "Update"),
         Binding("ctrl+q", "quit_app", "Quit", priority=True),
     ]
 
@@ -843,14 +844,26 @@ class PepperApp(App[None]):
     def action_quit_app(self) -> None:
         self.exit(return_code=0)
 
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "upgrade":
+            return bool(self.update_version)
+        return super().check_action(action, parameters)
+
     def action_upgrade(self) -> None:
         """``Ctrl+U``: show confirmation to exit and upgrade Pepper."""
         if not self.update_version or self.fatal or isinstance(self.screen, ModalScreen):
             return
+        import sys
+
+        detail = (
+            "Pepper will exit. Run 'uv tool upgrade vycari-pepper' in your terminal."
+            if sys.platform == "win32"
+            else "Pepper will exit and run 'uv tool upgrade vycari-pepper' in your terminal."
+        )
         self.push_screen(
             ConfirmScreen(
                 f"Upgrade Pepper to v{self.update_version}?",
-                "Pepper will exit and run 'uv tool upgrade vycari-pepper' in your terminal.",
+                detail,
             ),
             self._on_confirm_upgrade,
         )
@@ -883,11 +896,7 @@ class PepperApp(App[None]):
         if self._quitting or not self._mounted():
             return
         self.update_version = version
-        self._bindings.bind(
-            "ctrl+u", "upgrade", description=f"Update (v{version})", show=True, priority=True
-        )
-        if hasattr(self, "screen") and self.screen is not None:
-            self.screen.bindings_updated_signal.publish(self.screen)
+        self.refresh_bindings()
         self.refresh_chrome()
 
     def action_focus_composer(self) -> None:
