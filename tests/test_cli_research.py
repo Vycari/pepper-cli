@@ -1023,6 +1023,33 @@ def test_edit_brief_applied_but_filters_unreachable_says_which_part_applied(
     assert "filters were not changed" in error["message"]
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        lambda request: (_ for _ in ()).throw(httpx.ReadTimeout("slow", request=request)),
+        lambda request: (_ for _ in ()).throw(httpx.RemoteProtocolError("eof", request=request)),
+        lambda request: httpx.Response(504, json={"detail": "gateway timeout"}),
+    ],
+    ids=["read-timeout", "dropped-mid-response", "504"],
+)
+def test_edit_brief_applied_but_filters_unconfirmed_says_so(
+    server, capsys, monkeypatch, failure
+) -> None:
+    # The PUT may have reached the server and been saved: "not changed" would be a guess.
+    _stdin(monkeypatch, "B")
+    server.routes[f"PATCH {BASE}/{P1}"] = _json(_detail(brief="B"))
+    server.routes[f"PUT {BASE}/{P1}/filters"] = failure
+    rc, out, err = _run(
+        ["research-projects", "edit", P1, "--file", "-", "--filter", "f", "--json"], capsys
+    )
+    assert (rc, out) == (1, "")
+    message = _error(err)["message"]
+    assert "brief was updated" in message
+    assert "filter change could not be confirmed" in message
+    assert "not changed" not in message
+    assert f"pepper research-projects show {P1}" in message
+
+
 def test_edit_filter_with_clear_filters_is_a_usage_error(server, capsys) -> None:
     rc, out, err = _run(
         ["research-projects", "edit", P1, "--filter", "x", "--clear", "filters", "--json"], capsys

@@ -8615,27 +8615,37 @@ def cmd_research_projects_edit(args: argparse.Namespace) -> int:
             except (api_client.ApiError, httpx.RequestError) as exc:
                 if new_brief is None:
                     raise
-                # Two calls, the first already applied: say which part did.
+                # Two calls, the first already applied: say which part did. A 4xx or a
+                # failure before the request left means the filters were not changed; a 5xx
+                # (a gateway's 504 included) or a lost response may follow a saved PUT.
                 if isinstance(exc, api_client.ApiError):
                     code, status = _error_code_for_status(exc.status), exc.status
                     cause = f"server returned {exc.status}" + (
                         f": {exc.detail}" if exc.detail else ""
                     )
+                    unsent = exc.status < 500
                 else:
                     code, status, cause = "network", None, f"couldn't reach the server: {exc}"
-                _emit_error(
-                    args,
-                    code,
-                    f"The brief was updated, but the filters were not changed ({cause}).",
-                    status=status,
-                    soft_wrap=True,
-                )
+                    unsent = isinstance(exc, _UNSENT_REQUEST_ERRORS)
+                if unsent:
+                    message = f"The brief was updated, but the filters were not changed ({cause})."
+                else:
+                    message = (
+                        f"The brief was updated, but the filter change could not be confirmed "
+                        f"({cause}); check with: pepper research-projects show "
+                        f"{shlex.quote(args.project)}"
+                    )
+                _emit_error(args, code, message, status=status, soft_wrap=True)
                 return 1
         assert result is not None  # a brief or a filter list was sent
         _emit(result, args, lambda: render.info(f"Updated research project {result.name!r}."))
         return 0
 
     return _with_api(run, _report_research_error, args)
+
+
+#: Transport failures that happen before a request is sent, so the server never saw it.
+_UNSENT_REQUEST_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 
 
 def _research_run_id(run: object) -> str:
