@@ -660,3 +660,71 @@ def test_not_logged_in(tmp_home, capsys) -> None:
     rc, _, err = _run(["research-projects", "list"], capsys)
     assert rc == 1
     assert "pepper login" in err
+
+
+def _without(row: dict, key: str) -> dict:
+    return {k: v for k, v in row.items() if k != key}
+
+
+@pytest.mark.parametrize(
+    ("argv", "path", "body", "missing"),
+    [
+        (
+            ["research-projects", "list"],
+            BASE,
+            {"items": [_without(_summary(P1, "robot-vacuums"), "name")]},
+            "ResearchProjectSummary has no 'name'",
+        ),
+        (
+            ["research-projects", "list"],
+            BASE,
+            {
+                "items": [
+                    _summary(
+                        P1,
+                        "robot-vacuums",
+                        last_iteration={"id": "i1", "status": "succeeded", "started_at": None},
+                    )
+                ]
+            },
+            "ResearchLastIteration has no 'started_at'",
+        ),
+        (
+            ["research-projects", "show", P1],
+            f"{BASE}/{P1}",
+            _without(_detail(), "status"),
+            "ResearchProjectDetail has no 'status'",
+        ),
+        (
+            ["research-projects", "runs", P1],
+            f"{BASE}/{P1}/iterations",
+            {"items": [_without(_iteration(), "started_at")]},
+            "ResearchIteration has no 'started_at'",
+        ),
+        (
+            ["research-items", "list", "--project", P1],
+            f"{BASE}/{P1}/items",
+            {"items": [_without(_item(1), "state")]},
+            "ResearchItem has no 'state'",
+        ),
+        (
+            ["research-items", "show", "--project", P1, _item(1)["id"]],
+            f"{BASE}/{P1}/items/{_item(1)['id']}",
+            {**_without(_item(1), "state"), "source_type": "web", "citations": []},
+            "ResearchItemDetail has no 'state'",
+        ),
+    ],
+)
+@pytest.mark.parametrize("as_json", [False, True])
+def test_a_missing_required_field_is_a_clear_error_not_a_crash(
+    server, capsys, argv, path, body, missing, as_json
+) -> None:
+    server.routes[path] = _json(body)
+    rc, out, err = _run([*argv, *(["--json"] if as_json else [])], capsys)
+    assert (rc, out) == (1, "")
+    assert "Traceback" not in err
+    message = f"Server returned 200: malformed response: {missing}"
+    if as_json:
+        assert _error(err)["message"] == message
+    else:
+        assert message in " ".join(err.split())  # the terminal may wrap the line

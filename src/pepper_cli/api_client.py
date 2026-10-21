@@ -671,8 +671,9 @@ class ScheduledTaskMessage:
 #
 # Mirrors src/pepper/api/research_projects.py, the personal read routes
 # (``planning/research-projects.md``). Every shape is a typed response model, so the
-# contract test checks each field below against the snapshot. A field the server omits
-# reads as ``None`` (the parse tolerates a missing key); an unknown one is ignored.
+# contract test checks each field below against the snapshot. An optional field the server
+# omits reads as ``None``; a required one missing is a malformed response (``_fields``); an
+# unknown one is ignored.
 # ---------------------------------------------------------------------------
 
 
@@ -3463,10 +3464,25 @@ def _page_params(limit: int, before: str | None) -> dict[str, Any]:
 
 
 def _fields[T](cls: type[T], row: dict[str, Any], **parsed: Any) -> T:
-    """``cls`` built from the keys of ``row`` it declares: a missing key is ``None``, an unknown
-    one is ignored (``/api/v1`` is additive-only). ``parsed`` overrides nested fields."""
-    names = (f.name for f in dataclasses.fields(cast("Any", cls)))
-    return cls(**{**{n: row.get(n) for n in names}, **parsed})
+    """``cls`` built from the keys of ``row`` it declares. An unknown key is ignored (``/api/v1``
+    is additive-only); an optional field (``X | None``) the server leaves out reads as ``None``.
+    A required field that is missing or ``null`` is a malformed response, raised as an
+    :class:`ApiError` naming it, so no renderer ever sees ``None`` where the type says it can't
+    be. ``parsed`` overrides nested fields."""
+    values: dict[str, Any] = {}
+    for f in dataclasses.fields(cast("Any", cls)):
+        if f.name in parsed:
+            continue
+        value = row.get(f.name)
+        # ``from __future__ import annotations`` leaves ``f.type`` as the annotation's text.
+        if value is None and "None" not in str(f.type):
+            raise ApiError(
+                status=200,
+                body=str(row)[:200],
+                detail=f"malformed response: {cls.__name__} has no {f.name!r}",
+            )
+        values[f.name] = value
+    return cls(**{**values, **parsed})
 
 
 def _nested[T](cls: type[T], row: object) -> T | None:

@@ -201,3 +201,64 @@ def test_http_errors_raise_with_the_code_readable() -> None:
 @pytest.mark.parametrize("body", ["not json", "[1]", '{"code": 3}', "{}"])
 def test_error_code_is_none_unless_the_body_carries_a_string_code(body) -> None:
     assert api_client.error_code(api_client.ApiError(403, body)) is None
+
+
+def test_a_missing_optional_field_reads_none_and_falsy_required_values_pass() -> None:
+    item = _client(
+        _serve(
+            {
+                "items": [
+                    {
+                        "id": IID,
+                        "seq": 0,
+                        "title": "",
+                        "state": "candidate",
+                        "first_seen_at": "a",
+                        "state_changed_at": "b",
+                    }
+                ]
+            }
+        )
+    ).list_research_items(PID)
+    row = item.items[0]
+    assert (row.seq, row.title, row.url, row.summary, row.state_reason) == (0, "", None, None, None)
+
+
+@pytest.mark.parametrize("value", ["missing", None])
+def test_a_missing_or_null_required_field_is_a_malformed_response(value) -> None:
+    row = {
+        "id": IID,
+        "seq": 1,
+        "title": "t",
+        "first_seen_at": "a",
+        "state_changed_at": "b",
+    }
+    if value is None:
+        row["state"] = None
+    with pytest.raises(api_client.ApiError) as exc:
+        _client(_serve({"items": [row]})).list_research_items(PID)
+    assert exc.value.status == 200
+    assert exc.value.detail == "malformed response: ResearchItem has no 'state'"
+
+
+def test_a_required_nested_field_is_checked_too() -> None:
+    schedule = {"cron": "0 9 * * 0", "timezone": None}  # no "active"
+    with pytest.raises(api_client.ApiError, match="ResearchSchedule has no 'active'"):
+        _client(
+            _serve(
+                {
+                    "items": [
+                        {
+                            "id": PID,
+                            "name": "n",
+                            "status": "active",
+                            "delivery_policy": "drip",
+                            "brief_snippet": "b",
+                            "skill": "s",
+                            "schedule": schedule,
+                            "created_at": "c",
+                        }
+                    ]
+                }
+            )
+        ).list_research_projects()
