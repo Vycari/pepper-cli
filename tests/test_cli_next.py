@@ -321,12 +321,10 @@ def test_todo_leads_with_its_next_action_and_shows_a_suggestion(server, capsys) 
         "next_action_suggestion": {"text": "Book a slot", "updated_at": "2026-10-21T00:00Z"},
     }
     _mock(server, [acted, _todo("Plain")])
-    lines = [
-        ln for ln in _run(capsys).splitlines() if "Vet" in ln or "Plain" in ln or "suggests" in ln
-    ]
+    lines = [ln for ln in _run(capsys).splitlines() if "Vet" in ln or "Plain" in ln or "Or:" in ln]
     assert lines == [
-        " 1. Email the vet (Pepper)  for: Vet",
-        "      Pepper suggests: Book a slot",
+        " 1. Email the vet  for: Vet",
+        "      Or: Book a slot",
         " 2. Plain",
     ]
 

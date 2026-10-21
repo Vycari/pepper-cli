@@ -1010,7 +1010,10 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     edit_next.add_argument(
         "--clear-next-action",
         action="store_true",
-        help="Drop the next action; Pepper writes a new one.",
+        help=(
+            "Drop the next action. Yours goes back to Pepper; "
+            "Pepper's own stays gone until the todo changes."
+        ),
     )
     edit_next.add_argument(
         "--accept-suggestion",

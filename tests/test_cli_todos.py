@@ -428,8 +428,8 @@ def test_list_shows_the_next_action_and_pepper_suggestion(tmp_home, patch_api, c
     assert cli.main(["todos", "list"]) == 0
     lines = capsys.readouterr().out.splitlines()
     assert lines[1] == "    Next: Email the vet"
-    assert lines[3] == "    Next: Call Bob  (Pepper)"
-    assert lines[4] == "    Pepper suggests: Book a slot"
+    assert lines[3] == "    Next: Call Bob"
+    assert lines[4] == "      Or: Book a slot"
     assert len(lines) == 6  # "Plain" has no extra lines
 
 
