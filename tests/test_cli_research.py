@@ -10,6 +10,8 @@ from __future__ import annotations
 import datetime as dt
 import io
 import json
+import threading
+import time
 
 import httpx
 import pytest
@@ -1639,6 +1641,30 @@ def test_wait_a_poll_that_times_out_at_the_deadline_is_a_wait_timeout(
     assert json.loads(out)["status"] == "running"
     assert _error(err)["code"] == "timeout"
     assert clock.now <= 1003.0 + cli._WAIT_MIN_REQUEST_TIMEOUT
+
+
+def test_wait_bounds_the_whole_poll_not_just_each_phase(server, capsys, clock, monkeypatch) -> None:
+    # httpx's timeouts bound each phase (and not DNS at all), so a poll that keeps trickling
+    # could outlast them; the wait gives up on the whole call once the time left is gone.
+    monkeypatch.setattr(cli, "_WAIT_MIN_REQUEST_TIMEOUT", 0.05)
+    release = threading.Event()
+
+    def hung(request: httpx.Request) -> httpx.Response:
+        release.wait(10)
+        return _json(_run_detail("succeeded"))
+
+    _wait_routes(server, _poll("running"), hung)
+    began = time.monotonic()
+    try:
+        rc, out, err = _run(
+            ["research-projects", "run", P1, "--wait", "--timeout", "3", "--json"], capsys
+        )
+    finally:
+        release.set()
+    assert time.monotonic() - began < 5  # nowhere near the hung request's 10 s
+    assert rc == 4
+    assert json.loads(out)["status"] == "running"
+    assert _error(err)["code"] == "timeout"
 
 
 # --- research-items take and reconsider ------------------------------------

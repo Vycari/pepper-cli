@@ -101,6 +101,7 @@ import re
 import shlex
 import socket
 import sys
+import threading
 import time
 import uuid
 import webbrowser
@@ -8725,6 +8726,36 @@ def _monotonic() -> float:
     return time.monotonic()
 
 
+class _PollDeadlineError(Exception):
+    """A ``--wait`` poll still running when the time it was given ran out."""
+
+
+def _call_within[T](fn: Callable[[], T], seconds: float) -> T:
+    """``fn()`` given at most ``seconds`` of wall time in all, or :class:`_PollDeadlineError`.
+
+    httpx's timeouts bound each phase of a request (connect, write, each read, pool) and not
+    the name lookup, so they add up and a response that trickles in can outlast them. The
+    call runs on a daemon thread that is abandoned if it overruns; its own httpx timeout
+    ends it soon after, and being a daemon it never holds the process open.
+    """
+    box: dict[str, Any] = {}
+
+    def target() -> None:
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # handed to the caller's thread below
+            box["error"] = exc
+
+    worker = threading.Thread(target=target, name="pepper-wait-poll", daemon=True)
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        raise _PollDeadlineError
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
 def _wait_progress(args: argparse.Namespace, status: str, elapsed: float, *, rewrite: bool) -> None:
     """One status line on stderr (human mode only): rewritten in place on a terminal, one line
     per change otherwise. ``rewrite`` is the terminal case."""
@@ -8750,10 +8781,10 @@ def _wait_for_research_run(
     Polls at 2 s, x1.5 a poll to a 15 s cap, back to 2 s when the status changes; a server
     ``Retry-After`` replaces the next gap. A network error, a 5xx or a 429 is retried inside
     the bound; any other error ends the wait through the leaf's error path. ``--timeout``
-    bounds it (default 900 s, 0 = no bound), and each poll's request is bounded by the time
-    left (at least :data:`_WAIT_MIN_REQUEST_TIMEOUT`); on expiry the run is left going
-    (exit 4). ``first`` is ``None`` for a run joined after a 409: the first poll then goes
-    out at once, as the lookup, under the same retries.
+    bounds it (default 900 s, 0 = no bound), and each poll as a whole is bounded by the
+    time left (at least :data:`_WAIT_MIN_REQUEST_TIMEOUT`, see :func:`_call_within`); on
+    expiry the run is left going (exit 4). ``first`` is ``None`` for a run joined after a
+    409: the first poll then goes out at once, as the lookup, under the same retries.
     """
     timeout = _WAIT_DEFAULT_TIMEOUT if args.timeout is None else args.timeout
     ref = shlex.quote(args.project)
@@ -8765,6 +8796,7 @@ def _wait_for_research_run(
     rewrite = sys.stderr.isatty()
     shown_status: str | None = None
     polled = first is not None  # a joined run's lookup is a poll with no sleep before it
+    expired = False  # a poll used up the time left
 
     def unfinished_hint() -> str:
         return f"still running — check 'pepper research-projects show {ref}'"
@@ -8777,7 +8809,7 @@ def _wait_for_research_run(
                 shown_status = last.status
                 _wait_progress(args, last.status, _monotonic() - start, rewrite=rewrite)
             now = _monotonic()
-            if deadline is not None and now >= deadline:
+            if deadline is not None and (expired or now >= deadline):
                 if rewrite and not _json_mode(args) and shown_status is not None:
                     sys.stderr.write("\n")
                 waited = render.format_duration(timeout)
@@ -8808,14 +8840,23 @@ def _wait_for_research_run(
                 _sleep(max(delay, 0.0))
             polled = True
             hint = None
-            request_timeout: float | None = None
-            if deadline is not None:
-                left = deadline - _monotonic()
-                request_timeout = min(
-                    max(left, _WAIT_MIN_REQUEST_TIMEOUT), api_client.DEFAULT_TIMEOUT
-                )
             try:
-                detail, hint = api.poll_research_run(project_id, run_id, timeout=request_timeout)
+                if deadline is None:
+                    detail, hint = api.poll_research_run(project_id, run_id)
+                else:
+                    # The whole poll gets the time left (at least the floor), not just each
+                    # phase of it; one that overruns that ends the wait as a timeout.
+                    left = deadline - _monotonic()
+                    bound = min(max(left, _WAIT_MIN_REQUEST_TIMEOUT), api_client.DEFAULT_TIMEOUT)
+                    detail, hint = _call_within(
+                        functools.partial(api.poll_research_run, project_id, run_id, timeout=bound),
+                        bound,
+                    )
+            except _PollDeadlineError:
+                if bound < api_client.DEFAULT_TIMEOUT:
+                    expired = True  # the deadline was the bound: the wait is over
+                interval = min(interval * _WAIT_GROWTH, _WAIT_MAX_INTERVAL)
+                continue
             except api_client.ApiError as exc:
                 if exc.status < 500 and exc.status != 429:
                     raise
