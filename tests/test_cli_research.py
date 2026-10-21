@@ -988,6 +988,41 @@ def test_edit_brief_and_filters_send_both_and_answer_the_last(server, capsys, mo
     assert json.loads(out)["name"] == "after-filters"
 
 
+@pytest.mark.parametrize("as_json", [True, False])
+def test_edit_brief_applied_but_filters_refused_says_which_part_applied(
+    server, capsys, monkeypatch, as_json
+) -> None:
+    _stdin(monkeypatch, "B")
+    server.routes[f"PATCH {BASE}/{P1}"] = _json(_detail(brief="B"))
+    server.routes[f"PUT {BASE}/{P1}/filters"] = httpx.Response(422, json={"detail": "Too many."})
+    argv = ["research-projects", "edit", P1, "--file", "-", "--filter", "f"]
+    rc, out, err = _run([*argv, "--json"] if as_json else argv, capsys)
+    assert (rc, out) == (1, "")
+    message = _error(err)["message"] if as_json else " ".join(err.split())
+    assert "brief was updated" in message
+    assert "filters were not changed" in message
+    assert "Too many." in message
+
+
+def test_edit_brief_applied_but_filters_unreachable_says_which_part_applied(
+    server, capsys, monkeypatch
+) -> None:
+    def dropped(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("reset", request=request)
+
+    _stdin(monkeypatch, "B")
+    server.routes[f"PATCH {BASE}/{P1}"] = _json(_detail(brief="B"))
+    server.routes[f"PUT {BASE}/{P1}/filters"] = dropped
+    rc, out, err = _run(
+        ["research-projects", "edit", P1, "--file", "-", "--filter", "f", "--json"], capsys
+    )
+    assert (rc, out) == (1, "")
+    error = _error(err)
+    assert error["code"] == "network"
+    assert "brief was updated" in error["message"]
+    assert "filters were not changed" in error["message"]
+
+
 def test_edit_filter_with_clear_filters_is_a_usage_error(server, capsys) -> None:
     rc, out, err = _run(
         ["research-projects", "edit", P1, "--filter", "x", "--clear", "filters", "--json"], capsys

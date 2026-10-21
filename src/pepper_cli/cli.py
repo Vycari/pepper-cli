@@ -8607,7 +8607,27 @@ def cmd_research_projects_edit(args: argparse.Namespace) -> int:
         if new_brief is not None:
             result = api.edit_research_project(project_id, brief=new_brief)
         if filters is not None:
-            result = api.set_research_filters(project_id, filters)
+            try:
+                result = api.set_research_filters(project_id, filters)
+            except (api_client.ApiError, httpx.RequestError) as exc:
+                if new_brief is None:
+                    raise
+                # Two calls, the first already applied: say which part did.
+                if isinstance(exc, api_client.ApiError):
+                    code, status = _error_code_for_status(exc.status), exc.status
+                    cause = f"server returned {exc.status}" + (
+                        f": {exc.detail}" if exc.detail else ""
+                    )
+                else:
+                    code, status, cause = "network", None, f"couldn't reach the server: {exc}"
+                _emit_error(
+                    args,
+                    code,
+                    f"The brief was updated, but the filters were not changed ({cause}).",
+                    status=status,
+                    soft_wrap=True,
+                )
+                return 1
         assert result is not None  # a brief or a filter list was sent
         _emit(result, args, lambda: render.info(f"Updated research project {result.name!r}."))
         return 0
