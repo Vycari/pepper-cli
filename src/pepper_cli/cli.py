@@ -94,6 +94,7 @@ import difflib
 import functools
 import getpass
 import json
+import math
 import mimetypes
 import os
 import re
@@ -8633,7 +8634,7 @@ def cmd_research_projects_run(args: argparse.Namespace) -> int:
     if args.timeout is not None and not args.wait:
         _emit_error(args, "usage", "--timeout only means something with --wait")
         return 2
-    if args.timeout is not None and args.timeout < 0:
+    if args.timeout is not None and not (math.isfinite(args.timeout) and args.timeout >= 0):
         _emit_error(args, "usage", "--timeout must be 0 (no limit) or more seconds")
         return 2
 

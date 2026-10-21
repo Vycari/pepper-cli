@@ -1190,7 +1190,16 @@ def test_run_a_malformed_receipt_is_a_clear_error(server, capsys) -> None:
     assert "ResearchRunReceipt has no 'run_id'" in _error(err)["message"]
 
 
-@pytest.mark.parametrize("flags", [["--timeout", "5"], ["--wait", "--timeout", "-1"]])
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--timeout", "5"],
+        ["--wait", "--timeout", "-1"],
+        ["--wait", "--timeout", "nan"],
+        ["--wait", "--timeout", "inf"],
+        ["--wait", "--timeout", "Infinity"],
+    ],
+)
 def test_run_timeout_needs_wait_and_a_sane_value(server, capsys, flags) -> None:
     rc, out, err = _run(["research-projects", "run", P1, *flags, "--json"], capsys)
     assert (rc, out) == (2, "")
