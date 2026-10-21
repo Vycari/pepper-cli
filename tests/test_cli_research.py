@@ -7,6 +7,7 @@ code and J8 line for each failure in ``planning/research-projects.md`` §8.
 
 from __future__ import annotations
 
+import io
 import json
 
 import httpx
@@ -113,7 +114,15 @@ def server(monkeypatch, tmp_path):
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        return routes.get(request.url.path, httpx.Response(404, json={"detail": "nope"}))
+        # A write is keyed "POST /path" (a read by its bare path). A list is a script: each
+        # request takes the next response, the last one repeating; a callable sees the request.
+        for key in (f"{request.method} {request.url.path}", request.url.path):
+            if key in routes:
+                answer = routes[key]
+                if isinstance(answer, list):
+                    answer = answer.pop(0) if len(answer) > 1 else answer[0]
+                return answer(request) if callable(answer) else answer
+        return httpx.Response(404, json={"detail": "nope"})
 
     real = api_client.ApiClient
 
@@ -757,3 +766,816 @@ def test_a_missing_required_field_is_a_clear_error_not_a_crash(
         assert _error(err)["message"] == message
     else:
         assert message in " ".join(err.split())  # the terminal may wrap the line
+
+
+# ---------------------------------------------------------------------------
+# the write and run commands (personal)
+
+RUN = "00000000-0000-0000-0000-0000000000c1"
+OWN = {"user_id": ME, "name": "Me"}
+
+
+def _post(path: str, status: int = 200, **body) -> httpx.Response:
+    return httpx.Response(status, json=body)
+
+
+def _receipt(status: str = "queued") -> dict:
+    return {
+        "run_id": RUN,
+        "project_id": P1,
+        "status": status,
+        "requested_at": "2026-10-20T10:00:00+00:00",
+    }
+
+
+def _run_detail(status: str = "running", **over) -> dict:
+    row = {
+        "id": RUN,
+        "status": status,
+        "requested_by_user_id": ME,
+        "requested_at": "2026-10-20T10:00:00+00:00",
+        "started_at": "2026-10-20T10:00:05+00:00",
+        "finished_at": None,
+        "attempts": 1,
+        "error": None,
+        "iteration": None,
+        "changelog": [],
+    }
+    row.update(over)
+    return row
+
+
+def _writes(server) -> list[httpx.Request]:
+    return [r for r in server.requests if r.method != "GET"]
+
+
+def _sent(request: httpx.Request) -> dict:
+    return json.loads(request.content) if request.content else {}
+
+
+@pytest.fixture
+def tty(monkeypatch):
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+
+
+def _stdin(monkeypatch, text: str) -> None:
+    monkeypatch.setattr("sys.stdin", io.StringIO(text))
+
+
+def _editor(monkeypatch, returns: str | None):
+    seen: list[str] = []
+
+    def fake(initial: str) -> str | None:
+        seen.append(initial)
+        return returns
+
+    monkeypatch.setattr(cli, "_open_in_editor", fake)
+    return seen
+
+
+# --- create ---------------------------------------------------------------
+
+
+def test_create_sends_the_brief_and_leaves_the_skill_to_the_server(
+    server, capsys, tmp_path
+) -> None:
+    brief = tmp_path / "brief.md"
+    brief.write_text("Robot vacuums under $500.\n", encoding="utf-8")
+    server.routes[f"POST {BASE}"] = httpx.Response(201, json=_detail())
+    rc, out, err = _run(
+        ["research-projects", "create", "robot-vacuums", "--file", str(brief)], capsys
+    )
+    assert rc == 0
+    assert _sent(_writes(server)[0]) == {
+        "name": "robot-vacuums",
+        "brief": "Robot vacuums under $500.\n",
+        "delivery_policy": "drip",
+    }
+    assert "Created research project 'robot-vacuums'" in err
+    assert out.strip() == P1
+
+
+def test_create_sends_skill_policy_and_source_url_when_given(server, capsys, monkeypatch) -> None:
+    _stdin(monkeypatch, "A brief")
+    server.routes[f"POST {BASE}"] = httpx.Response(201, json=_detail())
+    rc, out, _ = _run(
+        [
+            "research-projects",
+            "create",
+            "robot-vacuums",
+            "--file",
+            "-",
+            "--skill",
+            "product-research",
+            "--policy",
+            "digest",
+            "--source-url",
+            "https://example.com/x",
+            "--json",
+        ],
+        capsys,
+    )
+    assert rc == 0
+    assert _sent(_writes(server)[0]) == {
+        "name": "robot-vacuums",
+        "brief": "A brief",
+        "delivery_policy": "digest",
+        "skill_name": "product-research",
+        "source_url": "https://example.com/x",
+    }
+    assert json.loads(out)["id"] == P1  # J5: the object as the server returned it
+
+
+def test_create_takes_the_brief_from_the_editor_on_a_terminal(
+    server, capsys, tty, monkeypatch
+) -> None:
+    seen = _editor(monkeypatch, "From the editor")
+    server.routes[f"POST {BASE}"] = httpx.Response(201, json=_detail())
+    rc, _, _ = _run(["research-projects", "create", "robot-vacuums"], capsys)
+    assert rc == 0
+    assert seen == [""]
+    assert _sent(_writes(server)[0])["brief"] == "From the editor"
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_create_without_a_brief_and_no_editor_is_a_usage_error(server, capsys, as_json) -> None:
+    argv = ["research-projects", "create", "robot-vacuums", *(["--json"] if as_json else [])]
+    rc, out, err = _run(argv, capsys)
+    assert (rc, out) == (2, "")
+    assert "pass --file" in err
+    assert not server.requests
+
+
+def test_create_an_empty_brief_is_a_usage_error(server, capsys, monkeypatch) -> None:
+    _stdin(monkeypatch, "  \n")
+    rc, _, err = _run(["research-projects", "create", "x", "--file", "-", "--json"], capsys)
+    assert rc == 2
+    assert _error(err)["code"] == "usage"
+    assert not server.requests
+
+
+def test_create_a_bad_policy_is_a_usage_error_before_any_request(server) -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["research-projects", "create", "x", "--policy", "alert"])
+    assert exc.value.code == 2
+    assert not server.requests
+
+
+def test_create_a_taken_name_is_the_servers_conflict(server, capsys, monkeypatch) -> None:
+    _stdin(monkeypatch, "brief")
+    server.routes[f"POST {BASE}"] = httpx.Response(409, json={"detail": "name already taken"})
+    rc, out, err = _run(["research-projects", "create", "x", "--file", "-", "--json"], capsys)
+    assert (rc, out) == (1, "")
+    assert _error(err) == {
+        "code": "conflict",
+        "status": 409,
+        "message": "Server returned 409: name already taken",
+    }
+
+
+def test_create_yes_is_accepted_and_changes_nothing(server, capsys, monkeypatch) -> None:
+    _stdin(monkeypatch, "brief")
+    server.routes[f"POST {BASE}"] = httpx.Response(201, json=_detail())
+    rc, _, _ = _run(["research-projects", "create", "x", "--file", "-", "--yes"], capsys)
+    assert rc == 0
+
+
+# --- edit -----------------------------------------------------------------
+
+
+def test_edit_file_patches_the_brief_byte_exact(server, capsys, monkeypatch) -> None:
+    _stdin(monkeypatch, "New brief\n\n")
+    server.routes[f"PATCH {BASE}/{P1}"] = _json(_detail(brief="New brief\n\n"))
+    rc, out, _ = _run(
+        ["research-projects", "edit", "robot-vacuums", "--file", "-", "--json"], capsys
+    )
+    assert rc == 0
+    (write,) = _writes(server)
+    assert write.url.path == f"{BASE}/{P1}"
+    assert _sent(write) == {"brief": "New brief\n\n"}
+    assert json.loads(out)["brief"] == "New brief\n\n"
+
+
+def test_edit_filters_replace_the_whole_list(server, capsys) -> None:
+    server.routes[f"PUT {BASE}/{P1}/filters"] = _json(_detail())
+    rc, _, err = _run(
+        ["research-projects", "edit", P1, "--filter", "nothing over $500", "--filter", "no subs"],
+        capsys,
+    )
+    assert rc == 0
+    (write,) = _writes(server)
+    assert _sent(write) == {"filters": [{"text": "nothing over $500"}, {"text": "no subs"}]}
+    assert "Updated research project 'robot-vacuums'" in err
+
+
+def test_edit_clear_filters_sends_an_empty_list(server, capsys) -> None:
+    server.routes[f"PUT {BASE}/{P1}/filters"] = _json(_detail(filters=[]))
+    rc, _, _ = _run(["research-projects", "edit", P1, "--clear", "filters"], capsys)
+    assert rc == 0
+    assert _sent(_writes(server)[0]) == {"filters": []}
+
+
+def test_edit_brief_and_filters_send_both_and_answer_the_last(server, capsys, monkeypatch) -> None:
+    _stdin(monkeypatch, "B")
+    server.routes[f"PATCH {BASE}/{P1}"] = _json(_detail(brief="B"))
+    server.routes[f"PUT {BASE}/{P1}/filters"] = _json(_detail(brief="B", name="after-filters"))
+    rc, out, _ = _run(
+        ["research-projects", "edit", P1, "--file", "-", "--filter", "f", "--json"], capsys
+    )
+    assert rc == 0
+    assert [w.method for w in _writes(server)] == ["PATCH", "PUT"]
+    assert json.loads(out)["name"] == "after-filters"
+
+
+def test_edit_filter_with_clear_filters_is_a_usage_error(server, capsys) -> None:
+    rc, out, err = _run(
+        ["research-projects", "edit", P1, "--filter", "x", "--clear", "filters", "--json"], capsys
+    )
+    assert (rc, out) == (2, "")
+    assert _error(err)["code"] == "usage"
+    assert not server.requests
+
+
+def test_edit_a_blank_filter_is_a_usage_error(server, capsys) -> None:
+    rc, _, err = _run(["research-projects", "edit", P1, "--filter", " ", "--json"], capsys)
+    assert rc == 2
+    assert _error(err)["code"] == "usage"
+
+
+def test_edit_clear_only_knows_filters_until_schedules_land(server) -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["research-projects", "edit", P1, "--clear", "schedule"])
+    assert exc.value.code == 2
+
+
+def test_edit_with_nothing_to_change_opens_the_editor_on_the_brief(
+    server, capsys, tty, monkeypatch
+) -> None:
+    seen = _editor(monkeypatch, "Edited brief")
+    server.routes[f"{BASE}/{P1}"] = _json(_detail(brief="Old brief"))
+    server.routes[f"PATCH {BASE}/{P1}"] = _json(_detail(brief="Edited brief"))
+    rc, _, _ = _run(["research-projects", "edit", P1], capsys)
+    assert rc == 0
+    assert seen == ["Old brief"]
+    assert _sent(_writes(server)[0]) == {"brief": "Edited brief"}
+
+
+def test_edit_an_unchanged_editor_brief_sends_nothing(server, capsys, tty, monkeypatch) -> None:
+    _editor(monkeypatch, "Old brief\n")  # an editor's trailing newline is not a change
+    server.routes[f"{BASE}/{P1}"] = _json(_detail(brief="Old brief"))
+    rc, _, err = _run(["research-projects", "edit", P1], capsys)
+    assert rc == 0
+    assert "No changes." in err
+    assert not _writes(server)
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_edit_with_nothing_to_change_and_no_terminal_exits_2(server, capsys, as_json) -> None:
+    rc, out, err = _run(["research-projects", "edit", P1, *(["--json"] if as_json else [])], capsys)
+    assert (rc, out) == (2, "")
+    assert "pass --file" in err
+    assert not server.requests
+
+
+def test_edit_a_422_prints_the_servers_sentence(server, capsys, monkeypatch) -> None:
+    _stdin(monkeypatch, "same")
+    server.routes[f"PATCH {BASE}/{P1}"] = httpx.Response(422, json={"detail": "Nothing changed."})
+    rc, _, err = _run(["research-projects", "edit", P1, "--file", "-", "--json"], capsys)
+    assert rc == 1
+    assert _error(err) == {
+        "code": "validation",
+        "status": 422,
+        "message": "Server returned 422: Nothing changed.",
+    }
+
+
+# --- pause and resume ------------------------------------------------------
+
+
+@pytest.mark.parametrize(("verb", "said"), [("pause", "Paused"), ("resume", "Resumed")])
+def test_pause_and_resume_answer_the_project(server, capsys, verb, said) -> None:
+    server.routes[f"POST {BASE}/{P1}/{verb}"] = _json(_detail(status="paused"))
+    rc, out, err = _run(["research-projects", verb, "robot-vacuums"], capsys)
+    assert rc == 0
+    assert said in err
+    rc, out, _ = _run(["research-projects", verb, "robot-vacuums", "--json"], capsys)
+    assert json.loads(out)["status"] == "paused"
+
+
+def test_resume_says_it_does_not_run_the_project(server, capsys) -> None:
+    server.routes[f"POST {BASE}/{P1}/resume"] = _json(_detail())
+    _, _, err = _run(["research-projects", "resume", P1], capsys)
+    assert "does not run it" in err
+
+
+def test_pause_a_conflict_is_the_servers_refusal(server, capsys) -> None:
+    server.routes[f"POST {BASE}/{P1}/pause"] = httpx.Response(409, json={"detail": "stopped"})
+    rc, _, err = _run(["research-projects", "pause", P1, "--json"], capsys)
+    assert rc == 1
+    assert _error(err)["code"] == "conflict"
+
+
+# --- steer -----------------------------------------------------------------
+
+
+def _steering(**over) -> dict:
+    row = {
+        "id": "00000000-0000-0000-0000-0000000000e1",
+        "text": "skip anything refurbished",
+        "question_id": None,
+        "author_user_id": ME,
+        "author_name": "Me",
+        "created_at": "2026-10-20T10:00:00+00:00",
+        "consumed_at": None,
+    }
+    row.update(over)
+    return row
+
+
+def test_steer_joins_the_words_and_names_the_question(server, capsys) -> None:
+    server.routes[f"POST {BASE}/{P1}/steering"] = httpx.Response(
+        201, json=_steering(question_id="q2")
+    )
+    rc, _out, err = _run(
+        ["research-projects", "steer", P1, "skip", "anything", "refurbished", "--question", "q2"],
+        capsys,
+    )
+    assert rc == 0
+    assert _sent(_writes(server)[0]) == {"text": "skip anything refurbished", "question_id": "q2"}
+    assert "(answering q2)" in err
+
+
+def test_steer_reads_stdin_for_a_dash_and_emits_the_note(server, capsys, monkeypatch) -> None:
+    _stdin(monkeypatch, "  long guidance\nover lines\n")
+    server.routes[f"POST {BASE}/{P1}/steering"] = httpx.Response(201, json=_steering())
+    rc, out, _ = _run(["research-projects", "steer", P1, "-", "--json"], capsys)
+    assert rc == 0
+    assert _sent(_writes(server)[0]) == {"text": "long guidance\nover lines"}
+    assert json.loads(out)["author_name"] == "Me"
+
+
+def test_steer_without_text_is_a_usage_error(server, capsys) -> None:
+    rc, out, err = _run(["research-projects", "steer", P1, "--json"], capsys)
+    assert (rc, out) == (2, "")
+    assert _error(err)["code"] == "usage"
+    assert not server.requests
+
+
+def test_steer_yes_is_accepted_and_changes_nothing(server, capsys) -> None:
+    server.routes[f"POST {BASE}/{P1}/steering"] = httpx.Response(201, json=_steering())
+    rc, _, _ = _run(["research-projects", "steer", P1, "go", "--yes"], capsys)
+    assert rc == 0
+
+
+# --- run, without --wait ---------------------------------------------------
+
+
+def test_run_prints_the_receipt_and_does_not_wait(server, capsys) -> None:
+    server.routes[f"POST {BASE}/{P1}/runs"] = httpx.Response(202, json=_receipt())
+    rc, out, err = _run(["research-projects", "run", "robot-vacuums"], capsys)
+    assert rc == 0
+    assert out.strip() == RUN
+    assert f"Queued run {RUN} for robot-vacuums." in err
+    assert "pepper research-projects show robot-vacuums" in err
+    assert [r.method for r in server.requests].count("POST") == 1
+
+
+def test_run_json_is_the_receipt(server, capsys) -> None:
+    server.routes[f"POST {BASE}/{P1}/runs"] = httpx.Response(202, json=_receipt())
+    rc, out, err = _run(["research-projects", "run", P1, "--json"], capsys)
+    assert (rc, err) == (0, "")
+    assert json.loads(out) == _receipt()
+
+
+def test_run_while_one_is_in_flight_prints_it_and_exits_0(server, capsys) -> None:
+    server.routes[f"POST {BASE}/{P1}/runs"] = httpx.Response(
+        409, json={"detail": "a run is already in flight", "run_id": RUN.upper()}
+    )
+    server.routes[f"{BASE}/{P1}/runs/{RUN}"] = _json(_run_detail("running"))
+    rc, out, err = _run(["research-projects", "run", "robot-vacuums"], capsys)
+    assert rc == 0
+    assert f"A run of robot-vacuums is already running ({RUN}); not starting another." in err
+    assert out.strip() == RUN
+    rc, out, err = _run(["research-projects", "run", P1, "--json"], capsys)
+    assert (rc, err) == (0, "")
+    assert json.loads(out)["status"] == "running"
+    assert [r.method for r in server.requests].count("POST") == 2  # one per invocation
+
+
+def test_run_a_409_without_a_run_id_is_a_conflict(server, capsys) -> None:
+    server.routes[f"POST {BASE}/{P1}/runs"] = httpx.Response(
+        409, json={"detail": "the project is paused"}
+    )
+    rc, out, err = _run(["research-projects", "run", P1, "--json"], capsys)
+    assert (rc, out) == (1, "")
+    assert _error(err) == {
+        "code": "conflict",
+        "status": 409,
+        "message": "Server returned 409: the project is paused",
+    }
+
+
+def test_run_yes_is_accepted_and_changes_nothing(server, capsys) -> None:
+    server.routes[f"POST {BASE}/{P1}/runs"] = httpx.Response(202, json=_receipt())
+    rc, _, _ = _run(["research-projects", "run", P1, "--yes"], capsys)
+    assert rc == 0
+
+
+def test_run_a_malformed_receipt_is_a_clear_error(server, capsys) -> None:
+    server.routes[f"POST {BASE}/{P1}/runs"] = httpx.Response(
+        202, json={k: v for k, v in _receipt().items() if k != "run_id"}
+    )
+    rc, out, err = _run(["research-projects", "run", P1, "--json"], capsys)
+    assert (rc, out) == (1, "")
+    assert "ResearchRunReceipt has no 'run_id'" in _error(err)["message"]
+
+
+@pytest.mark.parametrize("flags", [["--timeout", "5"], ["--wait", "--timeout", "-1"]])
+def test_run_timeout_needs_wait_and_a_sane_value(server, capsys, flags) -> None:
+    rc, out, err = _run(["research-projects", "run", P1, *flags, "--json"], capsys)
+    assert (rc, out) == (2, "")
+    assert _error(err)["code"] == "usage"
+    assert not server.requests
+
+
+# --- run --wait ------------------------------------------------------------
+
+
+class _Clock:
+    """A fake clock: ``sleep`` advances it, and the gaps it was asked for are recorded."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.slept: list[float] = []
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch) -> _Clock:
+    c = _Clock()
+    monkeypatch.setattr(cli, "_sleep", c.sleep)
+    monkeypatch.setattr(cli, "_monotonic", c.monotonic)
+    return c
+
+
+def _wait_routes(server, *polls: httpx.Response) -> None:
+    server.routes[f"POST {BASE}/{P1}/runs"] = httpx.Response(202, json=_receipt())
+    server.routes[f"{BASE}/{P1}/runs/{RUN}"] = list(polls)
+
+
+def _poll(status: str, **over) -> httpx.Response:
+    return _json(_run_detail(status, **over))
+
+
+def test_wait_polls_to_success_and_prints_one_json_document(server, capsys, clock) -> None:
+    done = {"finished_at": "2026-10-20T10:03:17+00:00"}
+    _wait_routes(server, _poll("queued"), _poll("running"), _poll("succeeded", **done))
+    rc, out, err = _run(["research-projects", "run", P1, "--wait", "--json"], capsys)
+    assert (rc, err) == (0, "")
+    body = json.loads(out)  # exactly one document, nothing before it
+    assert body["status"] == "succeeded"
+    assert [r.method for r in server.requests].count("POST") == 1
+
+
+def test_wait_polls_at_2s_growing_by_half_to_15s_and_resets_on_a_change(
+    server, capsys, clock
+) -> None:
+    statuses = ["queued"] * 6 + ["running"] * 2 + ["succeeded"]
+    _wait_routes(server, *[_poll(s) for s in statuses])
+    rc, _, _ = _run(["research-projects", "run", P1, "--wait", "--json"], capsys)
+    assert rc == 0
+    # Six polls still queued: 2, then x1.5 each time to the 15 s cap. The seventh answers
+    # "running" (that change resets the gap), so the next two sleeps are 2 and 3.
+    assert clock.slept == pytest.approx([2, 3, 4.5, 6.75, 10.125, 15, 15, 2, 3])
+
+
+def test_wait_a_retry_after_overrides_the_gap(server, capsys, clock) -> None:
+    _wait_routes(
+        server,
+        httpx.Response(200, json=_run_detail("running"), headers={"Retry-After": "7"}),
+        _poll("succeeded"),
+    )
+    _run(["research-projects", "run", P1, "--wait", "--json"], capsys)
+    assert clock.slept == [2, 7]
+
+
+def test_wait_human_output_has_progress_on_stderr_and_whats_new_on_stdout(
+    server, capsys, clock
+) -> None:
+    iteration_id = "00000000-0000-0000-0000-00000000f001"
+    _wait_routes(
+        server,
+        _poll("running"),
+        _poll(
+            "succeeded",
+            finished_at="2026-10-20T10:03:17+00:00",
+            changelog=[
+                {
+                    "day": "2026-10-20",
+                    "text": "Two new candidates under $450",
+                    "evidence_ids": [],
+                    "iteration_id": iteration_id,
+                }
+            ],
+        ),
+    )
+    rc, out, err = _run(["research-projects", "run", "robot-vacuums", "--wait"], capsys)
+    assert rc == 0
+    assert out.splitlines() == [
+        f"Run {RUN} succeeded in 3m12s.",
+        "What's new",
+        "  2026-10-20  Two new candidates under $450",
+    ]
+    lines = err.splitlines()
+    assert lines[0].startswith("Queued run")
+    assert [ln.split(" ")[0] for ln in lines[1:]] == ["queued", "running"]  # one line per change
+
+
+def test_wait_without_changelog_entries_points_at_the_report(server, capsys, clock) -> None:
+    _wait_routes(server, _poll("succeeded", finished_at="2026-10-20T10:00:45+00:00"))
+    _, out, _ = _run(["research-projects", "run", "robot-vacuums", "--wait"], capsys)
+    assert out.splitlines() == [
+        f"Run {RUN} succeeded in 40s.",
+        "Read the report: pepper research-projects show robot-vacuums --report",
+    ]
+
+
+@pytest.mark.parametrize("status", ["error", "interrupted"])
+def test_wait_a_failed_run_is_run_failed_with_the_receipt_on_stdout(
+    server, capsys, clock, status
+) -> None:
+    _wait_routes(server, _poll("running"), _poll(status, error="page fetch failed"))
+    rc, out, err = _run(["research-projects", "run", P1, "--wait", "--json"], capsys)
+    assert rc == 1
+    assert json.loads(out)["status"] == status  # the same document as a success
+    assert _error(err) == {
+        "code": "run_failed",
+        "status": None,
+        "message": f"run {RUN} ended {status}: page fetch failed",
+    }
+
+
+def test_wait_times_out_with_exit_4_and_the_last_receipt(server, capsys, clock) -> None:
+    _wait_routes(server, _poll("queued"), _poll("running"))
+    rc, out, err = _run(
+        ["research-projects", "run", "robot-vacuums", "--wait", "--timeout", "1", "--json"], capsys
+    )
+    assert rc == 4
+    body = json.loads(out)
+    assert (body["id"], body["status"]) == (RUN, "queued")  # the last receipt seen
+    error = _error(err)
+    assert error["code"] == "timeout"
+    assert RUN in error["message"]
+    assert "pepper research-projects show robot-vacuums" in error["message"]
+    assert "runs robot-vacuums" not in error["message"]  # never `runs` while it is unfinished
+
+
+def test_wait_timeout_keeps_the_last_status_seen(server, capsys, clock) -> None:
+    _wait_routes(server, _poll("running"))
+    rc, out, _err = _run(
+        ["research-projects", "run", P1, "--wait", "--timeout", "5", "--json"], capsys
+    )
+    assert rc == 4
+    assert json.loads(out)["status"] == "running"
+    assert clock.now == 1005.0  # the last sleep was cut to the time left
+
+
+def test_wait_timeout_in_human_mode(server, capsys, clock) -> None:
+    _wait_routes(server, _poll("running"))
+    rc, out, err = _run(["research-projects", "run", P1, "--wait", "--timeout", "3"], capsys)
+    assert rc == 4
+    assert out.strip() == f"Run {RUN} is still running."
+    assert "stopped waiting after 3s" in err
+
+
+def test_wait_timeout_0_has_no_bound(server, capsys, clock) -> None:
+    _wait_routes(server, *([_poll("running")] * 400), _poll("succeeded"))
+    rc, _, _ = _run(["research-projects", "run", P1, "--wait", "--timeout", "0", "--json"], capsys)
+    assert rc == 0
+    assert sum(clock.slept) > 900  # past the default bound
+
+
+def test_wait_ctrl_c_stops_waiting_without_cancelling(server, capsys, monkeypatch) -> None:
+    _wait_routes(server, _poll("running"))
+
+    def interrupt(_seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "_sleep", interrupt)
+    rc, out, err = _run(["research-projects", "run", "robot-vacuums", "--wait"], capsys)
+    assert (rc, out) == (130, "")
+    assert "still running — check 'pepper research-projects show robot-vacuums'" in err
+    assert [r.method for r in server.requests].count("POST") == 1
+    assert not [r for r in server.requests if r.method in {"DELETE", "PUT", "PATCH"}]
+
+
+def test_wait_ctrl_c_in_json_mode_is_a_timeout_line_and_empty_stdout(
+    server, capsys, monkeypatch
+) -> None:
+    _wait_routes(server, _poll("running"))
+    monkeypatch.setattr(cli, "_sleep", lambda _s: (_ for _ in ()).throw(KeyboardInterrupt))
+    rc, out, err = _run(["research-projects", "run", P1, "--wait", "--json"], capsys)
+    assert (rc, out) == (130, "")
+    assert _error(err)["code"] == "timeout"
+
+
+def test_wait_retries_a_5xx_and_a_dropped_connection(server, capsys, clock) -> None:
+    def dropped(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("reset", request=request)
+
+    _wait_routes(server, httpx.Response(503, json={"detail": "busy"}), dropped, _poll("succeeded"))
+    rc, out, _ = _run(["research-projects", "run", P1, "--wait", "--json"], capsys)
+    assert rc == 0
+    assert json.loads(out)["status"] == "succeeded"
+
+
+@pytest.mark.parametrize("status", [401, 403, 404])
+def test_wait_a_client_error_while_polling_ends_through_the_normal_path(
+    server, capsys, clock, status
+) -> None:
+    _wait_routes(server, httpx.Response(status, json={"detail": "nope"}))
+    rc, out, err = _run(["research-projects", "run", P1, "--wait", "--json"], capsys)
+    assert (rc, out) == (1, "")
+    assert _error(err)["status"] == status
+
+
+def test_wait_attaches_to_a_run_in_flight_without_a_second_post(server, capsys, clock) -> None:
+    server.routes[f"POST {BASE}/{P1}/runs"] = httpx.Response(
+        409, json={"detail": "in flight", "run_id": RUN}
+    )
+    server.routes[f"{BASE}/{P1}/runs/{RUN}"] = [
+        _poll("running"),  # the lookup after the 409
+        _poll("running"),
+        _poll("succeeded"),
+    ]
+    rc, _out, err = _run(["research-projects", "run", "robot-vacuums", "--wait"], capsys)
+    assert rc == 0
+    assert (
+        f"A run of robot-vacuums is already running ({RUN}); waiting on it instead of starting "
+        "another." in " ".join(err.split())
+    )
+    assert [r.method for r in server.requests].count("POST") == 1
+
+
+def test_wait_on_an_attached_run_that_failed_exits_1(server, capsys, clock) -> None:
+    server.routes[f"POST {BASE}/{P1}/runs"] = httpx.Response(
+        409, json={"detail": "in flight", "run_id": RUN}
+    )
+    server.routes[f"{BASE}/{P1}/runs/{RUN}"] = _poll("error", error="boom")
+    rc, out, err = _run(["research-projects", "run", P1, "--wait", "--json"], capsys)
+    assert rc == 1
+    assert json.loads(out)["status"] == "error"
+    assert _error(err)["code"] == "run_failed"
+
+
+# --- research-items take and reconsider ------------------------------------
+
+
+def _marked(server, verb: str, item: dict, **over) -> None:
+    server.routes[f"POST {BASE}/{P1}/items/{item['id']}/{verb}"] = _json({**item, **over})
+
+
+def test_take_by_number_marks_the_item(server, capsys) -> None:
+    items = [_item(1), _item(2, state="delivered")]
+    _items_route(server, items)
+    _marked(server, "take", items[1], state="taken")
+    _run(["research-items", "list", "--project", P1], capsys)
+    rc, out, err = _run(["research-items", "take", "--project", P1, "2"], capsys)
+    assert rc == 0
+    assert "Marked 'Item 2' taken." in err
+    assert _writes(server)[0].url.path == f"{BASE}/{P1}/items/{items[1]['id']}/take"
+    rc, out, _ = _run(["research-items", "take", "--project", P1, "2", "--json"], capsys)
+    assert json.loads(out)["state"] == "taken"  # J5
+
+
+def test_reconsider_sends_the_reason_as_given(server, capsys) -> None:
+    item = _item(1, state="rejected")
+    _items_route(server, [item])
+    _marked(server, "reconsider", item, state="candidate")
+    _run(["research-items", "list", "--project", P1], capsys)
+    rc, _, err = _run(
+        ["research-items", "reconsider", "--project", P1, "1", "--reason", "price dropped"], capsys
+    )
+    assert rc == 0
+    assert "'Item 1' is a candidate again." in err
+    assert _sent(_writes(server)[0]) == {"reason": "price dropped"}
+
+
+def test_reconsider_without_a_reason_is_the_servers_refusal(server, capsys) -> None:
+    item = _item(1, state="rejected")
+    server.routes[f"POST {BASE}/{P1}/items/{item['id']}/reconsider"] = httpx.Response(
+        422, json={"detail": "reconsidering a rejection needs a `reason`."}
+    )
+    rc, out, err = _run(
+        ["research-items", "reconsider", "--project", P1, item["id"], "--json"], capsys
+    )
+    assert (rc, out) == (1, "")
+    assert _sent(_writes(server)[0]) == {"reason": ""}
+    assert _error(err)["code"] == "validation"
+
+
+def test_take_a_refused_transition_prints_the_servers_sentence(server, capsys) -> None:
+    item = _item(1)
+    server.routes[f"POST {BASE}/{P1}/items/{item['id']}/take"] = httpx.Response(
+        409, json={"detail": "only a delivered item can be taken"}
+    )
+    rc, _, err = _run(["research-items", "take", "--project", P1, item["id"], "--json"], capsys)
+    assert rc == 1
+    assert _error(err)["message"] == "Server returned 409: only a delivered item can be taken"
+
+
+@pytest.mark.parametrize("verb", ["take", "reconsider"])
+def test_a_number_from_another_projects_listing_is_refused_by_the_writes(
+    server, capsys, verb
+) -> None:
+    _items_route(server, [_item(1)])
+    _run(["research-items", "list", "--project", P1], capsys)
+    server.requests.clear()
+    rc, out, err = _run(["research-items", verb, "--project", P2, "1", "--json"], capsys)
+    assert (rc, out) == (2, "")
+    assert _error(err)["message"] == research_view.ANOTHER_PROJECT
+    assert not server.requests  # nothing was written to the wrong ledger
+
+
+@pytest.mark.parametrize("verb", ["take", "reconsider"])
+def test_an_item_id_in_any_case_passes_straight_through_lowercased(server, capsys, verb) -> None:
+    item = _item(1, id="0000000a-0000-0000-0000-00000000e000")
+    _marked(server, verb, item)
+    rc, _, _ = _run(
+        ["research-items", verb, "--project", P1.upper(), item["id"].upper(), "--json"], capsys
+    )
+    assert rc == 0
+    assert _writes(server)[0].url.path == f"{BASE}/{P1}/items/{item['id']}/{verb}"
+
+
+# --- errors shared by the writes -------------------------------------------
+
+
+_WRITES = [
+    (["research-projects", "create", "x", "--file", "-"], "POST", BASE),
+    (["research-projects", "edit", P1, "--file", "-"], "PATCH", f"{BASE}/{P1}"),
+    (["research-projects", "edit", P1, "--filter", "f"], "PUT", f"{BASE}/{P1}/filters"),
+    (["research-projects", "run", P1], "POST", f"{BASE}/{P1}/runs"),
+    (["research-projects", "steer", P1, "go"], "POST", f"{BASE}/{P1}/steering"),
+    (["research-projects", "pause", P1], "POST", f"{BASE}/{P1}/pause"),
+    (["research-projects", "resume", P1], "POST", f"{BASE}/{P1}/resume"),
+    (
+        ["research-items", "take", "--project", P1, _item(1)["id"]],
+        "POST",
+        f"{BASE}/{P1}/items/{_item(1)['id']}/take",
+    ),
+    (
+        ["research-items", "reconsider", "--project", P1, _item(1)["id"]],
+        "POST",
+        f"{BASE}/{P1}/items/{_item(1)['id']}/reconsider",
+    ),
+]
+
+
+@pytest.mark.parametrize(("argv", "method", "path"), _WRITES)
+@pytest.mark.parametrize("as_json", [False, True])
+def test_every_write_says_when_research_projects_are_switched_off(
+    server, capsys, monkeypatch, argv, method, path, as_json
+) -> None:
+    _stdin(monkeypatch, "body")
+    server.routes[f"{method} {path}"] = httpx.Response(
+        403, json={"detail": "off", "code": "research_projects_disabled"}
+    )
+    rc, out, err = _run([*argv, *(["--json"] if as_json else [])], capsys)
+    assert (rc, out) == (1, "")
+    message = "Research projects are not enabled on this Pepper server."
+    if as_json:
+        assert _error(err) == {"code": "forbidden", "status": 403, "message": message}
+    else:
+        assert message in err
+
+
+@pytest.mark.parametrize(("argv", "method", "path"), _WRITES)
+def test_every_write_reports_a_project_that_is_not_yours_as_not_found(
+    server, capsys, monkeypatch, argv, method, path
+) -> None:
+    _stdin(monkeypatch, "body")
+    server.routes[f"{method} {path}"] = httpx.Response(
+        404, json={"detail": "no such research project"}
+    )
+    rc, out, err = _run([*argv, "--json"], capsys)
+    assert (rc, out) == (1, "")
+    assert _error(err)["code"] == "not_found"
+
+
+@pytest.mark.parametrize("argv", [w[0] for w in _WRITES if P1 in w[0] or "--project" in w[0]])
+def test_the_writes_resolve_a_project_by_name_prefix_and_say_so_when_it_is_unknown(
+    server, capsys, monkeypatch, argv
+) -> None:
+    _stdin(monkeypatch, "body")
+    argv = [("nothing-like-it" if a == P1 else a) for a in argv]
+    rc, out, err = _run([*argv, "--json"], capsys)
+    assert (rc, out) == (2, "")
+    assert _error(err)["code"] == "not_found"
+    assert not _writes(server)

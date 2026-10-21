@@ -33,6 +33,15 @@ ITEM_STATES = (
 #: sends none.
 LIST_STATUSES = ("active", "paused", "all")
 
+#: ``create --policy``: fixed here so a typo is a usage error before a round trip. The server
+#: needs one, and ``drip`` is the one its own chat tool and ``create`` default to (§3).
+POLICIES = ("drip", "digest")
+DEFAULT_POLICY = "drip"
+
+#: ``edit --clear``: what can be emptied. ``schedule`` joins it with the schedule routes
+#: (``planning/research-projects.md`` §7, a later phase).
+CLEARABLE = ("filters",)
+
 
 def listing_row(item: dict[str, Any]) -> dict[str, Any]:
     """What a listing remembers about one item: enough to name it in a later message."""

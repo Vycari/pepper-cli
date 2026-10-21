@@ -349,5 +349,8 @@ binary has, not commands your token may use.
   server's reason and exits 1 (JSON code `forbidden`). The watch is the exception:
   `pepper --profile <name> rooms watch` treats a 404 as a server with no stream and exits 1
   (section 4).
+- Exit 4 means a command run with `--wait` stopped waiting; the work it started is still going.
+  No command an agent token can run takes `--wait`, so seeing it means the command is not one
+  you should be running (section 9).
 - An unknown first word is sent to Pepper as a chat message (section 2); check `--help` before
   guessing at a command.

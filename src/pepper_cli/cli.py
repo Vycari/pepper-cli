@@ -68,9 +68,12 @@ Subcommands:
   ``following search``.
 - ``pepper artifacts list | show | download | create | delete`` — everything you saved: notes,
   links and files. ``create`` uploads a file; to edit a note's text use ``notes``.
-- ``pepper research-projects list | show [--report] | runs`` and ``pepper research-items list |
-  show --project P`` — read your research projects, their reports and run history, and each
-  project's ledger (numbered; ``show N`` follows the last ``list`` of that project).
+- ``pepper research-projects list | show [--report] | runs | create | edit | run [--wait] | steer |
+  pause | resume`` and ``pepper research-items list | show | take | reconsider --project P`` —
+  your research projects (their brief, report and run history) and each project's ledger
+  (numbered; ``show N`` follows the last ``list`` of that project). ``run`` queues a run and
+  returns its receipt; ``--wait`` waits for it (exit 4 if it is still going when ``--timeout``
+  ends).
 - ``pepper preferences show | edit`` — the Calendar > Preferences values.
 - ``pepper takeout [--out FILE]`` — download a zip archive of everything
   Pepper holds about your account.
@@ -88,11 +91,13 @@ from __future__ import annotations
 import argparse
 import contextlib
 import difflib
+import functools
 import getpass
 import json
 import mimetypes
 import os
 import re
+import shlex
 import socket
 import sys
 import time
@@ -4339,6 +4344,33 @@ def _build_yes_parent() -> argparse.ArgumentParser:
     return parent
 
 
+#: ``--wait`` (IA §3.5): the default bound, and the polling schedule (first gap, growth per
+#: poll, cap), all in seconds.
+_WAIT_DEFAULT_TIMEOUT = 900.0
+_WAIT_FIRST_INTERVAL = 2.0
+_WAIT_GROWTH = 1.5
+_WAIT_MAX_INTERVAL = 15.0
+
+
+def _build_wait_parent() -> argparse.ArgumentParser:
+    parent = argparse.ArgumentParser(add_help=False)
+    parent.add_argument(
+        "--wait",
+        action="store_true",
+        help="Wait for the work to finish instead of returning its receipt at once.",
+    )
+    parent.add_argument(
+        "--timeout",
+        type=float,
+        metavar="SECONDS",
+        help=(
+            f"With --wait: stop waiting after this long (default {_WAIT_DEFAULT_TIMEOUT:g}, "
+            "0 = no limit). The work goes on; exit 4."
+        ),
+    )
+    return parent
+
+
 def _build_page_parent() -> argparse.ArgumentParser:
     parent = argparse.ArgumentParser(add_help=False)
     parent.add_argument("--limit", type=int, metavar="N", help="At most N items.")
@@ -4354,6 +4386,7 @@ def _build_page_parent() -> argparse.ArgumentParser:
 #: Built once, attached with ``parents=[...]`` (each has ``add_help=False``).
 _json_parent = _build_json_parent()
 _yes_parent = _build_yes_parent()
+_wait_parent = _build_wait_parent()
 _page_parent = _build_page_parent()
 
 
@@ -4437,6 +4470,9 @@ _ERROR_CODES = frozenset(
         "server",
         "network",
         "gap",
+        # ``--wait`` only (IA §3.5): the wait ran out, or the run it waited on failed.
+        "timeout",
+        "run_failed",
     }
 )
 
@@ -8016,12 +8052,14 @@ _RESEARCH_PROJECT_HELP = "Research project: its name, a unique name prefix, or i
 
 
 def _register_research_commands(sub: Any) -> None:
-    """``research-projects`` and ``research-items``: the read commands."""
+    """``research-projects`` and ``research-items``: reads, then the personal write and run
+    commands (rooms follow, ``planning/research-projects.md`` §12)."""
     p_proj = sub.add_parser(
         "research-projects",
         help=(
             "Your research projects: a brief, a ledger of what Pepper found and a report. "
-            "``list``/``show`` (``--report`` for the report)/``runs`` to read them."
+            "``list``/``show`` (``--report`` for the report)/``runs`` to read them; ``create``, "
+            "``edit``, ``run`` (``--wait``), ``steer``, ``pause`` and ``resume`` to work them."
         ),
     )
     sub_proj = p_proj.add_subparsers(dest="research_projects_action", required=True)
@@ -8070,11 +8108,120 @@ def _register_research_commands(sub: Any) -> None:
     )
     p.set_defaults(handler=cmd_research_projects_runs)
 
+    p = sub_proj.add_parser(
+        "create",
+        help=(
+            "Create a research project that runs only when you say so. The brief comes from "
+            "$EDITOR, --file PATH, or --file - for stdin."
+        ),
+        parents=[_json_parent, _yes_parent],
+    )
+    p.add_argument(
+        "name", metavar="NAME", help="Short, lowercase and hyphenated; unique among your projects."
+    )
+    p.add_argument(
+        "--file",
+        metavar="BRIEF",
+        help="Read the brief from this path, or '-' to read stdin, instead of $EDITOR.",
+    )
+    p.add_argument(
+        "--skill",
+        metavar="SKILL",
+        help="The skill each run follows (default: the server's web-research).",
+    )
+    p.add_argument(
+        "--policy",
+        choices=research_view.POLICIES,
+        default=research_view.DEFAULT_POLICY,
+        help=(
+            "How findings are delivered: drip (a few at a time, the default) or digest "
+            "(together, in one go)."
+        ),
+    )
+    p.add_argument(
+        "--source-url", metavar="URL", help="A page the runs should start from (optional)."
+    )
+    p.set_defaults(handler=cmd_research_projects_create)
+
+    p = sub_proj.add_parser(
+        "edit",
+        help=(
+            "Change a project: its brief ($EDITOR when no other flag is given, or --file PATH, "
+            "or --file - for stdin) and its filters (--filter, repeatable, replaces the whole "
+            "list; --clear filters empties it)."
+        ),
+        parents=[_json_parent, _yes_parent],
+    )
+    p.add_argument("project", metavar="PROJECT", help=_RESEARCH_PROJECT_HELP)
+    p.add_argument(
+        "--file",
+        metavar="BRIEF",
+        help="Read the new brief from this path, or '-' to read stdin, instead of $EDITOR.",
+    )
+    p.add_argument(
+        "--filter",
+        action="append",
+        metavar="FILTER",
+        help="A standing rule for every run. Repeat for several; they replace the current list.",
+    )
+    p.add_argument(
+        "--clear",
+        choices=research_view.CLEARABLE,
+        help="Empty the project's filters.",
+    )
+    p.set_defaults(handler=cmd_research_projects_edit)
+
+    p = sub_proj.add_parser(
+        "run",
+        help=(
+            "Start a run now. Returns the receipt at once; --wait waits for the run to end "
+            "(exit 4 if --timeout runs out first; the run goes on). A run already queued or "
+            "running is attached to, not repeated."
+        ),
+        parents=[_json_parent, _wait_parent, _yes_parent],
+    )
+    p.add_argument("project", metavar="PROJECT", help=_RESEARCH_PROJECT_HELP)
+    p.set_defaults(handler=cmd_research_projects_run)
+
+    p = sub_proj.add_parser(
+        "steer",
+        help=(
+            "Give the project's next run guidance. TEXT is the words after PROJECT, or '-' to "
+            "read stdin. --question QN answers one of the report's open questions."
+        ),
+        parents=[_json_parent, _yes_parent],
+    )
+    p.add_argument("project", metavar="PROJECT", help=_RESEARCH_PROJECT_HELP)
+    p.add_argument("text", nargs="*", metavar="TEXT", help="The guidance; '-' reads stdin.")
+    p.add_argument(
+        "--question",
+        metavar="QN",
+        help="The open question (q1, q2, ...) this answers, as 'show' lists them.",
+    )
+    p.set_defaults(handler=cmd_research_projects_steer)
+
+    p = sub_proj.add_parser(
+        "pause",
+        help="Pause a project (and its schedule, if it has one). Already paused is fine.",
+        parents=[_json_parent],
+    )
+    p.add_argument("project", metavar="PROJECT", help=_RESEARCH_PROJECT_HELP)
+    p.set_defaults(handler=cmd_research_projects_pause)
+
+    p = sub_proj.add_parser(
+        "resume",
+        help="Resume a paused project. It does not run the project.",
+        parents=[_json_parent],
+    )
+    p.add_argument("project", metavar="PROJECT", help=_RESEARCH_PROJECT_HELP)
+    p.set_defaults(handler=cmd_research_projects_resume)
+
     p_items = sub.add_parser(
         "research-items",
         help=(
             "The ledger of one research project: what Pepper found. ``list`` it (numbered), "
-            "then ``show`` one by number. Every command takes --project."
+            "then ``show``, ``take`` or ``reconsider`` one by number. Every command takes "
+            "--project."
         ),
     )
     sub_items = p_items.add_subparsers(dest="research_items_action", required=True)
@@ -8103,17 +8250,35 @@ def _register_research_commands(sub: Any) -> None:
     )
     p.set_defaults(handler=cmd_research_items_list)
 
+    item_help = "A number from the last 'research-items list' of this project, or an item id."
     p = sub_items.add_parser(
         "show",
         help="One ledger item in full.",
         parents=[_json_parent, _project_parent()],
     )
-    p.add_argument(
-        "item",
-        metavar="ITEM",
-        help="A number from the last 'research-items list' of this project, or an item id.",
-    )
+    p.add_argument("item", metavar="ITEM", help=item_help)
     p.set_defaults(handler=cmd_research_items_show)
+
+    p = sub_items.add_parser(
+        "take",
+        help="Mark a delivered item as taken (you went with it). Already taken is fine.",
+        parents=[_json_parent, _project_parent()],
+    )
+    p.add_argument("item", metavar="ITEM", help=item_help)
+    p.set_defaults(handler=cmd_research_items_take)
+
+    p = sub_items.add_parser(
+        "reconsider",
+        help="Put a rejected item back as a candidate, with a reason it deserves another look.",
+        parents=[_json_parent, _project_parent()],
+    )
+    p.add_argument("item", metavar="ITEM", help=item_help)
+    p.add_argument(
+        "--reason",
+        metavar="TEXT",
+        help="Why it deserves another look (the server refuses a blank one).",
+    )
+    p.set_defaults(handler=cmd_research_items_reconsider)
 
 
 def _report_research_error(exc: api_client.ApiError, args: argparse.Namespace | None = None) -> int:
@@ -8323,6 +8488,417 @@ def cmd_research_items_show(args: argparse.Namespace) -> int:
         return 0
 
     return _with_api(run, _report_research_error, args)
+
+
+# ---------------------------------------------------------------------------
+# research-projects and research-items, write and run side (personal)
+
+
+def _research_brief_in(args: argparse.Namespace) -> tuple[bool, str | None]:
+    """The brief named by ``--file`` (path, or ``-`` for stdin), read before any network call.
+
+    ``(ok, text)``: ``ok`` is ``False`` after the error is reported (exit 2); ``text`` is
+    ``None`` when no ``--file`` was given, meaning the brief comes from ``$EDITOR``."""
+    if args.file is None:
+        return True, None
+    body = _read_file_or_stdin(args.file, args)
+    return body is not None, body
+
+
+def _research_editor_refused(args: argparse.Namespace, why: str) -> bool:
+    """True (after the J8 usage error) when ``$EDITOR`` would have to open and cannot: JSON
+    mode never opens one (J2), and with no terminal there is nobody to type."""
+    if _json_mode(args) or not _stdin_is_tty():
+        _emit_error(args, "usage", f"{why}; there is no editor here, so pass --file PATH (or -)")
+        return True
+    return False
+
+
+def cmd_research_projects_create(args: argparse.Namespace) -> int:
+    """``pepper research-projects create NAME [--file BRIEF|-] [--skill S] [--policy drip|digest]
+    [--source-url URL] [--json]``.
+
+    A manual-only project: it runs when you ``run`` it. The brief is read before any network
+    call. ``--yes`` is accepted and ignored: only a room's project needs it (§9.2).
+    """
+    ok, brief = _research_brief_in(args)
+    if not ok:
+        return 2
+    if brief is None and _research_editor_refused(args, "the brief is the project's body"):
+        return 2
+    if brief is None:
+        brief = _open_in_editor("")
+        if brief is None:
+            return 2
+    if not brief.strip():
+        _emit_error(args, "usage", "the brief is empty — aborting")
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        detail = api.create_research_project(
+            name=args.name,
+            brief=brief,
+            delivery_policy=args.policy,
+            skill_name=args.skill,
+            source_url=args.source_url,
+        )
+
+        def human() -> None:
+            ref = shlex.quote(detail.name)
+            render.info(
+                f"Created research project {detail.name!r}. Run it with: "
+                f"pepper research-projects run {ref}"
+            )
+            print(sanitize_line(detail.id))
+
+        _emit(detail, args, human)
+        return 0
+
+    return _with_api(run, _report_research_error, args)
+
+
+def cmd_research_projects_edit(args: argparse.Namespace) -> int:
+    """``pepper research-projects edit PROJECT [--file BRIEF|-] [--filter F]… [--clear filters]
+    [--json]``.
+
+    ``--file`` replaces the brief. ``--filter`` (repeatable) or ``--clear filters`` replaces
+    the whole filter list. With none of these, ``$EDITOR`` opens on the brief; with no terminal
+    that is exit 2. A brief the editor leaves unchanged sends nothing. Answers the project.
+    """
+    if args.filter and args.clear:
+        _emit_error(args, "usage", "--filter and --clear filters contradict each other; pass one")
+        return 2
+    if args.filter and any(not f.strip() for f in args.filter):
+        _emit_error(args, "usage", "--filter needs some text")
+        return 2
+    ok, brief = _research_brief_in(args)
+    if not ok:
+        return 2
+    filters: list[str] | None = [f.strip() for f in args.filter] if args.filter else None
+    if args.clear == "filters":
+        filters = []
+    use_editor = brief is None and filters is None
+    if use_editor and _research_editor_refused(args, "nothing to change was given"):
+        return 2
+    if brief is not None and not brief.strip():
+        _emit_error(args, "usage", "the brief is empty — aborting")
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        project_id = _resolve_research_project(api, args.project, args=args)
+        if project_id is None:
+            return 2
+        new_brief = brief
+        current: api_client.ResearchProjectDetail | None = None
+        if use_editor:
+            current = api.get_research_project(project_id)
+            edited = _open_in_editor(current.brief)
+            if edited is None:
+                return 2
+            if not edited.strip():
+                _emit_error(args, "usage", "the brief is empty — aborting")
+                return 2
+            new_brief = None if _texts_match(current.brief, edited) else edited
+            if new_brief is None:
+                _emit(current, args, lambda: render.info("No changes."))
+                return 0
+        result = current
+        if new_brief is not None:
+            result = api.edit_research_project(project_id, brief=new_brief)
+        if filters is not None:
+            result = api.set_research_filters(project_id, filters)
+        assert result is not None  # a brief or a filter list was sent
+        _emit(result, args, lambda: render.info(f"Updated research project {result.name!r}."))
+        return 0
+
+    return _with_api(run, _report_research_error, args)
+
+
+def _research_run_id(run: object) -> str:
+    """A run's id: a receipt calls it ``run_id``, a detail ``id``."""
+    return getattr(run, "run_id", None) or getattr(run, "id")  # noqa: B009
+
+
+def cmd_research_projects_run(args: argparse.Namespace) -> int:
+    """``pepper research-projects run PROJECT [--wait [--timeout SECONDS]] [--json]``.
+
+    Queues one run and prints its receipt (J5). A run already queued or running is the answer,
+    not a failure: without ``--wait`` it is printed and the exit is 0, with ``--wait`` it is
+    waited on instead of starting another (§6.2). ``--yes`` is accepted and ignored: only a
+    room's run asks (§9.2).
+
+    Exit codes: 0 ok · 1 failed (a run that ended ``error``/``interrupted`` is ``run_failed``) ·
+    2 bad input · 4 ``--wait`` stopped waiting; the run goes on · 130 interrupted.
+    """
+    if args.timeout is not None and not args.wait:
+        _emit_error(args, "usage", "--timeout only means something with --wait")
+        return 2
+    if args.timeout is not None and args.timeout < 0:
+        _emit_error(args, "usage", "--timeout must be 0 (no limit) or more seconds")
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        project_id = _resolve_research_project(api, args.project, args=args)
+        if project_id is None:
+            return 2
+        ref = shlex.quote(args.project)
+        try:
+            receipt: api_client.ResearchRunReceipt | api_client.ResearchRunDetail
+            receipt = api.run_research_project(project_id)
+            already = False
+        except api_client.ResearchRunInFlightError as exc:
+            receipt = api.get_research_run(project_id, exc.run_id)
+            already = True
+        run_id = _research_run_id(receipt)
+        if already:
+            note = f"A run of {args.project} is already {receipt.status} ({run_id}); " + (
+                "waiting on it instead of starting another."
+                if args.wait
+                else "not starting another."
+            )
+        else:
+            note = (
+                f"Queued run {run_id} for {args.project}. "
+                f"Check it with: pepper research-projects show {ref}"
+            )
+        if not args.wait:
+
+            def human() -> None:
+                render.info(note, soft_wrap=True)
+                print(sanitize_line(run_id))
+
+            _emit(receipt, args, human)
+            return 0
+        if not _json_mode(args):
+            render.info(note, soft_wrap=True)
+        return _wait_for_research_run(api, args, project_id, receipt)
+
+    return _with_api(run, _report_research_error, args)
+
+
+def _sleep(seconds: float) -> None:
+    """``time.sleep``, a seam for the ``--wait`` tests."""
+    time.sleep(seconds)
+
+
+def _monotonic() -> float:
+    """``time.monotonic``, a seam for the ``--wait`` tests."""
+    return time.monotonic()
+
+
+def _wait_progress(args: argparse.Namespace, status: str, elapsed: float, *, rewrite: bool) -> None:
+    """One status line on stderr (human mode only): rewritten in place on a terminal, one line
+    per change otherwise. ``rewrite`` is the terminal case."""
+    if _json_mode(args):
+        return
+    line = f"{status} ({render.format_duration(elapsed)})"
+    if rewrite:
+        sys.stderr.write(f"\r\x1b[K{line}")
+    else:
+        sys.stderr.write(line + "\n")
+    sys.stderr.flush()
+
+
+def _wait_for_research_run(
+    api: api_client.ApiClient,
+    args: argparse.Namespace,
+    project_id: str,
+    first: api_client.ResearchRunReceipt | api_client.ResearchRunDetail,
+) -> int:
+    """Poll one run to its end under the IA §3.5 rules and exit accordingly.
+
+    Polls at 2 s, x1.5 a poll to a 15 s cap, back to 2 s when the status changes; a server
+    ``Retry-After`` replaces the next gap. A network error, a 5xx or a 429 is retried inside
+    the bound; any other error ends the wait through the leaf's error path. ``--timeout``
+    bounds it (default 900 s, 0 = no bound); on expiry the run is left going (exit 4).
+    """
+    timeout = _WAIT_DEFAULT_TIMEOUT if args.timeout is None else args.timeout
+    run_id = _research_run_id(first)
+    ref = shlex.quote(args.project)
+    start = _monotonic()
+    deadline = None if timeout == 0 else start + timeout
+    last: api_client.ResearchRunReceipt | api_client.ResearchRunDetail = first
+    interval = _WAIT_FIRST_INTERVAL
+    hint: float | None = None
+    rewrite = sys.stderr.isatty()
+    shown_status: str | None = None
+
+    def unfinished_hint() -> str:
+        return f"still running — check 'pepper research-projects show {ref}'"
+
+    try:
+        while True:
+            if last.status in api_client.RESEARCH_RUN_TERMINAL:
+                break
+            if last.status != shown_status:
+                shown_status = last.status
+                _wait_progress(args, last.status, _monotonic() - start, rewrite=rewrite)
+            now = _monotonic()
+            if deadline is not None and now >= deadline:
+                if rewrite and not _json_mode(args):
+                    sys.stderr.write("\n")
+                _emit(
+                    last,
+                    args,
+                    functools.partial(render.render_research_run_unfinished, run_id, last.status),
+                )
+                _emit_error(
+                    args,
+                    "timeout",
+                    f"stopped waiting after {render.format_duration(timeout)}; run {run_id} is "
+                    f"still {last.status} — check 'pepper research-projects show {ref}'",
+                )
+                return 4
+            delay = interval if hint is None else hint
+            if deadline is not None:
+                delay = min(delay, deadline - now)
+            _sleep(max(delay, 0.0))
+            hint = None
+            try:
+                detail, hint = api.poll_research_run(project_id, run_id)
+            except api_client.ApiError as exc:
+                if exc.status < 500 and exc.status != 429:
+                    raise
+                hint = exc.retry_after
+                interval = min(interval * _WAIT_GROWTH, _WAIT_MAX_INTERVAL)
+                continue
+            except httpx.RequestError:
+                interval = min(interval * _WAIT_GROWTH, _WAIT_MAX_INTERVAL)
+                continue
+            if detail.status != last.status:
+                interval = _WAIT_FIRST_INTERVAL
+            else:
+                interval = min(interval * _WAIT_GROWTH, _WAIT_MAX_INTERVAL)
+            last = detail
+            if rewrite and not _json_mode(args) and last.status == shown_status:
+                _wait_progress(args, last.status, _monotonic() - start, rewrite=True)
+    except KeyboardInterrupt:
+        if rewrite and not _json_mode(args):
+            sys.stderr.write("\n")
+        if _json_mode(args):
+            _emit_error(args, "timeout", unfinished_hint())
+        else:
+            render.info(f"pepper: {unfinished_hint()}", soft_wrap=True)
+        return 130
+    if rewrite and not _json_mode(args):
+        sys.stderr.write("\n")
+    final = last
+    assert isinstance(final, api_client.ResearchRunDetail)  # a terminal status came from a poll
+    _emit(final, args, lambda: render.render_research_run_end(final, project=ref))
+    if final.status == "succeeded":
+        return 0
+    reason = f": {final.error}" if final.error else ""
+    _emit_error(args, "run_failed", f"run {run_id} ended {final.status}{reason}")
+    return 1
+
+
+_STEER_TEXT_STDIN = "-"
+
+
+def cmd_research_projects_steer(args: argparse.Namespace) -> int:
+    """``pepper research-projects steer PROJECT [TEXT…|-] [--question QN] [--json]``.
+
+    Queues guidance the next run reads; ``--question`` says which open question it answers.
+    ``TEXT`` is the words given (joined by single spaces) or ``-`` for stdin. ``--yes`` is
+    accepted and ignored: only a room's steering asks (§9.2).
+    """
+    if args.text == [_STEER_TEXT_STDIN]:
+        text = _read_file_or_stdin("-", args)
+        if text is None:
+            return 2
+    else:
+        text = " ".join(args.text)
+    if not text.strip():
+        _emit_error(args, "usage", "steer needs the guidance: words after PROJECT, or - for stdin")
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        project_id = _resolve_research_project(api, args.project, args=args)
+        if project_id is None:
+            return 2
+        note = api.steer_research_project(project_id, text=text.strip(), question_id=args.question)
+
+        def human() -> None:
+            about = f" (answering {note.question_id})" if note.question_id else ""
+            render.info(
+                f"Steering queued for {args.project}{about}. The next run reads it.",
+                soft_wrap=True,
+            )
+
+        _emit(note, args, human)
+        return 0
+
+    return _with_api(run, _report_research_error, args)
+
+
+def _research_pause_resume(args: argparse.Namespace, *, pause: bool) -> int:
+    def run(api: api_client.ApiClient) -> int:
+        project_id = _resolve_research_project(api, args.project, args=args)
+        if project_id is None:
+            return 2
+        detail = (
+            api.pause_research_project(project_id)
+            if pause
+            else api.resume_research_project(project_id)
+        )
+
+        def human() -> None:
+            if pause:
+                render.info(f"Paused {detail.name!r}.")
+            else:
+                render.info(f"Resumed {detail.name!r}. Resuming does not run it.")
+
+        _emit(detail, args, human)
+        return 0
+
+    return _with_api(run, _report_research_error, args)
+
+
+def cmd_research_projects_pause(args: argparse.Namespace) -> int:
+    """``pepper research-projects pause PROJECT [--json]``: answers the project."""
+    return _research_pause_resume(args, pause=True)
+
+
+def cmd_research_projects_resume(args: argparse.Namespace) -> int:
+    """``pepper research-projects resume PROJECT [--json]``: answers the project. Never runs it."""
+    return _research_pause_resume(args, pause=False)
+
+
+def _research_item_mark(args: argparse.Namespace, *, take: bool) -> int:
+    def run(api: api_client.ApiClient) -> int:
+        project_id = _resolve_research_project(api, args.project, args=args)
+        if project_id is None:
+            return 2
+        item_id = _research_item_id(args, project_id)
+        if item_id is None:
+            return 2
+        if take:
+            item = api.take_research_item(project_id, item_id)
+        else:
+            item = api.reconsider_research_item(project_id, item_id, reason=args.reason or "")
+
+        def human() -> None:
+            if take:
+                render.info(f"Marked {item.title!r} taken.")
+            else:
+                render.info(f"{item.title!r} is a candidate again.")
+
+        _emit(item, args, human)
+        return 0
+
+    return _with_api(run, _report_research_error, args)
+
+
+def cmd_research_items_take(args: argparse.Namespace) -> int:
+    """``pepper research-items take --project P ITEM [--json]``: a delivered item you went with.
+    Answers the item. A number is checked against the last listing of this project first."""
+    return _research_item_mark(args, take=True)
+
+
+def cmd_research_items_reconsider(args: argparse.Namespace) -> int:
+    """``pepper research-items reconsider --project P ITEM [--reason TEXT] [--json]``: a rejected
+    item back as a candidate. ``--reason`` goes as given; the server refuses a blank one."""
+    return _research_item_mark(args, take=False)
 
 
 if __name__ == "__main__":

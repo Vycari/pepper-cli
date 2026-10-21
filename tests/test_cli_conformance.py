@@ -118,6 +118,11 @@ VERBS = frozenset(
         # `runs OBJECT` is the run history of an object that runs (IA §3.1).
         "runs",
         "guide",
+        # Research projects (IA §3.1): `steer` queues guidance for an object's next run;
+        # `take` and `reconsider` mark a ledger item.
+        "steer",
+        "take",
+        "reconsider",
     }
 )
 
@@ -175,13 +180,21 @@ ROOM_NA = {
 #: the ``groups`` leaves take the room as a positional until phase 2a/2b.
 ROOM_PENDING: frozenset[str] = frozenset(
     {
-        # Personal reads only until the server ships the room twins (research-projects.md
+        # Personal commands only until the server ships the room twins (research-projects.md
         # phase 3, tracked by #85); each of these takes --room then.
         "research-projects list",
         "research-projects show",
         "research-projects runs",
+        "research-projects create",
+        "research-projects edit",
+        "research-projects run",
+        "research-projects steer",
+        "research-projects pause",
+        "research-projects resume",
         "research-items list",
         "research-items show",
+        "research-items take",
+        "research-items reconsider",
     }
 )
 
@@ -403,6 +416,24 @@ def test_container_flag_is_required_on_every_leaf() -> None:
         assert re.search(rf"(?<!\[){flag}\b", usage), (leaf, usage)
 
 
+#: IA §3.5: verbs that start asynchronous work and answer a receipt take `--wait` and
+#: `--timeout`, and no other leaf has them.
+WAITS = frozenset({"research-projects run"})
+
+
+def test_only_the_asynchronous_verbs_take_wait() -> None:
+    have = {leaf for leaf, text in LEAVES.items() if "--wait" in _flags(text)}
+    assert have == WAITS
+    for leaf in WAITS:
+        assert "--timeout" in _flags(LEAVES[leaf]), leaf
+    assert not {leaf for leaf, text in LEAVES.items() if "--timeout" in _flags(text)} - WAITS
+
+
+def test_wait_codes_are_in_the_error_vocabulary() -> None:
+    # IA J8: `timeout` and `run_failed` exist for `--wait` only (J9: exit 4 for timeout).
+    assert {"timeout", "run_failed"} <= cli._ERROR_CODES
+
+
 def test_destructive_verbs_take_yes() -> None:
     failing = {
         leaf
@@ -482,6 +513,7 @@ _NOTE = "00000000-0000-0000-0000-0000000000e1"
 _TASK = "00000000-0000-0000-0000-0000000000a8"
 _A = "00000000-0000-0000-0000-0000000000a9"
 _RP = "00000000-0000-0000-0000-0000000000d3"
+_RUN = "00000000-0000-0000-0000-0000000000d5"
 _RI = "00000000-0000-0000-0000-0000000000d4"
 
 _TOPIC = {"topic_id": _T, "name": "General", "last_activity_at": "2026-10-01T12:00:00+00:00"}
@@ -585,6 +617,17 @@ _GRANT_ROW = {
     "can_revoke": True,
 }
 _DAY = {"date": "2026-10-02", "label": "Today", "date_label": "Fri, Oct 2"}
+_RESEARCH_DETAIL = {
+    **_RESEARCH_PROJECT,
+    "brief": "Robot vacuums under $500",
+    "source_url": None,
+    "filters": [],
+    "pending_steering_count": 0,
+    "item_counts": {"candidate": 2},
+    "report_artifact_id": None,
+    "open_questions": [],
+    "owner": {"kind": "user", "id": _P},
+}
 
 #: path -> body for every GET the leaves below make (query strings are ignored).
 ROUTES: dict[str, object] = {
@@ -633,17 +676,7 @@ ROUTES: dict[str, object] = {
         }
     ],
     "/api/v1/research-projects": {"items": [_RESEARCH_PROJECT], "next_before": None},
-    f"/api/v1/research-projects/{_RP}": {
-        **_RESEARCH_PROJECT,
-        "brief": "Robot vacuums under $500",
-        "source_url": None,
-        "filters": [],
-        "pending_steering_count": 0,
-        "item_counts": {"candidate": 2},
-        "report_artifact_id": None,
-        "open_questions": [],
-        "owner": {"kind": "user", "id": _P},
-    },
+    f"/api/v1/research-projects/{_RP}": _RESEARCH_DETAIL,
     f"/api/v1/research-projects/{_RP}/report": {
         "artifact_id": None,
         "body": "# Report\n",
@@ -810,6 +843,30 @@ ROUTES: dict[str, object] = {
 
 #: Non-GET routes (POST, DELETE): the room post answers ``{"message": {...}}``.
 POST_ROUTES: dict[str, object] = {
+    "/api/v1/research-projects": _RESEARCH_DETAIL,
+    f"/api/v1/research-projects/{_RP}": _RESEARCH_DETAIL,
+    f"/api/v1/research-projects/{_RP}/pause": _RESEARCH_DETAIL,
+    f"/api/v1/research-projects/{_RP}/resume": _RESEARCH_DETAIL,
+    f"/api/v1/research-projects/{_RP}/runs": {
+        "run_id": _RUN,
+        "project_id": _RP,
+        "status": "queued",
+        "requested_at": "2026-10-20T10:00:00+00:00",
+    },
+    f"/api/v1/research-projects/{_RP}/steering": {
+        "id": _RI,
+        "text": "skip refurbished",
+        "question_id": None,
+        "author_user_id": _P,
+        "author_name": "Dana",
+        "created_at": "2026-10-20T10:00:00+00:00",
+        "consumed_at": None,
+    },
+    f"/api/v1/research-projects/{_RP}/items/{_RI}/take": {**_RESEARCH_ITEM, "state": "taken"},
+    f"/api/v1/research-projects/{_RP}/items/{_RI}/reconsider": {
+        **_RESEARCH_ITEM,
+        "state": "candidate",
+    },
     f"/api/v1/groups/{_G}/topics/{_T}/messages": {"message": {**_MESSAGE, "topic_id": _T}},
     f"/api/v1/scheduled-tasks/{_TASK}/renew": _TASK_ROW,
     f"/api/v1/scheduled-tasks/{_TASK}": _TASK_ROW,
@@ -1048,6 +1105,28 @@ JSON_CASES: dict[str, list[str]] = {
     "research-projects runs": ["research-projects", "runs", _RP],
     "research-items list": ["research-items", "list", "--project", _RP],
     "research-items show": ["research-items", "show", "--project", _RP, _RI],
+    "research-projects create": [
+        "research-projects",
+        "create",
+        "robot-vacuums",
+        "--file",
+        "body.md",
+    ],
+    "research-projects edit": ["research-projects", "edit", _RP, "--file", "body.md"],
+    "research-projects run": ["research-projects", "run", _RP],
+    "research-projects steer": ["research-projects", "steer", _RP, "skip", "refurbished"],
+    "research-projects pause": ["research-projects", "pause", _RP],
+    "research-projects resume": ["research-projects", "resume", _RP],
+    "research-items take": ["research-items", "take", "--project", _RP, _RI],
+    "research-items reconsider": [
+        "research-items",
+        "reconsider",
+        "--project",
+        _RP,
+        _RI,
+        "--reason",
+        "price dropped",
+    ],
     "skills list": ["skills", "list"],
     "skills show": ["skills", "show", "triage"],
     "skills create": ["skills", "create", "triage", "--file", "triage.md"],

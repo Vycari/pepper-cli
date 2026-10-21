@@ -25,6 +25,7 @@ import dataclasses
 import json as _json
 import os
 import re as _re
+import uuid
 from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field
 from typing import Any, NoReturn, Self, cast
@@ -70,9 +71,18 @@ class ApiError(Exception):
     ``body`` stays exactly as received; it is for parsing, never printed.
     """
 
-    def __init__(self, status: int, body: str, *, detail: str | None = None) -> None:
+    def __init__(
+        self,
+        status: int,
+        body: str,
+        *,
+        detail: str | None = None,
+        retry_after: float | None = None,
+    ) -> None:
         self.status = status
         self.body = body
+        #: Seconds a ``Retry-After`` header asked the client to wait, when it sent one.
+        self.retry_after = retry_after
         detail = sanitize_text(detail) if detail is not None else None
         self.detail = detail
         msg = f"HTTP {status}"
@@ -837,6 +847,68 @@ class ResearchItemDetail(ResearchItem):
     published_at: str | None
     citations: list[Any]
     superseded_by: str | None
+
+
+# MIRROR: src/pepper/api/research_projects.py::ResearchRunReceipt
+@dataclass(frozen=True)
+class ResearchRunReceipt:
+    """``POST .../{id}/runs`` (202): the queued run to poll."""
+
+    run_id: str
+    project_id: str
+    status: str
+    requested_at: str
+
+
+# MIRROR: src/pepper/api/research_projects.py::ResearchRunOut
+@dataclass(frozen=True)
+class ResearchRun:
+    """A manual run receipt. ``status`` is ``queued``, ``running``, ``succeeded``, ``error``
+    or ``interrupted``; the last three are terminal."""
+
+    id: str
+    status: str
+    requested_by_user_id: str
+    requested_at: str
+    started_at: str | None
+    finished_at: str | None
+    attempts: int
+    error: str | None
+
+
+# MIRROR: src/pepper/api/research_projects.py::ResearchRunDetail
+@dataclass(frozen=True)
+class ResearchRunDetail(ResearchRun):
+    """``GET .../{id}/runs/{run_id}``: the receipt, the iteration it produced (once it has
+    started one) and the change-log lines that iteration wrote."""
+
+    iteration: ResearchIteration | None
+    changelog: list[ResearchChangelogEntry]
+
+
+# MIRROR: src/pepper/api/research_projects.py::ResearchSteeringOut
+@dataclass(frozen=True)
+class ResearchSteering:
+    id: str
+    text: str
+    question_id: str | None
+    author_user_id: str | None
+    author_name: str | None
+    created_at: str
+    consumed_at: str | None
+
+
+#: A run in one of these states is over (the server's ``RunDetail``).
+RESEARCH_RUN_TERMINAL = frozenset({"succeeded", "error", "interrupted"})
+
+
+class ResearchRunInFlightError(ApiError):
+    """A 409 whose body names the run already queued or running (server G1): not a failure,
+    the run to attach to. ``run_id`` is in canonical lowercase."""
+
+    def __init__(self, exc: ApiError, run_id: str) -> None:
+        super().__init__(exc.status, exc.body, detail=exc.detail)
+        self.run_id = run_id
 
 
 @dataclass(frozen=True)
@@ -2501,6 +2573,112 @@ class ApiClient:
         body = self._research_get(f"{RESEARCH_PROJECTS_PATH}/{project_id}/items/{item_id}")
         return _research_item_detail(body)
 
+    # The personal write side (phase 3). Every write answers the object it changed, as the
+    # server returns it.
+
+    def create_research_project(
+        self,
+        *,
+        name: str,
+        brief: str,
+        delivery_policy: str,
+        skill_name: str | None = None,
+        source_url: str | None = None,
+    ) -> ResearchProjectDetail:
+        """``POST /api/v1/research-projects``. A manual-only project; the server runs
+        ``web-research`` when ``skill_name`` is omitted."""
+        body: dict[str, Any] = {"name": name, "brief": brief, "delivery_policy": delivery_policy}
+        if skill_name is not None:
+            body["skill_name"] = skill_name
+        if source_url is not None:
+            body["source_url"] = source_url
+        return _research_detail(self._research_write("POST", RESEARCH_PROJECTS_PATH, body))
+
+    def edit_research_project(self, project_id: str, *, brief: str) -> ResearchProjectDetail:
+        """``PATCH /api/v1/research-projects/{id}``: replace the brief."""
+        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}"
+        return _research_detail(self._research_write("PATCH", path, {"brief": brief}))
+
+    def set_research_filters(self, project_id: str, filters: list[str]) -> ResearchProjectDetail:
+        """``PUT /api/v1/research-projects/{id}/filters``: replace the whole list (``[]``
+        clears it)."""
+        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/filters"
+        body = {"filters": [{"text": text} for text in filters]}
+        return _research_detail(self._research_write("PUT", path, body))
+
+    def run_research_project(self, project_id: str) -> ResearchRunReceipt:
+        """``POST /api/v1/research-projects/{id}/runs`` (202). Raises
+        :class:`ResearchRunInFlightError` for the 409 that names the run already in flight."""
+        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/runs"
+        try:
+            body = self._research_write("POST", path, None)
+        except ApiError as exc:
+            run_id = _in_flight_run_id(exc)
+            if run_id is None:
+                raise
+            raise ResearchRunInFlightError(exc, run_id) from exc
+        return _fields(ResearchRunReceipt, body)
+
+    def get_research_run(self, project_id: str, run_id: str) -> ResearchRunDetail:
+        """``GET /api/v1/research-projects/{id}/runs/{run_id}``."""
+        return self.poll_research_run(project_id, run_id)[0]
+
+    def poll_research_run(
+        self, project_id: str, run_id: str
+    ) -> tuple[ResearchRunDetail, float | None]:
+        """:meth:`get_research_run` plus the seconds a ``Retry-After`` header asked for."""
+        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/runs/{run_id}"
+        resp = self._request("GET", path)
+        body = resp.json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body)[:200], detail="malformed response")
+        return _research_run_detail(body), _retry_after(resp)
+
+    def steer_research_project(
+        self, project_id: str, *, text: str, question_id: str | None = None
+    ) -> ResearchSteering:
+        """``POST /api/v1/research-projects/{id}/steering`` (201): queue guidance for the next
+        run, optionally answering an open question (``q1``..)."""
+        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/steering"
+        body: dict[str, Any] = {"text": text}
+        if question_id is not None:
+            body["question_id"] = question_id
+        return _fields(ResearchSteering, self._research_write("POST", path, body))
+
+    def pause_research_project(self, project_id: str) -> ResearchProjectDetail:
+        """``POST /api/v1/research-projects/{id}/pause``. Already paused is a 200."""
+        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/pause"
+        return _research_detail(self._research_write("POST", path, None))
+
+    def resume_research_project(self, project_id: str) -> ResearchProjectDetail:
+        """``POST /api/v1/research-projects/{id}/resume``. Resuming never runs the project."""
+        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/resume"
+        return _research_detail(self._research_write("POST", path, None))
+
+    def take_research_item(self, project_id: str, item_id: str) -> ResearchItem:
+        """``POST .../{id}/items/{item_id}/take``: the caller had a delivered item."""
+        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/items/{item_id}/take"
+        return _research_item(self._research_write("POST", path, None))
+
+    def reconsider_research_item(
+        self, project_id: str, item_id: str, *, reason: str
+    ) -> ResearchItem:
+        """``POST .../{id}/items/{item_id}/reconsider``: bring a rejected item back as a
+        candidate. ``reason`` goes as given; the server refuses a blank one."""
+        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/items/{item_id}/reconsider"
+        return _research_item(self._research_write("POST", path, {"reason": reason}))
+
+    def _research_write(
+        self, method: str, path: str, body: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        resp = self._request(method, path, json=body)
+        parsed = resp.json()
+        if not isinstance(parsed, dict):
+            raise ApiError(
+                status=resp.status_code, body=str(parsed)[:200], detail="malformed response"
+            )
+        return parsed
+
     def _research_get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         body = self._request("GET", path, params=params).json()
         if not isinstance(body, dict):
@@ -3548,6 +3726,36 @@ def _research_item_detail(row: dict[str, Any]) -> ResearchItemDetail:
     return _fields(ResearchItemDetail, row, citations=row.get("citations") or [])
 
 
+def _research_run_detail(row: dict[str, Any]) -> ResearchRunDetail:
+    return _fields(
+        ResearchRunDetail,
+        row,
+        iteration=(
+            _research_iteration(row["iteration"])
+            if isinstance(row.get("iteration"), dict)
+            else None
+        ),
+        changelog=_nested_list(ResearchChangelogEntry, row.get("changelog")),
+    )
+
+
+def _in_flight_run_id(exc: ApiError) -> str | None:
+    """The ``run_id`` a 409 body carries when the conflict is a run already in flight."""
+    if exc.status != 409:
+        return None
+    try:
+        body = _json.loads(exc.body)
+    except ValueError:
+        return None
+    run_id = body.get("run_id") if isinstance(body, dict) else None
+    if not isinstance(run_id, str):
+        return None
+    try:
+        return str(uuid.UUID(run_id))
+    except ValueError:
+        return None
+
+
 def _research_page[T](
     body: dict[str, Any], parse: Callable[[dict[str, Any]], T]
 ) -> ResearchPage[T]:
@@ -3630,7 +3838,21 @@ def _raise_for_error(resp: httpx.Response) -> NoReturn:
     """
     if resp.status_code == 426:
         raise UpgradeRequiredError(_upgrade_message(resp))
-    raise ApiError(status=resp.status_code, body=resp.text, detail=_extract_detail(resp))
+    raise ApiError(
+        status=resp.status_code,
+        body=resp.text,
+        detail=_extract_detail(resp),
+        retry_after=_retry_after(resp),
+    )
+
+
+def _retry_after(resp: httpx.Response) -> float | None:
+    """The ``Retry-After`` header in seconds (the delay form only), or ``None``."""
+    try:
+        seconds = float(resp.headers.get("Retry-After", ""))
+    except ValueError:
+        return None
+    return seconds if 0 <= seconds < float("inf") else None
 
 
 def _extract_detail(resp: httpx.Response) -> str | None:

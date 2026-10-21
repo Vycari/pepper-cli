@@ -1490,3 +1490,62 @@ def _citation(cite: Any) -> str:
         if parts:
             return " — ".join(parts)
     return _short_json(cite, 200) if not isinstance(cite, str) else cite
+
+
+# ---------------------------------------------------------------------------
+# research projects: the write side (``planning/research-projects.md`` §4.5, §6)
+
+
+def format_duration(seconds: float) -> str:
+    """``3m12s``, ``45s``, ``1h02m``: how long a run (or a wait) took."""
+    whole = max(0, round(seconds))
+    hours, rest = divmod(whole, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    return f"{minutes}m{secs:02d}s" if minutes else f"{secs}s"
+
+
+def _run_took(run: Any) -> str:
+    """`` in 3m12s`` from the run's own start and finish times, or nothing when it lacks either."""
+    if not (run.started_at and run.finished_at):
+        return ""
+    try:
+        span = datetime.fromisoformat(run.finished_at) - datetime.fromisoformat(run.started_at)
+    except ValueError:
+        return ""
+    return f" in {format_duration(span.total_seconds())}"
+
+
+def render_research_run_end(run: Any, *, project: str) -> None:
+    """The end of ``run --wait``, on stdout: the receipt line and, for a run that succeeded,
+    the lines it wrote to the report ("What's new"), or a pointer to the report when it wrote
+    none the server tied to this run."""
+    if run.status != "succeeded":
+        detail = f": {sanitize_line(run.error)}" if run.error else ""
+        _stdout.print(f"Run {run.id} ended: {run.status}{detail}", markup=False, highlight=False)
+        return
+    _stdout.print(
+        f"Run {run.id} succeeded{_run_took(run)}.", markup=False, highlight=False, soft_wrap=True
+    )
+    if run.changelog:
+        _stdout.print("What's new", markup=False, highlight=False)
+        for entry in run.changelog:
+            _stdout.print(
+                f"  {sanitize_line(entry.day)}  {sanitize_line(entry.text)}",
+                markup=False,
+                highlight=False,
+                soft_wrap=True,
+            )
+    else:
+        _stdout.print(
+            f"Read the report: pepper research-projects show {project} --report",
+            markup=False,
+            highlight=False,
+            soft_wrap=True,
+        )
+
+
+def render_research_run_unfinished(run_id: str, status: str) -> None:
+    """The last receipt seen when ``run --wait`` stopped waiting (stdout)."""
+    _stdout.print(f"Run {run_id} is still {status}.", markup=False, highlight=False)
