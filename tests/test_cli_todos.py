@@ -88,8 +88,11 @@ class _FakeTodoApi:
         due=None,
         group_id=None,
         assignee_person_id=None,
+        next_action=None,
     ):
-        self.created_with.append({"assignee_person_id": assignee_person_id})
+        self.created_with.append(
+            {"assignee_person_id": assignee_person_id, "next_action": next_action}
+        )
         self.calls.append(("create", title, details, priority, due_date, due, group_id))
         return self._result("todo_created")
 
@@ -408,12 +411,57 @@ def test_list_shows_a_person_with_no_label_as_unnamed(tmp_home, patch_api, capsy
     assert "None" not in out
 
 
+def test_list_shows_the_next_action_and_pepper_suggestion(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    mine = api_client.TodoNextAction(
+        text="Email the vet", by="user", updated_at="2026-10-20T00:00Z"
+    )
+    pepper = api_client.TodoNextAction(text="Call Bob", by="model", updated_at="2026-10-20T00:00Z")
+    suggestion = api_client.TodoNextActionSuggestion(text="Book a slot", updated_at="2026-10-21Z")
+    patch_api(
+        todo_list=[
+            _todo(title="Vet", next_action=mine),
+            _todo(title="Trip", next_action=pepper, next_action_suggestion=suggestion),
+            _todo(title="Plain"),
+        ]
+    )
+    assert cli.main(["todos", "list"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1] == "    Next: Email the vet"
+    assert lines[3] == "    Next: Call Bob  (Pepper)"
+    assert lines[4] == "    Pepper suggests: Book a slot"
+    assert len(lines) == 6  # "Plain" has no extra lines
+
+
+def test_list_json_passes_the_next_action_fields_through(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    action = api_client.TodoNextAction(text="Call Bob", by="model", updated_at="2026-10-20T00:00Z")
+    patch_api(todo_list=[_todo(next_action=action)])
+    assert cli.main(["todos", "list", "--json"]) == 0
+    item = json.loads(capsys.readouterr().out)["items"][0]
+    assert item["next_action"] == {
+        "text": "Call Bob",
+        "by": "model",
+        "updated_at": "2026-10-20T00:00Z",
+    }
+    assert item["next_action_suggestion"] is None
+
+
+def test_create_sends_the_next_action(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(todo_created=_todo())
+    assert cli.main(["todos", "create", "Vet", "--next-action", "Email the vet"]) == 0
+    assert _FakeTodoApi.instances[-1].created_with[0]["next_action"] == "Email the vet"
+
+
 def test_create_assignee_resolves_the_name_through_the_roster(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(todo_created=_todo(assignee=api_client.TodoPerson(user_id="u2", label="Bob Stone")))
     rc = cli.main(["todos", "create", "Book it", "--room", _ROOM, "--assignee", "bob"])
     assert rc == 0
-    assert _FakeTodoApi.instances[-1].created_with == [{"assignee_person_id": _BOB}]
+    assert _FakeTodoApi.instances[-1].created_with == [
+        {"assignee_person_id": _BOB, "next_action": None}
+    ]
     assert "Asked Bob Stone" in capsys.readouterr().err
 
 
@@ -458,6 +506,22 @@ def test_edit_sends_only_what_was_given(tmp_home, patch_api, capsys) -> None:
     assert "Updated todo" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    ("flag", "sent"),
+    [
+        (["--next-action", " Call Bob "], {"next_action": "Call Bob"}),
+        (["--clear-next-action"], {"next_action": None}),
+        (["--accept-suggestion"], {"next_action_suggestion": "accept"}),
+        (["--dismiss-suggestion"], {"next_action_suggestion": "dismiss"}),
+    ],
+)
+def test_edit_next_action_flags_send_the_contract_body(tmp_home, patch_api, flag, sent) -> None:
+    _login(tmp_home)
+    patch_api(todo_edited=_todo())
+    assert cli.main(["todos", "edit", _TID, *flag]) == 0
+    assert _FakeTodoApi.instances[-1].edits == [(_TID, sent, None)]
+
+
 def test_edit_room_due_and_assignee(tmp_home, patch_api) -> None:
     _login(tmp_home)
     patch_api(todo_edited=_todo())
@@ -478,6 +542,7 @@ def test_edit_room_due_and_assignee(tmp_home, patch_api) -> None:
         ["edit", _TID, "--title", "  "],
         ["edit", _TID, "--details", "x", "--clear", "details"],
         ["edit", _TID, "--assignee", "bob"],
+        ["edit", _TID, "--next-action", "  "],
         ["edit", _TID, "--room", _ROOM, "--due", "tomorrow"],
     ],
 )

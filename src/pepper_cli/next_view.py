@@ -119,6 +119,10 @@ def _todo_row(t: api_client.TodoEntry) -> dict[str, Any]:
         "remind_at": t.remind_at,
         "priority": t.priority,
         "source": t.source,
+        "next_action": dataclasses.asdict(t.next_action) if t.next_action else None,
+        "next_action_suggestion": (
+            dataclasses.asdict(t.next_action_suggestion) if t.next_action_suggestion else None
+        ),
     }
 
 

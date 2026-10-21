@@ -281,3 +281,18 @@ def test_dismiss_todo_posts_a_reason_only_when_given() -> None:
         api.dismiss_todo(_T, group_id=_G, reason="out of town")
     assert not seen[0].content
     assert json.loads(seen[1].content) == {"reason": "out of town"}
+
+
+def test_next_action_fields_parse_and_are_optional() -> None:
+    row = _todo_json(
+        next_action={"text": "Call Bob", "by": "model", "updated_at": "2026-10-20T00:00:00Z"},
+        next_action_suggestion={"text": "Book it", "updated_at": "2026-10-21T00:00:00Z"},
+    )
+    with _client(lambda _r: httpx.Response(200, json=[row, _todo_json()])) as api:
+        with_fields, without = api.list_todos()
+    assert with_fields.next_action == api_client.TodoNextAction(
+        text="Call Bob", by="model", updated_at="2026-10-20T00:00:00Z"
+    )
+    assert with_fields.next_action_suggestion is not None
+    assert with_fields.next_action_suggestion.text == "Book it"
+    assert without.next_action is None and without.next_action_suggestion is None

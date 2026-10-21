@@ -979,6 +979,11 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     )
     p_todos_add.add_argument("--priority", help="Free-form priority label, e.g. high.")
     p_todos_add.add_argument(
+        "--next-action",
+        metavar="TEXT",
+        help="The next concrete step. Left off, Pepper writes one.",
+    )
+    p_todos_add.add_argument(
         "--assignee",
         metavar="PERSON",
         help="Ask this room member to do it (needs --room): a name or unique name prefix, "
@@ -988,7 +993,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
 
     p_todos_edit = sub_todos.add_parser(
         "edit",
-        help="Change a todo's title, details, due date, priority or assignee.",
+        help="Change a todo's title, details, due date, priority, next action or assignee.",
         parents=[_json_parent],
     )
     p_todos_edit.add_argument("todo_id", help="Todo UUID (from ``todos list``).")
@@ -1000,6 +1005,23 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "with --room, 'YYYY-MM-DD' only).",
     )
     p_todos_edit.add_argument("--priority", help="New priority label.")
+    edit_next = p_todos_edit.add_mutually_exclusive_group()
+    edit_next.add_argument("--next-action", metavar="TEXT", help="Set the next action.")
+    edit_next.add_argument(
+        "--clear-next-action",
+        action="store_true",
+        help="Drop the next action; Pepper writes a new one.",
+    )
+    edit_next.add_argument(
+        "--accept-suggestion",
+        action="store_true",
+        help="Make Pepper's suggested next action the next action.",
+    )
+    edit_next.add_argument(
+        "--dismiss-suggestion",
+        action="store_true",
+        help="Dismiss Pepper's suggested next action.",
+    )
     p_todos_edit.add_argument(
         "--assignee",
         metavar="PERSON",
@@ -2986,8 +3008,8 @@ def cmd_todo_list(args: argparse.Namespace) -> int:
 
 
 def cmd_todo_create(args: argparse.Namespace) -> int:
-    """``pepper todos create <title...> [--details D] [--due DATE] [--priority P] [--room ROOM
-    [--assignee PERSON]]``.
+    """``pepper todos create <title...> [--details D] [--due DATE] [--priority P]
+    [--next-action TEXT] [--room ROOM [--assignee PERSON]]``.
 
     A room's todo takes the same fields, but its ``--due`` is a ``YYYY-MM-DD`` day only.
     ``--assignee`` asks a member of that room: the CLI resolves the name to a roster person
@@ -3021,6 +3043,7 @@ def cmd_todo_create(args: argparse.Namespace) -> int:
             due=due_day,
             group_id=group_id,
             **({"assignee_person_id": assignee_id} if assignee_id else {}),
+            **({"next_action": args.next_action} if args.next_action else {}),
         )
 
         def human() -> None:
@@ -3108,7 +3131,8 @@ def _todo_due_args(args: argparse.Namespace) -> tuple[str | None, str | None, bo
 
 def cmd_todo_edit(args: argparse.Namespace) -> int:
     """``pepper todos edit <id> [--room ROOM] [--title T] [--details D] [--due DATE]
-    [--priority P] [--assignee PERSON] [--clear details|priority|due]``.
+    [--priority P] [--assignee PERSON] [--clear details|priority|due] [--next-action TEXT |
+    --clear-next-action | --accept-suggestion | --dismiss-suggestion]``.
 
     Sends only what was given. On an ask only the person who asked may edit, and both
     copies follow; ``--assignee`` hands it to another member. There is no ``--if-match``:
@@ -3135,11 +3159,26 @@ def cmd_todo_edit(args: argparse.Namespace) -> int:
     if args.title is not None and not args.title.strip():
         _emit_error(args, "usage", "todo title cannot be empty")
         return 2
-    if all(v is None for v in given.values()) and not args.clear and not args.assignee:
+    if args.next_action is not None and not args.next_action.strip():
+        _emit_error(args, "usage", "next action cannot be empty (--clear-next-action drops it)")
+        return 2
+    next_given = (
+        args.next_action is not None
+        or args.clear_next_action
+        or args.accept_suggestion
+        or args.dismiss_suggestion
+    )
+    if (
+        all(v is None for v in given.values())
+        and not args.clear
+        and not args.assignee
+        and not next_given
+    ):
         _emit_error(
             args,
             "usage",
-            "nothing to change: give --title, --details, --due, --priority, --assignee or --clear",
+            "nothing to change: give --title, --details, --due, --priority, --next-action, "
+            "--assignee or --clear",
         )
         return 2
     due_iso, due_day, bad_due = _todo_due_args(args)
@@ -3159,6 +3198,14 @@ def cmd_todo_edit(args: argparse.Namespace) -> int:
         fields["due"] = due_day
     for field in args.clear:
         fields["due" if field == "due" else field] = None
+    if args.next_action is not None:
+        fields["next_action"] = args.next_action.strip()
+    elif args.clear_next_action:
+        fields["next_action"] = None
+    elif args.accept_suggestion:
+        fields["next_action_suggestion"] = "accept"
+    elif args.dismiss_suggestion:
+        fields["next_action_suggestion"] = "dismiss"
 
     def run(api: api_client.ApiClient) -> int:
         group_id = _opt_group(api, args.room, args=args)

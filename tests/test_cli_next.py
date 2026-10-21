@@ -156,6 +156,8 @@ def test_no_live_event_means_no_now_and_todos_carry_the_servers_fields(server, c
             "remind_at": _at(30),
             "priority": "high",
             "source": "user",
+            "next_action": None,
+            "next_action_suggestion": None,
         }
     ]
 
@@ -311,6 +313,22 @@ def test_first_flag_is_gone(server, capsys) -> None:
         cli.main(["next", "--first", "urgent"])
     assert exc.value.code == 2
     assert "--first" in capsys.readouterr().err
+
+
+def test_todo_leads_with_its_next_action_and_shows_a_suggestion(server, capsys) -> None:
+    acted = _todo("Vet") | {
+        "next_action": {"text": "Email the vet", "by": "model", "updated_at": "2026-10-20T00:00Z"},
+        "next_action_suggestion": {"text": "Book a slot", "updated_at": "2026-10-21T00:00Z"},
+    }
+    _mock(server, [acted, _todo("Plain")])
+    lines = [
+        ln for ln in _run(capsys).splitlines() if "Vet" in ln or "Plain" in ln or "suggests" in ln
+    ]
+    assert lines == [
+        " 1. Email the vet  for: Vet",
+        "      Pepper suggests: Book a slot",
+        " 2. Plain",
+    ]
 
 
 def test_json_shape_is_stable(server, capsys) -> None:

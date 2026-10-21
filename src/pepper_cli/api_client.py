@@ -543,6 +543,29 @@ class TodoPerson:
     label: str | None
 
 
+# Nested in ``TodoEntry.next_action``; declared inline by the server, so nothing to mirror.
+@dataclass(frozen=True)
+class TodoNextAction:
+    """A todo's GTD-style next action: the one concrete step that moves it on.
+
+    ``by`` is ``"user"`` for text the person wrote and ``"model"`` for text Pepper wrote.
+    The text is display data, shown through the sanitising renderer."""
+
+    text: str
+    by: str
+    updated_at: str
+
+
+# Nested in ``TodoEntry.next_action_suggestion``; likewise declared inline.
+@dataclass(frozen=True)
+class TodoNextActionSuggestion:
+    """What Pepper proposes as the next action when the person's own text is already set;
+    it replaces nothing until accepted (``todos edit --accept-suggestion``)."""
+
+    text: str
+    updated_at: str
+
+
 # MIRROR: src/pepper/api/router.py::TodoEntry
 # Same dual-definition rule as the other ``/api/v1`` payload shapes —
 # keep the field list in sync with the server's pydantic twin.
@@ -563,6 +586,9 @@ class TodoEntry:
     room member): who it was asked of and who asked. Both are None on a plain
     todo. The ask's state (``pending``, ``declined``, ...) and a decline's
     reason ride in ``source_ref`` as display data.
+
+    ``next_action`` and ``next_action_suggestion`` are None when the todo has none, and
+    also when the server predates them and does not send the keys.
     """
 
     id: str
@@ -579,6 +605,8 @@ class TodoEntry:
     remind_at: str | None = None
     assignee: TodoPerson | None = None
     requested_by: TodoPerson | None = None
+    next_action: TodoNextAction | None = None
+    next_action_suggestion: TodoNextActionSuggestion | None = None
 
 
 # MIRROR: src/pepper/api/scheduled_tasks.py::TaskSummary
@@ -1824,6 +1852,7 @@ class ApiClient:
         due: str | None = None,
         group_id: str | None = None,
         assignee_person_id: str | None = None,
+        next_action: str | None = None,
     ) -> TodoEntry:
         """``POST /api/v1/todos`` (a room's: ``/api/v1/groups/{id}/todos``).
 
@@ -1841,6 +1870,7 @@ class ApiClient:
             ("due_date", due_date),
             ("due", due),
             ("assignee_person_id", assignee_person_id),
+            ("next_action", next_action),
         ):
             if value is not None:
                 payload[key] = value
@@ -3549,7 +3579,27 @@ def _todo_from_dict(row: dict[str, Any]) -> TodoEntry:
         remind_at=row.get("remind_at"),
         assignee=_todo_person(row.get("assignee")),
         requested_by=_todo_person(row.get("requested_by")),
+        next_action=_todo_next_action(row.get("next_action")),
+        next_action_suggestion=_todo_next_action_suggestion(row.get("next_action_suggestion")),
     )
+
+
+def _todo_next_action(raw: object) -> TodoNextAction | None:
+    """A ``TodoNextAction`` from the wire, or None when absent or not the expected shape."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("text"), str) or not raw["text"]:
+        return None
+    return TodoNextAction(
+        text=raw["text"],
+        by=str(raw.get("by") or "user"),
+        updated_at=str(raw.get("updated_at") or ""),
+    )
+
+
+def _todo_next_action_suggestion(raw: object) -> TodoNextActionSuggestion | None:
+    """A ``TodoNextActionSuggestion`` from the wire, or None when absent or malformed."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("text"), str) or not raw["text"]:
+        return None
+    return TodoNextActionSuggestion(text=raw["text"], updated_at=str(raw.get("updated_at") or ""))
 
 
 def _todo_person(raw: object) -> TodoPerson | None:

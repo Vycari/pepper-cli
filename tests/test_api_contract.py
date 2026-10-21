@@ -154,8 +154,17 @@ NOT_CHECKABLE: dict[tuple[str, str], NotCheckable] = {
 # Keyed by (dataclass name, field name). Each must be a real field that the schema really
 # lacks: it is an error if the field is gone or the schema grew it.
 # A genuine mismatch (a CLI field the server does not send) belongs here too, but its reason
-# must start with "KNOWN MISMATCH". There are none today.
+# must start with "KNOWN MISMATCH".
 FIELD_EXCEPTIONS: dict[tuple[str, str], str] = {
+    ("TodoEntry", "next_action"): (
+        "KNOWN MISMATCH: the server lands todo next actions in parallel with this CLI, so the "
+        "vendored snapshot predates the field. Delete this entry when the weekly refresh "
+        "brings it in (the test then fails as stale)."
+    ),
+    ("TodoEntry", "next_action_suggestion"): (
+        "KNOWN MISMATCH: as next_action, the snapshot predates the field. Delete this entry "
+        "when the weekly refresh brings it in."
+    ),
     ("RoomSkillDetail", "row"): (
         "Client-composed: the server returns the skill-row fields flattened beside 'skill'; "
         "the CLI groups those into a RoomSkill under 'row'. The flattened fields are checked "
