@@ -8502,8 +8502,13 @@ def _research_target(
 
     The room is resolved as every other ``--room`` is (:func:`_opt_group`); the project is
     then looked up among that room's projects, or yours without ``--room``. The project is
-    ``None`` after the error is reported (exit 2)."""
+    ``None`` after the error is reported (exit 2).
+
+    The room id comes back in its canonical lowercase form, as the project's does, so a listing
+    saved under a room compares equal whether the room was named, or its UUID typed in either
+    case."""
     group_id = _opt_group(api, args.room, args=args)
+    group_id = group_id.lower() if group_id is not None else None
     return group_id, _resolve_research_project(api, args.project, args=args, group_id=group_id)
 
 
@@ -8633,8 +8638,11 @@ def _research_item_id(
     except numbered_view.RefError as exc:
         _emit_error(args, exc.code, str(exc))
         return None
+    saved_room = meta.get("room_id")
     if numbered_view.NumberedView.is_number(args.item) and (
-        meta.get("project_id") != project_id or meta.get("room_id") != group_id
+        meta.get("project_id") != project_id
+        or (saved_room.lower() if isinstance(saved_room, str) else saved_room)
+        != (group_id.lower() if group_id is not None else None)
     ):
         _emit_error(args, "usage", research_view.ANOTHER_PROJECT)
         return None

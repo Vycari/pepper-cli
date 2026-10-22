@@ -2366,6 +2366,47 @@ def test_a_number_from_a_room_listing_is_refused_without_the_room(room, capsys) 
     assert not room.requests
 
 
+def _room_listing_then(room, capsys, list_room: str, verb_room: str) -> tuple[int, str]:
+    item = _item(1, state="delivered")
+    room.routes[f"{RB}/{P1}/items"] = _json({"items": [item], "next_before": None})
+    room.routes[f"POST {RB}/{P1}/items/{item['id']}/take"] = _json({**item, "state": "taken"})
+    assert _run(["research-items", "list", "--room", list_room, "--project", P1], capsys)[0] == 0
+    room.requests.clear()
+    rc, _, err = _run(
+        ["research-items", "take", "--room", verb_room, "--project", P1, "1", "--json"], capsys
+    )
+    return rc, err
+
+
+def test_a_room_uuid_number_matches_whatever_its_case(room, capsys) -> None:
+    rc, err = _room_listing_then(room, capsys, G.lower(), G.upper())
+    assert rc == 0, err
+    assert _writes(room)[0].url.path == f"{RB}/{P1}/items/{_item(1)['id']}/take"
+
+
+def test_a_number_from_a_room_named_listing_matches_its_uuid(room, capsys) -> None:
+    rc, err = _room_listing_then(room, capsys, "trip", G.upper())
+    assert rc == 0, err
+
+
+def test_a_listing_saved_with_an_uppercase_room_id_still_matches(room, capsys) -> None:
+    item = _item(1, state="delivered")
+    room.routes[f"POST {RB}/{P1}/items/{item['id']}/take"] = _json({**item, "state": "taken"})
+    research_view.VIEW.save(
+        [research_view.listing_row(item)], {"project_id": P1, "room_id": G.upper()}
+    )
+    rc, _, err = _run(["research-items", "take", "--room", G, "--project", P1, "1"], capsys)
+    assert rc == 0, err
+
+
+def test_a_number_from_another_room_is_still_refused(room, capsys) -> None:
+    other = "00000000-0000-0000-0000-0000000000b2"
+    rc, err = _room_listing_then(room, capsys, G, other.upper())
+    assert rc == 2
+    assert _error(err)["message"] == research_view.ANOTHER_PROJECT
+    assert not room.requests
+
+
 def test_reconsider_in_a_room_sends_the_reason(room, capsys) -> None:
     item = _item(1, state="rejected")
     room.routes[f"POST {RB}/{P1}/items/{item['id']}/reconsider"] = _json(
