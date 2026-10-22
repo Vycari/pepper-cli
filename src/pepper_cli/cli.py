@@ -8606,7 +8606,9 @@ def cmd_research_projects_show(args: argparse.Namespace) -> int:
 
 def cmd_research_projects_runs(args: argparse.Namespace) -> int:
     """``pepper research-projects runs PROJECT [--limit N] [--before CURSOR] [--json]``: the
-    project's iterations (what actually executed), newest first."""
+    project's iterations (what actually executed), newest first. On the first page a queued or
+    running manual run heads the list: it has no iteration until a worker claims it, so it is
+    read from the project detail's ``inflight_run``."""
     if not _research_limit_ok(args):
         return 2
 
@@ -8617,17 +8619,27 @@ def cmd_research_projects_runs(args: argparse.Namespace) -> int:
         page = api.list_research_iterations(
             project_id, limit=args.limit, before=args.before, group_id=group_id
         )
+        inflight = None
+        if args.before is None:
+            inflight = api.get_research_project(project_id, group_id=group_id).inflight_run
+            # Once a worker claims the run its iteration row exists: list it once.
+            if inflight is not None and any(r.run_id == inflight.id for r in page.items):
+                inflight = None
         # "you" on a manual row needs the caller's id; skip the call when no row has one.
         you = (
             api.whoami().user_id
-            if not _json_mode(args) and any(r.requested_by for r in page.items)
+            if not _json_mode(args)
+            and (any(r.requested_by for r in page.items) or (inflight and inflight.requested_by))
             else None
         )
         _emit_list(
             page.items,
             args,
-            lambda: render.render_research_runs(page.items, page.next_before, you=you),
+            lambda: render.render_research_runs(
+                page.items, page.next_before, you=you, inflight=inflight
+            ),
             page.next_before,
+            inflight_run=_to_plain(inflight) if inflight is not None else None,
         )
         return 0
 

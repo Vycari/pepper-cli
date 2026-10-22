@@ -199,6 +199,7 @@ Source      (none)
 Last run    2026-10-19 09:00 succeeded (4 new candidates)
 Ledger      2 candidate · 12 accepted · 5 rejected · 3 delivered · 1 taken
 Steering    1 note queued for the next run
+            - Chris, 2026-10-22 09:14 PDT: skip refurbished units
 Open        q1  Is a self-emptying base a must-have?
             q2  Should refurbished units count?
 Report      pepper research-projects show robot-vacuums --report
@@ -206,7 +207,7 @@ Report      pepper research-projects show robot-vacuums --report
 
 JSON (J5): the server's `ProjectDetail`. When a manual run is queued or running
 (`inflight_run_id` is set), `show` adds a `Run` line, `queued 7f3a… (pepper research-projects show
-[--room R] P)` (decision F: queued receipts appear here, not in `runs`). `show --report` reads `GET
+[--room R] P)` (decision F). `show --report` reads `GET
 …/{pid}/report` and prints its `body` raw to stdout, as `notes show` does. Under `--json` it emits
 the `Report` object as the server returns it. The open questions (`qN` ids), ledger counts and
 pending steering count are fields of `ProjectDetail` and `Report`, and the CLI never parses them
@@ -224,8 +225,10 @@ STARTED            TRIGGER              STATUS      NOTE
 Decision F: a row is an **iteration**, meaning what actually executed, from `GET
 …/{pid}/iterations`. The TRIGGER column is the iteration's `kind`. A manual row also names the
 member who pressed run, "you" when that was the caller, which matters in a room where the run is
-billed to the account owner (server R2 (b)). A queued manual receipt has no iteration yet, so it
-shows in `show` and not here. JSON (J3): `{"items": [<iteration>, …], "next_before":
+billed to the account owner (server R2 (b)). A queued manual receipt has no iteration yet, so on the first page (no `--before`) the
+project detail's `inflight_run` heads the table (`queued`/`running`, stamped with when it was requested, naming
+who pressed run) and is dropped once an iteration row carries its `run_id`; `show` still has its `Run` line.
+Under `--json` it rides beside `items` as `inflight_run` (null when none). JSON (J3): `{"items": [<iteration>, …], "next_before":
 <cursor|null>}`, paged backwards with `--before` like `scheduled-tasks runs` (IA §5.3), using the
 server's opaque cursor. The server's separate `GET …/{pid}/runs` (request rows) has no command of
 its own in v1. `--wait` reads one run by id (§6.1).
@@ -310,7 +313,7 @@ run today and does not wait; it would need a receipt to poll first). The rules:
 | Progress | Human mode: one status line on stderr (`queued` → `running`, with the time waited: `running (1m13s waited)`; the end line gives the run's own time and the time since it was queued, `succeeded in 40s (1m53s since queued)`), rewritten in place on a terminal, one line per change off a terminal. JSON mode: nothing at all until the end (J2), and never JSON lines: `--wait` is not a stream (J6) |
 | End: succeeded | exit 0. stdout: the final receipt (JSON), or in human mode the receipt line and then the run's "What's new" lines (§6.3) |
 | End: run failed (`error`, `interrupted`) | stdout: the final receipt, the same document as on success (it is the answer). stderr: a J8 line, code `run_failed`. exit 1 |
-| End: timeout | stdout: the last receipt seen (status `queued`/`running`). stderr: a J8 line, code `timeout`, message naming the receipt id and `pepper research-projects show [--room R] P` (the run is still queued or running, so it is in `show`, not yet in `runs`, §4.3). exit 4 |
+| End: timeout | stdout: the last receipt seen (status `queued`/`running`). stderr: a J8 line, code `timeout`, message naming the receipt id and `pepper research-projects show [--room R] P` (the run is still queued or running, so `show` has it, §4.3). exit 4 |
 | Ctrl-C | Stops waiting, never cancels the run. stderr: `pepper: still running — check 'pepper research-projects show [--room R] P'` (human mode) or a J8 line, code `timeout` (JSON mode). stdout empty. exit 130 (J9) |
 | Hints | Every recovery hint names `show`, never `runs`, while the run is unfinished, and repeats the `--room R` the command was given, so it can be pasted as is |
 | Poll errors | A network error or 5xx while polling is retried within the bound; a 401/403/404 ends the wait through the leaf's normal error path (exit per J9) |
@@ -613,7 +616,7 @@ when it is omitted (the server doc says which). (b) Required in the CLI. Recomme
 the server doc defines a default, else (b); choosing a skill from the brief would be business logic
 the CLI must not carry.
 
-**F. What `runs` lists.** **Taken 2026-10-20: iterations** (a variant of (b)), from the server's iterations route, with a trigger column: manual, naming the member who pressed run, or scheduled. Queued manual receipts appear in `show`, and `--wait` polls the manual-run receipt route (§4.3, §6.1). (a) One server list of runs with a `trigger` (`manual`/`scheduled`)
+**F. What `runs` lists.** **Taken 2026-10-20: iterations** (a variant of (b)), from the server's iterations route, with a trigger column: manual, naming the member who pressed run, or scheduled. A queued or running receipt heads the first page of `runs` (read from the detail's `inflight_run`, amended 2026-10-22) and appears in `show`, and `--wait` polls the manual-run receipt route (§4.3, §6.1). (a) One server list of runs with a `trigger` (`manual`/`scheduled`)
 column, merging receipts and iterations. (b) Iterations only. (c) Manual receipts only.
 Recommended at the time: (a), built by the server; a person asking "what ran" does not care which door
 started it. The CLI renders whatever the server doc picks.

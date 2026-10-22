@@ -809,6 +809,32 @@ class ResearchProjectDetail(ResearchProjectSummary):
     owner: ResearchOwner | None
 
 
+@dataclass(frozen=True)
+class ResearchSteeringNote:
+    """One entry of a project detail's ``pending_steering``: a note waiting for the next run,
+    oldest first. ``author_name`` is ``None`` when the server cannot name the author.
+
+    Not a ``MIRROR``: the server field (pepper#5175) is not in the vendored schema snapshot
+    until its next refresh; fold this and :class:`ResearchProjectWithSteering` into the
+    mirrored classes then."""
+
+    id: str
+    text: str
+    question_id: str | None
+    author_user_id: str | None
+    author_name: str | None
+    created_at: str
+    consumed_at: str | None
+
+
+@dataclass(frozen=True)
+class ResearchProjectWithSteering(ResearchProjectDetail):
+    """The detail plus ``pending_steering``; ``None`` when the server does not send the field
+    (an older server), so a renderer falls back to ``pending_steering_count``."""
+
+    pending_steering: list[ResearchSteeringNote] | None = None
+
+
 # MIRROR: src/pepper/api/research_projects.py::ResearchIterationOut
 @dataclass(frozen=True)
 class ResearchIteration:
@@ -3875,9 +3901,13 @@ def _research_summary(row: dict[str, Any]) -> ResearchProjectSummary:
 
 
 def _research_detail(row: dict[str, Any]) -> ResearchProjectDetail:
+    steering = row.get("pending_steering")
     return _fields(
-        ResearchProjectDetail,
+        ResearchProjectWithSteering,
         row,
+        pending_steering=_nested_list(ResearchSteeringNote, steering)
+        if isinstance(steering, list)
+        else None,
         **_research_summary_parts(row),
         filters=_nested_list(ResearchFilter, row.get("filters")),
         open_questions=_nested_list(ResearchQuestion, row.get("open_questions")),

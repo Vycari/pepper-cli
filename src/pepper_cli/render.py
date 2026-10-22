@@ -1366,6 +1366,34 @@ def _show_command(detail: Any, room: str | None) -> str:
     return f"pepper research-projects show {where}{_shell_ref(detail)}"
 
 
+def _steering_author(note: Any) -> str:
+    """Who wrote a steering note: their name, else a short id, else ``unknown``."""
+    if note.author_name:
+        return sanitize_line(note.author_name)
+    return note.author_user_id[:8] if note.author_user_id else "unknown"
+
+
+def _render_steering(detail: Any) -> None:
+    """The ``Steering`` block of ``show``: each pending note with its author and time (every
+    room member sees all of them), or, from a server that does not send the notes, the count."""
+    notes = getattr(detail, "pending_steering", None)
+    if notes is None:
+        queued = detail.pending_steering_count or 0
+        if queued:
+            _labelled(
+                "Steering", f"{queued} note{'s' if queued != 1 else ''} queued for the next run"
+            )
+        return
+    if not notes:
+        return
+    _labelled(
+        "Steering", f"{len(notes)} note{'s' if len(notes) != 1 else ''} queued for the next run"
+    )
+    for note in notes:
+        stamp = _format_stamp(note.created_at)
+        _labelled("", f"- {_steering_author(note)}, {stamp}: {note.text}")
+
+
 def render_research_project(detail: Any, *, room: str | None = None) -> None:
     """``research-projects show``: the project, its ledger and what is waiting on the person.
 
@@ -1397,9 +1425,7 @@ def render_research_project(detail: Any, *, room: str | None = None) -> None:
     known = [s for s in _LEDGER_ORDER if counts.get(s)]
     other = sorted(s for s in counts if s not in _LEDGER_ORDER and counts[s])
     _labelled("Ledger", " · ".join(f"{counts[s]} {s}" for s in [*known, *other]) or "(empty)")
-    queued = detail.pending_steering_count or 0
-    if queued:
-        _labelled("Steering", f"{queued} note{'s' if queued != 1 else ''} queued for the next run")
+    _render_steering(detail)
     for i, q in enumerate(detail.open_questions or []):
         _labelled("Open" if i == 0 else "", f"{q.id}  {sanitize_line(q.text)}")
     _labelled("Report", f"{show} --report")
@@ -1412,18 +1438,23 @@ def _more_hint(next_before: str | None) -> None:
 
 
 def render_research_runs(
-    rows: list[Any], next_before: str | None, *, you: str | None = None
+    rows: list[Any],
+    next_before: str | None,
+    *,
+    you: str | None = None,
+    inflight: Any = None,
 ) -> None:
     """``research-projects runs``: iterations, newest first. A manual row names who pressed run
-    (``you`` when that was ``you``, the caller's user id)."""
-    if not rows:
+    (``you`` when that was ``you``, the caller's user id). ``inflight`` is the project's queued
+    or running manual run, which has no iteration until a worker claims it: it heads the table,
+    stamped with when it was requested."""
+    if not rows and inflight is None:
         _stdout.print("(no runs yet)")
         return
 
-    def trigger(row: Any) -> str:
-        if row.trigger != "manual":
-            return row.trigger
-        who = row.requested_by
+    def trigger(kind: str, who: Any) -> str:
+        if kind != "manual":
+            return kind
         if who is None:
             return "manual"
         return f"manual · {'you' if you and who.user_id == you else who.name}"
@@ -1434,10 +1465,21 @@ def render_research_runs(
         failed = sorted((row.source_failures or {}).keys())
         return f"sources failed: {', '.join(failed)}" if failed else ""
 
-    _plain_table(
-        ["STARTED", "TRIGGER", "STATUS", "NOTE"],
-        [[_format_stamp(r.started_at), trigger(r), r.status, note(r)] for r in rows],
-    )
+    table = [
+        [_format_stamp(r.started_at), trigger(r.trigger, r.requested_by), r.status, note(r)]
+        for r in rows
+    ]
+    if inflight is not None:
+        table.insert(
+            0,
+            [
+                _format_stamp(inflight.requested_at),
+                trigger("manual", inflight.requested_by),
+                inflight.status,
+                "requested, not started" if inflight.status == "queued" else "",
+            ],
+        )
+    _plain_table(["STARTED", "TRIGGER", "STATUS", "NOTE"], table)
     _more_hint(next_before)
 
 

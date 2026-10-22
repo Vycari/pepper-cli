@@ -304,6 +304,57 @@ def test_show_prints_the_project(server, capsys) -> None:
     assert lines[-1] == "Report      pepper research-projects show robot-vacuums --report"
 
 
+def _note(text: str, name: str | None = "Chris", **over) -> dict:
+    row = {
+        "id": "00000000-0000-0000-0000-00000000c001",
+        "text": text,
+        "question_id": None,
+        "author_user_id": CHRIS,
+        "author_name": name,
+        "created_at": "2026-10-22T09:14:00+00:00",
+        "consumed_at": None,
+    }
+    row.update(over)
+    return row
+
+
+def test_show_lists_each_pending_steering_note_with_its_author(server, capsys) -> None:
+    server.routes[f"{BASE}/{P1}"] = _json(
+        _detail(
+            pending_steering_count=3,
+            pending_steering=[
+                _note("skip the refurbished ones"),
+                _note("also check [bold]noise[/bold]\nin dB", name=None),
+                _note("third", name=None, author_user_id=None),
+            ],
+        )
+    )
+    rc, out, _ = _run(["research-projects", "show", P1], capsys)
+    lines = out.splitlines()
+    assert rc == 0
+    i = lines.index("Steering    3 notes queued for the next run")
+    assert lines[i + 1].startswith("            - Chris, ")
+    assert lines[i + 1].endswith(": skip the refurbished ones")
+    assert lines[i + 2].startswith("            - 00000000, ")
+    assert lines[i + 2].endswith(": also check [bold]noise[/bold]")
+    assert lines[i + 3] == "            in dB"
+    assert lines[i + 4].startswith("            - unknown, ")
+
+
+def test_show_an_empty_pending_steering_list_prints_no_steering(server, capsys) -> None:
+    server.routes[f"{BASE}/{P1}"] = _json(_detail(pending_steering_count=0, pending_steering=[]))
+    _, out, _ = _run(["research-projects", "show", P1], capsys)
+    assert "Steering" not in out
+
+
+def test_show_json_passes_pending_steering_through(server, capsys) -> None:
+    server.routes[f"{BASE}/{P1}"] = _json(_detail(pending_steering=[_note("x")]))
+    _, out, _ = _run(["research-projects", "show", P1, "--json"], capsys)
+    body = json.loads(out)
+    assert body["pending_steering_count"] == 1
+    assert body["pending_steering"] == [_note("x")]
+
+
 def test_show_a_quiet_project_leaves_out_the_optional_lines(server, capsys) -> None:
     server.routes[f"{BASE}/{P1}"] = _json(
         _detail(filters=[], pending_steering_count=0, item_counts={}, open_questions=[], brief="b")
@@ -364,6 +415,7 @@ def test_show_report_json_is_the_report_object(server, capsys) -> None:
 
 
 def test_runs_shows_a_trigger_column_and_who_pressed_run(server, capsys) -> None:
+    server.routes[f"{BASE}/{P1}"] = _json(_detail())
     server.routes[f"{BASE}/{P1}/iterations"] = _json(
         {
             "items": [
@@ -393,7 +445,65 @@ def test_runs_shows_a_trigger_column_and_who_pressed_run(server, capsys) -> None
     assert sent["limit"] == "50" and "before" not in sent
 
 
+_INFLIGHT = {
+    "id": "00000000-0000-0000-0000-0000000000c1",
+    "status": "queued",
+    "requested_at": "2026-10-22T10:00:00+00:00",
+    "requested_by": {"user_id": CHRIS, "name": "Chris"},
+}
+
+
+def test_runs_shows_a_queued_run_first(server, capsys) -> None:
+    server.routes[f"{BASE}/{P1}"] = _json(_detail(inflight_run=_INFLIGHT))
+    server.routes[f"{BASE}/{P1}/iterations"] = _json({"items": [_iteration()], "next_before": None})
+    rc, out, _ = _run(["research-projects", "runs", P1], capsys)
+    lines = out.splitlines()
+    assert rc == 0
+    assert lines[0].split() == ["STARTED", "TRIGGER", "STATUS", "NOTE"]
+    assert "manual · Chris" in lines[1] and "queued" in lines[1]
+    assert "requested, not started" in lines[1]
+    assert "scheduled" in lines[2]
+
+
+def test_runs_with_only_a_queued_run_is_not_empty(server, capsys) -> None:
+    server.routes[f"{BASE}/{P1}"] = _json(
+        _detail(inflight_run={**_INFLIGHT, "requested_by": {"user_id": ME, "name": "Me"}})
+    )
+    server.routes[f"{BASE}/{P1}/iterations"] = _json({"items": [], "next_before": None})
+    _, out, _ = _run(["research-projects", "runs", P1], capsys)
+    assert "no runs yet" not in out
+    assert "manual · you" in out
+
+
+def test_runs_lists_a_claimed_run_once(server, capsys) -> None:
+    server.routes[f"{BASE}/{P1}"] = _json(_detail(inflight_run={**_INFLIGHT, "status": "running"}))
+    server.routes[f"{BASE}/{P1}/iterations"] = _json(
+        {
+            "items": [_iteration(trigger="manual", run_id=_INFLIGHT["id"], status="running")],
+            "next_before": None,
+        }
+    )
+    _, out, _ = _run(["research-projects", "runs", P1], capsys)
+    assert len(out.splitlines()) == 2
+
+
+def test_runs_json_carries_the_inflight_run(server, capsys) -> None:
+    server.routes[f"{BASE}/{P1}"] = _json(_detail(inflight_run=_INFLIGHT))
+    server.routes[f"{BASE}/{P1}/iterations"] = _json({"items": [], "next_before": None})
+    _, out, _ = _run(["research-projects", "runs", P1, "--json"], capsys)
+    body = json.loads(out)
+    assert body["items"] == [] and body["inflight_run"]["id"] == _INFLIGHT["id"]
+    assert body["inflight_run"]["status"] == "queued"
+
+
+def test_runs_later_pages_do_not_ask_for_the_inflight_run(server, capsys) -> None:
+    server.routes[f"{BASE}/{P1}/iterations"] = _json({"items": [_iteration()], "next_before": None})
+    _run(["research-projects", "runs", P1, "--before", "CUR"], capsys)
+    assert f"{BASE}/{P1}" not in _paths(server)
+
+
 def test_runs_pages_back_with_before(server, capsys) -> None:
+    server.routes[f"{BASE}/{P1}"] = _json(_detail())
     server.routes[f"{BASE}/{P1}/iterations"] = _json({"items": [_iteration()], "next_before": None})
     rc, _, _ = _run(["research-projects", "runs", P1, "--before", "CUR", "--limit", "5"], capsys)
     assert rc == 0
@@ -402,6 +512,7 @@ def test_runs_pages_back_with_before(server, capsys) -> None:
 
 
 def test_runs_json_is_the_envelope_and_never_asks_who_you_are(server, capsys) -> None:
+    server.routes[f"{BASE}/{P1}"] = _json(_detail())
     server.routes[f"{BASE}/{P1}/iterations"] = _json(
         {
             "items": [_iteration(trigger="manual", requested_by={"user_id": ME, "name": "Me"})],
@@ -418,6 +529,7 @@ def test_runs_json_is_the_envelope_and_never_asks_who_you_are(server, capsys) ->
 
 
 def test_runs_empty(server, capsys) -> None:
+    server.routes[f"{BASE}/{P1}"] = _json(_detail())
     server.routes[f"{BASE}/{P1}/iterations"] = _json({"items": [], "next_before": None})
     _, out, _ = _run(["research-projects", "runs", P1], capsys)
     assert out.strip() == "(no runs yet)"
@@ -765,7 +877,7 @@ def _without(row: dict, key: str) -> dict:
             ["research-projects", "show", P1],
             f"{BASE}/{P1}",
             _without(_detail(), "status"),
-            "ResearchProjectDetail has no 'status'",
+            "ResearchProjectWithSteering has no 'status'",
         ),
         (
             ["research-projects", "runs", P1],
@@ -2374,9 +2486,16 @@ def test_an_unknown_room_name_is_not_found_exit_2(room, capsys) -> None:
 def test_show_report_and_runs_use_the_room_routes(room, capsys) -> None:
     room.routes[f"{RB}/{P1}/report"] = _json(REPORT)
     room.routes[f"{RB}/{P1}/iterations"] = _json({"items": [_iteration()], "next_before": None})
+    room.routes[f"{RB}/{P1}"] = _json(_detail(inflight_run=_INFLIGHT))
     assert _run(["research-projects", "show", "--room", G, P1, "--report"], capsys)[0] == 0
-    assert _run(["research-projects", "runs", "--room", G, P1], capsys)[0] == 0
-    assert _paths(room) == [f"{RB}/{P1}/report", f"{RB}/{P1}/iterations"]
+    rc, out, _ = _run(["research-projects", "runs", "--room", G, P1], capsys)
+    assert rc == 0 and "queued" in out
+    assert _paths(room) == [
+        f"{RB}/{P1}/report",
+        f"{RB}/{P1}/iterations",
+        f"{RB}/{P1}",
+        "/api/v1/whoami",
+    ]
 
 
 def test_room_items_are_numbered_per_room_and_project(room, capsys) -> None:
