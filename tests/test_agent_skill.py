@@ -59,7 +59,8 @@ _CANNOT_RUN = "cannot run"
 # The ``<noun> <verb>`` commands whose server route admits an agent token, and the
 # flags on them that reach a route which does not. Mirrors
 # the server's allowlist of routes an agent token may reach: ``rooms watch``
-# is the events stream, ``messages react``/``unreact`` the two reactions routes, ``--mark``
+# is the events stream, ``messages react``/``unreact`` the two reactions routes,
+# ``attachments download`` the attachment read route, ``--mark``
 # the read-mark route and ``--attach`` the upload route (both personal-token only).
 # ``members list`` (the old ``groups roster``) is the room roster.
 _AGENT_COMMANDS = frozenset(
@@ -72,6 +73,7 @@ _AGENT_COMMANDS = frozenset(
         "messages react",
         "messages unreact",
         "members list",
+        "attachments download",
     }
 )
 _AGENT_REFUSED_FLAGS = frozenset({"--mark", "--attach"})
@@ -345,7 +347,6 @@ def test_document_names_the_tempting_commands_as_unavailable() -> None:
         "messages edit",
         "messages delete",
         "rooms show",
-        "attachments download",
     ):
         assert f"`pepper --profile <name> {needle}`" in cannot, needle
     for flag in _AGENT_REFUSED_FLAGS:
@@ -360,6 +361,7 @@ def test_document_exercises_the_invocations_the_guard_is_meant_to_cover() -> Non
         "messages post",
         "messages react",
         "messages unreact",
+        "attachments download",
         "login",
     ):
         assert any(needle in j for j in joined), needle
@@ -478,8 +480,8 @@ def test_drift_guard_flag_scan_skips_frontmatter_fences_and_heredoc_bodies() -> 
         ),
         ("`pepper --profile p messages delete --room G M --yes`", "`messages delete`"),
         (
-            "```\npepper --profile p attachments download --room G A --out f\n```",
-            "`attachments download`",
+            "```\npepper --profile p rooms show G\n```",
+            "`rooms show`",
         ),
         (
             "`pepper --profile p messages list --room G --topic T --mark`",

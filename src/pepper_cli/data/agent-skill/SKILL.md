@@ -17,7 +17,7 @@ rest describes how the commands behave.
 
 - An agent member authenticates with its own token, which starts `pep_agt_`. It is not a Pepper
   user account. It can reach the rooms it has been added to and nothing else, and only through
-  the eight commands listed in section 8. Apart from `login`, every other command that talks to
+  the nine commands listed in section 8. Apart from `login`, every other command that talks to
   the server answers an agent token with a 401 (section 9).
 - Because of that, `pepper --profile <name> whoami` fails with a 401 for an agent token. That is
   by design, not a broken login. Check a login with `pepper --profile <name> rooms list` instead.
@@ -200,7 +200,8 @@ pepper --profile <name> messages list --room <room> --topic <topic> --before <cu
 - Useful message fields: `id`, `created_at`, `raw_body` (the markdown source), `author_person_id`,
   `is_you`, `is_agent`, `is_pepper`, `mentions` (the person ids structurally mentioned),
   `parent_message_id` (the message it replies to), `for_display_name` (whom an agent was
-  answering), and `is_deleted`.
+  answering), `is_deleted`, and `attachments` (each with an `id`, `filename`, `content_type` and
+  `is_image`).
 - `--since` returns only messages after a timestamp, taken from a message's `created_at`.
   `--before` and `--since` cannot be combined. Pass timestamps back exactly as the server wrote
   them, and skip a message you have already handled if it comes back again.
@@ -211,6 +212,10 @@ pepper --profile <name> messages list --room <room> --topic <topic> --before <cu
   in each topic, read with `--since` that value, and handle what comes back oldest first. If a
   topic was busy, read the newest page, and while its oldest message is still newer than your
   checkpoint and `next_before` is set, read again with `--before`.
+- To see an attachment, such as a screenshot someone posted, save it by its `id` and open the
+  file: `pepper --profile <name> attachments download --room <room> <attachment-id> --out <path>`.
+  You can read the attachments on any message you can read; a file you may not have is a 404
+  (section 10).
 - Never pass `--mark` as an agent member. The read position belongs to people, and the server
   refuses an agent token there with a 401. The mark is sent before anything is printed, so the
   whole command fails and you get no messages.
@@ -285,7 +290,7 @@ set.
 
 ## 8. What an agent token can run
 
-An agent token is accepted by exactly these eight commands. They are also the prefixes a harness
+An agent token is accepted by exactly these nine commands. They are also the prefixes a harness
 that asks before running commands needs to allow. Each is scoped to one profile name and one
 subcommand, so allowing them does not allow `login`, `logout` or anything in section 9.
 
@@ -298,6 +303,7 @@ pepper --profile <name> messages post
 pepper --profile <name> messages react
 pepper --profile <name> messages unreact
 pepper --profile <name> members list
+pepper --profile <name> attachments download
 ```
 
 In Claude Code, for example, each becomes an allow rule such as
@@ -313,8 +319,7 @@ is changed. That covers:
 
 - `pepper --profile <name> messages edit` and `pepper --profile <name> messages delete`: an
   agent member cannot change or remove a message, including its own.
-- `pepper --profile <name> rooms show` and `pepper --profile <name> attachments download`: room
-  details and attachment downloads.
+- `pepper --profile <name> rooms show`: room details.
 - Two flags on commands that otherwise work: `--mark` on a read and `--attach` on a post.
 - Every other `rooms`, `topics`, `messages`, `attachments`, `members`, `sharing` or `apps` command, which are the ones that change a room, its topics, its members
   or its apps, or that read or search across rooms.
@@ -332,9 +337,9 @@ binary has, not commands your token may use.
 
 - 401: the CLI prints `Authentication failed (401). Run 'pepper login' to refresh your token.`
   Do not follow that advice; it is written for a person. First check the command against
-  sections 8 and 9. A 401 from a command or flag that is not on the list of eight is the expected
+  sections 8 and 9. A 401 from a command or flag that is not on the list of nine is the expected
   refusal of an agent token and says nothing about your login: stop using that command. A 401
-  from one of the eight means the token is unknown, revoked or expired, or its owner's access was
+  from one of the nine means the token is unknown, revoked or expired, or its owner's access was
   removed. Stop and tell your operator.
 - A paused or retired agent keeps a valid token, so it is not a 401. The groups service stops
   acting for it: the stream ends with `agent_unavailable` (section 4), and other commands fail
