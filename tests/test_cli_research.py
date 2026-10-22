@@ -1067,12 +1067,6 @@ def test_edit_a_blank_filter_is_a_usage_error(server, capsys) -> None:
     assert _error(err)["code"] == "usage"
 
 
-def test_edit_clear_only_knows_filters_until_schedules_land(server) -> None:
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["research-projects", "edit", P1, "--clear", "schedule"])
-    assert exc.value.code == 2
-
-
 def test_edit_with_nothing_to_change_opens_the_editor_on_the_brief(
     server, capsys, tty, monkeypatch
 ) -> None:
@@ -1754,6 +1748,7 @@ _WRITES = [
     (["research-projects", "create", "x", "--file", "-"], "POST", BASE),
     (["research-projects", "edit", P1, "--file", "-"], "PATCH", f"{BASE}/{P1}"),
     (["research-projects", "edit", P1, "--filter", "f"], "PUT", f"{BASE}/{P1}/filters"),
+    (["research-projects", "edit", P1, "--clear", "schedule"], "DELETE", f"{BASE}/{P1}/schedule"),
     (["research-projects", "run", P1], "POST", f"{BASE}/{P1}/runs"),
     (["research-projects", "steer", P1, "go"], "POST", f"{BASE}/{P1}/steering"),
     (["research-projects", "pause", P1], "POST", f"{BASE}/{P1}/pause"),
@@ -1812,3 +1807,419 @@ def test_the_writes_resolve_a_project_by_name_prefix_and_say_so_when_it_is_unkno
     assert (rc, out) == (2, "")
     assert _error(err)["code"] == "not_found"
     assert not _writes(server)
+
+
+# ---------------------------------------------------------------------------
+# edit: schedules (planning/research-projects.md section 7)
+
+SCHEDULE = f"{BASE}/{P1}/schedule"
+TASK = "00000000-0000-0000-0000-0000000000c1"
+TASK_PATH = f"/api/v1/scheduled-tasks/{TASK}"
+CRON = "0 9 * * 0"
+
+
+def _scheduled(**over) -> dict:
+    schedule = {"cron": CRON, "timezone": "America/Los_Angeles", "active": True}
+    return _detail(**{"scheduled_task_id": TASK, "schedule": schedule, **over})
+
+
+def _manual_only(server) -> None:
+    server.routes[f"{BASE}/{P1}"] = _json(_detail())
+
+
+def _no_editor(monkeypatch) -> None:
+    def boom(initial: str) -> str | None:
+        raise AssertionError("the editor must not open for a schedule edit")
+
+    monkeypatch.setattr(cli, "_open_in_editor", boom)
+
+
+def test_enable_confirms_with_the_cron_and_the_zone_then_posts(
+    server, capsys, tty, monkeypatch
+) -> None:
+    _no_editor(monkeypatch)
+    _manual_only(server)
+    server.routes[f"POST {SCHEDULE}"] = httpx.Response(201, json=_scheduled())
+    asked: list[str] = []
+    monkeypatch.setattr(cli, "_prompt", lambda text: asked.append(text) or "y")
+    rc, _, err = _run(
+        [
+            "research-projects",
+            "edit",
+            "robot-vacuums",
+            "--cron",
+            CRON,
+            "--timezone",
+            "Europe/Paris",
+        ],
+        capsys,
+    )
+    assert rc == 0
+    (question,) = asked
+    assert "robot-vacuums" in question
+    assert f"'{CRON}'" in question
+    assert "(Europe/Paris)" in question
+    assert question.rstrip().endswith("[y/N]")
+    (write,) = _writes(server)
+    assert write.url.path == SCHEDULE
+    assert _sent(write) == {"cron": CRON, "timezone": "Europe/Paris"}
+    # What the server echoes back is what the person is told.
+    assert f"'{CRON}' (America/Los_Angeles)" in err
+
+
+def test_enable_without_a_zone_says_it_is_the_profile_zone_and_sends_none(
+    server, capsys, tty, monkeypatch
+) -> None:
+    _manual_only(server)
+    server.routes[f"POST {SCHEDULE}"] = httpx.Response(201, json=_scheduled())
+    asked: list[str] = []
+    monkeypatch.setattr(cli, "_prompt", lambda text: asked.append(text) or "yes")
+    rc, _, _ = _run(["research-projects", "edit", P1, "--cron", CRON], capsys)
+    assert rc == 0
+    assert "(your profile timezone)" in asked[0]
+    assert _sent(_writes(server)[0]) == {"cron": CRON}
+
+
+def test_enable_declined_sends_nothing(server, capsys, tty, monkeypatch) -> None:
+    _manual_only(server)
+    monkeypatch.setattr(cli, "_prompt", lambda text: "n")
+    rc, _, err = _run(["research-projects", "edit", P1, "--cron", CRON], capsys)
+    assert rc == 0
+    assert "Aborted." in err
+    assert not _writes(server)
+
+
+def test_a_declined_enable_does_not_apply_the_rest_of_the_edit(
+    server, capsys, tty, monkeypatch
+) -> None:
+    _manual_only(server)
+    _stdin(monkeypatch, "New brief")
+    monkeypatch.setattr(cli, "_prompt", lambda text: "n")
+    rc, _, _ = _run(["research-projects", "edit", P1, "--file", "-", "--cron", CRON], capsys)
+    assert rc == 0
+    assert not _writes(server)
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_enable_without_a_terminal_or_yes_is_a_usage_error_with_no_write(
+    server, capsys, monkeypatch, as_json
+) -> None:
+    _manual_only(server)
+    _stdin(monkeypatch, "New brief")
+    argv = ["research-projects", "edit", P1, "--file", "-", "--cron", CRON]
+    rc, out, err = _run([*argv, "--json"] if as_json else argv, capsys)
+    assert (rc, out) == (2, "")
+    assert "pass --yes" in (_error(err)["message"] if as_json else err)
+    if as_json:
+        assert _error(err)["code"] == "usage"
+    assert not _writes(server)
+
+
+def test_enable_json_never_prompts_even_on_a_terminal(server, capsys, tty, monkeypatch) -> None:
+    _manual_only(server)
+
+    def boom(text: str) -> str:
+        raise AssertionError("JSON mode never prompts")
+
+    monkeypatch.setattr(cli, "_prompt", boom)
+    rc, out, err = _run(["research-projects", "edit", P1, "--cron", CRON, "--json"], capsys)
+    assert (rc, out) == (2, "")
+    assert _error(err)["code"] == "usage"
+    assert not _writes(server)
+
+
+def test_enable_with_yes_posts_without_a_terminal_and_answers_the_project(
+    server, capsys, monkeypatch
+) -> None:
+    _no_editor(monkeypatch)
+    _manual_only(server)
+    server.routes[f"POST {SCHEDULE}"] = httpx.Response(201, json=_scheduled())
+    rc, out, _ = _run(["research-projects", "edit", P1, "--cron", CRON, "--yes", "--json"], capsys)
+    assert rc == 0
+    assert json.loads(out)["schedule"]["timezone"] == "America/Los_Angeles"
+    assert [w.method for w in _writes(server)] == ["POST"]
+
+
+def test_changing_a_schedule_patches_the_task_without_a_prompt(server, capsys, monkeypatch) -> None:
+    server.routes[f"{BASE}/{P1}"] = [
+        _json(_scheduled()),
+        _json(_scheduled(schedule={"cron": "0 7 * * 1", "timezone": "UTC", "active": True})),
+    ]
+    server.routes[f"PATCH {TASK_PATH}"] = _json({"id": TASK})
+    rc, out, _ = _run(
+        ["research-projects", "edit", P1, "--cron", "0 7 * * 1", "--timezone", "UTC", "--json"],
+        capsys,
+    )
+    assert rc == 0  # no terminal and no --yes: a change does not prompt (decision D)
+    (write,) = _writes(server)
+    assert write.url.path == TASK_PATH
+    assert _sent(write) == {"cron": "0 7 * * 1", "timezone": "UTC"}
+    assert json.loads(out)["schedule"]["cron"] == "0 7 * * 1"  # the project, read back
+
+
+def test_changing_only_the_cron_sends_no_timezone(server, capsys) -> None:
+    server.routes[f"{BASE}/{P1}"] = _json(_scheduled())
+    server.routes[f"PATCH {TASK_PATH}"] = _json({"id": TASK})
+    rc, _, err = _run(["research-projects", "edit", P1, "--cron", "0 7 * * 1"], capsys)
+    assert rc == 0
+    assert _sent(_writes(server)[0]) == {"cron": "0 7 * * 1"}
+    assert "Changed the schedule" in err
+
+
+def test_a_refused_cron_is_the_servers_sentence(server, capsys) -> None:
+    server.routes[f"{BASE}/{P1}"] = _json(_scheduled())
+    server.routes[f"PATCH {TASK_PATH}"] = httpx.Response(422, json={"detail": "bad cron: nope"})
+    rc, out, err = _run(["research-projects", "edit", P1, "--cron", "nope", "--json"], capsys)
+    assert (rc, out) == (1, "")
+    assert _error(err)["code"] == "validation"
+    assert "bad cron: nope" in _error(err)["message"]
+
+
+def test_a_lost_race_to_enable_follows_the_pointer_to_the_task(server, capsys, monkeypatch) -> None:
+    # Another client scheduled it between the read and the POST: the 409 names the task.
+    _manual_only(server)
+    server.routes[f"POST {SCHEDULE}"] = httpx.Response(
+        409, json={"detail": "already has a schedule", "scheduled_task_id": TASK}
+    )
+    server.routes[f"PATCH {TASK_PATH}"] = _json({"id": TASK})
+    rc, _, _ = _run(["research-projects", "edit", P1, "--cron", CRON, "--yes"], capsys)
+    assert rc == 0
+    assert [(w.method, w.url.path) for w in _writes(server)] == [
+        ("POST", SCHEDULE),
+        ("PATCH", TASK_PATH),
+    ]
+    assert _sent(_writes(server)[1]) == {"cron": CRON}
+
+
+def test_an_already_scheduled_409_without_a_task_id_is_a_conflict(server, capsys) -> None:
+    _manual_only(server)
+    server.routes[f"POST {SCHEDULE}"] = httpx.Response(409, json={"detail": "project is paused"})
+    rc, out, err = _run(
+        ["research-projects", "edit", P1, "--cron", CRON, "--yes", "--json"], capsys
+    )
+    assert (rc, out) == (1, "")
+    assert _error(err)["code"] == "conflict"
+    assert "project is paused" in _error(err)["message"]
+
+
+def test_clear_schedule_deletes_without_a_prompt_and_answers_the_project(
+    server, capsys, monkeypatch
+) -> None:
+    _no_editor(monkeypatch)
+    server.routes[f"DELETE {SCHEDULE}"] = _json(_detail())
+    rc, out, _ = _run(["research-projects", "edit", P1, "--clear", "schedule", "--json"], capsys)
+    assert rc == 0  # stops spend and can be undone: no terminal, no --yes, still fine
+    (write,) = _writes(server)
+    assert (write.method, write.url.path) == ("DELETE", SCHEDULE)
+    assert json.loads(out)["scheduled_task_id"] is None
+    assert not [r for r in server.requests if r.method == "GET" and r.url.path == f"{BASE}/{P1}"]
+
+
+def test_clear_schedule_says_the_history_is_kept(server, capsys) -> None:
+    server.routes[f"DELETE {SCHEDULE}"] = _json(_detail())
+    rc, _, err = _run(["research-projects", "edit", P1, "--clear", "schedule"], capsys)
+    assert rc == 0
+    assert "Turned off the schedule" in err
+    assert "history is kept" in err
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "Nothing changed: a scheduled run is in progress; try again when it finishes.",
+        (
+            "Nothing changed: the schedule of research project 'robot-vacuums' changed while it "
+            "was being detached; read the project again and retry."
+        ),
+        "Nothing changed: research project 'robot-vacuums' has no schedule.",
+    ],
+    ids=["lease-running", "changed-while-detaching", "no-schedule"],
+)
+@pytest.mark.parametrize("as_json", [False, True])
+def test_clear_schedule_409s_print_the_servers_sentence(server, capsys, detail, as_json) -> None:
+    server.routes[f"DELETE {SCHEDULE}"] = httpx.Response(409, json={"detail": detail})
+    argv = ["research-projects", "edit", P1, "--clear", "schedule"]
+    rc, out, err = _run([*argv, "--json"] if as_json else argv, capsys)
+    assert (rc, out) == (1, "")
+    if as_json:
+        error = _error(err)
+        assert (error["code"], error["status"]) == ("conflict", 409)
+        assert detail in error["message"]
+    else:
+        assert detail in " ".join(err.split())
+
+
+def test_clear_schedule_with_a_brief_and_filters_is_three_writes_in_order(
+    server, capsys, monkeypatch
+) -> None:
+    _stdin(monkeypatch, "B")
+    server.routes[f"PATCH {BASE}/{P1}"] = _json(_detail(brief="B"))
+    server.routes[f"PUT {BASE}/{P1}/filters"] = _json(_detail(brief="B"))
+    server.routes[f"DELETE {SCHEDULE}"] = _json(_detail(brief="B", name="after-clear"))
+    rc, out, _ = _run(
+        [
+            "research-projects",
+            "edit",
+            P1,
+            "--file",
+            "-",
+            "--filter",
+            "f",
+            "--clear",
+            "schedule",
+            "--json",
+        ],
+        capsys,
+    )
+    assert rc == 0
+    assert [w.method for w in _writes(server)] == ["PATCH", "PUT", "DELETE"]
+    assert json.loads(out)["name"] == "after-clear"
+
+
+@pytest.mark.parametrize(
+    ("argv", "fragment"),
+    [
+        (["--timezone", "UTC"], "--timezone needs --cron"),
+        (["--cron", CRON, "--clear", "schedule"], "contradict"),
+        (["--cron", " "], "--cron needs"),
+        (["--cron", CRON, "--timezone", " "], "--timezone needs"),
+    ],
+    ids=["timezone-alone", "cron-and-clear", "blank-cron", "blank-timezone"],
+)
+def test_schedule_flag_misuse_is_a_usage_error_before_any_request(
+    server, capsys, argv, fragment
+) -> None:
+    rc, out, err = _run(["research-projects", "edit", P1, *argv, "--yes", "--json"], capsys)
+    assert (rc, out) == (2, "")
+    assert _error(err)["code"] == "usage"
+    assert fragment in _error(err)["message"]
+    assert not server.requests
+
+
+def test_filter_with_clear_schedule_is_not_a_contradiction(server, capsys) -> None:
+    server.routes[f"PUT {BASE}/{P1}/filters"] = _json(_detail())
+    server.routes[f"DELETE {SCHEDULE}"] = _json(_detail())
+    rc, _, _ = _run(
+        ["research-projects", "edit", P1, "--filter", "f", "--clear", "schedule"], capsys
+    )
+    assert rc == 0
+
+
+@pytest.mark.parametrize("as_json", [True, False])
+def test_brief_applied_but_schedule_refused_says_which_part_applied(
+    server, capsys, monkeypatch, as_json
+) -> None:
+    _stdin(monkeypatch, "B")
+    _manual_only(server)
+    server.routes[f"PATCH {BASE}/{P1}"] = _json(_detail(brief="B"))
+    server.routes[f"POST {SCHEDULE}"] = httpx.Response(422, json={"detail": "bad cron: x"})
+    argv = ["research-projects", "edit", P1, "--file", "-", "--cron", "x", "--yes"]
+    rc, out, err = _run([*argv, "--json"] if as_json else argv, capsys)
+    assert (rc, out) == (1, "")
+    message = _error(err)["message"] if as_json else " ".join(err.split())
+    assert "brief was updated" in message
+    assert "schedule was not changed" in message
+    assert "bad cron: x" in message
+
+
+def test_brief_and_filters_applied_but_schedule_clear_refused_names_both(
+    server, capsys, monkeypatch
+) -> None:
+    _stdin(monkeypatch, "B")
+    server.routes[f"PATCH {BASE}/{P1}"] = _json(_detail(brief="B"))
+    server.routes[f"PUT {BASE}/{P1}/filters"] = _json(_detail(brief="B"))
+    server.routes[f"DELETE {SCHEDULE}"] = httpx.Response(
+        409, json={"detail": "Nothing changed: a scheduled run is in progress; try again."}
+    )
+    rc, out, err = _run(
+        [
+            "research-projects",
+            "edit",
+            P1,
+            "--file",
+            "-",
+            "--filter",
+            "f",
+            "--clear",
+            "schedule",
+            "--json",
+        ],
+        capsys,
+    )
+    assert (rc, out) == (1, "")
+    error = _error(err)
+    assert error["code"] == "conflict"
+    assert "brief and filters were updated" in error["message"]
+    assert "schedule was not changed" in error["message"]
+    assert "a scheduled run is in progress" in error["message"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        lambda request: (_ for _ in ()).throw(httpx.ReadTimeout("slow", request=request)),
+        lambda request: httpx.Response(504, json={"detail": "gateway timeout"}),
+    ],
+    ids=["read-timeout", "504"],
+)
+def test_brief_applied_but_schedule_unconfirmed_says_so(
+    server, capsys, monkeypatch, failure
+) -> None:
+    _stdin(monkeypatch, "B")
+    server.routes[f"PATCH {BASE}/{P1}"] = _json(_detail(brief="B"))
+    server.routes[f"DELETE {SCHEDULE}"] = failure
+    rc, out, err = _run(
+        ["research-projects", "edit", P1, "--file", "-", "--clear", "schedule", "--json"], capsys
+    )
+    assert (rc, out) == (1, "")
+    message = _error(err)["message"]
+    assert "brief was updated" in message
+    assert "schedule change could not be confirmed" in message
+    assert "not changed" not in message
+    assert f"pepper research-projects show {P1}" in message
+
+
+def test_brief_applied_but_schedule_unreachable_says_which_part_applied(
+    server, capsys, monkeypatch
+) -> None:
+    def dropped(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("reset", request=request)
+
+    _stdin(monkeypatch, "B")
+    server.routes[f"PATCH {BASE}/{P1}"] = _json(_detail(brief="B"))
+    server.routes[f"DELETE {SCHEDULE}"] = dropped
+    rc, _, err = _run(
+        ["research-projects", "edit", P1, "--file", "-", "--clear", "schedule", "--json"], capsys
+    )
+    assert rc == 1
+    assert _error(err)["code"] == "network"
+    assert "schedule was not changed" in _error(err)["message"]
+
+
+def test_a_changed_schedule_whose_read_back_fails_says_it_was_changed(server, capsys) -> None:
+    server.routes[f"{BASE}/{P1}"] = [
+        _json(_scheduled()),
+        httpx.Response(503, json={"detail": "down"}),
+    ]
+    server.routes[f"PATCH {TASK_PATH}"] = _json({"id": TASK})
+    rc, out, err = _run(["research-projects", "edit", P1, "--cron", "0 7 * * 1", "--json"], capsys)
+    assert (rc, out) == (1, "")
+    message = _error(err)["message"]
+    assert "schedule was changed" in message
+    assert f"pepper research-projects show {P1}" in message
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_schedule_writes_say_when_research_projects_are_switched_off(
+    server, capsys, as_json
+) -> None:
+    off = httpx.Response(403, json={"detail": "off", "code": "research_projects_disabled"})
+    server.routes[f"DELETE {SCHEDULE}"] = off
+    server.routes[f"POST {SCHEDULE}"] = off
+    _manual_only(server)
+    for flags in (["--clear", "schedule"], ["--cron", CRON, "--yes"]):
+        rc, out, err = _run(
+            ["research-projects", "edit", P1, *flags, *(["--json"] if as_json else [])], capsys
+        )
+        assert (rc, out) == (1, "")
+        assert "Research projects are not enabled on this Pepper server." in err

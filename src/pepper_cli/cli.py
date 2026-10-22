@@ -4566,17 +4566,23 @@ def _run_personal(
         return 1
 
 
-def _confirm_destructive(args: argparse.Namespace, prompt: str, *, yes: bool) -> int | None:
+def _confirm_destructive(
+    args: argparse.Namespace,
+    prompt: str,
+    *,
+    yes: bool,
+    refusal: str = "this deletes for good; pass --yes to run it without a prompt",
+) -> int | None:
     """Gate a destructive personal command: ``None`` to go ahead, else the exit code.
 
     ``--yes`` skips it; a terminal gets a y/N question; with no terminal (or under
-    JSON mode, which never prompts) it refuses with exit 2, since a script must say
-    ``--yes`` out loud.
+    JSON mode, which never prompts) it refuses with exit 2 and ``refusal``, since a script
+    must say ``--yes`` out loud.
     """
     if yes:
         return None
     if _json_mode(args) or not _stdin_is_tty():
-        _emit_error(args, "usage", "this deletes for good; pass --yes to run it without a prompt")
+        _emit_error(args, "usage", refusal)
         return 2
     if _prompt(f"{prompt} [y/N] ").lower() not in ("y", "yes"):
         render.info("Aborted.")
@@ -8152,8 +8158,10 @@ def _register_research_commands(sub: Any) -> None:
         "edit",
         help=(
             "Change a project: its brief ($EDITOR when no other flag is given, or --file PATH, "
-            "or --file - for stdin) and its filters (--filter, repeatable, replaces the whole "
-            "list; --clear filters empties it)."
+            "or --file - for stdin), its filters (--filter, repeatable, replaces the whole "
+            "list; --clear filters empties it) and its schedule (--cron turns one on, after "
+            "a y/N question that needs --yes without a terminal, or changes the one it has; "
+            "--clear schedule turns it off and keeps the run history)."
         ),
         parents=[_json_parent, _yes_parent],
     )
@@ -8172,7 +8180,27 @@ def _register_research_commands(sub: Any) -> None:
     p.add_argument(
         "--clear",
         choices=research_view.CLEARABLE,
-        help="Empty the project's filters.",
+        help=(
+            "filters: empty the project's filters. schedule: turn the schedule off; the project "
+            "stays and keeps its run history, and --cron turns it on again."
+        ),
+    )
+    p.add_argument(
+        "--cron",
+        metavar="CRON",
+        help=(
+            "Run on this schedule, for example '0 9 * * 0' (Sundays at 09:00). Turning a "
+            "schedule on commits to recurring runs, so it asks y/N on a terminal and needs "
+            "--yes otherwise; changing one that exists does not ask."
+        ),
+    )
+    p.add_argument(
+        "--timezone",
+        metavar="TZ",
+        help=(
+            "The zone --cron is read in, for example America/Los_Angeles. Only with --cron; "
+            "the default is your profile timezone."
+        ),
     )
     p.set_defaults(handler=cmd_research_projects_edit)
 
@@ -8562,27 +8590,91 @@ def cmd_research_projects_create(args: argparse.Namespace) -> int:
     return _with_api(run, _report_research_error, args)
 
 
+def _research_failure(
+    exc: api_client.ApiError | httpx.RequestError,
+) -> tuple[str, int | None, str, bool]:
+    """``(J8 code, status, cause, unsent)`` for a failed write. ``unsent`` is True when the
+    server cannot have applied it: a 4xx, or a failure before the request left. A 5xx (a
+    gateway's 504 included) or a lost response may follow a saved write."""
+    if isinstance(exc, api_client.ApiError):
+        cause = f"server returned {exc.status}" + (f": {exc.detail}" if exc.detail else "")
+        return _error_code_for_status(exc.status), exc.status, cause, exc.status < 500
+    return (
+        "network",
+        None,
+        f"couldn't reach the server: {exc}",
+        isinstance(exc, _UNSENT_REQUEST_ERRORS),
+    )
+
+
+def _research_partial_failure(
+    args: argparse.Namespace,
+    exc: api_client.ApiError | httpx.RequestError,
+    *,
+    applied: list[str],
+    failed: str,
+) -> int:
+    """Report a write that failed after earlier writes of the same ``edit`` had applied.
+
+    ``applied`` names the parts already saved (``["brief", "filters"]``); ``failed`` is the
+    part that did not go through (``"filters"`` or ``"schedule"``). Two sentences, as for any
+    two-call edit: the part was not changed, or, when the answer may have been lost, that it
+    could not be confirmed and how to check."""
+    code, status, cause, unsent = _research_failure(exc)
+    done = " and ".join(applied) + (" was updated" if len(applied) == 1 else " were updated")
+    if unsent:
+        verb = "was" if failed == "schedule" else "were"
+        message = f"The {done}, but the {failed} {verb} not changed ({cause})."
+    else:
+        noun = "filter change" if failed == "filters" else "schedule change"
+        message = (
+            f"The {done}, but the {noun} could not be confirmed ({cause}); check with: "
+            f"pepper research-projects show {shlex.quote(args.project)}"
+        )
+    _emit_error(args, code, message, status=status, soft_wrap=True)
+    return 1
+
+
 def cmd_research_projects_edit(args: argparse.Namespace) -> int:
     """``pepper research-projects edit PROJECT [--file BRIEF|-] [--filter F]… [--clear filters]
-    [--json]``.
+    [--cron C [--timezone TZ]] [--clear schedule] [--yes] [--json]``.
 
     ``--file`` replaces the brief. ``--filter`` (repeatable) or ``--clear filters`` replaces
-    the whole filter list. With none of these, ``$EDITOR`` opens on the brief; with no terminal
-    that is exit 2. A brief the editor leaves unchanged sends nothing. Answers the project.
+    the whole filter list. ``--cron`` turns the schedule on (asking y/N first, before anything
+    is written; ``--yes`` without a terminal) or, when the project already has one, changes it
+    on the scheduled-tasks route without asking. ``--clear schedule`` turns it off and keeps
+    the run history. Writes go brief, filters, schedule. With none of these flags, ``$EDITOR``
+    opens on the brief; with no terminal that is exit 2. A brief left unchanged sends nothing.
+    Answers the project.
     """
-    if args.filter and args.clear:
+    if args.filter and args.clear == "filters":
         _emit_error(args, "usage", "--filter and --clear filters contradict each other; pass one")
         return 2
     if args.filter and any(not f.strip() for f in args.filter):
         _emit_error(args, "usage", "--filter needs some text")
         return 2
+    if args.timezone is not None and args.cron is None:
+        _emit_error(args, "usage", "--timezone needs --cron")
+        return 2
+    if args.cron is not None and args.clear == "schedule":
+        _emit_error(args, "usage", "--cron and --clear schedule contradict each other; pass one")
+        return 2
+    if args.cron is not None and not args.cron.strip():
+        _emit_error(args, "usage", "--cron needs a schedule, for example '0 9 * * 0'")
+        return 2
+    if args.timezone is not None and not args.timezone.strip():
+        _emit_error(args, "usage", "--timezone needs a zone, for example America/Los_Angeles")
+        return 2
+    cron = args.cron.strip() if args.cron is not None else None
+    zone = args.timezone.strip() if args.timezone is not None else None
     ok, brief = _research_brief_in(args)
     if not ok:
         return 2
     filters: list[str] | None = [f.strip() for f in args.filter] if args.filter else None
     if args.clear == "filters":
         filters = []
-    use_editor = brief is None and filters is None
+    clear_schedule = args.clear == "schedule"
+    use_editor = brief is None and filters is None and cron is None and not clear_schedule
     if use_editor and _research_editor_refused(args, "nothing to change was given"):
         return 2
     if brief is not None and not brief.strip():
@@ -8607,42 +8699,122 @@ def cmd_research_projects_edit(args: argparse.Namespace) -> int:
             if new_brief is None:
                 _emit(current, args, lambda: render.info("No changes."))
                 return 0
+        # Whether the project has a schedule is read from the server, never remembered. The
+        # question comes before the first write, so a "no" leaves the brief alone too.
+        scheduled_task_id: str | None = None
+        if cron is not None:
+            before = api.get_research_project(project_id)
+            scheduled_task_id = before.scheduled_task_id
+            if scheduled_task_id is None:
+                where = f"({zone})" if zone is not None else "(your profile timezone)"
+                code = _confirm_destructive(
+                    args,
+                    f"Run {sanitize_line(before.name)} every time {cron!r} matches {where}? "
+                    "Each run uses Pepper on your account.",
+                    yes=args.yes,
+                    refusal="this turns on recurring runs; pass --yes to confirm without a prompt",
+                )
+                if code is not None:
+                    return code
         result = current
+        applied: list[str] = []
         if new_brief is not None:
             result = api.edit_research_project(project_id, brief=new_brief)
+            applied.append("brief")
         if filters is not None:
             try:
                 result = api.set_research_filters(project_id, filters)
             except (api_client.ApiError, httpx.RequestError) as exc:
-                if new_brief is None:
+                if not applied:
                     raise
-                # Two calls, the first already applied: say which part did. A 4xx or a
-                # failure before the request left means the filters were not changed; a 5xx
-                # (a gateway's 504 included) or a lost response may follow a saved PUT.
-                if isinstance(exc, api_client.ApiError):
-                    code, status = _error_code_for_status(exc.status), exc.status
-                    cause = f"server returned {exc.status}" + (
-                        f": {exc.detail}" if exc.detail else ""
-                    )
-                    unsent = exc.status < 500
-                else:
-                    code, status, cause = "network", None, f"couldn't reach the server: {exc}"
-                    unsent = isinstance(exc, _UNSENT_REQUEST_ERRORS)
-                if unsent:
-                    message = f"The brief was updated, but the filters were not changed ({cause})."
-                else:
-                    message = (
-                        f"The brief was updated, but the filter change could not be confirmed "
-                        f"({cause}); check with: pepper research-projects show "
-                        f"{shlex.quote(args.project)}"
-                    )
-                _emit_error(args, code, message, status=status, soft_wrap=True)
+                return _research_partial_failure(args, exc, applied=applied, failed="filters")
+            applied.append("filters")
+        notes: list[str] = []
+        if cron is not None or clear_schedule:
+            try:
+                result, note = _research_schedule_step(
+                    api, args, project_id, scheduled_task_id, cron, zone, clear_schedule
+                )
+            except (api_client.ApiError, httpx.RequestError) as exc:
+                if not applied:
+                    raise
+                return _research_partial_failure(args, exc, applied=applied, failed="schedule")
+            except _ScheduleChangedReadFailed as exc:
+                code, status, cause, _ = _research_failure(exc.cause)
+                _emit_error(
+                    args,
+                    code,
+                    f"The schedule was changed, but reading the project back failed ({cause}); "
+                    f"check with: pepper research-projects show {shlex.quote(args.project)}",
+                    status=status,
+                    soft_wrap=True,
+                )
                 return 1
-        assert result is not None  # a brief or a filter list was sent
-        _emit(result, args, lambda: render.info(f"Updated research project {result.name!r}."))
+            notes.append(note)
+            applied.append("schedule")
+        assert result is not None  # something was sent
+        project = result
+
+        def human() -> None:
+            for note in notes:
+                render.info(note)
+            if set(applied) - {"schedule"}:
+                render.info(f"Updated research project {project.name!r}.")
+
+        _emit(result, args, human)
         return 0
 
     return _with_api(run, _report_research_error, args)
+
+
+class _ScheduleChangedReadFailed(Exception):
+    """The schedule PATCH went through but reading the project back did not."""
+
+    def __init__(self, cause: api_client.ApiError | httpx.RequestError) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+
+
+def _schedule_words(detail: api_client.ResearchProjectDetail) -> str:
+    """``'CRON' (ZONE)`` from what the server echoed back, for the success line."""
+    schedule = detail.schedule
+    if schedule is None or schedule.cron is None:
+        return "its schedule"
+    zone = f" ({schedule.timezone})" if schedule.timezone else ""
+    return f"{schedule.cron!r}{zone}"
+
+
+def _research_schedule_step(
+    api: api_client.ApiClient,
+    args: argparse.Namespace,
+    project_id: str,
+    scheduled_task_id: str | None,
+    cron: str | None,
+    zone: str | None,
+    clear_schedule: bool,
+) -> tuple[api_client.ResearchProjectDetail, str]:
+    """The schedule write of ``edit``: ``(the project, a line saying what happened)``."""
+    if clear_schedule:
+        detail = api.detach_research_schedule(project_id)
+        name = sanitize_line(detail.name)
+        return detail, f"Turned off the schedule of {name!r}; its run history is kept."
+    assert cron is not None
+    if scheduled_task_id is None:
+        try:
+            detail = api.enable_research_schedule(project_id, cron=cron, timezone=zone)
+        except api_client.ResearchAlreadyScheduledError as exc:
+            # Scheduled by another client since the read: the 409 names the task, and a change
+            # to an existing schedule goes through the scheduled-tasks route.
+            scheduled_task_id = exc.scheduled_task_id
+        else:
+            return detail, f"Scheduled {sanitize_line(detail.name)!r} on {_schedule_words(detail)}."
+    api.change_research_schedule(scheduled_task_id, cron=cron, timezone=zone)
+    try:
+        detail = api.get_research_project(project_id)
+    except (api_client.ApiError, httpx.RequestError) as exc:
+        raise _ScheduleChangedReadFailed(exc) from exc
+    name = sanitize_line(detail.name)
+    return detail, f"Changed the schedule of {name!r} to {_schedule_words(detail)}."
 
 
 #: Transport failures that happen before a request is sent, so the server never saw it.

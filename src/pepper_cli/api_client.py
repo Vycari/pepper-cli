@@ -914,6 +914,15 @@ class ResearchRunInFlightError(ApiError):
         self.run_id = run_id
 
 
+class ResearchAlreadyScheduledError(ApiError):
+    """A 409 whose body carries ``scheduled_task_id``: the project already has a schedule.
+    The server points at ``PATCH /api/v1/scheduled-tasks/{id}`` to change it."""
+
+    def __init__(self, exc: ApiError, scheduled_task_id: str) -> None:
+        super().__init__(exc.status, exc.body, detail=exc.detail)
+        self.scheduled_task_id = scheduled_task_id
+
+
 @dataclass(frozen=True)
 class ResearchPage[T]:
     """A ``{items, next_before}`` page; ``next_before`` is the server's opaque cursor."""
@@ -2622,6 +2631,36 @@ class ApiClient:
             raise ResearchRunInFlightError(exc, run_id) from exc
         return _fields(ResearchRunReceipt, body)
 
+    def enable_research_schedule(
+        self, project_id: str, *, cron: str, timezone: str | None = None
+    ) -> ResearchProjectDetail:
+        """``POST /api/v1/research-projects/{id}/schedule`` (201): the project's first
+        schedule. ``timezone`` is left out when ``None`` so the server uses the profile zone.
+        Raises :class:`ResearchAlreadyScheduledError` for the 409 that names the task."""
+        body = _schedule_body(cron, timezone)
+        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/schedule"
+        try:
+            return _research_detail(self._research_write("POST", path, body))
+        except ApiError as exc:
+            task_id = _scheduled_task_id(exc)
+            if task_id is None:
+                raise
+            raise ResearchAlreadyScheduledError(exc, task_id) from exc
+
+    def detach_research_schedule(self, project_id: str) -> ResearchProjectDetail:
+        """``DELETE /api/v1/research-projects/{id}/schedule``: manual-only again; the run
+        history stays."""
+        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/schedule"
+        return _research_detail(self._research_write("DELETE", path, None))
+
+    def change_research_schedule(
+        self, task_id: str, *, cron: str, timezone: str | None = None
+    ) -> None:
+        """``PATCH /api/v1/scheduled-tasks/{id}``: the cadence of an existing schedule (the
+        server keeps changes on the scheduled-tasks routes). Only the keys given are sent."""
+        body = _schedule_body(cron, timezone)
+        self._research_write("PATCH", f"/api/v1/scheduled-tasks/{task_id}", body)
+
     def get_research_run(self, project_id: str, run_id: str) -> ResearchRunDetail:
         """``GET /api/v1/research-projects/{id}/runs/{run_id}``."""
         return self.poll_research_run(project_id, run_id)[0]
@@ -3767,6 +3806,28 @@ def _in_flight_run_id(exc: ApiError) -> str | None:
         return None
     try:
         return str(uuid.UUID(run_id))
+    except ValueError:
+        return None
+
+
+def _schedule_body(cron: str, timezone: str | None) -> dict[str, Any]:
+    """The cron, and the zone only when one was given (else the server uses the profile's)."""
+    return {"cron": cron} if timezone is None else {"cron": cron, "timezone": timezone}
+
+
+def _scheduled_task_id(exc: ApiError) -> str | None:
+    """The ``scheduled_task_id`` a 409 body carries when the project is already scheduled."""
+    if exc.status != 409:
+        return None
+    try:
+        body = _json.loads(exc.body)
+    except ValueError:
+        return None
+    task_id = body.get("scheduled_task_id") if isinstance(body, dict) else None
+    if not isinstance(task_id, str):
+        return None
+    try:
+        return str(uuid.UUID(task_id))
     except ValueError:
         return None
 

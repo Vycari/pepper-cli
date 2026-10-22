@@ -845,6 +845,8 @@ ROUTES: dict[str, object] = {
 POST_ROUTES: dict[str, object] = {
     "/api/v1/research-projects": _RESEARCH_DETAIL,
     f"/api/v1/research-projects/{_RP}": _RESEARCH_DETAIL,
+    f"/api/v1/research-projects/{_RP}/filters": _RESEARCH_DETAIL,
+    f"/api/v1/research-projects/{_RP}/schedule": _RESEARCH_DETAIL,
     f"/api/v1/research-projects/{_RP}/pause": _RESEARCH_DETAIL,
     f"/api/v1/research-projects/{_RP}/resume": _RESEARCH_DETAIL,
     f"/api/v1/research-projects/{_RP}/runs": {
@@ -1147,6 +1149,59 @@ def _run(argv: list[str], capsys) -> tuple[int, str, str]:
     rc = cli.main(argv)
     captured = capsys.readouterr()
     return rc, captured.out, captured.err
+
+
+#: Leaves that prompt only in some cases (IA §3.1, ``planning/research-projects.md`` §7): the
+#: leaf takes ``--yes``, and each case here exits 2 with a J8 ``usage`` line without a terminal
+#: or ``--yes``, having written nothing. Room cases join in the rooms phase.
+CONFIRMS = {
+    "research-projects edit": ["research-projects", "edit", _RP, "--cron", "0 9 * * 0"],
+}
+
+#: The same leaves' cases that do not prompt: each succeeds without a terminal or ``--yes``
+#: and sends its write.
+NO_PROMPT = {
+    "research-projects edit --clear schedule": (
+        ["research-projects", "edit", _RP, "--clear", "schedule"],
+        "DELETE",
+    ),
+    "research-projects edit --clear filters": (
+        ["research-projects", "edit", _RP, "--clear", "filters"],
+        "PUT",
+    ),
+}
+
+
+def test_confirming_leaves_take_yes() -> None:
+    assert all("--yes" in _flags(LEAVES[leaf]) for leaf in CONFIRMS)
+
+
+@pytest.mark.parametrize("leaf", sorted(CONFIRMS))
+@pytest.mark.parametrize("as_json", [False, True])
+def test_a_prompting_case_without_a_terminal_or_yes_is_a_usage_error(
+    leaf, as_json, _env, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+    rc, out, err = _run([*CONFIRMS[leaf], *(["--json"] if as_json else [])], capsys)
+    assert (rc, out) == (2, "")
+    lines = [ln for ln in err.splitlines() if ln.strip()]
+    assert len(lines) == 1, err
+    assert "--yes" in lines[0]
+    if as_json:
+        assert json.loads(lines[0])["error"]["code"] == "usage"
+    assert [m for m, _ in _env.seen if m != "GET"] == []
+    assert not _env.unrouted, _env.unrouted
+
+
+@pytest.mark.parametrize("case", sorted(NO_PROMPT))
+def test_a_non_prompting_case_succeeds_without_a_terminal_or_yes(
+    case, _env, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+    argv, method = NO_PROMPT[case]
+    rc, _out, err = _run(argv, capsys)
+    assert rc == 0, err
+    assert [m for m, _ in _env.seen if m != "GET"] == [method]
 
 
 def _is_json(out: str) -> bool:

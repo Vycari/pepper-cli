@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -262,3 +264,99 @@ def test_a_required_nested_field_is_checked_too() -> None:
                 }
             )
         ).list_research_projects()
+
+
+TASK = "00000000-0000-0000-0000-0000000000c1"
+
+
+def _project(**over) -> dict:
+    row = {
+        "id": PID,
+        "name": "n",
+        "status": "active",
+        "delivery_policy": "drip",
+        "brief_snippet": "b",
+        "skill": "s",
+        "scheduled_task_id": None,
+        "schedule": None,
+        "last_iteration": None,
+        "inflight_run": None,
+        "created_at": "c",
+        "brief": "b",
+        "source_url": None,
+        "filters": [],
+        "pending_steering_count": 0,
+        "item_counts": {},
+        "report_artifact_id": None,
+        "open_questions": [],
+        "owner": None,
+    }
+    row.update(over)
+    return row
+
+
+def test_enable_schedule_posts_the_cron_and_leaves_the_zone_to_the_server() -> None:
+    seen: list[httpx.Request] = []
+    detail = _client(_serve(_project(), seen, status=201)).enable_research_schedule(
+        PID, cron="0 9 * * 0"
+    )
+    (request,) = seen
+    assert (request.method, request.url.path) == (
+        "POST",
+        f"/api/v1/research-projects/{PID}/schedule",
+    )
+    assert json.loads(request.content) == {"cron": "0 9 * * 0"}
+    assert detail.id == PID
+
+
+def test_enable_schedule_sends_the_zone_when_given() -> None:
+    seen: list[httpx.Request] = []
+    _client(_serve(_project(), seen, status=201)).enable_research_schedule(
+        PID, cron="0 9 * * 0", timezone="Europe/Paris"
+    )
+    assert json.loads(seen[0].content) == {"cron": "0 9 * * 0", "timezone": "Europe/Paris"}
+
+
+def test_enable_schedule_409_with_a_task_id_is_the_already_scheduled_error() -> None:
+    body = {"detail": "already has one", "scheduled_task_id": TASK.upper()}
+    with pytest.raises(api_client.ResearchAlreadyScheduledError) as exc:
+        _client(_serve(body, status=409)).enable_research_schedule(PID, cron="x")
+    assert exc.value.scheduled_task_id == TASK  # canonical lowercase
+    assert exc.value.status == 409
+    assert exc.value.detail == "already has one"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"detail": "paused"}, {"detail": "x", "scheduled_task_id": "not-a-uuid"}],
+    ids=["no-id", "bad-id"],
+)
+def test_enable_schedule_409_without_a_usable_task_id_stays_a_plain_error(body) -> None:
+    with pytest.raises(api_client.ApiError) as exc:
+        _client(_serve(body, status=409)).enable_research_schedule(PID, cron="x")
+    assert not isinstance(exc.value, api_client.ResearchAlreadyScheduledError)
+
+
+def test_detach_schedule_deletes_and_parses_the_project() -> None:
+    seen: list[httpx.Request] = []
+    detail = _client(_serve(_project(), seen)).detach_research_schedule(PID)
+    assert (seen[0].method, seen[0].url.path) == (
+        "DELETE",
+        f"/api/v1/research-projects/{PID}/schedule",
+    )
+    assert seen[0].content == b""
+    assert detail.scheduled_task_id is None
+
+
+def test_change_schedule_patches_the_task_with_only_the_keys_given() -> None:
+    seen: list[httpx.Request] = []
+    client = _client(_serve({"id": TASK}, seen))
+    client.change_research_schedule(TASK, cron="0 7 * * 1")
+    client.change_research_schedule(TASK, cron="0 7 * * 1", timezone="UTC")
+    assert [(r.method, r.url.path) for r in seen] == [
+        ("PATCH", f"/api/v1/scheduled-tasks/{TASK}")
+    ] * 2
+    assert [json.loads(r.content) for r in seen] == [
+        {"cron": "0 7 * * 1"},
+        {"cron": "0 7 * * 1", "timezone": "UTC"},
+    ]

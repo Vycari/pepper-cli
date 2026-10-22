@@ -38,9 +38,9 @@ LIST_STATUSES = ("active", "paused", "all")
 POLICIES = ("drip", "digest")
 DEFAULT_POLICY = "drip"
 
-#: ``edit --clear``: what can be emptied. ``schedule`` joins it with the schedule routes
-#: (``planning/research-projects.md`` §7, a later phase).
-CLEARABLE = ("filters",)
+#: ``edit --clear``: what can be emptied. ``schedule`` turns the schedule off and keeps the
+#: run history (``planning/research-projects.md`` §7).
+CLEARABLE = ("filters", "schedule")
 
 
 def listing_row(item: dict[str, Any]) -> dict[str, Any]:
