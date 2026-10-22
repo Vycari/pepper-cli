@@ -8688,10 +8688,12 @@ def _research_item_id(
     view = numbered_view.NumberedView(
         research_view.VIEW.state_name, research_view.VIEW.noun, command
     )
+    # One read of the saved list serves both the scope check and the resolve, so a listing of
+    # another project saved in between cannot slip a number past the check.
+    loaded = view.load()
     if numbered_view.NumberedView.is_number(args.item):
         # Whose list this is comes before whether the number is in it: a number from another
         # ledger is not "out of range", it is the wrong list.
-        loaded = view.load()
         meta = loaded[1] if loaded is not None else {}
         saved_room = meta.get("room_id")
         project_differs = meta.get("project_id") != project_id
@@ -8709,7 +8711,7 @@ def _research_item_id(
             )
             return None
     try:
-        item_id, _row, _meta = view.resolve(args.item.lower())
+        item_id, _row, _meta = view.resolve(args.item.lower(), snapshot=loaded)
     except numbered_view.RefError as exc:
         _emit_error(args, exc.code, str(exc), soft_wrap=True)
         return None

@@ -69,6 +69,13 @@ def forget(path: Path) -> None:
         path.unlink(missing_ok=True)
 
 
+class _Unread:
+    """The type of :data:`_UNREAD`: ``resolve`` was given no snapshot, so it reads the file."""
+
+
+_UNREAD = _Unread()
+
+
 class NumberedView:
     def __init__(self, state_name: str, noun: str, list_command: str) -> None:
         self.state_name = state_name
@@ -101,14 +108,23 @@ class NumberedView:
         return ref.isdigit() and len(ref) <= _MAX_N_DIGITS
 
     def resolve(
-        self, ref: str, *, alt_keys: tuple[str, ...] = ()
+        self,
+        ref: str,
+        *,
+        alt_keys: tuple[str, ...] = (),
+        snapshot: tuple[list[dict[str, Any]], dict[str, Any]] | _Unread | None = _UNREAD,
     ) -> tuple[str, dict[str, Any] | None, dict[str, Any]]:
         """``(id, row, meta)``: ``row`` is what the last listing held (``None`` for an id it
-        never held, which is passed on as given); ``meta`` is how that listing was scoped."""
+        never held, which is passed on as given); ``meta`` is how that listing was scoped.
+
+        ``snapshot`` is a :meth:`load` result the caller already holds (``None`` included: no
+        listing). Pass it when the caller checked that listing's ``meta`` first, so the number
+        resolves against the very listing that was checked rather than a second read of a file
+        another process may have rewritten in between."""
         ref = ref.strip()
         if not ref:
             raise RefError(f"name a {self.noun}: a number from '{self.list_command}', or an id")
-        loaded = self.load()
+        loaded = self.load() if isinstance(snapshot, _Unread) else snapshot
         rows, meta = loaded if loaded is not None else (None, {})
         if self.is_number(ref):
             if rows is None:

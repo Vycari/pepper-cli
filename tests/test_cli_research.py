@@ -16,7 +16,7 @@ import time
 import httpx
 import pytest
 
-from pepper_cli import api_client, cli, credentials, research_view
+from pepper_cli import api_client, cli, credentials, numbered_view, research_view
 from pepper_cli.secret import SecretStr
 
 P1 = "00000000-0000-0000-0000-0000000000d1"
@@ -613,6 +613,34 @@ def test_a_number_from_another_projects_listing_is_refused(server, capsys) -> No
         f"run 'pepper research-items list --project {P2}' first and use its numbers"
     )
     assert not server.requests  # nothing was fetched for the wrong ledger
+
+
+def test_a_listing_saved_mid_show_cannot_move_the_number_to_another_project(
+    server, capsys, monkeypatch
+) -> None:
+    """The scope check and the resolve read the saved list once. If another process lists a
+    different project after that read, the number still names the row that was checked."""
+    mine, theirs = _item(1), _item(1, id="0000000b-0000-0000-0000-00000000b001")
+    _items_route(server, [mine])
+    _show_route(server, mine)
+    _run(["research-items", "list", "--project", P1], capsys)
+    server.requests.clear()
+    real_load = numbered_view.NumberedView.load
+    reads: list[int] = []
+
+    def load_then_relist(self):
+        loaded = real_load(self)
+        reads.append(1)
+        # Another process lists P2 right after this read.
+        research_view.VIEW.save([theirs], {"project_id": P2, "room_id": None})
+        return loaded
+
+    monkeypatch.setattr(numbered_view.NumberedView, "load", load_then_relist)
+    rc, out, _ = _run(["research-items", "show", "--project", P1, "1", "--json"], capsys)
+    assert rc == 0
+    assert json.loads(out)["id"] == mine["id"]
+    assert [r.url.path for r in server.requests] == [f"{BASE}/{P1}/items/{mine['id']}"]
+    assert len(reads) == 1
 
 
 def test_a_number_with_no_listing_says_to_list_first(server, capsys) -> None:
