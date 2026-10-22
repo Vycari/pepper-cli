@@ -454,6 +454,14 @@ def test_create_sends_the_next_action(tmp_home, patch_api) -> None:
     assert _FakeTodoApi.instances[-1].created_with[0]["next_action"] == "Email the vet"
 
 
+@pytest.mark.parametrize("text", ["", "   "])
+def test_create_refuses_a_blank_next_action(tmp_home, patch_api, text) -> None:
+    _login(tmp_home)
+    patch_api(todo_created=_todo())
+    assert cli.main(["todos", "create", "Vet", "--next-action", text]) == 2
+    assert not _FakeTodoApi.instances or not _FakeTodoApi.instances[-1].created_with
+
+
 def test_create_assignee_resolves_the_name_through_the_roster(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(todo_created=_todo(assignee=api_client.TodoPerson(user_id="u2", label="Bob Stone")))

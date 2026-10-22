@@ -3017,12 +3017,18 @@ def cmd_todo_create(args: argparse.Namespace) -> int:
     A room's todo takes the same fields, but its ``--due`` is a ``YYYY-MM-DD`` day only.
     ``--assignee`` asks a member of that room: the CLI resolves the name to a roster person
     id (the matcher ``--mention`` uses) and the server checks everything else. Exit codes:
-    0 ok · 1 auth/API/transport · 2 bad input (blank title / unparseable ``--due`` /
-    ``--assignee`` without ``--room`` / an unknown or ambiguous person).
+    0 ok · 1 auth/API/transport · 2 bad input (blank title / blank ``--next-action`` /
+    unparseable ``--due`` / ``--assignee`` without ``--room`` / an unknown or ambiguous person).
     """
     title = " ".join(args.title).strip()
     if not title:
         _emit_error(args, "usage", "todo title cannot be empty")
+        return 2
+    next_action = args.next_action.strip() if args.next_action is not None else None
+    if next_action == "":
+        _emit_error(
+            args, "usage", "next action cannot be empty (leave it off and Pepper writes one)"
+        )
         return 2
     if args.assignee and not args.room:
         _emit_error(args, "usage", "--assignee needs --room: asks are made in a room")
@@ -3046,7 +3052,7 @@ def cmd_todo_create(args: argparse.Namespace) -> int:
             due=due_day,
             group_id=group_id,
             **({"assignee_person_id": assignee_id} if assignee_id else {}),
-            **({"next_action": args.next_action} if args.next_action else {}),
+            **({"next_action": next_action} if next_action else {}),
         )
 
         def human() -> None:
