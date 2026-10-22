@@ -2560,37 +2560,49 @@ class ApiClient:
     # ------------------------------------------------------------------
     # Research projects (``/api/v1/research-projects``)
     #
-    # The personal read side. A project, run or item that is not yours is the
-    # same 404 as one that does not exist. With the feature switched off every
-    # route answers 403 with a ``code`` (see :func:`error_code`).
+    # A project, run or item that is not yours is the same 404 as one that does not exist.
+    # With the feature switched off every route answers 403 with a ``code`` (see
+    # :func:`error_code`). Every method takes ``group_id``: given, it addresses the room's
+    # twin of the route under ``/api/v1/groups/{gid}/research-projects`` (same paths, bodies
+    # and shapes; any member reads, steers, takes and reconsiders, the owner role does the
+    # rest, ``planning/research-projects.md`` §9.3).
 
     def list_research_projects(
-        self, *, status: str | None = None, limit: int = 200
+        self, *, status: str | None = None, limit: int = 200, group_id: str | None = None
     ) -> ResearchPage[ResearchProjectSummary]:
         """``GET /api/v1/research-projects``. Newest first; ``status`` (``active``,
         ``paused``, ``stopped``) is the server's filter, and none means every status.
-        The server never issues a cursor here in v1 (a person has a handful)."""
+        The server never issues a cursor here in v1 (a person or a room has a handful)."""
         params: dict[str, Any] = {"limit": limit}
         if status is not None:
             params["status"] = status
-        body = self._research_get(RESEARCH_PROJECTS_PATH, params)
+        body = self._research_get(_research_base(group_id), params)
         return _research_page(body, _research_summary)
 
-    def get_research_project(self, project_id: str) -> ResearchProjectDetail:
+    def get_research_project(
+        self, project_id: str, *, group_id: str | None = None
+    ) -> ResearchProjectDetail:
         """``GET /api/v1/research-projects/{id}``."""
-        return _research_detail(self._research_get(f"{RESEARCH_PROJECTS_PATH}/{project_id}"))
+        return _research_detail(self._research_get(_research_path(group_id, project_id)))
 
-    def get_research_report(self, project_id: str) -> ResearchReport:
+    def get_research_report(
+        self, project_id: str, *, group_id: str | None = None
+    ) -> ResearchReport:
         """``GET /api/v1/research-projects/{id}/report``."""
-        return _research_report(self._research_get(f"{RESEARCH_PROJECTS_PATH}/{project_id}/report"))
+        return _research_report(self._research_get(_research_path(group_id, project_id, "report")))
 
     def list_research_iterations(
-        self, project_id: str, *, limit: int = 50, before: str | None = None
+        self,
+        project_id: str,
+        *,
+        limit: int = 50,
+        before: str | None = None,
+        group_id: str | None = None,
     ) -> ResearchPage[ResearchIteration]:
         """``GET /api/v1/research-projects/{id}/iterations``. What executed, newest first;
         ``before`` is a ``next_before`` the previous page returned."""
         body = self._research_get(
-            f"{RESEARCH_PROJECTS_PATH}/{project_id}/iterations", _page_params(limit, before)
+            _research_path(group_id, project_id, "iterations"), _page_params(limit, before)
         )
         return _research_page(body, _research_iteration)
 
@@ -2601,22 +2613,24 @@ class ApiClient:
         states: list[str] | None = None,
         limit: int = 50,
         before: str | None = None,
+        group_id: str | None = None,
     ) -> ResearchPage[ResearchItem]:
         """``GET /api/v1/research-projects/{id}/items``. Newest ``seq`` first; ``states``
         repeats the ``state`` query parameter (any of them matches)."""
         params = _page_params(limit, before)
         if states:
             params["state"] = list(states)
-        body = self._research_get(f"{RESEARCH_PROJECTS_PATH}/{project_id}/items", params)
+        body = self._research_get(_research_path(group_id, project_id, "items"), params)
         return _research_page(body, _research_item)
 
-    def get_research_item(self, project_id: str, item_id: str) -> ResearchItemDetail:
+    def get_research_item(
+        self, project_id: str, item_id: str, *, group_id: str | None = None
+    ) -> ResearchItemDetail:
         """``GET /api/v1/research-projects/{id}/items/{item_id}``."""
-        body = self._research_get(f"{RESEARCH_PROJECTS_PATH}/{project_id}/items/{item_id}")
+        body = self._research_get(_research_path(group_id, project_id, "items", item_id))
         return _research_item_detail(body)
 
-    # The personal write side (phase 3). Every write answers the object it changed, as the
-    # server returns it.
+    # The write side. Every write answers the object it changed, as the server returns it.
 
     def create_research_project(
         self,
@@ -2626,32 +2640,40 @@ class ApiClient:
         delivery_policy: str,
         skill_name: str | None = None,
         source_url: str | None = None,
+        group_id: str | None = None,
     ) -> ResearchProjectDetail:
         """``POST /api/v1/research-projects``. A manual-only project; the server runs
-        ``web-research`` when ``skill_name`` is omitted."""
+        ``web-research`` when ``skill_name`` is omitted. In a room the skill must be one
+        granted to the room (the server's 422 ``skill_not_granted`` says so)."""
         body: dict[str, Any] = {"name": name, "brief": brief, "delivery_policy": delivery_policy}
         if skill_name is not None:
             body["skill_name"] = skill_name
         if source_url is not None:
             body["source_url"] = source_url
-        return _research_detail(self._research_write("POST", RESEARCH_PROJECTS_PATH, body))
+        return _research_detail(self._research_write("POST", _research_base(group_id), body))
 
-    def edit_research_project(self, project_id: str, *, brief: str) -> ResearchProjectDetail:
+    def edit_research_project(
+        self, project_id: str, *, brief: str, group_id: str | None = None
+    ) -> ResearchProjectDetail:
         """``PATCH /api/v1/research-projects/{id}``: replace the brief."""
-        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}"
+        path = _research_path(group_id, project_id)
         return _research_detail(self._research_write("PATCH", path, {"brief": brief}))
 
-    def set_research_filters(self, project_id: str, filters: list[str]) -> ResearchProjectDetail:
+    def set_research_filters(
+        self, project_id: str, filters: list[str], *, group_id: str | None = None
+    ) -> ResearchProjectDetail:
         """``PUT /api/v1/research-projects/{id}/filters``: replace the whole list (``[]``
         clears it)."""
-        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/filters"
+        path = _research_path(group_id, project_id, "filters")
         body = {"filters": [{"text": text} for text in filters]}
         return _research_detail(self._research_write("PUT", path, body))
 
-    def run_research_project(self, project_id: str) -> ResearchRunReceipt:
+    def run_research_project(
+        self, project_id: str, *, group_id: str | None = None
+    ) -> ResearchRunReceipt:
         """``POST /api/v1/research-projects/{id}/runs`` (202). Raises
         :class:`ResearchRunInFlightError` for the 409 that names the run already in flight."""
-        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/runs"
+        path = _research_path(group_id, project_id, "runs")
         try:
             body = self._research_write("POST", path, None)
         except ApiError as exc:
@@ -2662,13 +2684,23 @@ class ApiClient:
         return _fields(ResearchRunReceipt, body)
 
     def enable_research_schedule(
-        self, project_id: str, *, cron: str, timezone: str | None = None
+        self,
+        project_id: str,
+        *,
+        cron: str,
+        timezone: str | None = None,
+        topic_id: str | None = None,
+        group_id: str | None = None,
     ) -> ResearchProjectDetail:
         """``POST /api/v1/research-projects/{id}/schedule`` (201): the project's first
         schedule. ``timezone`` is left out when ``None`` so the server uses the profile zone.
-        Raises :class:`ResearchAlreadyScheduledError` for the 409 that names the task."""
+        ``topic_id`` (a room's only) is the topic each scheduled run posts to; left out, the
+        room's default delivery applies. Raises :class:`ResearchAlreadyScheduledError` for
+        the 409 that names the task."""
         body = _schedule_body(cron, timezone)
-        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/schedule"
+        if topic_id is not None:
+            body["topic_id"] = topic_id
+        path = _research_path(group_id, project_id, "schedule")
         try:
             return _research_detail(self._research_write("POST", path, body))
         except ApiError as exc:
@@ -2677,33 +2709,56 @@ class ApiClient:
                 raise
             raise ResearchAlreadyScheduledError(exc, task_id) from exc
 
-    def detach_research_schedule(self, project_id: str) -> ResearchProjectDetail:
+    def detach_research_schedule(
+        self, project_id: str, *, group_id: str | None = None
+    ) -> ResearchProjectDetail:
         """``DELETE /api/v1/research-projects/{id}/schedule``: manual-only again; the run
         history stays."""
-        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/schedule"
+        path = _research_path(group_id, project_id, "schedule")
         return _research_detail(self._research_write("DELETE", path, None))
 
     def change_research_schedule(
-        self, task_id: str, *, cron: str, timezone: str | None = None
+        self,
+        task_id: str,
+        *,
+        cron: str,
+        timezone: str | None = None,
+        topic_id: str | None = None,
+        group_id: str | None = None,
     ) -> None:
         """``PATCH /api/v1/scheduled-tasks/{id}``: the cadence of an existing schedule (the
-        server keeps changes on the scheduled-tasks routes). Only the keys given are sent."""
-        body = _schedule_body(cron, timezone)
-        self._research_write("PATCH", f"/api/v1/scheduled-tasks/{task_id}", body)
+        server keeps changes on the scheduled-tasks routes). Only the keys given are sent.
 
-    def get_research_run(self, project_id: str, run_id: str) -> ResearchRunDetail:
+        In a room it is the room twin, ``PATCH /api/v1/groups/{gid}/scheduled-tasks/{id}``
+        (owner role), and ``topic_id`` moves the delivery to that topic of the room."""
+        body = _schedule_body(cron, timezone)
+        if group_id is None:
+            self._research_write("PATCH", f"/api/v1/scheduled-tasks/{task_id}", body)
+            return
+        if topic_id is not None:
+            body["delivery"] = _room_delivery(["groups_service"], topic_id)
+        self._research_write("PATCH", f"{_scheduled_tasks_path(group_id)}/{task_id}", body)
+
+    def get_research_run(
+        self, project_id: str, run_id: str, *, group_id: str | None = None
+    ) -> ResearchRunDetail:
         """``GET /api/v1/research-projects/{id}/runs/{run_id}``."""
-        return self.poll_research_run(project_id, run_id)[0]
+        return self.poll_research_run(project_id, run_id, group_id=group_id)[0]
 
     def poll_research_run(
-        self, project_id: str, run_id: str, *, timeout: float | None = None
+        self,
+        project_id: str,
+        run_id: str,
+        *,
+        timeout: float | None = None,
+        group_id: str | None = None,
     ) -> tuple[ResearchRunDetail, float | None]:
         """:meth:`get_research_run` plus the seconds a ``Retry-After`` header asked for.
 
         ``timeout`` bounds this one request in seconds (``None``: the client's own), so a
         ``--wait`` poll near its deadline cannot run a full :data:`DEFAULT_TIMEOUT` past it.
         """
-        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/runs/{run_id}"
+        path = _research_path(group_id, project_id, "runs", run_id)
         resp = self._request("GET", path, timeout=timeout)
         body = resp.json()
         if not isinstance(body, dict):
@@ -2711,37 +2766,48 @@ class ApiClient:
         return _research_run_detail(body), _retry_after(resp)
 
     def steer_research_project(
-        self, project_id: str, *, text: str, question_id: str | None = None
+        self,
+        project_id: str,
+        *,
+        text: str,
+        question_id: str | None = None,
+        group_id: str | None = None,
     ) -> ResearchSteering:
         """``POST /api/v1/research-projects/{id}/steering`` (201): queue guidance for the next
         run, optionally answering an open question (``q1``..)."""
-        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/steering"
+        path = _research_path(group_id, project_id, "steering")
         body: dict[str, Any] = {"text": text}
         if question_id is not None:
             body["question_id"] = question_id
         return _fields(ResearchSteering, self._research_write("POST", path, body))
 
-    def pause_research_project(self, project_id: str) -> ResearchProjectDetail:
+    def pause_research_project(
+        self, project_id: str, *, group_id: str | None = None
+    ) -> ResearchProjectDetail:
         """``POST /api/v1/research-projects/{id}/pause``. Already paused is a 200."""
-        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/pause"
+        path = _research_path(group_id, project_id, "pause")
         return _research_detail(self._research_write("POST", path, None))
 
-    def resume_research_project(self, project_id: str) -> ResearchProjectDetail:
+    def resume_research_project(
+        self, project_id: str, *, group_id: str | None = None
+    ) -> ResearchProjectDetail:
         """``POST /api/v1/research-projects/{id}/resume``. Resuming never runs the project."""
-        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/resume"
+        path = _research_path(group_id, project_id, "resume")
         return _research_detail(self._research_write("POST", path, None))
 
-    def take_research_item(self, project_id: str, item_id: str) -> ResearchItem:
+    def take_research_item(
+        self, project_id: str, item_id: str, *, group_id: str | None = None
+    ) -> ResearchItem:
         """``POST .../{id}/items/{item_id}/take``: the caller had a delivered item."""
-        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/items/{item_id}/take"
+        path = _research_path(group_id, project_id, "items", item_id, "take")
         return _research_item(self._research_write("POST", path, None))
 
     def reconsider_research_item(
-        self, project_id: str, item_id: str, *, reason: str
+        self, project_id: str, item_id: str, *, reason: str, group_id: str | None = None
     ) -> ResearchItem:
         """``POST .../{id}/items/{item_id}/reconsider``: bring a rejected item back as a
         candidate. ``reason`` goes as given; the server refuses a blank one."""
-        path = f"{RESEARCH_PROJECTS_PATH}/{project_id}/items/{item_id}/reconsider"
+        path = _research_path(group_id, project_id, "items", item_id, "reconsider")
         return _research_item(self._research_write("POST", path, {"reason": reason}))
 
     def _research_write(
@@ -3720,6 +3786,19 @@ def _keyset_params(limit: int, before: str | None, before_id: str | None) -> dic
 
 #: Base path of the personal research-project routes.
 RESEARCH_PROJECTS_PATH = "/api/v1/research-projects"
+
+
+def _research_base(group_id: str | None) -> str:
+    """The research-project routes: yours, or the room's twin under ``/groups/{gid}``."""
+    if group_id is None:
+        return RESEARCH_PROJECTS_PATH
+    return f"/api/v1/groups/{group_id}/research-projects"
+
+
+def _research_path(group_id: str | None, project_id: str, *parts: str) -> str:
+    """``{base}/{project_id}[/part…]`` for the personal or the room route."""
+    return "/".join([_research_base(group_id), project_id, *parts])
+
 
 #: The 403 ``code`` values the server uses to say the feature is switched off, as opposed to
 #: a role 403 (``planning/research-projects.md`` §8).

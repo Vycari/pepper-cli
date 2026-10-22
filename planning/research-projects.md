@@ -465,6 +465,19 @@ prompt (`create`, `edit`, `run`, `steer`) and is only *required* in the cases ab
 `run` or `steer` it is a no-op, as `archive --yes` is (IA §3.1). Decision G (a) keeps the "no"
 rows unprompted.
 
+**As built (phase 3).** Three details differ from the text above, each forced by a server fact:
+
+- The `run` prompt says the run is billed to "the room's account owner" but cannot name them: no
+  response the CLI reads carries `Group.owner_user_id`. Naming the person needs a server field.
+- The prompts for `create`, `run`, `steer` and `edit --cron` in a room come before any network
+  call (as `scheduled-tasks` room writes do), so a refusal without a terminal or `--yes` sends
+  nothing, not even the room lookup. The room-schedule prompt therefore does not say whether it
+  enables or changes the schedule; it is the same question either way (decision D).
+- `edit --topic T` resolves `T` by name or UUID in the room before the first write. On a schedule
+  that already exists, a topic goes with the cadence on the room's
+  `PATCH /api/v1/groups/{gid}/scheduled-tasks/{tid}` as a `delivery` object
+  (`{destinations: ["groups_service"], topic}`), because that route has no other way to name one.
+
 ### 9.3 Roles in a room
 
 Server R1 (a). Help text names the role on each leaf, as `scheduled-tasks renew` does:
@@ -556,7 +569,7 @@ refresh. Phases 2 and 3 touch the same parser block in `cli.py` and run in seque
 | 0 | This doc | design + IA amendments | — |
 | 1 | Projects, personal | `research-projects list/show/create/edit/run/steer/pause/resume/runs` without `--room`; `show --report`; `--wait` with attach-on-409; `--clear schedule`; J8 `timeout`/`run_failed` + exit 4; `_report_research_error`; wire models with `# MIRROR:`; README rows; conformance | server phases 2–4 (personal routes and schedule) + snapshot |
 | 2 | Items, personal | `research-items` with `--project`, `numbered_view` state, §5.2 check; `CONTAINER` conformance | phase 1 |
-| 3 | Rooms | `--room` on both nouns via `_room_parent`, `edit --topic`, §9.2 confirmations, role messages, room flag-off message | server phase 5 (room twins), `research_group_projects_enabled` on in staging |
+| 3 | Rooms (built, pepper-cli#95) | `--room` on both nouns via `_room_parent`, `edit --topic`, §9.2 confirmations, role messages, room flag-off message | server phase 5 (room twins, pepper#5113), `research_group_projects_enabled` on in staging |
 | 4 | Later | `brief --now --wait` if the brief gets a receipt; item ordinal (decision A (b)) | each its own server change |
 
 ## 13. Decisions (taken by Allen, 2026-10-20)

@@ -178,25 +178,7 @@ ROOM_NA = {
 
 #: Leaves that should take ``--room`` and do not yet. §6 is the per-command authority;
 #: the ``groups`` leaves take the room as a positional until phase 2a/2b.
-ROOM_PENDING: frozenset[str] = frozenset(
-    {
-        # Personal commands only until the server ships the room twins (research-projects.md
-        # phase 3, tracked by #85); each of these takes --room then.
-        "research-projects list",
-        "research-projects show",
-        "research-projects runs",
-        "research-projects create",
-        "research-projects edit",
-        "research-projects run",
-        "research-projects steer",
-        "research-projects pause",
-        "research-projects resume",
-        "research-items list",
-        "research-items show",
-        "research-items take",
-        "research-items reconsider",
-    }
-)
+ROOM_PENDING: frozenset[str] = frozenset()
 
 #: Leaves whose verb is not in §3.1 yet (old spellings; phase 2a-2d renames them).
 VERB_PENDING = frozenset(
@@ -403,6 +385,16 @@ def test_room_is_a_flag_where_it_means_something() -> None:
 
 #: Nouns whose leaves each take a required container flag (IA §3 rule 2).
 CONTAINER = {"research-items": "--project"}
+
+
+def test_room_comes_before_the_container_flag() -> None:
+    # IA §3 rule 3: `--room` first, so a harness allow rule can pin the room.
+    for leaf, text in LEAVES.items():
+        flag = CONTAINER.get(_noun(leaf))
+        if flag is None:
+            continue
+        usage = " ".join(text.split("\n\n", 1)[0].split())
+        assert usage.index("--room") < usage.index(flag), (leaf, usage)
 
 
 def test_container_flag_is_required_on_every_leaf() -> None:
@@ -948,6 +940,18 @@ POST_ROUTES: dict[str, object] = {
 }
 
 
+def _room_twins(routes: dict[str, object]) -> None:
+    """The room twin of every research route: same paths and shapes under the room."""
+    prefix = "/api/v1/research-projects"
+    for path, body in list(routes.items()):
+        if path.startswith(prefix):
+            routes[f"/api/v1/groups/{_G}/research-projects" + path[len(prefix) :]] = body
+
+
+_room_twins(ROUTES)
+_room_twins(POST_ROUTES)
+
+
 @dataclass
 class _Server:
     seen: list[tuple[str, str]] = field(default_factory=list)
@@ -1153,9 +1157,38 @@ def _run(argv: list[str], capsys) -> tuple[int, str, str]:
 
 #: Leaves that prompt only in some cases (IA §3.1, ``planning/research-projects.md`` §7): the
 #: leaf takes ``--yes``, and each case here exits 2 with a J8 ``usage`` line without a terminal
-#: or ``--yes``, having written nothing. Room cases join in the rooms phase.
+#: or ``--yes``, having written nothing. The personal case is turning a schedule on; in a room
+#: ``create``, ``run``, ``steer`` and ``edit --cron`` (``planning/research-projects.md`` §9.2).
 CONFIRMS = {
     "research-projects edit": ["research-projects", "edit", _RP, "--cron", "0 9 * * 0"],
+    "research-projects edit --room": [
+        "research-projects",
+        "edit",
+        "--room",
+        _G,
+        _RP,
+        "--cron",
+        "0 9 * * 0",
+    ],
+    "research-projects create --room": [
+        "research-projects",
+        "create",
+        "--room",
+        _G,
+        "robot-vacuums",
+        "--file",
+        "body.md",
+    ],
+    "research-projects run --room": ["research-projects", "run", "--room", _G, _RP],
+    "research-projects steer --room": [
+        "research-projects",
+        "steer",
+        "--room",
+        _G,
+        _RP,
+        "skip",
+        "refurbished",
+    ],
 }
 
 #: The same leaves' cases that do not prompt: each succeeds without a terminal or ``--yes``
@@ -1169,11 +1202,34 @@ NO_PROMPT = {
         ["research-projects", "edit", _RP, "--clear", "filters"],
         "PUT",
     ),
+    # The room edits that do not ask (§9.2): settings, and turning a schedule off.
+    "research-projects edit --room --file": (
+        ["research-projects", "edit", "--room", _G, _RP, "--file", "body.md"],
+        "PATCH",
+    ),
+    "research-projects edit --room --filter": (
+        ["research-projects", "edit", "--room", _G, _RP, "--filter", "only new models"],
+        "PUT",
+    ),
+    "research-projects edit --room --clear filters": (
+        ["research-projects", "edit", "--room", _G, _RP, "--clear", "filters"],
+        "PUT",
+    ),
+    "research-projects edit --room --clear schedule": (
+        ["research-projects", "edit", "--room", _G, _RP, "--clear", "schedule"],
+        "DELETE",
+    ),
+    "research-projects pause --room": (["research-projects", "pause", "--room", _G, _RP], "POST"),
+    "research-projects resume --room": (["research-projects", "resume", "--room", _G, _RP], "POST"),
+    "research-items take --room": (
+        ["research-items", "take", "--room", _G, "--project", _RP, _RI],
+        "POST",
+    ),
 }
 
 
 def test_confirming_leaves_take_yes() -> None:
-    assert all("--yes" in _flags(LEAVES[leaf]) for leaf in CONFIRMS)
+    assert all("--yes" in _flags(LEAVES[leaf.split(" --")[0]]) for leaf in CONFIRMS)
 
 
 @pytest.mark.parametrize("leaf", sorted(CONFIRMS))
@@ -1182,6 +1238,7 @@ def test_a_prompting_case_without_a_terminal_or_yes_is_a_usage_error(
     leaf, as_json, _env, monkeypatch, capsys
 ) -> None:
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+    Path("body.md").write_text("hello\n")
     rc, out, err = _run([*CONFIRMS[leaf], *(["--json"] if as_json else [])], capsys)
     assert (rc, out) == (2, "")
     lines = [ln for ln in err.splitlines() if ln.strip()]
@@ -1198,10 +1255,30 @@ def test_a_non_prompting_case_succeeds_without_a_terminal_or_yes(
     case, _env, monkeypatch, capsys
 ) -> None:
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+    Path("body.md").write_text("hello\n")
     argv, method = NO_PROMPT[case]
     rc, _out, err = _run(argv, capsys)
     assert rc == 0, err
     assert [m for m, _ in _env.seen if m != "GET"] == [method]
+    assert not _env.unrouted, _env.unrouted
+
+
+#: Every research leaf with ``--room`` goes to the room's twin of its route (and only that).
+ROOM_RESEARCH = sorted(leaf for leaf in JSON_CASES if leaf.startswith("research-"))
+
+
+@pytest.mark.parametrize("leaf", ROOM_RESEARCH)
+def test_a_research_leaf_with_room_uses_the_rooms_routes(leaf, _env, capsys) -> None:
+    Path("body.md").write_text("hello\n")
+    noun, verb, *rest = JSON_CASES[leaf]
+    yes = ["--yes"] if "--yes" in _flags(LEAVES[leaf]) else []
+    rc, _out, err = _run([noun, verb, "--room", _G, *rest, *yes, "--json"], capsys)
+    assert rc == 0, (leaf, err)
+    assert _env.seen, leaf
+    research = [path for _m, path in _env.seen if "research-projects" in path]
+    assert research, leaf
+    assert all(path.startswith(f"/api/v1/groups/{_G}/research-projects") for path in research)
+    assert not _env.unrouted, _env.unrouted
 
 
 def _is_json(out: str) -> bool:

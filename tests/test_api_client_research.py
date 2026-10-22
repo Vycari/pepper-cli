@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 
 import httpx
@@ -360,3 +361,104 @@ def test_change_schedule_patches_the_task_with_only_the_keys_given() -> None:
         {"cron": "0 7 * * 1"},
         {"cron": "0 7 * * 1", "timezone": "UTC"},
     ]
+
+
+# ---------------------------------------------------------------------------
+# the room twins
+
+GID = "00000000-0000-0000-0000-0000000000a1"
+ROOM = f"/api/v1/groups/{GID}/research-projects"
+PERSONAL = "/api/v1/research-projects"
+
+
+def _room_calls(api: api_client.ApiClient, group_id: str | None):
+    return [
+        ("GET", "", lambda: api.list_research_projects(group_id=group_id)),
+        ("GET", f"/{PID}", lambda: api.get_research_project(PID, group_id=group_id)),
+        ("GET", f"/{PID}/report", lambda: api.get_research_report(PID, group_id=group_id)),
+        ("GET", f"/{PID}/iterations", lambda: api.list_research_iterations(PID, group_id=group_id)),
+        ("GET", f"/{PID}/items", lambda: api.list_research_items(PID, group_id=group_id)),
+        ("GET", f"/{PID}/items/{IID}", lambda: api.get_research_item(PID, IID, group_id=group_id)),
+        ("GET", f"/{PID}/runs/{IID}", lambda: api.get_research_run(PID, IID, group_id=group_id)),
+        (
+            "POST",
+            "",
+            lambda: api.create_research_project(
+                name="n", brief="b", delivery_policy="drip", group_id=group_id
+            ),
+        ),
+        ("PATCH", f"/{PID}", lambda: api.edit_research_project(PID, brief="b", group_id=group_id)),
+        ("PUT", f"/{PID}/filters", lambda: api.set_research_filters(PID, ["f"], group_id=group_id)),
+        ("POST", f"/{PID}/runs", lambda: api.run_research_project(PID, group_id=group_id)),
+        (
+            "POST",
+            f"/{PID}/schedule",
+            lambda: api.enable_research_schedule(PID, cron="0 9 * * 0", group_id=group_id),
+        ),
+        (
+            "DELETE",
+            f"/{PID}/schedule",
+            lambda: api.detach_research_schedule(PID, group_id=group_id),
+        ),
+        (
+            "POST",
+            f"/{PID}/steering",
+            lambda: api.steer_research_project(PID, text="t", group_id=group_id),
+        ),
+        ("POST", f"/{PID}/pause", lambda: api.pause_research_project(PID, group_id=group_id)),
+        ("POST", f"/{PID}/resume", lambda: api.resume_research_project(PID, group_id=group_id)),
+        (
+            "POST",
+            f"/{PID}/items/{IID}/take",
+            lambda: api.take_research_item(PID, IID, group_id=group_id),
+        ),
+        (
+            "POST",
+            f"/{PID}/items/{IID}/reconsider",
+            lambda: api.reconsider_research_item(PID, IID, reason="r", group_id=group_id),
+        ),
+    ]
+
+
+@pytest.mark.parametrize("group_id", [None, GID])
+def test_every_research_call_goes_to_the_personal_or_the_room_route(group_id) -> None:
+    base = PERSONAL if group_id is None else ROOM
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={})
+
+    api = _client(handler)
+    for method, suffix, call in _room_calls(api, group_id):
+        seen.clear()
+        with contextlib.suppress(
+            Exception
+        ):  # an empty body does not parse; only the request counts
+            call()
+        assert [(r.method, r.url.path) for r in seen] == [(method, base + suffix)]
+
+
+def test_a_room_schedule_carries_the_topic_and_a_change_goes_to_the_room_task() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={})
+
+    api = _client(handler)
+    with contextlib.suppress(Exception):  # the empty answer does not parse; the request is sent
+        api.enable_research_schedule(PID, cron="0 9 * * 0", topic_id="T1", group_id=GID)
+    assert json.loads(seen[-1].content) == {"cron": "0 9 * * 0", "topic_id": "T1"}
+    api.change_research_schedule("TASK", cron="0 7 * * 1", topic_id="T1", group_id=GID)
+    assert (seen[-1].method, seen[-1].url.path) == (
+        "PATCH",
+        f"/api/v1/groups/{GID}/scheduled-tasks/TASK",
+    )
+    assert json.loads(seen[-1].content) == {
+        "cron": "0 7 * * 1",
+        "delivery": {"destinations": ["groups_service"], "topic": "T1"},
+    }
+    api.change_research_schedule("TASK", cron="0 7 * * 1")
+    assert seen[-1].url.path == "/api/v1/scheduled-tasks/TASK"
+    assert json.loads(seen[-1].content) == {"cron": "0 7 * * 1"}

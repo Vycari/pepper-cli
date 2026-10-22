@@ -2245,3 +2245,501 @@ def test_schedule_writes_say_when_research_projects_are_switched_off(
         )
         assert (rc, out) == (1, "")
         assert "Research projects are not enabled on this Pepper server." in err
+
+
+# ---------------------------------------------------------------------------
+# rooms (planning/research-projects.md §9)
+
+G = "00000000-0000-0000-0000-0000000000a1"
+TOPIC = "00000000-0000-0000-0000-0000000000b1"
+RB = f"/api/v1/groups/{G}/research-projects"
+ROOM_TASK_PATH = f"/api/v1/groups/{G}/scheduled-tasks/{TASK}"
+_ROOM_ROW = {
+    "group_id": G,
+    "display_name": "Trip planning",
+    "color": "#ffaa00",
+    "sub": "",
+    "member_count": 3,
+    "archived": False,
+    "topics": [
+        {"topic_id": TOPIC, "name": "Research", "last_activity_at": "2026-10-01T12:00:00+00:00"}
+    ],
+}
+
+
+@pytest.fixture
+def room(server):
+    """The fake server with a room named 'Trip planning' whose projects are P1 and P2."""
+    server.routes["/api/v1/groups"] = _json(
+        {"enabled": True, "degraded": False, "total": 1, "archived_total": 0, "groups": [_ROOM_ROW]}
+    )
+    server.routes[f"/api/v1/groups/{G}/topics"] = _json({"topics": [_ROOM_ROW["topics"][0]]})
+    server.routes[RB] = _json(
+        {
+            "items": [_summary(P1, "robot-vacuums"), _summary(P2, "robot-lawnmowers")],
+            "next_before": None,
+        }
+    )
+    return server
+
+
+def _paths(server) -> list[str]:
+    return [r.url.path for r in server.requests]
+
+
+def test_list_with_room_reads_the_rooms_projects(room, capsys) -> None:
+    rc, out, _ = _run(["research-projects", "list", "--room", "trip", "--json"], capsys)
+    assert rc == 0
+    assert _paths(room)[-1] == RB
+    assert BASE not in _paths(room)
+    assert [p["name"] for p in json.loads(out)["items"]] == ["robot-vacuums", "robot-lawnmowers"]
+
+
+def test_a_room_uuid_passes_straight_through(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(_detail())
+    rc, out, _ = _run(["research-projects", "show", "--room", G, P1], capsys)
+    assert rc == 0
+    assert _paths(room) == [f"{RB}/{P1}"]
+    assert out.startswith("robot-vacuums")
+
+
+def test_a_project_name_is_looked_up_in_the_room_only(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(_detail())
+    rc, _, _ = _run(["research-projects", "show", "--room", "Trip", "robot-v"], capsys)
+    assert rc == 0
+    assert BASE not in _paths(room)
+    assert _paths(room)[-2:] == [RB, f"{RB}/{P1}"]
+
+
+def test_a_missing_room_project_name_mentions_the_room(room, capsys) -> None:
+    rc, _, err = _run(["research-projects", "show", "--room", G, "nothing-like-it"], capsys)
+    assert rc == 2
+    assert "no research project named 'nothing-like-it' in that room" in err
+
+
+def test_an_unknown_room_name_is_not_found_exit_2(room, capsys) -> None:
+    rc, out, err = _run(["research-projects", "list", "--room", "nowhere", "--json"], capsys)
+    assert (rc, out) == (2, "")
+    assert _error(err)["code"] == "not_found"
+    assert RB not in _paths(room)
+
+
+def test_show_report_and_runs_use_the_room_routes(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}/report"] = _json(REPORT)
+    room.routes[f"{RB}/{P1}/iterations"] = _json({"items": [_iteration()], "next_before": None})
+    assert _run(["research-projects", "show", "--room", G, P1, "--report"], capsys)[0] == 0
+    assert _run(["research-projects", "runs", "--room", G, P1], capsys)[0] == 0
+    assert _paths(room) == [f"{RB}/{P1}/report", f"{RB}/{P1}/iterations"]
+
+
+def test_room_items_are_numbered_per_room_and_project(room, capsys) -> None:
+    item = _item(1, state="delivered")
+    room.routes[f"{RB}/{P1}/items"] = _json({"items": [item], "next_before": None})
+    room.routes[f"POST {RB}/{P1}/items/{item['id']}/take"] = _json({**item, "state": "taken"})
+    assert _run(["research-items", "list", "--room", G, "--project", P1], capsys)[0] == 0
+    room.requests.clear()
+    rc, _, err = _run(["research-items", "take", "--room", G, "--project", P1, "1"], capsys)
+    assert rc == 0, err
+    assert _writes(room)[0].url.path == f"{RB}/{P1}/items/{item['id']}/take"
+
+
+@pytest.mark.parametrize("verb", ["show", "take", "reconsider"])
+def test_a_number_from_a_personal_listing_is_refused_in_a_room(room, capsys, verb) -> None:
+    _items_route(room, [_item(1)])
+    _run(["research-items", "list", "--project", P1], capsys)
+    room.requests.clear()
+    rc, out, err = _run(
+        ["research-items", verb, "--room", G, "--project", P1, "1", "--json"], capsys
+    )
+    assert (rc, out) == (2, "")
+    assert _error(err)["message"] == research_view.ANOTHER_PROJECT
+    assert not room.requests
+
+
+def test_a_number_from_a_room_listing_is_refused_without_the_room(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}/items"] = _json({"items": [_item(1)], "next_before": None})
+    _run(["research-items", "list", "--room", G, "--project", P1], capsys)
+    room.requests.clear()
+    rc, out, err = _run(["research-items", "take", "--project", P1, "1", "--json"], capsys)
+    assert (rc, out) == (2, "")
+    assert _error(err)["message"] == research_view.ANOTHER_PROJECT
+    assert not room.requests
+
+
+def test_reconsider_in_a_room_sends_the_reason(room, capsys) -> None:
+    item = _item(1, state="rejected")
+    room.routes[f"POST {RB}/{P1}/items/{item['id']}/reconsider"] = _json(
+        {**item, "state": "candidate"}
+    )
+    rc, _, _ = _run(
+        ["research-items", "reconsider", "--room", G, "--project", P1, item["id"], "--reason", "x"],
+        capsys,
+    )
+    assert rc == 0
+    assert _sent(_writes(room)[0]) == {"reason": "x"}
+
+
+# Confirmations (§9.2)
+
+
+def _expect_prompt(monkeypatch, answer: str = "y") -> list[str]:
+    asked: list[str] = []
+    monkeypatch.setattr(cli, "_prompt", lambda text: asked.append(text) or answer)
+    return asked
+
+
+def test_room_create_asks_then_posts_to_the_room(room, capsys, tty, monkeypatch) -> None:
+    _stdin(monkeypatch, "Robot vacuums")
+    asked = _expect_prompt(monkeypatch)
+    room.routes[f"POST {RB}"] = httpx.Response(201, json=_detail())
+    rc, _, err = _run(
+        ["research-projects", "create", "--room", G, "robot-vacuums", "--file", "-"], capsys
+    )
+    assert rc == 0, err
+    assert "robot-vacuums" in asked[0] and "every member" in asked[0].lower()
+    (write,) = _writes(room)
+    assert write.url.path == RB
+    assert "--room" in err and "run --room" in err  # the hint finds the same room's project
+
+
+def test_room_create_declined_sends_nothing(room, capsys, tty, monkeypatch) -> None:
+    _stdin(monkeypatch, "Robot vacuums")
+    _expect_prompt(monkeypatch, "n")
+    rc, _, err = _run(
+        ["research-projects", "create", "--room", G, "robot-vacuums", "--file", "-"], capsys
+    )
+    assert rc == 0
+    assert "Aborted." in err
+    assert not room.requests
+
+
+def test_a_personal_create_still_does_not_ask(server, capsys, tty, monkeypatch) -> None:
+    _stdin(monkeypatch, "Robot vacuums")
+    monkeypatch.setattr(cli, "_prompt", lambda text: pytest.fail("a personal create asks nothing"))
+    server.routes[f"POST {BASE}"] = httpx.Response(201, json=_detail())
+    rc, _, _ = _run(["research-projects", "create", "robot-vacuums", "--file", "-"], capsys)
+    assert rc == 0
+
+
+def test_room_create_with_yes_posts_without_a_terminal(room, capsys, monkeypatch) -> None:
+    _stdin(monkeypatch, "Robot vacuums")
+    room.routes[f"POST {RB}"] = httpx.Response(201, json=_detail())
+    rc, out, _ = _run(
+        [
+            *["research-projects", "create", "--room", G, "robot-vacuums", "--file", "-", "--yes"],
+            *["--skill", "scout", "--json"],
+        ],
+        capsys,
+    )
+    assert rc == 0
+    assert json.loads(out)["name"] == "robot-vacuums"
+    assert _sent(_writes(room)[0])["skill_name"] == "scout"
+
+
+def test_room_create_skill_not_granted_is_the_servers_sentence(room, capsys, monkeypatch) -> None:
+    _stdin(monkeypatch, "Robot vacuums")
+    room.routes[f"POST {RB}"] = httpx.Response(
+        422,
+        json={"detail": "the room has not been granted that skill", "code": "skill_not_granted"},
+    )
+    rc, _, err = _run(
+        ["research-projects", "create", "--room", G, "x", "--file", "-", "--yes", "--json"], capsys
+    )
+    assert rc == 1
+    assert _error(err)["code"] == "validation"
+    assert "the room has not been granted that skill" in _error(err)["message"]
+
+
+def test_room_run_asks_and_names_who_pays(room, capsys, tty, monkeypatch) -> None:
+    asked = _expect_prompt(monkeypatch)
+    room.routes[f"POST {RB}/{P1}/runs"] = httpx.Response(202, json=_receipt())
+    rc, out, err = _run(["research-projects", "run", "--room", G, P1], capsys)
+    assert rc == 0, err
+    assert "account owner" in asked[0]
+    assert out.strip() == RUN
+    assert f"--room {G} {P1}" in err  # the check-it hint keeps the room
+
+
+def test_room_run_in_flight_shows_the_run_like_the_personal_path(room, capsys) -> None:
+    room.routes[f"POST {RB}/{P1}/runs"] = httpx.Response(
+        409, json={"detail": "a run is already in flight", "run_id": RUN}
+    )
+    room.routes[f"{RB}/{P1}/runs/{RUN}"] = _json(_run_detail("running"))
+    rc, out, err = _run(["research-projects", "run", "--room", G, P1, "--yes"], capsys)
+    assert rc == 0
+    assert f"already running ({RUN}); not starting another." in err
+    assert out.strip() == RUN
+
+
+def test_room_run_wait_polls_the_rooms_run(room, capsys, monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_sleep", lambda s: None)
+    room.routes[f"POST {RB}/{P1}/runs"] = httpx.Response(202, json=_receipt())
+    room.routes[f"{RB}/{P1}/runs/{RUN}"] = [
+        _json(_run_detail("running")),
+        _json(_run_detail("succeeded")),
+    ]
+    rc, _, err = _run(["research-projects", "run", "--room", G, P1, "--yes", "--wait"], capsys)
+    assert rc == 0, err
+    polls = [p for p in _paths(room) if p == f"{RB}/{P1}/runs/{RUN}"]
+    assert len(polls) == 2
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_room_run_without_a_terminal_or_yes_is_a_usage_error(room, capsys, as_json) -> None:
+    argv = ["research-projects", "run", "--room", G, P1]
+    rc, out, err = _run([*argv, "--json"] if as_json else argv, capsys)
+    assert (rc, out) == (2, "")
+    assert "pass --yes" in (_error(err)["message"] if as_json else err)
+    assert not room.requests
+
+
+def test_room_steer_asks_and_posts_to_the_room(room, capsys, tty, monkeypatch) -> None:
+    asked = _expect_prompt(monkeypatch)
+    room.routes[f"POST {RB}/{P1}/steering"] = httpx.Response(
+        201,
+        json={
+            "id": RUN,
+            "text": "skip",
+            "question_id": None,
+            "author_user_id": ME,
+            "author_name": "Me",
+            "created_at": "2026-10-20T10:00:00+00:00",
+            "consumed_at": None,
+        },
+    )
+    rc, _, err = _run(["research-projects", "steer", "--room", G, P1, "skip", "x"], capsys)
+    assert rc == 0, err
+    assert "attributed to you" in asked[0]
+    assert _sent(_writes(room)[0]) == {"text": "skip x"}
+
+
+def test_room_steer_by_any_member_needs_no_role_precheck(room, capsys, monkeypatch) -> None:
+    # The CLI never reads roles: it sends the write and lets the server decide (R1).
+    room.routes[f"POST {RB}/{P1}/steering"] = httpx.Response(403, json={"detail": "no"})
+    rc, _, err = _run(
+        ["research-projects", "steer", "--room", G, P1, "go", "--yes", "--json"], capsys
+    )
+    assert rc == 1
+    assert _error(err)["code"] == "forbidden"
+    assert "Only a room owner" not in _error(err)["message"]  # steering is a member action
+
+
+# Pause, resume, edit (owner role)
+
+
+@pytest.mark.parametrize("verb", ["pause", "resume"])
+def test_room_pause_and_resume_post_to_the_room(room, capsys, verb) -> None:
+    room.routes[f"POST {RB}/{P1}/{verb}"] = _json(_detail())
+    rc, _, _ = _run(["research-projects", verb, "--room", G, P1], capsys)
+    assert rc == 0
+    assert _writes(room)[0].url.path == f"{RB}/{P1}/{verb}"
+
+
+@pytest.mark.parametrize("verb", ["create", "edit", "run", "pause", "resume"])
+@pytest.mark.parametrize("as_json", [False, True])
+def test_a_role_403_in_a_room_says_only_an_owner_can(
+    room, capsys, monkeypatch, verb, as_json
+) -> None:
+    detail = "Only an owner of this room can change its research projects."
+    _stdin(monkeypatch, "brief")
+    owner_writes = [("POST", RB), ("PATCH", f"{RB}/{P1}"), ("POST", f"{RB}/{P1}/runs")]
+    owner_writes += [("POST", f"{RB}/{P1}/{v}") for v in ("pause", "resume")]
+    for method, path in owner_writes:
+        room.routes[f"{method} {path}"] = httpx.Response(403, json={"detail": detail})
+    argv = {
+        "create": ["create", "--room", G, "x", "--file", "-", "--yes"],
+        "edit": ["edit", "--room", G, P1, "--file", "-"],
+        "run": ["run", "--room", G, P1, "--yes"],
+        "pause": ["pause", "--room", G, P1],
+        "resume": ["resume", "--room", G, P1],
+    }[verb]
+    rc, out, err = _run(["research-projects", *argv, *(["--json"] if as_json else [])], capsys)
+    assert (rc, out) == (1, "")
+    message = _error(err)["message"] if as_json else " ".join(err.split())
+    assert f"Only a room owner can {verb} a room's research project." in message
+    assert detail in message
+    if as_json:
+        assert _error(err)["code"] == "forbidden"
+
+
+def test_room_flag_off_has_its_own_message_in_a_room(room, capsys) -> None:
+    room.routes[RB] = httpx.Response(
+        403, json={"detail": "off", "code": "research_group_projects_disabled"}
+    )
+    rc, _, err = _run(["research-projects", "list", "--room", G, "--json"], capsys)
+    assert rc == 1
+    assert (
+        _error(err)["message"]
+        == "Research projects in rooms are not enabled on this Pepper server."
+    )
+
+
+def test_the_room_404_is_not_a_member(room, capsys) -> None:
+    room.routes[RB] = httpx.Response(
+        404, json={"detail": "Room research projects are not available."}
+    )
+    rc, _, err = _run(["research-projects", "list", "--room", G, "--json"], capsys)
+    assert rc == 2
+    assert _error(err)["message"] == "not found, or you are not a member of that room"
+
+
+def test_a_missing_project_in_a_room_is_the_servers_404(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}"] = httpx.Response(404, json={"detail": "no such research project"})
+    rc, _, err = _run(["research-projects", "show", "--room", G, P1, "--json"], capsys)
+    assert rc == 1
+    assert _error(err) == {
+        "code": "not_found",
+        "status": 404,
+        "message": "Server returned 404: no such research project",
+    }
+
+
+def test_room_edit_brief_filters_and_clear_need_no_yes(room, capsys, monkeypatch) -> None:
+    _stdin(monkeypatch, "New brief")
+    room.routes[f"PATCH {RB}/{P1}"] = _json(_detail(brief="New brief"))
+    room.routes[f"PUT {RB}/{P1}/filters"] = _json(_detail())
+    room.routes[f"DELETE {RB}/{P1}/schedule"] = _json(_detail())
+    rc, _, err = _run(
+        [
+            *["research-projects", "edit", "--room", G, P1, "--file", "-", "--filter", "f"],
+            *["--clear", "schedule"],
+        ],
+        capsys,
+    )
+    assert rc == 0, err
+    assert [(w.method, w.url.path) for w in _writes(room)] == [
+        ("PATCH", f"{RB}/{P1}"),
+        ("PUT", f"{RB}/{P1}/filters"),
+        ("DELETE", f"{RB}/{P1}/schedule"),
+    ]
+
+
+def test_room_enable_asks_and_posts_the_topic(room, capsys, tty, monkeypatch) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(_detail())
+    room.routes[f"POST {RB}/{P1}/schedule"] = httpx.Response(201, json=_scheduled())
+    asked = _expect_prompt(monkeypatch)
+    rc, _, err = _run(
+        ["research-projects", "edit", "--room", G, P1, "--cron", CRON, "--topic", "research"],
+        capsys,
+    )
+    assert rc == 0, err
+    assert "Research" not in asked[0] and "'research'" in asked[0]
+    assert "account owner" in asked[0]
+    (write,) = _writes(room)
+    assert write.url.path == f"{RB}/{P1}/schedule"
+    assert _sent(write) == {"cron": CRON, "topic_id": TOPIC}
+
+
+def test_room_enable_without_a_topic_sends_none(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(_detail())
+    room.routes[f"POST {RB}/{P1}/schedule"] = httpx.Response(201, json=_scheduled())
+    rc, _, _ = _run(["research-projects", "edit", "--room", G, P1, "--cron", CRON, "--yes"], capsys)
+    assert rc == 0
+    assert _sent(_writes(room)[0]) == {"cron": CRON}
+
+
+def test_a_topic_uuid_needs_no_lookup(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(_detail())
+    room.routes[f"POST {RB}/{P1}/schedule"] = httpx.Response(201, json=_scheduled())
+    rc, _, _ = _run(
+        ["research-projects", "edit", "--room", G, P1, "--cron", CRON, "--topic", TOPIC, "--yes"],
+        capsys,
+    )
+    assert rc == 0
+    assert f"/api/v1/groups/{G}/topics" not in _paths(room)
+    assert _sent(_writes(room)[0])["topic_id"] == TOPIC
+
+
+def test_an_unknown_topic_is_not_found_before_any_write(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(_detail())
+    rc, _, err = _run(
+        [
+            *["research-projects", "edit", "--room", G, P1, "--cron", CRON],
+            *["--topic", "nope", "--yes", "--json"],
+        ],
+        capsys,
+    )
+    assert rc == 2
+    assert _error(err)["code"] == "not_found"
+    assert not _writes(room)
+
+
+def test_room_schedule_topic_delivery_off_shows_the_servers_message(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(_detail())
+    room.routes[f"POST {RB}/{P1}/schedule"] = httpx.Response(
+        422, json={"detail": "Delivering to a topic is not enabled yet."}
+    )
+    rc, _, err = _run(
+        [
+            *[
+                "research-projects",
+                "edit",
+                "--room",
+                G,
+                P1,
+                "--cron",
+                CRON,
+                "--topic",
+                TOPIC,
+                "--yes",
+            ],
+            *["--json"],
+        ],
+        capsys,
+    )
+    assert rc == 1
+    assert _error(err)["code"] == "validation"
+    assert "Delivering to a topic is not enabled yet." in _error(err)["message"]
+
+
+def test_room_schedule_change_asks_every_time_and_patches_the_room_task(
+    room, capsys, tty, monkeypatch
+) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(_scheduled())
+    room.routes[f"PATCH {ROOM_TASK_PATH}"] = _json({"id": TASK})
+    asked = _expect_prompt(monkeypatch)
+    rc, _, err = _run(
+        ["research-projects", "edit", "--room", G, P1, "--cron", "0 7 * * 1", "--topic", TOPIC],
+        capsys,
+    )
+    assert rc == 0, err
+    assert len(asked) == 1  # a room asks on a change too (decision D)
+    (write,) = _writes(room)
+    assert write.url.path == ROOM_TASK_PATH
+    assert _sent(write) == {
+        "cron": "0 7 * * 1",
+        "delivery": {"destinations": ["groups_service"], "topic": TOPIC},
+    }
+
+
+def test_room_schedule_change_without_a_terminal_or_yes_is_a_usage_error(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(_scheduled())
+    rc, _, err = _run(["research-projects", "edit", "--room", G, P1, "--cron", "0 7 * * 1"], capsys)
+    assert rc == 2
+    assert "pass --yes" in err
+    assert not _writes(room)
+
+
+def test_room_clear_schedule_does_not_ask(room, capsys, tty, monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_prompt", lambda text: pytest.fail("clearing asks nothing"))
+    room.routes[f"DELETE {RB}/{P1}/schedule"] = _json(_detail())
+    rc, _, _ = _run(["research-projects", "edit", "--room", G, P1, "--clear", "schedule"], capsys)
+    assert rc == 0
+
+
+@pytest.mark.parametrize("tail", [["--cron", CRON, "--yes"], ["--clear", "schedule"], []])
+def test_topic_without_room_is_a_usage_error(server, capsys, tail) -> None:
+    rc, _, err = _run(["research-projects", "edit", P1, "--topic", TOPIC, *tail], capsys)
+    assert rc == 2
+    assert "--topic needs --room and --cron" in err
+    assert not server.requests
+
+
+def test_topic_with_room_but_no_cron_is_a_usage_error(room, capsys) -> None:
+    rc, _, err = _run(
+        ["research-projects", "edit", "--room", G, P1, "--clear", "schedule", "--topic", TOPIC],
+        capsys,
+    )
+    assert rc == 2
+    assert "--topic needs --room and --cron" in err
+    assert not room.requests

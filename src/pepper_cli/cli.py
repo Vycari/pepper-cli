@@ -4966,6 +4966,7 @@ def _confirm(prompt: str, *, yes: bool, args: argparse.Namespace | None = None) 
             args,
             "usage",
             "this changes the room for everyone; pass --yes to run it without a terminal",
+            soft_wrap=True,
         )
         return 2
     if _prompt(f"{prompt} [y/N] ").lower() not in ("y", "yes"):
@@ -8114,6 +8115,11 @@ def _project_parent() -> argparse.ArgumentParser:
     return parent
 
 
+def _research_room() -> argparse.ArgumentParser:
+    """``--room ROOM`` for the research leaves (optional: without it, your own projects only)."""
+    return _room_parent(omitted="Omit to act on your own research projects.")
+
+
 _RESEARCH_LIMIT_MAX = 200
 _RESEARCH_PROJECT_HELP = "Research project: its name, a unique name prefix, or its UUID."
 
@@ -8124,17 +8130,22 @@ def _register_research_commands(sub: Any) -> None:
     p_proj = sub.add_parser(
         "research-projects",
         help=(
-            "Your research projects: a brief, a ledger of what Pepper found and a report. "
-            "``list``/``show`` (``--report`` for the report)/``runs`` to read them; ``create``, "
-            "``edit``, ``run`` (``--wait``), ``steer``, ``pause`` and ``resume`` to work them."
+            "Your research projects, or a room's with --room: a brief, a ledger of what Pepper "
+            "found and a report. ``list``/``show`` (``--report`` for the report)/``runs`` to "
+            "read them; ``create``, ``edit``, ``run`` (``--wait``), ``steer``, ``pause`` and "
+            "``resume`` to work them. In a room any member reads and steers; the owner role "
+            "creates, edits, runs, pauses and resumes."
         ),
     )
     sub_proj = p_proj.add_subparsers(dest="research_projects_action", required=True)
 
     p = sub_proj.add_parser(
         "list",
-        help="List your research projects (active ones unless --status says otherwise).",
-        parents=[_json_parent],
+        help=(
+            "List your research projects, or a room's with --room (active ones unless --status "
+            "says otherwise). Any room member."
+        ),
+        parents=[_research_room(), _json_parent],
     )
     p.add_argument(
         "--status",
@@ -8146,8 +8157,11 @@ def _register_research_commands(sub: Any) -> None:
 
     p = sub_proj.add_parser(
         "show",
-        help="One project: brief, schedule, last run, ledger counts and open questions.",
-        parents=[_json_parent],
+        help=(
+            "One project: brief, schedule, last run, ledger counts and open questions. "
+            "Any room member."
+        ),
+        parents=[_research_room(), _json_parent],
     )
     p.add_argument("project", metavar="PROJECT", help=_RESEARCH_PROJECT_HELP)
     p.add_argument(
@@ -8161,9 +8175,9 @@ def _register_research_commands(sub: Any) -> None:
         "runs",
         help=(
             "What a project has run, newest first, with what started each one (scheduled, "
-            "or manual and who pressed run)."
+            "or manual and who pressed run). Any room member."
         ),
-        parents=[_json_parent, _before_parent],
+        parents=[_research_room(), _json_parent, _before_parent],
     )
     p.add_argument("project", metavar="PROJECT", help=_RESEARCH_PROJECT_HELP)
     p.add_argument(
@@ -8179,12 +8193,15 @@ def _register_research_commands(sub: Any) -> None:
         "create",
         help=(
             "Create a research project that runs only when you say so. The brief comes from "
-            "$EDITOR, --file PATH, or --file - for stdin."
+            "$EDITOR, --file PATH, or --file - for stdin. With --room it is a room owner's, "
+            "every member sees it, and it asks y/N (--yes without a terminal)."
         ),
-        parents=[_json_parent, _yes_parent],
+        parents=[_research_room(), _json_parent, _yes_parent],
     )
     p.add_argument(
-        "name", metavar="NAME", help="Short, lowercase and hyphenated; unique among your projects."
+        "name",
+        metavar="NAME",
+        help="Short, lowercase and hyphenated; unique among your projects (or the room's).",
     )
     p.add_argument(
         "--file",
@@ -8194,7 +8211,10 @@ def _register_research_commands(sub: Any) -> None:
     p.add_argument(
         "--skill",
         metavar="SKILL",
-        help="The skill each run follows (default: the server's web-research).",
+        help=(
+            "The skill each run follows (default: the server's web-research). In a room it "
+            "must be granted to the room."
+        ),
     )
     p.add_argument(
         "--policy",
@@ -8217,9 +8237,11 @@ def _register_research_commands(sub: Any) -> None:
             "or --file - for stdin), its filters (--filter, repeatable, replaces the whole "
             "list; --clear filters empties it) and its schedule (--cron turns one on, after "
             "a y/N question that needs --yes without a terminal, or changes the one it has; "
-            "--clear schedule turns it off and keeps the run history)."
+            "--clear schedule turns it off and keeps the run history). In a room: owner role "
+            "only, --cron asks y/N every time (--yes without a terminal), and --topic picks the "
+            "topic scheduled runs post to."
         ),
-        parents=[_json_parent, _yes_parent],
+        parents=[_research_room(), _json_parent, _yes_parent],
     )
     p.add_argument("project", metavar="PROJECT", help=_RESEARCH_PROJECT_HELP)
     p.add_argument(
@@ -8247,7 +8269,8 @@ def _register_research_commands(sub: Any) -> None:
         help=(
             "Run on this schedule, for example '0 9 * * 0' (Sundays at 09:00). Turning a "
             "schedule on commits to recurring runs, so it asks y/N on a terminal and needs "
-            "--yes otherwise; changing one that exists does not ask."
+            "--yes otherwise; changing one that exists does not ask, except in a room, where "
+            "every change asks."
         ),
     )
     p.add_argument(
@@ -8258,6 +8281,15 @@ def _register_research_commands(sub: Any) -> None:
             "the default is your profile timezone."
         ),
     )
+    p.add_argument(
+        "--topic",
+        metavar="TOPIC",
+        help=(
+            "With --room and --cron: the topic of the room each scheduled run posts to (its "
+            "name or UUID; default the room's own delivery). The server refuses while topic "
+            "delivery is off."
+        ),
+    )
     p.set_defaults(handler=cmd_research_projects_edit)
 
     p = sub_proj.add_parser(
@@ -8265,9 +8297,10 @@ def _register_research_commands(sub: Any) -> None:
         help=(
             "Start a run now. Returns the receipt at once; --wait waits for the run to end "
             "(exit 4 if --timeout runs out first; the run goes on). A run already queued or "
-            "running is attached to, not repeated."
+            "running is attached to, not repeated. In a room: owner role, asks y/N "
+            "(--yes without a terminal); the room's account owner pays."
         ),
-        parents=[_json_parent, _wait_parent, _yes_parent],
+        parents=[_research_room(), _json_parent, _wait_parent, _yes_parent],
     )
     p.add_argument("project", metavar="PROJECT", help=_RESEARCH_PROJECT_HELP)
     p.set_defaults(handler=cmd_research_projects_run)
@@ -8276,9 +8309,11 @@ def _register_research_commands(sub: Any) -> None:
         "steer",
         help=(
             "Give the project's next run guidance. TEXT is the words after PROJECT, or '-' to "
-            "read stdin. --question QN answers one of the report's open questions."
+            "read stdin. --question QN answers one of the report's open questions. In a room any "
+            "member may; the text is attributed to you, read by every member, and asks y/N "
+            "(--yes without a terminal)."
         ),
-        parents=[_json_parent, _yes_parent],
+        parents=[_research_room(), _json_parent, _yes_parent],
     )
     p.add_argument("project", metavar="PROJECT", help=_RESEARCH_PROJECT_HELP)
     p.add_argument("text", nargs="*", metavar="TEXT", help="The guidance; '-' reads stdin.")
@@ -8291,16 +8326,19 @@ def _register_research_commands(sub: Any) -> None:
 
     p = sub_proj.add_parser(
         "pause",
-        help="Pause a project (and its schedule, if it has one). Already paused is fine.",
-        parents=[_json_parent],
+        help=(
+            "Pause a project (and its schedule, if it has one). Already paused is fine. "
+            "In a room: owner role."
+        ),
+        parents=[_research_room(), _json_parent],
     )
     p.add_argument("project", metavar="PROJECT", help=_RESEARCH_PROJECT_HELP)
     p.set_defaults(handler=cmd_research_projects_pause)
 
     p = sub_proj.add_parser(
         "resume",
-        help="Resume a paused project. It does not run the project.",
-        parents=[_json_parent],
+        help="Resume a paused project. It does not run the project. In a room: owner role.",
+        parents=[_research_room(), _json_parent],
     )
     p.add_argument("project", metavar="PROJECT", help=_RESEARCH_PROJECT_HELP)
     p.set_defaults(handler=cmd_research_projects_resume)
@@ -8310,7 +8348,7 @@ def _register_research_commands(sub: Any) -> None:
         help=(
             "The ledger of one research project: what Pepper found. ``list`` it (numbered), "
             "then ``show``, ``take`` or ``reconsider`` one by number. Every command takes "
-            "--project."
+            "--project (with --room, a project of that room). Any room member."
         ),
     )
     sub_items = p_items.add_subparsers(dest="research_items_action", required=True)
@@ -8318,7 +8356,7 @@ def _register_research_commands(sub: Any) -> None:
     p = sub_items.add_parser(
         "list",
         help="List a project's ledger, numbered, newest first.",
-        parents=[_json_parent, _project_parent(), _before_parent],
+        parents=[_research_room(), _project_parent(), _json_parent, _before_parent],
     )
     p.add_argument(
         "--state",
@@ -8343,7 +8381,7 @@ def _register_research_commands(sub: Any) -> None:
     p = sub_items.add_parser(
         "show",
         help="One ledger item in full.",
-        parents=[_json_parent, _project_parent()],
+        parents=[_research_room(), _project_parent(), _json_parent],
     )
     p.add_argument("item", metavar="ITEM", help=item_help)
     p.set_defaults(handler=cmd_research_items_show)
@@ -8351,7 +8389,7 @@ def _register_research_commands(sub: Any) -> None:
     p = sub_items.add_parser(
         "take",
         help="Mark a delivered item as taken (you went with it). Already taken is fine.",
-        parents=[_json_parent, _project_parent()],
+        parents=[_research_room(), _project_parent(), _json_parent],
     )
     p.add_argument("item", metavar="ITEM", help=item_help)
     p.set_defaults(handler=cmd_research_items_take)
@@ -8359,7 +8397,7 @@ def _register_research_commands(sub: Any) -> None:
     p = sub_items.add_parser(
         "reconsider",
         help="Put a rejected item back as a candidate, with a reason it deserves another look.",
-        parents=[_json_parent, _project_parent()],
+        parents=[_research_room(), _project_parent(), _json_parent],
     )
     p.add_argument("item", metavar="ITEM", help=item_help)
     p.add_argument(
@@ -8370,10 +8408,19 @@ def _register_research_commands(sub: Any) -> None:
     p.set_defaults(handler=cmd_research_items_reconsider)
 
 
+#: The research leaves that need the room's owner role (``planning/research-projects.md`` §9.3).
+_RESEARCH_OWNER_VERBS = frozenset({"create", "edit", "run", "pause", "resume"})
+
+
 def _report_research_error(exc: api_client.ApiError, args: argparse.Namespace | None = None) -> int:
-    """The research leaves' reporter. A 403 whose ``code`` says the feature is switched off is
-    a fact about the server, said in one sentence; every other failure (including a 404 for a
-    project that is not yours) is :func:`_report_api_error`."""
+    """The research leaves' reporter (``planning/research-projects.md`` §8).
+
+    A 403 whose ``code`` says the feature is switched off is a fact about the server, said in
+    one sentence. Any other 403 under ``--room`` on an owner-role leaf is the role gate. A 404
+    under ``--room`` is the uniform room 404 (no such room, or you are not in it) unless the
+    server names a research project, item or run, which is reported as the server says it.
+    Every other failure is :func:`_report_api_error`."""
+    room = getattr(args, "room", None)
     if exc.status == 403:
         code = api_client.error_code(exc)
         if code == "research_projects_disabled":
@@ -8381,9 +8428,18 @@ def _report_research_error(exc: api_client.ApiError, args: argparse.Namespace | 
         elif code == "research_group_projects_disabled":
             message = "Research projects in rooms are not enabled on this Pepper server."
         else:
+            verb = getattr(args, "research_projects_action", None)
+            if room and verb in _RESEARCH_OWNER_VERBS and code is None:
+                message = f"Only a room owner can {verb} a room's research project."
+                if exc.detail:
+                    message += f" {exc.detail}"
+                _emit_error(args, "forbidden", message, status=403, soft_wrap=True)
+                return 1
             return _report_api_error(exc, args)
         _emit_error(args, "forbidden", message, status=403)
         return 1
+    if room and exc.status == 404 and not (exc.detail or "").lower().startswith("no such research"):
+        return _report_room_error(exc, args)
     return _report_api_error(exc, args)
 
 
@@ -8395,18 +8451,23 @@ def _research_limit_ok(args: argparse.Namespace) -> bool:
 
 
 def _resolve_research_project(
-    api: api_client.ApiClient, ref: str, *, args: argparse.Namespace
+    api: api_client.ApiClient,
+    ref: str,
+    *,
+    args: argparse.Namespace,
+    group_id: str | None = None,
 ) -> str | None:
     """A project's id from a name, a unique case-insensitive name prefix or a UUID (which passes
-    straight through; the server refuses one that is not yours). The lookup lists projects of
-    every status. ``None`` after the error is reported (exit 2).
+    straight through; the server refuses one that is not in scope). The lookup lists the
+    projects of every status of your own, or of the room ``group_id`` names. ``None`` after the
+    error is reported (exit 2).
 
     A UUID comes back in its canonical lowercase form, the form the server's ids take, so the
     project a listing is saved under compares equal however the id was typed."""
     if _valid_uuid(ref):
         return ref.lower()
     match, candidates = _match_by_name(
-        ref, api.list_research_projects().items, name_of=lambda p: p.name
+        ref, api.list_research_projects(group_id=group_id).items, name_of=lambda p: p.name
     )
     if match is not None:
         return match.id
@@ -8418,6 +8479,13 @@ def _resolve_research_project(
             f"{ref!r} matches more than one research project: {listing}",
             soft_wrap=True,
         )
+    elif group_id is not None:
+        _emit_error(
+            args,
+            "not_found",
+            f"no research project named {ref!r} in that room — "
+            "run 'pepper research-projects list --room ROOM --status all'",
+        )
     else:
         _emit_error(
             args,
@@ -8427,11 +8495,26 @@ def _resolve_research_project(
     return None
 
 
+def _research_target(
+    api: api_client.ApiClient, args: argparse.Namespace
+) -> tuple[str | None, str | None]:
+    """``(room id or None, project id or None)`` for a leaf with ``--room`` and a project.
+
+    The room is resolved as every other ``--room`` is (:func:`_opt_group`); the project is
+    then looked up among that room's projects, or yours without ``--room``. The project is
+    ``None`` after the error is reported (exit 2)."""
+    group_id = _opt_group(api, args.room, args=args)
+    return group_id, _resolve_research_project(api, args.project, args=args, group_id=group_id)
+
+
 def cmd_research_projects_list(args: argparse.Namespace) -> int:
-    """``pepper research-projects list [--status active|paused|all] [--json]``."""
+    """``pepper research-projects list [--room R] [--status active|paused|all] [--json]``."""
 
     def run(api: api_client.ApiClient) -> int:
-        page = api.list_research_projects(status=None if args.status == "all" else args.status)
+        group_id = _opt_group(api, args.room, args=args)
+        page = api.list_research_projects(
+            status=None if args.status == "all" else args.status, group_id=group_id
+        )
         _emit_list(
             page.items,
             args,
@@ -8451,14 +8534,14 @@ def cmd_research_projects_show(args: argparse.Namespace) -> int:
     """
 
     def run(api: api_client.ApiClient) -> int:
-        project_id = _resolve_research_project(api, args.project, args=args)
+        group_id, project_id = _research_target(api, args)
         if project_id is None:
             return 2
         if args.report:
-            report = api.get_research_report(project_id)
+            report = api.get_research_report(project_id, group_id=group_id)
             _emit(report, args, lambda: render.render_markdown(report.body or ""))
             return 0
-        detail = api.get_research_project(project_id)
+        detail = api.get_research_project(project_id, group_id=group_id)
         _emit(detail, args, lambda: render.render_research_project(detail))
         return 0
 
@@ -8472,10 +8555,12 @@ def cmd_research_projects_runs(args: argparse.Namespace) -> int:
         return 2
 
     def run(api: api_client.ApiClient) -> int:
-        project_id = _resolve_research_project(api, args.project, args=args)
+        group_id, project_id = _research_target(api, args)
         if project_id is None:
             return 2
-        page = api.list_research_iterations(project_id, limit=args.limit, before=args.before)
+        page = api.list_research_iterations(
+            project_id, limit=args.limit, before=args.before, group_id=group_id
+        )
         # "you" on a manual row needs the caller's id; skip the call when no row has one.
         you = (
             api.whoami().user_id
@@ -8505,16 +8590,16 @@ def cmd_research_items_list(args: argparse.Namespace) -> int:
         return 2
 
     def run(api: api_client.ApiClient) -> int:
-        project_id = _resolve_research_project(api, args.project, args=args)
+        group_id, project_id = _research_target(api, args)
         if project_id is None:
             return 2
         page = api.list_research_items(
-            project_id, states=args.state, limit=args.limit, before=args.before
+            project_id, states=args.state, limit=args.limit, before=args.before, group_id=group_id
         )
         rows = [dataclasses.asdict(item) for item in page.items]
         problem = research_view.VIEW.save(
             [research_view.listing_row(r) for r in rows],
-            {"project_id": project_id, "room_id": None},
+            {"project_id": project_id, "room_id": group_id},
         )
         if _listing_unusable(args, problem):
             return 1
@@ -8534,11 +8619,13 @@ def cmd_research_items_list(args: argparse.Namespace) -> int:
     return _with_api(run, _report_research_error, args)
 
 
-def _research_item_id(args: argparse.Namespace, project_id: str) -> str | None:
+def _research_item_id(
+    args: argparse.Namespace, project_id: str, group_id: str | None = None
+) -> str | None:
     """The item id ``ITEM`` names, or ``None`` after the error is reported (exit 2).
 
-    A number resolves only against a listing of this very project (and personal scope), so it
-    never lands on another ledger. An id, or a prefix of one the listing held, is passed on:
+    A number resolves only against a listing of this very project (and the same room, or none),
+    so it never lands on another ledger. An id, or a prefix of one the listing held, is passed on:
     the server refuses an item that is not in the project. Ids are hex, so ``ITEM`` is matched
     in lowercase, the form the listing saved them in."""
     try:
@@ -8547,7 +8634,7 @@ def _research_item_id(args: argparse.Namespace, project_id: str) -> str | None:
         _emit_error(args, exc.code, str(exc))
         return None
     if numbered_view.NumberedView.is_number(args.item) and (
-        meta.get("project_id") != project_id or meta.get("room_id") is not None
+        meta.get("project_id") != project_id or meta.get("room_id") != group_id
     ):
         _emit_error(args, "usage", research_view.ANOTHER_PROJECT)
         return None
@@ -8566,13 +8653,13 @@ def cmd_research_items_show(args: argparse.Namespace) -> int:
     """``pepper research-items show --project P ITEM [--json]``."""
 
     def run(api: api_client.ApiClient) -> int:
-        project_id = _resolve_research_project(api, args.project, args=args)
+        group_id, project_id = _research_target(api, args)
         if project_id is None:
             return 2
-        item_id = _research_item_id(args, project_id)
+        item_id = _research_item_id(args, project_id, group_id)
         if item_id is None:
             return 2
-        detail = api.get_research_item(project_id, item_id)
+        detail = api.get_research_item(project_id, item_id, group_id=group_id)
         _emit(detail, args, lambda: render.render_research_item(detail))
         return 0
 
@@ -8603,12 +8690,30 @@ def _research_editor_refused(args: argparse.Namespace, why: str) -> bool:
     return False
 
 
+def _research_ref(args: argparse.Namespace, project: str | None = None) -> str:
+    """``[--room R ]PROJECT`` quoted for a command line a message suggests running, so the hint
+    finds the same project in the same room."""
+    name = shlex.quote(args.project if project is None else project)
+    return f"--room {shlex.quote(args.room)} {name}" if args.room else name
+
+
+def _research_room_confirm(args: argparse.Namespace, prompt: str) -> int | None:
+    """The room-write gate of ``create``, ``run``, ``steer`` and a schedule on or changed
+    (``planning/research-projects.md`` §9.2): ``None`` to go ahead, else the exit code. It
+    runs before any network call, so a refusal sends nothing. Without ``--room`` nothing
+    asks: ``--yes`` is then a no-op."""
+    if not args.room:
+        return None
+    return _confirm(prompt, yes=args.yes, args=args)
+
+
 def cmd_research_projects_create(args: argparse.Namespace) -> int:
     """``pepper research-projects create NAME [--file BRIEF|-] [--skill S] [--policy drip|digest]
     [--source-url URL] [--json]``.
 
     A manual-only project: it runs when you ``run`` it. The brief is read before any network
-    call. ``--yes`` is accepted and ignored: only a room's project needs it (§9.2).
+    call. With ``--room`` it is the room's (owner role), every member sees it, and it asks
+    y/N first; ``--yes`` is a no-op on a personal project (§9.2).
     """
     ok, brief = _research_brief_in(args)
     if not ok:
@@ -8622,18 +8727,27 @@ def cmd_research_projects_create(args: argparse.Namespace) -> int:
     if not brief.strip():
         _emit_error(args, "usage", "the brief is empty — aborting")
         return 2
+    code = _research_room_confirm(
+        args,
+        f"Create research project {sanitize_line(args.name)!r} in room "
+        f"{sanitize_line(args.room or '')}? Every member of the room will see it.",
+    )
+    if code is not None:
+        return code
 
     def run(api: api_client.ApiClient) -> int:
+        group_id = _opt_group(api, args.room, args=args)
         detail = api.create_research_project(
             name=args.name,
             brief=brief,
             delivery_policy=args.policy,
             skill_name=args.skill,
             source_url=args.source_url,
+            group_id=group_id,
         )
 
         def human() -> None:
-            ref = shlex.quote(detail.name)
+            ref = _research_ref(args, detail.name)
             render.info(
                 f"Created research project {detail.name!r}. Run it with: "
                 f"pepper research-projects run {ref}"
@@ -8683,7 +8797,7 @@ def _research_partial_failure(
     if failed == "read-back":
         message = (
             f"The {done}, but reading the project back failed ({cause}); check with: "
-            f"pepper research-projects show {shlex.quote(args.project)}"
+            f"pepper research-projects show {_research_ref(args)}"
         )
     elif unsent:
         verb = "was" if failed == "schedule" else "were"
@@ -8692,23 +8806,25 @@ def _research_partial_failure(
         noun = "filter change" if failed == "filters" else "schedule change"
         message = (
             f"The {done}, but the {noun} could not be confirmed ({cause}); check with: "
-            f"pepper research-projects show {shlex.quote(args.project)}"
+            f"pepper research-projects show {_research_ref(args)}"
         )
     _emit_error(args, code, message, status=status, soft_wrap=True)
     return 1
 
 
 def cmd_research_projects_edit(args: argparse.Namespace) -> int:
-    """``pepper research-projects edit PROJECT [--file BRIEF|-] [--filter F]… [--clear filters]
-    [--cron C [--timezone TZ]] [--clear schedule] [--yes] [--json]``.
+    """``pepper research-projects edit [--room R] PROJECT [--file BRIEF|-] [--filter F]…
+    [--clear filters] [--cron C [--timezone TZ] [--topic T]] [--clear schedule] [--yes] [--json]``.
 
     ``--file`` replaces the brief. ``--filter`` (repeatable) or ``--clear filters`` replaces
     the whole filter list. ``--cron`` turns the schedule on (asking y/N first, before anything
     is written; ``--yes`` without a terminal) or, when the project already has one, changes it
     on the scheduled-tasks route without asking. ``--clear schedule`` turns it off and keeps
-    the run history. Writes go brief, filters, schedule. With none of these flags, ``$EDITOR``
-    opens on the brief; with no terminal that is exit 2. A brief left unchanged sends nothing.
-    Answers the project.
+    the run history. In a room (owner role) ``--cron`` asks every time, enabling or changing,
+    before anything is written, and ``--topic`` names the topic scheduled runs post to; a room
+    schedule change goes on the room's scheduled-tasks route. Writes go brief, filters,
+    schedule. With none of these flags, ``$EDITOR`` opens on the brief; with no terminal that
+    is exit 2. A brief left unchanged sends nothing. Answers the project.
     """
     if args.filter and args.clear == "filters":
         _emit_error(args, "usage", "--filter and --clear filters contradict each other; pass one")
@@ -8718,6 +8834,12 @@ def cmd_research_projects_edit(args: argparse.Namespace) -> int:
         return 2
     if args.timezone is not None and args.cron is None:
         _emit_error(args, "usage", "--timezone needs --cron")
+        return 2
+    if args.topic is not None and (args.cron is None or not args.room):
+        _emit_error(args, "usage", "--topic needs --room and --cron")
+        return 2
+    if args.topic is not None and not args.topic.strip():
+        _emit_error(args, "usage", "--topic needs a topic name or id")
         return 2
     if args.cron is not None and args.clear == "schedule":
         _emit_error(args, "usage", "--cron and --clear schedule contradict each other; pass one")
@@ -8743,15 +8865,28 @@ def cmd_research_projects_edit(args: argparse.Namespace) -> int:
     if brief is not None and not brief.strip():
         _emit_error(args, "usage", "the brief is empty — aborting")
         return 2
+    if cron is not None:
+        # In a room every enable or change asks, so it asks before any network call. A
+        # personal project asks only to enable, once the server says it has no schedule.
+        where = f"({zone})" if zone is not None else "(your profile timezone)"
+        posts = f" and post to topic {sanitize_line(args.topic)!r}" if args.topic else ""
+        code = _research_room_confirm(
+            args,
+            f"Run {sanitize_line(args.project)!r} in room {sanitize_line(args.room or '')} every "
+            f"time {cron!r} matches {where}{posts}? Each run changes the room's report and "
+            "ledger for everyone, and uses Pepper on the room's account owner's account.",
+        )
+        if code is not None:
+            return code
 
     def run(api: api_client.ApiClient) -> int:
-        project_id = _resolve_research_project(api, args.project, args=args)
+        group_id, project_id = _research_target(api, args)
         if project_id is None:
             return 2
         new_brief = brief
         current: api_client.ResearchProjectDetail | None = None
         if use_editor:
-            current = api.get_research_project(project_id)
+            current = api.get_research_project(project_id, group_id=group_id)
             edited = _open_in_editor(current.brief)
             if edited is None:
                 return 2
@@ -8765,10 +8900,13 @@ def cmd_research_projects_edit(args: argparse.Namespace) -> int:
         # Whether the project has a schedule is read from the server, never remembered. The
         # question comes before the first write, so a "no" leaves the brief alone too.
         scheduled_task_id: str | None = None
+        topic_id: str | None = None
         if cron is not None:
-            before = api.get_research_project(project_id)
+            before = api.get_research_project(project_id, group_id=group_id)
             scheduled_task_id = before.scheduled_task_id
-            if scheduled_task_id is None:
+            if group_id is not None and args.topic is not None:
+                topic_id = _need_topic(api, group_id, args.topic, args=args)
+            if scheduled_task_id is None and group_id is None:
                 where = f"({zone})" if zone is not None else "(your profile timezone)"
                 code = _confirm_destructive(
                     args,
@@ -8782,11 +8920,11 @@ def cmd_research_projects_edit(args: argparse.Namespace) -> int:
         result = current
         applied: list[str] = []
         if new_brief is not None:
-            result = api.edit_research_project(project_id, brief=new_brief)
+            result = api.edit_research_project(project_id, brief=new_brief, group_id=group_id)
             applied.append("brief")
         if filters is not None:
             try:
-                result = api.set_research_filters(project_id, filters)
+                result = api.set_research_filters(project_id, filters, group_id=group_id)
             except (api_client.ApiError, httpx.RequestError) as exc:
                 if not applied:
                     raise
@@ -8796,7 +8934,14 @@ def cmd_research_projects_edit(args: argparse.Namespace) -> int:
         if cron is not None or clear_schedule:
             try:
                 result, note = _research_schedule_step(
-                    api, args, project_id, scheduled_task_id, cron, zone, clear_schedule
+                    api,
+                    project_id,
+                    scheduled_task_id,
+                    cron,
+                    zone,
+                    clear_schedule,
+                    group_id,
+                    topic_id,
                 )
             except (api_client.ApiError, httpx.RequestError) as exc:
                 if not applied:
@@ -8842,31 +8987,36 @@ def _schedule_words(detail: api_client.ResearchProjectDetail) -> str:
 
 def _research_schedule_step(
     api: api_client.ApiClient,
-    args: argparse.Namespace,
     project_id: str,
     scheduled_task_id: str | None,
     cron: str | None,
     zone: str | None,
     clear_schedule: bool,
+    group_id: str | None,
+    topic_id: str | None,
 ) -> tuple[api_client.ResearchProjectDetail, str]:
     """The schedule write of ``edit``: ``(the project, a line saying what happened)``."""
     if clear_schedule:
-        detail = api.detach_research_schedule(project_id)
+        detail = api.detach_research_schedule(project_id, group_id=group_id)
         name = sanitize_line(detail.name)
         return detail, f"Turned off the schedule of {name!r}; its run history is kept."
     assert cron is not None
     if scheduled_task_id is None:
         try:
-            detail = api.enable_research_schedule(project_id, cron=cron, timezone=zone)
+            detail = api.enable_research_schedule(
+                project_id, cron=cron, timezone=zone, topic_id=topic_id, group_id=group_id
+            )
         except api_client.ResearchAlreadyScheduledError as exc:
             # Scheduled by another client since the read: the 409 names the task, and a change
             # to an existing schedule goes through the scheduled-tasks route.
             scheduled_task_id = exc.scheduled_task_id
         else:
             return detail, f"Scheduled {sanitize_line(detail.name)!r} on {_schedule_words(detail)}."
-    api.change_research_schedule(scheduled_task_id, cron=cron, timezone=zone)
+    api.change_research_schedule(
+        scheduled_task_id, cron=cron, timezone=zone, topic_id=topic_id, group_id=group_id
+    )
     try:
-        detail = api.get_research_project(project_id)
+        detail = api.get_research_project(project_id, group_id=group_id)
     except (api_client.ApiError, httpx.RequestError) as exc:
         raise _ScheduleChangedReadFailed(exc) from exc
     name = sanitize_line(detail.name)
@@ -8883,12 +9033,13 @@ def _research_run_id(run: object) -> str:
 
 
 def cmd_research_projects_run(args: argparse.Namespace) -> int:
-    """``pepper research-projects run PROJECT [--wait [--timeout SECONDS]] [--json]``.
+    """``pepper research-projects run [--room R] PROJECT [--wait [--timeout SECONDS]] [--json]``.
 
     Queues one run and prints its receipt (J5). A run already queued or running is the answer,
     not a failure: without ``--wait`` it is printed and the exit is 0, with ``--wait`` it is
-    waited on instead of starting another (§6.2). ``--yes`` is accepted and ignored: only a
-    room's run asks (§9.2).
+    waited on instead of starting another (§6.2). With ``--room`` (owner role) it asks y/N first,
+    since the run changes the room's report and ledger for everyone and is billed to the room's
+    account owner; ``--yes`` is a no-op on a personal project (§9.2).
 
     Exit codes: 0 ok · 1 failed (a run that ended ``error``/``interrupted`` is ``run_failed``) ·
     2 bad input · 4 ``--wait`` stopped waiting; the run goes on · 130 interrupted.
@@ -8899,15 +9050,23 @@ def cmd_research_projects_run(args: argparse.Namespace) -> int:
     if args.timeout is not None and not (math.isfinite(args.timeout) and args.timeout >= 0):
         _emit_error(args, "usage", "--timeout must be 0 (no limit) or more seconds")
         return 2
+    code = _research_room_confirm(
+        args,
+        f"Run research project {sanitize_line(args.project)!r} in room "
+        f"{sanitize_line(args.room or '')}? It changes the room's report and ledger for "
+        "everyone, and is billed to the room's account owner.",
+    )
+    if code is not None:
+        return code
 
     def run(api: api_client.ApiClient) -> int:
-        project_id = _resolve_research_project(api, args.project, args=args)
+        group_id, project_id = _research_target(api, args)
         if project_id is None:
             return 2
-        ref = shlex.quote(args.project)
+        ref = _research_ref(args)
         receipt: api_client.ResearchRunReceipt | api_client.ResearchRunDetail | None
         try:
-            receipt = api.run_research_project(project_id)
+            receipt = api.run_research_project(project_id, group_id=group_id)
         except api_client.ResearchRunInFlightError as exc:
             if args.wait:
                 # The lookup is the wait's first poll, under its retries and Retry-After.
@@ -8917,8 +9076,8 @@ def cmd_research_projects_run(args: argparse.Namespace) -> int:
                         "waiting on it instead of starting another.",
                         soft_wrap=True,
                     )
-                return _wait_for_research_run(api, args, project_id, exc.run_id, None)
-            receipt = api.get_research_run(project_id, exc.run_id)
+                return _wait_for_research_run(api, args, project_id, exc.run_id, None, group_id)
+            receipt = api.get_research_run(project_id, exc.run_id, group_id=group_id)
             note = (
                 f"A run of {args.project} is already {receipt.status} "
                 f"({exc.run_id}); not starting another."
@@ -8939,7 +9098,7 @@ def cmd_research_projects_run(args: argparse.Namespace) -> int:
             return 0
         if not _json_mode(args):
             render.info(note, soft_wrap=True)
-        return _wait_for_research_run(api, args, project_id, run_id, receipt)
+        return _wait_for_research_run(api, args, project_id, run_id, receipt, group_id)
 
     return _with_api(run, _report_research_error, args)
 
@@ -9003,6 +9162,7 @@ def _wait_for_research_run(
     project_id: str,
     run_id: str,
     first: api_client.ResearchRunReceipt | api_client.ResearchRunDetail | None,
+    group_id: str | None = None,
 ) -> int:
     """Poll one run to its end under the IA §3.5 rules and exit accordingly.
 
@@ -9015,7 +9175,7 @@ def _wait_for_research_run(
     409: the first poll then goes out at once, as the lookup, under the same retries.
     """
     timeout = _WAIT_DEFAULT_TIMEOUT if args.timeout is None else args.timeout
-    ref = shlex.quote(args.project)
+    ref = _research_ref(args)
     start = _monotonic()
     deadline = None if timeout == 0 else start + timeout
     last = first
@@ -9070,14 +9230,20 @@ def _wait_for_research_run(
             hint = None
             try:
                 if deadline is None:
-                    detail, hint = api.poll_research_run(project_id, run_id)
+                    detail, hint = api.poll_research_run(project_id, run_id, group_id=group_id)
                 else:
                     # The whole poll gets the time left (at least the floor), not just each
                     # phase of it; one that overruns that ends the wait as a timeout.
                     left = deadline - _monotonic()
                     bound = min(max(left, _WAIT_MIN_REQUEST_TIMEOUT), api_client.DEFAULT_TIMEOUT)
                     detail, hint = _call_within(
-                        functools.partial(api.poll_research_run, project_id, run_id, timeout=bound),
+                        functools.partial(
+                            api.poll_research_run,
+                            project_id,
+                            run_id,
+                            timeout=bound,
+                            group_id=group_id,
+                        ),
                         bound,
                     )
             except _PollDeadlineError:
@@ -9126,11 +9292,13 @@ _STEER_TEXT_STDIN = "-"
 
 
 def cmd_research_projects_steer(args: argparse.Namespace) -> int:
-    """``pepper research-projects steer PROJECT [TEXT…|-] [--question QN] [--json]``.
+    """``pepper research-projects steer [--room R] PROJECT [TEXT…|-] [--question QN] [--json]``.
 
     Queues guidance the next run reads; ``--question`` says which open question it answers.
-    ``TEXT`` is the words given (joined by single spaces) or ``-`` for stdin. ``--yes`` is
-    accepted and ignored: only a room's steering asks (§9.2).
+    ``TEXT`` is the words given (joined by single spaces) or ``-`` for stdin. Any room member
+    may steer; with ``--room`` it asks y/N first, since the text is stored as written,
+    attributed to you and read by the run that writes the report every member sees (§9.2).
+    ``--yes`` is a no-op on a personal project.
     """
     if args.text == [_STEER_TEXT_STDIN]:
         text = _read_file_or_stdin("-", args)
@@ -9141,12 +9309,22 @@ def cmd_research_projects_steer(args: argparse.Namespace) -> int:
     if not text.strip():
         _emit_error(args, "usage", "steer needs the guidance: words after PROJECT, or - for stdin")
         return 2
+    code = _research_room_confirm(
+        args,
+        f"Steer research project {sanitize_line(args.project)!r} in room "
+        f"{sanitize_line(args.room or '')}? Your text is stored as written, attributed to you, "
+        "and read by the next run; every member of the room sees it.",
+    )
+    if code is not None:
+        return code
 
     def run(api: api_client.ApiClient) -> int:
-        project_id = _resolve_research_project(api, args.project, args=args)
+        group_id, project_id = _research_target(api, args)
         if project_id is None:
             return 2
-        note = api.steer_research_project(project_id, text=text.strip(), question_id=args.question)
+        note = api.steer_research_project(
+            project_id, text=text.strip(), question_id=args.question, group_id=group_id
+        )
 
         def human() -> None:
             about = f" (answering {note.question_id})" if note.question_id else ""
@@ -9163,13 +9341,13 @@ def cmd_research_projects_steer(args: argparse.Namespace) -> int:
 
 def _research_pause_resume(args: argparse.Namespace, *, pause: bool) -> int:
     def run(api: api_client.ApiClient) -> int:
-        project_id = _resolve_research_project(api, args.project, args=args)
+        group_id, project_id = _research_target(api, args)
         if project_id is None:
             return 2
         detail = (
-            api.pause_research_project(project_id)
+            api.pause_research_project(project_id, group_id=group_id)
             if pause
-            else api.resume_research_project(project_id)
+            else api.resume_research_project(project_id, group_id=group_id)
         )
 
         def human() -> None:
@@ -9196,16 +9374,18 @@ def cmd_research_projects_resume(args: argparse.Namespace) -> int:
 
 def _research_item_mark(args: argparse.Namespace, *, take: bool) -> int:
     def run(api: api_client.ApiClient) -> int:
-        project_id = _resolve_research_project(api, args.project, args=args)
+        group_id, project_id = _research_target(api, args)
         if project_id is None:
             return 2
-        item_id = _research_item_id(args, project_id)
+        item_id = _research_item_id(args, project_id, group_id)
         if item_id is None:
             return 2
         if take:
-            item = api.take_research_item(project_id, item_id)
+            item = api.take_research_item(project_id, item_id, group_id=group_id)
         else:
-            item = api.reconsider_research_item(project_id, item_id, reason=args.reason or "")
+            item = api.reconsider_research_item(
+                project_id, item_id, reason=args.reason or "", group_id=group_id
+            )
 
         def human() -> None:
             if take:
