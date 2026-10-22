@@ -1358,8 +1358,20 @@ def _shell_ref(detail: Any) -> str:
     return detail.name if re.fullmatch(r"[\w.-]+", detail.name) else detail.id
 
 
-def render_research_project(detail: Any) -> None:
-    """``research-projects show``: the project, its ledger and what is waiting on the person."""
+def _show_command(detail: Any, room: str | None) -> str:
+    """``pepper research-projects show [--room R] PROJECT``, as it can be pasted."""
+    import shlex
+
+    where = f"--room {shlex.quote(room)} " if room else ""
+    return f"pepper research-projects show {where}{_shell_ref(detail)}"
+
+
+def render_research_project(detail: Any, *, room: str | None = None) -> None:
+    """``research-projects show``: the project, its ledger and what is waiting on the person.
+
+    ``room`` is the ``--room`` the command was given: the hint lines repeat it, so they can be
+    pasted as they are."""
+    show = _show_command(detail, room)
     head = f"{sanitize_line(detail.name)}   {detail.status} · {detail.delivery_policy}"
     _stdout.print(f"{head} · skill {sanitize_line(detail.skill)}", markup=False, highlight=False)
     _labelled("Brief", detail.brief or "")
@@ -1379,7 +1391,7 @@ def render_research_project(detail: Any) -> None:
     if run is not None:
         _labelled(
             "Run",
-            f"{run.status} {run.id} (pepper research-projects show {_shell_ref(detail)})",
+            f"{run.status} {run.id} ({show})",
         )
     counts = detail.item_counts or {}
     known = [s for s in _LEDGER_ORDER if counts.get(s)]
@@ -1390,7 +1402,7 @@ def render_research_project(detail: Any) -> None:
         _labelled("Steering", f"{queued} note{'s' if queued != 1 else ''} queued for the next run")
     for i, q in enumerate(detail.open_questions or []):
         _labelled("Open" if i == 0 else "", f"{q.id}  {sanitize_line(q.text)}")
-    _labelled("Report", f"pepper research-projects show {_shell_ref(detail)} --report")
+    _labelled("Report", f"{show} --report")
 
 
 def _more_hint(next_before: str | None) -> None:
@@ -1527,15 +1539,27 @@ def format_duration(seconds: float) -> str:
     return f"{minutes}m{secs:02d}s" if minutes else f"{secs}s"
 
 
-def _run_took(run: Any) -> str:
-    """`` in 3m12s`` from the run's own start and finish times, or nothing when it lacks either."""
-    if not (run.started_at and run.finished_at):
-        return ""
+def _span(start: str | None, end: str | None) -> str | None:
+    """The time from ``start`` to ``end`` (ISO-8601), or ``None`` when either is missing."""
+    if not (start and end):
+        return None
     try:
-        span = datetime.fromisoformat(run.finished_at) - datetime.fromisoformat(run.started_at)
+        span = datetime.fromisoformat(end) - datetime.fromisoformat(start)
+        return format_duration(span.total_seconds())
     except ValueError:
-        return ""
-    return f" in {format_duration(span.total_seconds())}"
+        return None
+
+
+def _run_took(run: Any) -> str:
+    """`` in 40s (1m53s since queued)``: how long the run itself took (start to finish), then how
+    long it was since it was queued (queued to finish), which is what the ``--wait`` status line
+    counts. Either part is left out when the server did not give its times."""
+    took = _span(run.started_at, run.finished_at)
+    since = _span(getattr(run, "requested_at", None), run.finished_at)
+    text = f" in {took}" if took else ""
+    if since:
+        text += f" ({since} since queued)"
+    return text
 
 
 def render_research_run_end(run: Any, *, project: str) -> None:

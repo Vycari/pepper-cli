@@ -107,7 +107,7 @@ import uuid
 import webbrowser
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 from urllib.parse import urlparse
 
 import httpx
@@ -8102,6 +8102,23 @@ def cmd_preferences_edit(args: argparse.Namespace) -> int:
 # research-projects and research-items (planning/research-projects.md), read side
 
 
+class _ContainerFlagParser(argparse.ArgumentParser):
+    """A ``research-items`` leaf: a missing ``--project`` says how to pass it.
+
+    The IA keeps a container a flag, required on every verb of the child noun, never a
+    positional (IA §3 rule 2: it has no "yours" default, and a positional would make
+    ``research-items show 3`` ambiguous between a project and an item). A person who types the
+    project where the flag goes (``research-items list monitor-research``) otherwise gets only
+    "the following arguments are required: --project"."""
+
+    def error(self, message: str) -> NoReturn:
+        if "--project" in message:
+            message += (
+                f" (the project is a flag here, not a positional: {self.prog} --project NAME)"
+            )
+        super().error(message)
+
+
 def _project_parent() -> argparse.ArgumentParser:
     """``--project PROJECT``, required: the container flag of a noun that exists only inside a
     research project (IA §3 rule 2)."""
@@ -8110,7 +8127,8 @@ def _project_parent() -> argparse.ArgumentParser:
         "--project",
         metavar="PROJECT",
         required=True,
-        help="Research project: its name, a unique name prefix, or its UUID.",
+        help="Research project: its name, a unique name prefix, or its UUID (always this flag, "
+        "never a positional).",
     )
     return parent
 
@@ -8351,7 +8369,9 @@ def _register_research_commands(sub: Any) -> None:
             "--project (with --room, a project of that room). Any room member."
         ),
     )
-    sub_items = p_items.add_subparsers(dest="research_items_action", required=True)
+    sub_items = p_items.add_subparsers(
+        dest="research_items_action", required=True, parser_class=_ContainerFlagParser
+    )
 
     p = sub_items.add_parser(
         "list",
@@ -8412,6 +8432,27 @@ def _register_research_commands(sub: Any) -> None:
 _RESEARCH_OWNER_VERBS = frozenset({"create", "edit", "run", "pause", "resume"})
 
 
+def _report_research_api_error(
+    exc: api_client.ApiError, args: argparse.Namespace | None = None
+) -> int:
+    """:func:`_report_api_error` for the research leaves, with one difference: a 4xx refusal
+    (other than 401) whose detail is the server's own sentence for the person ("the project is
+    paused", "no such research project") is printed as that sentence, without the
+    ``Server returned 409:`` prefix (``planning/research-projects.md`` §8). The status stays in
+    the J8 ``status`` field. Without a detail, or for any other status, the shared format
+    stands. The shared helper is not changed: other commands keep their prefix."""
+    if exc.detail and 400 <= exc.status < 500 and exc.status != 401:
+        _emit_error(
+            args,
+            _error_code_for_status(exc.status),
+            exc.detail,
+            status=exc.status,
+            soft_wrap=True,
+        )
+        return 1
+    return _report_api_error(exc, args)
+
+
 def _report_research_error(exc: api_client.ApiError, args: argparse.Namespace | None = None) -> int:
     """The research leaves' reporter (``planning/research-projects.md`` §8).
 
@@ -8419,7 +8460,7 @@ def _report_research_error(exc: api_client.ApiError, args: argparse.Namespace | 
     one sentence. Any other 403 under ``--room`` on an owner-role leaf is the role gate. A 404
     under ``--room`` is the uniform room 404 (no such room, or you are not in it) unless the
     server names a research project, item or run, which is reported as the server says it.
-    Every other failure is :func:`_report_api_error`."""
+    Every other failure is :func:`_report_research_api_error`."""
     room = getattr(args, "room", None)
     if exc.status == 403:
         code = api_client.error_code(exc)
@@ -8435,12 +8476,12 @@ def _report_research_error(exc: api_client.ApiError, args: argparse.Namespace | 
                     message += f" {exc.detail}"
                 _emit_error(args, "forbidden", message, status=403, soft_wrap=True)
                 return 1
-            return _report_api_error(exc, args)
+            return _report_research_api_error(exc, args)
         _emit_error(args, "forbidden", message, status=403)
         return 1
     if room and exc.status == 404 and not (exc.detail or "").lower().startswith("no such research"):
         return _report_room_error(exc, args)
-    return _report_api_error(exc, args)
+    return _report_research_api_error(exc, args)
 
 
 def _research_limit_ok(args: argparse.Namespace) -> bool:
@@ -8484,13 +8525,16 @@ def _resolve_research_project(
             args,
             "not_found",
             f"no research project named {ref!r} in that room — "
-            "run 'pepper research-projects list --room ROOM --status all'",
+            f"run 'pepper research-projects list --room {shlex.quote(args.room or 'ROOM')} "
+            "--status all'",
+            soft_wrap=True,
         )
     else:
         _emit_error(
             args,
             "not_found",
             f"no research project named {ref!r} — run 'pepper research-projects list --status all'",
+            soft_wrap=True,
         )
     return None
 
@@ -8534,8 +8578,9 @@ def cmd_research_projects_list(args: argparse.Namespace) -> int:
 def cmd_research_projects_show(args: argparse.Namespace) -> int:
     """``pepper research-projects show PROJECT [--report] [--json]``.
 
-    ``--report`` prints the report document's markdown as it is stored (as ``notes show`` does),
-    or under ``--json`` the server's report object.
+    ``--report`` prints the report document's markdown as it is stored (as ``notes show`` does)
+    minus the engine's trailing metadata marker line, or under ``--json`` the server's report
+    object, marker and all.
     """
 
     def run(api: api_client.ApiClient) -> int:
@@ -8544,10 +8589,16 @@ def cmd_research_projects_show(args: argparse.Namespace) -> int:
             return 2
         if args.report:
             report = api.get_research_report(project_id, group_id=group_id)
-            _emit(report, args, lambda: render.render_markdown(report.body or ""))
+            _emit(
+                report,
+                args,
+                lambda: render.render_markdown(
+                    research_view.strip_report_marker(report.body or "")
+                ),
+            )
             return 0
         detail = api.get_research_project(project_id, group_id=group_id)
-        _emit(detail, args, lambda: render.render_research_project(detail))
+        _emit(detail, args, lambda: render.render_research_project(detail, room=args.room))
         return 0
 
     return _with_api(run, _report_research_error, args)
@@ -8633,25 +8684,41 @@ def _research_item_id(
     so it never lands on another ledger. An id, or a prefix of one the listing held, is passed on:
     the server refuses an item that is not in the project. Ids are hex, so ``ITEM`` is matched
     in lowercase, the form the listing saved them in."""
+    command = research_view.list_command(args.project, args.room)
+    view = numbered_view.NumberedView(
+        research_view.VIEW.state_name, research_view.VIEW.noun, command
+    )
+    if numbered_view.NumberedView.is_number(args.item):
+        # Whose list this is comes before whether the number is in it: a number from another
+        # ledger is not "out of range", it is the wrong list.
+        loaded = view.load()
+        meta = loaded[1] if loaded is not None else {}
+        saved_room = meta.get("room_id")
+        project_differs = meta.get("project_id") != project_id
+        room_differs = (saved_room.lower() if isinstance(saved_room, str) else saved_room) != (
+            group_id.lower() if group_id is not None else None
+        )
+        if loaded is not None and (project_differs or room_differs):
+            _emit_error(
+                args,
+                "usage",
+                research_view.another_ledger(
+                    args.project, args.room, project_differs=project_differs
+                ),
+                soft_wrap=True,
+            )
+            return None
     try:
-        item_id, _row, meta = research_view.VIEW.resolve(args.item.lower())
+        item_id, _row, _meta = view.resolve(args.item.lower())
     except numbered_view.RefError as exc:
-        _emit_error(args, exc.code, str(exc))
-        return None
-    saved_room = meta.get("room_id")
-    if numbered_view.NumberedView.is_number(args.item) and (
-        meta.get("project_id") != project_id
-        or (saved_room.lower() if isinstance(saved_room, str) else saved_room)
-        != (group_id.lower() if group_id is not None else None)
-    ):
-        _emit_error(args, "usage", research_view.ANOTHER_PROJECT)
+        _emit_error(args, exc.code, str(exc), soft_wrap=True)
         return None
     if not _valid_uuid(item_id):
         _emit_error(
             args,
             "not_found",
-            f"no research item {args.item!r} — use a number from "
-            "'pepper research-items list --project PROJECT', or an item id",
+            f"no research item {args.item!r} — use a number from '{command}', or an item id",
+            soft_wrap=True,
         )
         return None
     return item_id
@@ -8909,6 +8976,7 @@ def cmd_research_projects_edit(args: argparse.Namespace) -> int:
         # question comes before the first write, so a "no" leaves the brief alone too.
         scheduled_task_id: str | None = None
         topic_id: str | None = None
+        before: api_client.ResearchProjectDetail | None = None
         if cron is not None:
             before = api.get_research_project(project_id, group_id=group_id)
             scheduled_task_id = before.scheduled_task_id
@@ -8950,6 +9018,8 @@ def cmd_research_projects_edit(args: argparse.Namespace) -> int:
                     clear_schedule,
                     group_id,
                     topic_id,
+                    before=before,
+                    topic_name=args.topic,
                 )
             except (api_client.ApiError, httpx.RequestError) as exc:
                 if not applied:
@@ -8966,7 +9036,7 @@ def cmd_research_projects_edit(args: argparse.Namespace) -> int:
 
         def human() -> None:
             for note in notes:
-                render.info(note)
+                render.info(note, soft_wrap=True)
             if set(applied) - {"schedule"}:
                 render.info(f"Updated research project {project.name!r}.")
 
@@ -9002,8 +9072,16 @@ def _research_schedule_step(
     clear_schedule: bool,
     group_id: str | None,
     topic_id: str | None,
+    *,
+    before: api_client.ResearchProjectDetail | None = None,
+    topic_name: str | None = None,
 ) -> tuple[api_client.ResearchProjectDetail, str]:
-    """The schedule write of ``edit``: ``(the project, a line saying what happened)``."""
+    """The schedule write of ``edit``: ``(the project, a line saying what happened)``.
+
+    ``before`` is the project as read before the write and ``topic_name`` the ``--topic`` as
+    given: the line names the topic scheduled runs post to, and says "unchanged" when a change
+    leaves the cron and zone as they were (and no topic was asked for)."""
+    posting = f", posting to topic {sanitize_line(topic_name)!r}" if topic_name else ""
     if clear_schedule:
         detail = api.detach_research_schedule(project_id, group_id=group_id)
         name = sanitize_line(detail.name)
@@ -9019,7 +9097,10 @@ def _research_schedule_step(
             # to an existing schedule goes through the scheduled-tasks route.
             scheduled_task_id = exc.scheduled_task_id
         else:
-            return detail, f"Scheduled {sanitize_line(detail.name)!r} on {_schedule_words(detail)}."
+            return (
+                detail,
+                f"Scheduled {sanitize_line(detail.name)!r} on {_schedule_words(detail)}{posting}.",
+            )
     api.change_research_schedule(
         scheduled_task_id, cron=cron, timezone=zone, topic_id=topic_id, group_id=group_id
     )
@@ -9028,7 +9109,15 @@ def _research_schedule_step(
     except (api_client.ApiError, httpx.RequestError) as exc:
         raise _ScheduleChangedReadFailed(exc) from exc
     name = sanitize_line(detail.name)
-    return detail, f"Changed the schedule of {name!r} to {_schedule_words(detail)}."
+    old, new = (before.schedule if before else None), detail.schedule
+    if (
+        old is not None
+        and new is not None
+        and not topic_name
+        and (old.cron, old.timezone) == (new.cron, new.timezone)
+    ):
+        return detail, f"The schedule of {name!r} is unchanged: {_schedule_words(detail)}."
+    return detail, f"Changed the schedule of {name!r} to {_schedule_words(detail)}{posting}."
 
 
 #: Transport failures that happen before a request is sent, so the server never saw it.
@@ -9156,7 +9245,7 @@ def _wait_progress(args: argparse.Namespace, status: str, elapsed: float, *, rew
     per change otherwise. ``rewrite`` is the terminal case."""
     if _json_mode(args):
         return
-    line = f"{status} ({render.format_duration(elapsed)})"
+    line = f"{status} ({render.format_duration(elapsed)} waited)"
     if rewrite:
         sys.stderr.write(f"\r\x1b[K{line}")
     else:
@@ -9348,21 +9437,35 @@ def cmd_research_projects_steer(args: argparse.Namespace) -> int:
 
 
 def _research_pause_resume(args: argparse.Namespace, *, pause: bool) -> int:
+    """Pause or resume. The server answers the project as it is after the call, and a repeat is
+    a plain 200, so the response cannot say whether anything changed. The status is read first;
+    the write is still sent (it is idempotent, and the server stays the judge of who may do it),
+    and the line says "already" when the project was in that state to begin with. A read that
+    fails only costs that wording; the write then reports the failure."""
+
     def run(api: api_client.ApiClient) -> int:
         group_id, project_id = _research_target(api, args)
         if project_id is None:
             return 2
+        try:
+            was: str | None = api.get_research_project(project_id, group_id=group_id).status
+        except (api_client.ApiError, httpx.RequestError):
+            was = None  # only decides the wording; the write below reports a real failure
         detail = (
             api.pause_research_project(project_id, group_id=group_id)
             if pause
             else api.resume_research_project(project_id, group_id=group_id)
         )
+        already = was == ("paused" if pause else "active")
+        name = sanitize_line(detail.name)
 
         def human() -> None:
             if pause:
-                render.info(f"Paused {detail.name!r}.")
+                render.info(f"{name!r} was already paused." if already else f"Paused {name!r}.")
+            elif already:
+                render.info(f"{name!r} was already active.")
             else:
-                render.info(f"Resumed {detail.name!r}. Resuming does not run it.")
+                render.info(f"Resumed {name!r}. Resuming does not run it.")
 
         _emit(detail, args, human)
         return 0

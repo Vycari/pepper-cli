@@ -152,7 +152,9 @@ item reference (a list number, §5.2) means nothing without its project. The IA 
   (`--project`), takes what the parent noun's own positional takes (name, unique prefix, UUID),
   and is resolved by the parent noun's own resolver.
 - **Required.** It is required on every verb of the child noun. There is no "yours" default for a
-  container: a ledger with no project is not a thing.
+  container: a ledger with no project is not a thing. It stays a flag and is not also accepted as
+  a positional (`research-items list monitor-research`): `research-items show 3` would then be
+  ambiguous between a project and an item. A missing `--project` says so in its error.
 - **Order.** Canonical order is `<noun> <verb> [--room R] [--project P] [OBJECT…] [flags]`.
   `--room` scopes the container (it says whose project), never the item directly; it stays first
   because harness allow rules pin the room. Other orders still parse (rule 3: they just do not
@@ -279,8 +281,11 @@ later, additive change.
 
 **Scoping a saved listing.** `save()` records `meta = {"project_id", "room_id"}` (room id `null`
 for personal). `show/take/reconsider` resolve `--room` and `--project` first and refuse a number
-whose saved meta names a different project or room: `pepper: the last 'research-items list' was
-of another project — list this one first`, J8 `usage`, exit 2. A number never resolves against
+whose saved meta names a different project or room: `that number is from the last 'research-items list',
+which was of another project — run '<the list command for this project, with --room>' first and use
+its numbers` (`another room` when it is the room that differs), J8 `usage`, exit 2. The check comes
+before the range check, so a number from an empty list of another project is the wrong list, not
+"it listed 0". A number never resolves against
 the wrong ledger. An id or id prefix is accepted without that check (the server refuses one that is
 not in the project). `take` and `reconsider` act on a number only after the check, which is the
 same safeguard `dash do` gets from a confirmation (`cli-core-coverage.md` §6), without a prompt:
@@ -302,7 +307,7 @@ run today and does not wait; it would need a receipt to poll first). The rules:
 | Without `--wait` | Print the receipt and exit 0 as soon as the server accepts (J5 under `--json`) |
 | Polling | `GET …/{pid}/runs/{rid}` (the server's `RunDetail`, terminal at `succeeded`, `error`, `interrupted`) at 2 s, growing ×1.5 per poll to a 15 s cap; reset to 2 s on a status change. A `Retry-After` from the server overrides the interval |
 | Bound | `--timeout SECONDS`, default 900 (15 min), `0` = no bound. On expiry the command stops waiting; the work goes on |
-| Progress | Human mode: one status line on stderr (`queued` → `running`, elapsed time), rewritten in place on a terminal, one line per change off a terminal. JSON mode: nothing at all until the end (J2), and never JSON lines: `--wait` is not a stream (J6) |
+| Progress | Human mode: one status line on stderr (`queued` → `running`, with the time waited: `running (1m13s waited)`; the end line gives the run's own time and the time since it was queued, `succeeded in 40s (1m53s since queued)`), rewritten in place on a terminal, one line per change off a terminal. JSON mode: nothing at all until the end (J2), and never JSON lines: `--wait` is not a stream (J6) |
 | End: succeeded | exit 0. stdout: the final receipt (JSON), or in human mode the receipt line and then the run's "What's new" lines (§6.3) |
 | End: run failed (`error`, `interrupted`) | stdout: the final receipt, the same document as on success (it is the answer). stderr: a J8 line, code `run_failed`. exit 1 |
 | End: timeout | stdout: the last receipt seen (status `queued`/`running`). stderr: a J8 line, code `timeout`, message naming the receipt id and `pepper research-projects show [--room R] P` (the run is still queued or running, so it is in `show`, not yet in `runs`, §4.3). exit 4 |
@@ -418,7 +423,8 @@ enabling again. In a room it needs the owner role, like enabling.
 | Run already in flight (409 with `run_id`) | — | 0 | §6.2: attach or report it, not an error |
 | Name or number does not resolve | `not_found` / `ambiguous` / `usage` | 2 | §5 |
 | Prompt needed and no terminal or `--json` | `usage` | 2 | `pass --yes to …` |
-| Refused transition (409), taken name (409), bad input (422) | `conflict` / `validation` | 1 | the server's own refusal sentence, the same text chat shows |
+| Refused transition (409), taken name (409), bad input (422) | `conflict` / `validation` | 1 | the server's own refusal sentence, the same text chat shows, printed alone (`error: <sentence>`) for a 4xx other than 401 with a detail; the status stays in the J8 `status` field. No detail, or a 5xx: `Server returned N[: detail]`. Research commands only (`_report_research_api_error`); the shared `_report_api_error` is unchanged |
+| `pause` on a paused project, `resume` on an active one | — | 0 | `'x' was already paused.` / `'x' was already active.` The server answers a plain 200 with the project as it is after, so the status is read first (advisory: a failed read only loses the wording) |
 
 The flag-off messages say "on this Pepper server", not "for your account":
 `research_projects_enabled` is a deployment setting, not per user (the tool's own docstring), so

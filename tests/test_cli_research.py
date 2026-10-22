@@ -24,6 +24,8 @@ P2 = "00000000-0000-0000-0000-0000000000d2"
 ME = "00000000-0000-0000-0000-0000000000aa"
 CHRIS = "00000000-0000-0000-0000-0000000000bb"
 BASE = "/api/v1/research-projects"
+#: How the refusal of a number from another project's or room's listing begins.
+ANOTHER = "that number is from the last 'research-items list', which was of another"
 
 
 def _summary(pid: str, name: str, **over) -> dict:
@@ -607,7 +609,8 @@ def test_a_number_from_another_projects_listing_is_refused(server, capsys) -> No
     error = _error(err)
     assert error["code"] == "usage"
     assert error["message"] == (
-        "the last 'research-items list' was of another project — list this one first"
+        "that number is from the last 'research-items list', which was of another project — "
+        f"run 'pepper research-items list --project {P2}' first and use its numbers"
     )
     assert not server.requests  # nothing was fetched for the wrong ledger
 
@@ -685,7 +688,7 @@ def test_a_403_without_a_flag_code_keeps_the_servers_detail(server, capsys) -> N
     server.routes[f"{BASE}/{P1}"] = httpx.Response(403, json={"detail": "Only a room owner can."})
     rc, _, err = _run(["research-projects", "show", P1], capsys)
     assert rc == 1
-    assert "Server returned 403: Only a room owner can." in err
+    assert err == "error: Only a room owner can.\n"
 
 
 def test_a_bad_cursor_is_the_servers_422(server, capsys) -> None:
@@ -932,7 +935,7 @@ def test_create_a_taken_name_is_the_servers_conflict(server, capsys, monkeypatch
     assert _error(err) == {
         "code": "conflict",
         "status": 409,
-        "message": "Server returned 409: name already taken",
+        "message": "name already taken",
     }
 
 
@@ -1104,7 +1107,7 @@ def test_edit_a_422_prints_the_servers_sentence(server, capsys, monkeypatch) -> 
     assert _error(err) == {
         "code": "validation",
         "status": 422,
-        "message": "Server returned 422: Nothing changed.",
+        "message": "Nothing changed.",
     }
 
 
@@ -1230,7 +1233,7 @@ def test_run_a_409_without_a_run_id_is_a_conflict(server, capsys) -> None:
     assert _error(err) == {
         "code": "conflict",
         "status": 409,
-        "message": "Server returned 409: the project is paused",
+        "message": "the project is paused",
     }
 
 
@@ -1398,20 +1401,21 @@ def test_wait_human_output_has_progress_on_stderr_and_whats_new_on_stdout(
     rc, out, err = _run(["research-projects", "run", "robot-vacuums", "--wait"], capsys)
     assert rc == 0
     assert out.splitlines() == [
-        f"Run {RUN} succeeded in 3m12s.",
+        f"Run {RUN} succeeded in 3m12s (3m17s since queued).",
         "What's new",
         "  2026-10-20  Two new candidates under $450",
     ]
     lines = err.splitlines()
     assert lines[0].startswith("Queued run")
     assert [ln.split(" ")[0] for ln in lines[1:]] == ["queued", "running"]  # one line per change
+    assert all(ln.endswith(" waited)") for ln in lines[1:])  # time since the wait began
 
 
 def test_wait_without_changelog_entries_points_at_the_report(server, capsys, clock) -> None:
     _wait_routes(server, _poll("succeeded", finished_at="2026-10-20T10:00:45+00:00"))
     _, out, _ = _run(["research-projects", "run", "robot-vacuums", "--wait"], capsys)
     assert out.splitlines() == [
-        f"Run {RUN} succeeded in 40s.",
+        f"Run {RUN} succeeded in 40s (45s since queued).",
         "Read the report: pepper research-projects show robot-vacuums --report",
     ]
 
@@ -1714,7 +1718,7 @@ def test_take_a_refused_transition_prints_the_servers_sentence(server, capsys) -
     )
     rc, _, err = _run(["research-items", "take", "--project", P1, item["id"], "--json"], capsys)
     assert rc == 1
-    assert _error(err)["message"] == "Server returned 409: only a delivered item can be taken"
+    assert _error(err)["message"] == "only a delivered item can be taken"
 
 
 @pytest.mark.parametrize("verb", ["take", "reconsider"])
@@ -1726,7 +1730,7 @@ def test_a_number_from_another_projects_listing_is_refused_by_the_writes(
     server.requests.clear()
     rc, out, err = _run(["research-items", verb, "--project", P2, "1", "--json"], capsys)
     assert (rc, out) == (2, "")
-    assert _error(err)["message"] == research_view.ANOTHER_PROJECT
+    assert _error(err)["message"].startswith(ANOTHER)
     assert not server.requests  # nothing was written to the wrong ledger
 
 
@@ -1958,12 +1962,27 @@ def test_changing_a_schedule_patches_the_task_without_a_prompt(server, capsys, m
 
 
 def test_changing_only_the_cron_sends_no_timezone(server, capsys) -> None:
-    server.routes[f"{BASE}/{P1}"] = _json(_scheduled())
+    server.routes[f"{BASE}/{P1}"] = [  # read before the write, then read back after it
+        _json(_scheduled()),
+        _json(
+            _scheduled(
+                schedule={"cron": "0 7 * * 1", "timezone": "America/Los_Angeles", "active": True}
+            )
+        ),
+    ]
     server.routes[f"PATCH {TASK_PATH}"] = _json({"id": TASK})
     rc, _, err = _run(["research-projects", "edit", P1, "--cron", "0 7 * * 1"], capsys)
     assert rc == 0
     assert _sent(_writes(server)[0]) == {"cron": "0 7 * * 1"}
     assert "Changed the schedule" in err
+
+
+def test_resending_the_same_cron_says_the_schedule_is_unchanged(server, capsys) -> None:
+    server.routes[f"{BASE}/{P1}"] = _json(_scheduled())
+    server.routes[f"PATCH {TASK_PATH}"] = _json({"id": TASK})
+    rc, _, err = _run(["research-projects", "edit", P1, "--cron", CRON], capsys)
+    assert rc == 0
+    assert err == f"The schedule of 'robot-vacuums' is unchanged: '{CRON}' (America/Los_Angeles).\n"
 
 
 def test_a_refused_cron_is_the_servers_sentence(server, capsys) -> None:
@@ -2352,7 +2371,7 @@ def test_a_number_from_a_personal_listing_is_refused_in_a_room(room, capsys, ver
         ["research-items", verb, "--room", G, "--project", P1, "1", "--json"], capsys
     )
     assert (rc, out) == (2, "")
-    assert _error(err)["message"] == research_view.ANOTHER_PROJECT
+    assert _error(err)["message"].startswith(ANOTHER)
     assert not room.requests
 
 
@@ -2362,7 +2381,7 @@ def test_a_number_from_a_room_listing_is_refused_without_the_room(room, capsys) 
     room.requests.clear()
     rc, out, err = _run(["research-items", "take", "--project", P1, "1", "--json"], capsys)
     assert (rc, out) == (2, "")
-    assert _error(err)["message"] == research_view.ANOTHER_PROJECT
+    assert _error(err)["message"].startswith(ANOTHER)
     assert not room.requests
 
 
@@ -2403,7 +2422,7 @@ def test_a_number_from_another_room_is_still_refused(room, capsys) -> None:
     other = "00000000-0000-0000-0000-0000000000b2"
     rc, err = _room_listing_then(room, capsys, G, other.upper())
     assert rc == 2
-    assert _error(err)["message"] == research_view.ANOTHER_PROJECT
+    assert _error(err)["message"].startswith(ANOTHER)
     assert not room.requests
 
 
@@ -2631,7 +2650,7 @@ def test_a_missing_project_in_a_room_is_the_servers_404(room, capsys) -> None:
     assert _error(err) == {
         "code": "not_found",
         "status": 404,
-        "message": "Server returned 404: no such research project",
+        "message": "no such research project",
     }
 
 
@@ -2784,3 +2803,230 @@ def test_topic_with_room_but_no_cron_is_a_usage_error(room, capsys) -> None:
     assert rc == 2
     assert "--topic needs --room and --cron" in err
     assert not room.requests
+
+
+# ---------------------------------------------------------------------------
+# smoke-test fixes (pepper-cli#98)
+
+MARKER = '<!-- pepper-research-report-metadata:v1 {"iteration": 3, "open_questions": []} -->'
+
+
+def test_show_report_drops_the_trailing_engine_marker(server, capsys) -> None:
+    body = "# robot-vacuums\n\n## Summary\nAll good.  \n\n<!-- a note of mine -->\n"
+    server.routes[f"{BASE}/{P1}/report"] = _json({**REPORT, "body": f"{body}{MARKER}\n"})
+    rc, out, _ = _run(["research-projects", "show", P1, "--report"], capsys)
+    assert (rc, out) == (0, body)  # everything else byte for byte
+
+
+def test_show_report_json_keeps_the_marker(server, capsys) -> None:
+    server.routes[f"{BASE}/{P1}/report"] = _json({**REPORT, "body": f"text\n{MARKER}\n"})
+    _, out, _ = _run(["research-projects", "show", P1, "--report", "--json"], capsys)
+    assert json.loads(out)["body"] == f"text\n{MARKER}\n"
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (f"text\n{MARKER}", "text\n"),
+        (f"text\n{MARKER}\n\n", "text\n"),
+        (MARKER, ""),
+        (f"{MARKER}\ntext\n", f"{MARKER}\ntext\n"),  # only a trailing line goes
+        (f"text {MARKER}\n", f"text {MARKER}\n"),  # ... and only a whole line
+        ("text\n", "text\n"),
+        ("", ""),
+    ],
+)
+def test_strip_report_marker(body, expected) -> None:
+    assert research_view.strip_report_marker(body) == expected
+
+
+@pytest.mark.parametrize(
+    ("verb", "before", "after", "said"),
+    [
+        ("pause", "paused", "paused", "'robot-vacuums' was already paused."),
+        ("pause", "active", "paused", "Paused 'robot-vacuums'."),
+        ("resume", "active", "active", "'robot-vacuums' was already active."),
+        ("resume", "paused", "active", "Resumed 'robot-vacuums'. Resuming does not run it."),
+    ],
+)
+def test_pause_and_resume_say_when_there_was_nothing_to_do(
+    server, capsys, verb, before, after, said
+) -> None:
+    server.routes[f"{BASE}/{P1}"] = _json(_detail(status=before))
+    server.routes[f"POST {BASE}/{P1}/{verb}"] = _json(_detail(status=after))
+    rc, out, err = _run(["research-projects", verb, P1], capsys)
+    assert (rc, out, err) == (0, "", said + "\n")
+    rc, out, _ = _run(["research-projects", verb, P1, "--json"], capsys)
+    assert (rc, json.loads(out)["status"]) == (0, after)
+
+
+def test_pause_still_posts_when_it_is_already_paused(server, capsys) -> None:
+    server.routes[f"{BASE}/{P1}"] = _json(_detail(status="paused"))
+    server.routes[f"POST {BASE}/{P1}/pause"] = _json(_detail(status="paused"))
+    _run(["research-projects", "pause", P1], capsys)
+    assert [w.url.path for w in _writes(server)] == [f"{BASE}/{P1}/pause"]
+
+
+def test_a_failed_pre_read_only_costs_the_wording(server, capsys) -> None:
+    server.routes[f"{BASE}/{P1}"] = httpx.Response(500, json={"detail": "boom"})
+    server.routes[f"POST {BASE}/{P1}/pause"] = _json(_detail(status="paused"))
+    rc, _, err = _run(["research-projects", "pause", P1], capsys)
+    assert (rc, err) == (0, "Paused 'robot-vacuums'.\n")
+
+
+@pytest.mark.parametrize("verb", ["list", "show", "take", "reconsider"])
+def test_the_project_given_as_a_positional_is_told_it_is_a_flag(server, capsys, verb) -> None:
+    argv = ["research-items", verb, "robot-lawnmowers"]
+    with pytest.raises(SystemExit) as exc:
+        cli.main(argv)
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "the following arguments are required: --project" in err
+    assert f"(the project is a flag here, not a positional: pepper research-items {verb}" in err
+    assert not server.requests
+
+
+def test_a_server_sentence_is_printed_without_the_status_prefix(server, capsys) -> None:
+    server.routes[f"POST {BASE}/{P1}/pause"] = httpx.Response(
+        409, json={"detail": "It is stopped."}
+    )
+    rc, out, err = _run(["research-projects", "pause", P1], capsys)
+    assert (rc, out, err) == (1, "", "error: It is stopped.\n")
+
+
+def test_a_refusal_without_a_sentence_and_a_server_fault_keep_the_status(server, capsys) -> None:
+    server.routes[f"POST {BASE}/{P1}/pause"] = httpx.Response(409, text="")
+    assert _run(["research-projects", "pause", P1], capsys)[2] == "error: Server returned 409.\n"
+    server.routes[f"POST {BASE}/{P1}/pause"] = httpx.Response(502, json={"detail": "bad gateway"})
+    err = _run(["research-projects", "pause", P1], capsys)[2]
+    assert err == "error: Server returned 502: bad gateway\n"
+
+
+def test_other_commands_keep_the_status_prefix(server, capsys) -> None:
+    server.routes["/api/v1/todos"] = httpx.Response(409, json={"detail": "Not so."})
+    rc, _, err = _run(["todos", "list"], capsys)
+    assert (rc, err) == (1, "error: Server returned 409: Not so.\n")
+
+
+def test_a_number_from_an_empty_listing_of_another_project_names_the_list_to_run(
+    server, capsys
+) -> None:
+    _items_route(server, [])
+    _run(["research-items", "list", "--project", "robot-vacuums"], capsys)
+    server.requests.clear()
+    rc, out, err = _run(["research-items", "take", "--project", "robot-lawnmowers", "1"], capsys)
+    assert (rc, out) == (2, "")
+    assert err == (
+        "error: that number is from the last 'research-items list', which was of another "
+        "project — run 'pepper research-items list --project robot-lawnmowers' first and use "
+        "its numbers\n"
+    )
+    assert not _writes(server)
+
+
+def test_a_number_with_no_listing_names_this_projects_list_command(server, capsys) -> None:
+    rc, _, err = _run(["research-items", "show", "--project", "robot-vacuums", "1"], capsys)
+    assert rc == 2
+    assert "run 'pepper research-items list --project robot-vacuums' first" in err
+
+
+def test_a_number_past_the_listing_names_this_projects_list_command(server, capsys) -> None:
+    _items_route(server, [_item(1)])
+    _run(["research-items", "list", "--project", "robot-vacuums"], capsys)
+    rc, _, err = _run(["research-items", "show", "--project", "robot-vacuums", "9"], capsys)
+    assert rc == 2
+    assert (
+        "no research item 9 in the last 'pepper research-items list --project robot-vacuums'" in err
+    )
+
+
+def test_a_number_from_another_room_names_the_room_and_the_list_command(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}/items"] = _json({"items": [_item(1)], "next_before": None})
+    _run(
+        ["research-items", "list", "--room", "Trip planning", "--project", "robot-vacuums"], capsys
+    )
+    room.requests.clear()
+    rc, _, err = _run(["research-items", "take", "--project", "robot-vacuums", "1"], capsys)
+    assert rc == 2
+    assert err == (
+        "error: that number is from the last 'research-items list', which was of another "
+        "room — run 'pepper research-items list --project robot-vacuums' first and use its "
+        "numbers\n"
+    )
+    rc, _, err = _run(
+        ["research-items", "take", "--room", "Trip planning", "--project", "robot-lawnmowers", "1"],
+        capsys,
+    )
+    assert (
+        "run 'pepper research-items list --room 'Trip planning' --project robot-lawnmowers'" in err
+    )
+
+
+def test_the_report_hint_in_a_room_repeats_the_room(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(
+        _detail(
+            inflight_run={
+                "id": RUN,
+                "status": "running",
+                "requested_at": "2026-10-20T10:00:00+00:00",
+                "requested_by": None,
+            }
+        )
+    )
+    rc, out, _ = _run(["research-projects", "show", "--room", "Trip planning", P1], capsys)
+    assert rc == 0
+    lines = out.splitlines()
+    show = "pepper research-projects show --room 'Trip planning' robot-vacuums"
+    assert lines[-1] == f"Report      {show} --report"
+    assert any(ln.startswith("Run ") and ln.endswith(f"({show})") for ln in lines)
+
+
+def test_an_unknown_project_in_a_room_names_the_room(room, capsys) -> None:
+    rc, _, err = _run(["research-projects", "show", "--room", "Trip planning", "nope"], capsys)
+    assert rc == 2
+    assert "run 'pepper research-projects list --room 'Trip planning' --status all'" in err
+
+
+def test_the_wait_status_line_says_what_it_counts(server, capsys, clock) -> None:
+    done = _poll("succeeded", finished_at="2026-10-20T10:01:53+00:00")
+    _wait_routes(server, _poll("running"), done)
+    _, out, err = _run(["research-projects", "run", P1, "--wait"], capsys)
+    assert all(ln.endswith(" waited)") for ln in err.splitlines()[1:])
+    assert out.splitlines()[0] == f"Run {RUN} succeeded in 1m48s (1m53s since queued)."
+
+
+def test_enabling_a_room_schedule_names_the_topic(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(_detail())
+    room.routes[f"POST {RB}/{P1}/schedule"] = httpx.Response(201, json=_scheduled())
+    rc, _, err = _run(
+        [
+            "research-projects",
+            "edit",
+            "--room",
+            G,
+            P1,
+            "--cron",
+            CRON,
+            "--topic",
+            "Research",
+            "--yes",
+        ],
+        capsys,
+    )
+    assert rc == 0
+    assert err == (
+        f"Scheduled 'robot-vacuums' on '{CRON}' (America/Los_Angeles), "
+        "posting to topic 'Research'.\n"
+    )
+
+
+def test_changing_a_room_schedules_topic_is_a_change_even_with_the_same_cron(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(_scheduled())
+    room.routes[f"PATCH {ROOM_TASK_PATH}"] = _json({"id": TASK})
+    rc, _, err = _run(
+        ["research-projects", "edit", "--room", G, P1, "--cron", CRON, "--topic", TOPIC, "--yes"],
+        capsys,
+    )
+    assert rc == 0
+    assert err.startswith("Changed the schedule of 'robot-vacuums'")
+    assert f"posting to topic '{TOPIC}'" in err

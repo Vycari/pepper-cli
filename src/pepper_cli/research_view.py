@@ -48,4 +48,36 @@ def listing_row(item: dict[str, Any]) -> dict[str, Any]:
     return {k: item[k] for k in ("id", "title", "state") if k in item}
 
 
-ANOTHER_PROJECT = "the last 'research-items list' was of another project — list this one first"
+#: The line the research engine appends to a stored report: ``<!-- pepper-research-report-
+#: metadata:v1 {...} -->``. It is for the server's parser, not for a person reading the report.
+REPORT_MARKER_PREFIX = "<!-- pepper-research-report-metadata:"
+
+
+def strip_report_marker(body: str) -> str:
+    """``body`` without its trailing engine marker line; everything else stays byte for byte.
+
+    Only the last non-blank line is looked at, and only when it starts with
+    :data:`REPORT_MARKER_PREFIX`; blank lines after it go with it."""
+    kept = body.rstrip()
+    start = kept.rfind("\n") + 1
+    if kept[start:].startswith(REPORT_MARKER_PREFIX):
+        return body[:start]
+    return body
+
+
+def list_command(project: str, room: str | None) -> str:
+    """The ``research-items list`` command for this project, as it can be pasted."""
+    import shlex
+
+    where = f"--room {shlex.quote(room)} " if room else ""
+    return f"pepper research-items list {where}--project {shlex.quote(project)}"
+
+
+def another_ledger(project: str, room: str | None, *, project_differs: bool) -> str:
+    """The refusal for a number from a listing of another project or room, with the command
+    that lists this one."""
+    which = "another project" if project_differs else "another room"
+    return (
+        f"that number is from the last 'research-items list', which was of {which} — "
+        f"run '{list_command(project, room)}' first and use its numbers"
+    )
