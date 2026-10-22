@@ -2205,7 +2205,29 @@ def test_a_changed_schedule_whose_read_back_fails_says_it_was_changed(server, ca
     rc, out, err = _run(["research-projects", "edit", P1, "--cron", "0 7 * * 1", "--json"], capsys)
     assert (rc, out) == (1, "")
     message = _error(err)["message"]
-    assert "schedule was changed" in message
+    assert "The schedule was updated, but reading the project back failed" in message
+    assert f"pepper research-projects show {P1}" in message
+
+
+@pytest.mark.parametrize("as_json", [True, False])
+def test_a_combined_edit_whose_read_back_fails_names_every_saved_part(
+    server, capsys, monkeypatch, as_json
+) -> None:
+    _stdin(monkeypatch, "B")
+    server.routes[f"{BASE}/{P1}"] = [
+        _json(_scheduled()),
+        httpx.Response(503, json={"detail": "down"}),
+    ]
+    server.routes[f"PATCH {BASE}/{P1}"] = _json(_detail(brief="B"))
+    server.routes[f"PUT {BASE}/{P1}/filters"] = _json(_detail(brief="B"))
+    server.routes[f"PATCH {TASK_PATH}"] = _json({"id": TASK})
+    argv = ["research-projects", "edit", P1, "--file", "-", "--filter", "f", "--cron", "0 7 * * 1"]
+    rc, out, err = _run([*argv, "--json"] if as_json else argv, capsys)
+    assert (rc, out) == (1, "")
+    message = _error(err)["message"] if as_json else " ".join(err.split())
+    assert "brief, filters and schedule were updated" in message
+    assert "reading the project back failed" in message
+    assert "down" in message
     assert f"pepper research-projects show {P1}" in message
 
 

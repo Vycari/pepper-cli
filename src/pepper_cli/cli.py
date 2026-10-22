@@ -8617,12 +8617,19 @@ def _research_partial_failure(
     """Report a write that failed after earlier writes of the same ``edit`` had applied.
 
     ``applied`` names the parts already saved (``["brief", "filters"]``); ``failed`` is the
-    part that did not go through (``"filters"`` or ``"schedule"``). Two sentences, as for any
-    two-call edit: the part was not changed, or, when the answer may have been lost, that it
-    could not be confirmed and how to check."""
+    part that did not go through (``"filters"`` or ``"schedule"``), or ``"read-back"`` when
+    every write went through and only reading the project back failed. Two sentences, as for
+    any two-call edit: the part was not changed, or, when the answer may have been lost, that
+    it could not be confirmed and how to check."""
     code, status, cause, unsent = _research_failure(exc)
-    done = " and ".join(applied) + (" was updated" if len(applied) == 1 else " were updated")
-    if unsent:
+    parts = (", ".join(applied[:-1]) + " and " + applied[-1]) if len(applied) > 1 else applied[0]
+    done = parts + (" was updated" if len(applied) == 1 else " were updated")
+    if failed == "read-back":
+        message = (
+            f"The {done}, but reading the project back failed ({cause}); check with: "
+            f"pepper research-projects show {shlex.quote(args.project)}"
+        )
+    elif unsent:
         verb = "was" if failed == "schedule" else "were"
         message = f"The {done}, but the {failed} {verb} not changed ({cause})."
     else:
@@ -8740,16 +8747,9 @@ def cmd_research_projects_edit(args: argparse.Namespace) -> int:
                     raise
                 return _research_partial_failure(args, exc, applied=applied, failed="schedule")
             except _ScheduleChangedReadFailed as exc:
-                code, status, cause, _ = _research_failure(exc.cause)
-                _emit_error(
-                    args,
-                    code,
-                    f"The schedule was changed, but reading the project back failed ({cause}); "
-                    f"check with: pepper research-projects show {shlex.quote(args.project)}",
-                    status=status,
-                    soft_wrap=True,
+                return _research_partial_failure(
+                    args, exc.cause, applied=[*applied, "schedule"], failed="read-back"
                 )
-                return 1
             notes.append(note)
             applied.append("schedule")
         assert result is not None  # something was sent
