@@ -2125,6 +2125,43 @@ def test_resending_the_same_cron_says_the_schedule_is_unchanged(server, capsys) 
     assert err == f"The schedule of 'robot-vacuums' is unchanged: '{CRON}' (America/Los_Angeles).\n"
 
 
+def test_room_resending_cron_with_a_topic_says_cron_and_zone_are_unchanged(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(_scheduled())
+    room.routes[f"PATCH {ROOM_TASK_PATH}"] = _json({"id": TASK})
+    rc, _, err = _run(
+        ["research-projects", "edit", "--room", G, P1, "--cron", CRON, "--topic", TOPIC, "--yes"],
+        capsys,
+    )
+    assert rc == 0, err
+    assert "Changed the schedule" not in err
+    assert "are unchanged" in err
+    assert f"'{CRON}' (America/Los_Angeles)" in err
+
+
+def test_skill_not_granted_hint_is_on_its_own_line(room, capsys, monkeypatch) -> None:
+    _stdin(monkeypatch, "Robot vacuums")
+    room.routes[f"POST {RB}"] = httpx.Response(
+        422, json={"detail": "a room owner can grant it", "code": "skill_not_granted"}
+    )
+    rc, _, err = _run(
+        ["research-projects", "create", "--room", G, "x", "--file", "-", "--yes"], capsys
+    )
+    assert rc == 1
+    lines = err.splitlines()
+    assert any(ln.startswith("Grant it with: pepper skills share web-research") for ln in lines)
+    assert "grant it Grant it" not in err
+
+
+def test_create_run_hint_is_not_wrapped_mid_command(server, capsys, tmp_path) -> None:
+    name = "a-very-long-research-project-name-that-pushes-the-hint-past-the-width"
+    brief = tmp_path / "brief.md"
+    brief.write_text("Robot vacuums.\n", encoding="utf-8")
+    server.routes[f"POST {BASE}"] = httpx.Response(201, json=_detail(name=name))
+    rc, _, err = _run(["research-projects", "create", name, "--file", str(brief)], capsys)
+    assert rc == 0
+    assert f"pepper research-projects run {name}" in err
+
+
 def test_a_refused_cron_is_the_servers_sentence(server, capsys) -> None:
     server.routes[f"{BASE}/{P1}"] = _json(_scheduled())
     server.routes[f"PATCH {TASK_PATH}"] = httpx.Response(422, json={"detail": "bad cron: nope"})
@@ -3205,7 +3242,7 @@ def test_enabling_a_room_schedule_names_the_topic(room, capsys) -> None:
     )
 
 
-def test_changing_a_room_schedules_topic_is_a_change_even_with_the_same_cron(room, capsys) -> None:
+def test_a_room_schedules_topic_is_still_sent_when_the_cron_is_unchanged(room, capsys) -> None:
     room.routes[f"{RB}/{P1}"] = _json(_scheduled())
     room.routes[f"PATCH {ROOM_TASK_PATH}"] = _json({"id": TASK})
     rc, _, err = _run(
@@ -3213,5 +3250,7 @@ def test_changing_a_room_schedules_topic_is_a_change_even_with_the_same_cron(roo
         capsys,
     )
     assert rc == 0
-    assert err.startswith("Changed the schedule of 'robot-vacuums'")
+    # The detail does not carry the topic, so only the cron and zone are said to be unchanged.
+    assert err.startswith("The cron and timezone of 'robot-vacuums' are unchanged")
     assert f"posting to topic '{TOPIC}'" in err
+    assert _sent(_writes(room)[0])["delivery"]["topic"] == TOPIC

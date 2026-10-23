@@ -3812,6 +3812,16 @@ def _room_skill_shared_by(row: api_client.RoomSkill) -> str:
     return row.granted_by or "someone no longer here"
 
 
+def _room_skill_attribution(row: api_client.RoomSkill) -> str:
+    """``shared by X`` for a member's skill, ``granted by X`` for a built-in (it has no owner:
+    someone granted it). ``owner_is_you`` is never true for a built-in and the listing names
+    the granter by display name only, so the viewer is not recognised here: ``granted by`` the
+    name, even when the name is yours."""
+    if row.builtin:
+        return f"granted by {row.granted_by or 'someone no longer here'}"
+    return f"shared by {_room_skill_shared_by(row)}"
+
+
 def _room_skill_state_note(row: api_client.RoomSkill) -> str | None:
     """Why a room turn cannot run this one, or ``None`` when it can."""
     if row.state == "inactive":
@@ -3826,7 +3836,7 @@ def _room_skill_state_note(row: api_client.RoomSkill) -> str | None:
 
 def _room_skill_line(row: api_client.RoomSkill) -> str:
     notes = ["built-in"] if row.builtin else []
-    notes.append(f"shared by {_room_skill_shared_by(row)}")
+    notes.append(_room_skill_attribution(row))
     state = _room_skill_state_note(row)
     if state:
         notes.append(state)
@@ -3862,11 +3872,11 @@ def _resolve_room_skill(
             "not_found",
             f"no skill named {value!r} is shared with that room — "
             "run 'pepper skills list --room ROOM'",
+            soft_wrap=True,
         )
         raise _BadInputError
     lines = [
-        sanitize_line(f"{row.id}  shared by {_room_skill_shared_by(row)} ({row.state})")
-        for row in matches
+        sanitize_line(f"{row.id}  {_room_skill_attribution(row)} ({row.state})") for row in matches
     ]
     head = (
         f"{len(matches)} skills named {value!r} are shared with that room — "
@@ -3931,7 +3941,9 @@ def _cmd_room_skills_list(args: argparse.Namespace) -> int:
             for row in rows:
                 sys.stdout.write(_room_skill_line(row) + "\n")
             if any(row.can_revoke for row in rows):
-                render.info("* you can revoke it: pepper skills revoke NAME --room ROOM")
+                render.info(
+                    "* you can revoke it: pepper skills revoke NAME --room ROOM", soft_wrap=True
+                )
 
         _emit_list(rows, args, human)
         return 0
@@ -3946,7 +3958,8 @@ def _cmd_room_skills_show(args: argparse.Namespace) -> int:
 
         def human() -> None:
             kind = "built-in skill, " if detail.row.builtin else ""
-            note = f"({kind}shared with this room by {_room_skill_shared_by(detail.row)}"
+            how = "granted to this room by" if detail.row.builtin else "shared with this room by"
+            note = f"({kind}{how} {_room_skill_shared_by(detail.row)}"
             state = _room_skill_state_note(detail.row)
             render.info(f"{note} — {state})" if state else f"{note})")
             render.write_document(skill_doc.compose_skill_md(_fields_from_detail(detail.skill)))
@@ -8490,7 +8503,7 @@ def _report_research_error(exc: api_client.ApiError, args: argparse.Namespace | 
     if room and exc.status == 422 and api_client.error_code(exc) == "skill_not_granted":
         skill = shlex.quote(getattr(args, "skill", None) or "web-research")
         hint = f"Grant it with: pepper skills share {skill} --room {shlex.quote(room)}"
-        message = f"{exc.detail} {hint}" if exc.detail else hint
+        message = f"{exc.detail}\n{hint}" if exc.detail else hint
         _emit_error(args, "validation", message, status=422, soft_wrap=True)
         return 1
     if room and exc.status == 404 and not (exc.detail or "").lower().startswith("no such research"):
@@ -8853,7 +8866,8 @@ def cmd_research_projects_create(args: argparse.Namespace) -> int:
             ref = _research_ref(args, detail.name)
             render.info(
                 f"Created research project {detail.name!r}. Run it with: "
-                f"pepper research-projects run {ref}"
+                f"pepper research-projects run {ref}",
+                soft_wrap=True,
             )
             print(sanitize_line(detail.id))
 
@@ -9108,7 +9122,8 @@ def _research_schedule_step(
 
     ``before`` is the project as read before the write and ``topic_name`` the ``--topic`` as
     given: the line names the topic scheduled runs post to, and says "unchanged" when a change
-    leaves the cron and zone as they were (and no topic was asked for)."""
+    leaves the cron and zone as they were (the topic is not in the detail, so with a
+    ``--topic`` only the cron and zone are said to be unchanged)."""
     posting = f", posting to topic {sanitize_line(topic_name)!r}" if topic_name else ""
     if clear_schedule:
         detail = api.detach_research_schedule(project_id, group_id=group_id)
@@ -9138,12 +9153,12 @@ def _research_schedule_step(
         raise _ScheduleChangedReadFailed(exc) from exc
     name = sanitize_line(detail.name)
     old, new = (before.schedule if before else None), detail.schedule
-    if (
-        old is not None
-        and new is not None
-        and not topic_name
-        and (old.cron, old.timezone) == (new.cron, new.timezone)
-    ):
+    if old is not None and new is not None and (old.cron, old.timezone) == (new.cron, new.timezone):
+        if topic_name:
+            # The detail does not say which topic runs post to, so only the cron and zone are
+            # known to be unchanged.
+            words = _schedule_words(detail)
+            return detail, f"The cron and timezone of {name!r} are unchanged: {words}{posting}."
         return detail, f"The schedule of {name!r} is unchanged: {_schedule_words(detail)}."
     return detail, f"Changed the schedule of {name!r} to {_schedule_words(detail)}{posting}."
 
@@ -9332,6 +9347,7 @@ def _wait_for_research_run(
                         "timeout",
                         f"stopped waiting after {waited}; run {run_id} did not answer — "
                         f"check 'pepper research-projects show {ref}'",
+                        soft_wrap=True,
                     )
                     return 4
                 _emit(
@@ -9344,6 +9360,7 @@ def _wait_for_research_run(
                     "timeout",
                     f"stopped waiting after {waited}; run {run_id} is "
                     f"still {last.status} — check 'pepper research-projects show {ref}'",
+                    soft_wrap=True,
                 )
                 return 4
             if polled:

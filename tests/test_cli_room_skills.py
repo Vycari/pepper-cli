@@ -159,16 +159,20 @@ def test_list_reads_the_room_and_says_who_shared_each(api, capsys) -> None:
 
 
 def test_list_marks_a_built_in_grant(api, capsys) -> None:
-    api.rows = [_row(name="web-research", builtin=True, owner_is_you=True, can_revoke=True)]
+    api.rows = [
+        _row(name="web-research", builtin=True, granted_by="Allen Hutchison", can_revoke=True)
+    ]
     assert cli.main(["skills", "list", "--room", _ROOM]) == 0
     line = capsys.readouterr().out.strip()
-    assert "[built-in · shared by you]" in line
+    # A built-in has no owner: it was granted, by the name the listing carries.
+    assert "[built-in · granted by Allen Hutchison]" in line
+    assert "shared by" not in line
 
 
 def test_show_says_a_grant_is_built_in(api, capsys) -> None:
     api.rows = [_row(builtin=True)]
     assert cli.main(["skills", "show", "meal-plan", "--room", _ROOM]) == 0
-    assert "built-in skill, shared with this room by Sam" in _flat(capsys.readouterr().err)
+    assert "built-in skill, granted to this room by Sam" in _flat(capsys.readouterr().err)
 
 
 def test_share_help_allows_a_built_in(capsys) -> None:
