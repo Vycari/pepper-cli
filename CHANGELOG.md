@@ -4,6 +4,73 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (while 0.x, a minor bump may change flags or output).
 
+## 0.4.0 — 2026-10-23
+
+Research projects come to the terminal: `research-projects` and `research-items`, for personal
+projects and for rooms, covering reading, writing, running, schedules and steering. Todos gain next actions.
+Every PR merged since 0.3.0 is listed below.
+
+Upgrade notes:
+
+- The new commands need a server with the research routes (pepper#5080, #5091, #5113) and the
+  research flags on. Pending steering in `show` needs pepper#5175, and built-in room skills need
+  pepper#5205. An older server leaves those fields out, and nothing shows.
+- Project names must be lowercase words joined by single hyphens, at most 64 characters. The server
+  enforces this (pepper#5203). `research-projects create --help` states the rule, and a refused name
+  comes back with a suggested name.
+- Research commands print the server's error sentence without the `Server returned N:` prefix
+  (#99). Other commands are unchanged.
+
+### Added
+
+**Research projects** (`planning/research-projects.md`, tracking #85; designed in #86):
+
+- `pepper research-projects list`, `show` (`--report` for the full report) and `runs`, and
+  `pepper research-items list --project P` and `show` (#88).
+- `research-projects create`, `edit` (brief and filters), `run` (`--wait` follows the run to the
+  end), `steer`, `pause` and `resume`, and `research-items take` and `reconsider` (#90).
+- Schedules: `edit --cron C [--timezone TZ]` turns a schedule on or changes it, after one y/N
+  question that shows the cron and the zone. `edit --clear schedule` turns it off and keeps the run
+  history (#93).
+- `--room` on every `research-projects` and `research-items` command, plus `edit --topic` to choose
+  where a room schedule posts. In a room, `create`, `run`, `steer` and changing the schedule ask y/N
+  first; `--yes` answers it when there is no terminal (#96).
+- `show` lists each pending steering note with its author and time. `runs` puts a queued or
+  running manual run at the top of the first page (#101, #105).
+- `skills list --room` and `skills share --room` handle built-in skills that a room owner has
+  granted to the room (#105).
+
+**Todos:**
+
+- Todo next actions. `todos list` shows a "Next:" line for each todo, dimmed when Pepper wrote it,
+  and shows Pepper's newer suggestion on a dim "Or:" line. `pepper next` starts each todo with its
+  next action. `todos create` and `todos edit` can set or clear the next action, or accept or dismiss
+  Pepper's suggestion (#94).
+
+### Fixed
+
+- Fixes from the research smoke test on 2026-10-22 (#99):
+  - `show --report` no longer prints the report's metadata marker.
+  - `pause` and `resume` on a project that is already in that state say so.
+  - A numbered ref from a different project's list says which project that list was, and prints
+    the command that lists this one.
+  - In a room, `show`'s hints keep `--room`.
+  - `run --wait` reports a single duration.
+  - Turning on a room schedule names the topic it posts to.
+  - `research-items list` without `--project` explains how to name the project.
+- `pepper tui` in macOS Terminal.app: clicks land on the cell under the pointer, so the message bar
+  can be clicked again (#82).
+
+### Docs
+
+- The bundled agent guide (`pepper agents guide`) lists `attachments download` as a command an
+  agent token can run (#97).
+
+### Internal
+
+- The vendored `/api/v1` contract snapshot was refreshed (#81, #93, #105). The CLI core coverage plan
+  is in `planning/` (#61). Dependency bumps: #83, #84.
+
 ## 0.3.0 — 2026-10-17
 
 A full-screen terminal UI, which bare `pepper` now opens on a terminal; `pepper next` rebuilt from

@@ -1,6 +1,6 @@
 [project]
 name = "vycari-pepper"
-version = "0.3.0"
+version = "0.4.0"
 description = "Command-line client for Pepper — bearer-token API access to /api/v1/."
 requires-python = ">=3.13"
 license = { text = "Apache-2.0" }
