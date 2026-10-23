@@ -58,6 +58,12 @@ Upgrade notes:
   - `run --wait` reports a single duration.
   - Turning on a room schedule names the topic it posts to.
   - `research-items list` without `--project` explains how to name the project.
+- Fixes from the research retest on 2026-10-23 (#107):
+  - `edit --cron` with an unchanged cron and zone says they are unchanged, also when `--topic` is
+    given.
+  - The "Grant it with:" hint is on its own line.
+  - Built-in room skills are labelled "granted by <name>" and not "shared by".
+  - Research and skills command hints are not wrapped mid-command.
 - `pepper tui` in macOS Terminal.app: clicks land on the cell under the pointer, so the message bar
   can be clicked again (#82).
 
