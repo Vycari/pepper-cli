@@ -34,6 +34,7 @@ def _row(**over) -> api_client.RoomSkill:
         "description": "Plan the week's dinners.",
         "granted_by": "Sam",
         "owner_is_you": False,
+        "builtin": False,
         "toolsets": (),
         "state": "active",
         "ungrantable_toolsets": (),
@@ -155,6 +156,25 @@ def test_list_reads_the_room_and_says_who_shared_each(api, capsys) -> None:
     # No marker: not the caller's skill and not a room they manage.
     assert theirs == f"  trip-budget — Track spend.  [shared by Sam]  {_G2}"
     assert "* you can revoke it" in captured.err
+
+
+def test_list_marks_a_built_in_grant(api, capsys) -> None:
+    api.rows = [_row(name="web-research", builtin=True, owner_is_you=True, can_revoke=True)]
+    assert cli.main(["skills", "list", "--room", _ROOM]) == 0
+    line = capsys.readouterr().out.strip()
+    assert "[built-in · shared by you]" in line
+
+
+def test_show_says_a_grant_is_built_in(api, capsys) -> None:
+    api.rows = [_row(builtin=True)]
+    assert cli.main(["skills", "show", "meal-plan", "--room", _ROOM]) == 0
+    assert "built-in skill, shared with this room by Sam" in _flat(capsys.readouterr().err)
+
+
+def test_share_help_allows_a_built_in(capsys) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["skills", "share", "--help"])
+    assert "a built-in if you own the room" in " ".join(capsys.readouterr().out.split())
 
 
 def test_list_without_a_revocable_row_prints_no_legend(api, capsys) -> None:

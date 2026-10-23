@@ -590,6 +590,7 @@ def test_room_skill_and_watch_lines_are_cleaned() -> None:
         state="active",
         granted_by=H,
         owner_is_you=False,
+        builtin=False,
         can_revoke=True,
         ungrantable_toolsets=[],
         toolsets=[H],

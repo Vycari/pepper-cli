@@ -2000,6 +2000,37 @@
         ],
         "type": "object"
       },
+      "ChatEmojiUsageResponse": {
+        "properties": {
+          "hover": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "usage": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "hover",
+          "usage"
+        ],
+        "type": "object"
+      },
       "ChatHistoryEntry": {
         "properties": {
           "attachments": {
@@ -2120,6 +2151,17 @@
             "maxItems": 8,
             "type": "array"
           },
+          "capabilities": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "client_context": {
             "anyOf": [
               {
@@ -2205,6 +2247,17 @@
               }
             ],
             "default": false
+          },
+          "capabilities": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "client_tools_ignored": {
             "anyOf": [
@@ -4314,6 +4367,8 @@
             ]
           },
           "name": {
+            "maxLength": 64,
+            "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
             "type": "string"
           },
           "skill_name": {
@@ -4407,6 +4462,12 @@
           "owner": {
             "$ref": "#/components/schemas/ResearchOwnerOut"
           },
+          "pending_steering": {
+            "items": {
+              "$ref": "#/components/schemas/ResearchSteeringOut"
+            },
+            "type": "array"
+          },
           "pending_steering_count": {
             "type": "integer"
           },
@@ -4475,6 +4536,7 @@
           "source_url",
           "filters",
           "pending_steering_count",
+          "pending_steering",
           "item_counts",
           "report_artifact_id",
           "open_questions",
@@ -5107,6 +5169,9 @@
       },
       "RoomSkillDetail": {
         "properties": {
+          "builtin": {
+            "type": "boolean"
+          },
           "can_revoke": {
             "type": "boolean"
           },
@@ -5163,6 +5228,7 @@
           "description",
           "granted_by",
           "owner_is_you",
+          "builtin",
           "toolsets",
           "state",
           "ungrantable_toolsets",
@@ -5173,6 +5239,9 @@
       },
       "RoomSkillRow": {
         "properties": {
+          "builtin": {
+            "type": "boolean"
+          },
           "can_revoke": {
             "type": "boolean"
           },
@@ -5226,6 +5295,7 @@
           "description",
           "granted_by",
           "owner_is_you",
+          "builtin",
           "toolsets",
           "state",
           "ungrantable_toolsets",
@@ -13572,6 +13642,52 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api"
+        ]
+      }
+    },
+    "/api/v1/chat/emoji/usage": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatEmojiUsageResponse"
+                }
               }
             },
             "description": ""

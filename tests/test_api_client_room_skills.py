@@ -49,6 +49,7 @@ def _row_json(**over) -> dict:
         "description": "Plan the week's dinners.",
         "granted_by": "Sam",
         "owner_is_you": False,
+        "builtin": False,
         "toolsets": ["github"],
         "state": "inactive",
         "ungrantable_toolsets": ["github"],
@@ -71,12 +72,22 @@ def test_list_room_skills_hits_the_room_and_parses_every_field() -> None:
             description="Plan the week's dinners.",
             granted_by="Sam",
             owner_is_you=False,
+            builtin=False,
             toolsets=("github",),
             state="inactive",
             ungrantable_toolsets=("github",),
             can_revoke=True,
         )
     ]
+
+
+def test_list_room_skills_parses_builtin_and_tolerates_its_absence() -> None:
+    absent = {k: v for k, v in _row_json().items() if k != "builtin"}
+    _, handler = _capture(httpx.Response(200, json=[_row_json(builtin=True), absent]))
+    with _client(handler) as api:
+        built_in, older = api.list_room_skills(_ROOM)
+    assert built_in.builtin is True
+    assert older.builtin is False
 
 
 def test_list_room_skills_keeps_a_departed_granter_as_none() -> None:

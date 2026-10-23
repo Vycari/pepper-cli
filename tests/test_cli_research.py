@@ -877,7 +877,7 @@ def _without(row: dict, key: str) -> dict:
             ["research-projects", "show", P1],
             f"{BASE}/{P1}",
             _without(_detail(), "status"),
-            "ResearchProjectWithSteering has no 'status'",
+            "ResearchProjectDetail has no 'status'",
         ),
         (
             ["research-projects", "runs", P1],
@@ -2655,6 +2655,44 @@ def test_room_create_skill_not_granted_is_the_servers_sentence(room, capsys, mon
     assert rc == 1
     assert _error(err)["code"] == "validation"
     assert "the room has not been granted that skill" in _error(err)["message"]
+
+
+def test_room_create_skill_not_granted_names_the_share_command(room, capsys, monkeypatch) -> None:
+    _stdin(monkeypatch, "Robot vacuums")
+    room.routes[f"POST {RB}"] = httpx.Response(
+        422,
+        json={"detail": "the room has not been granted that skill", "code": "skill_not_granted"},
+    )
+    rc, _, err = _run(
+        ["research-projects", "create", "--room", G, "x", "--file", "-", "--yes", "--json"], capsys
+    )
+    message = _error(err)["message"]
+    assert rc == 1
+    assert _error(err)["status"] == 422
+    assert message.startswith("the room has not been granted that skill")
+    assert f"pepper skills share web-research --room {G}" in message
+
+
+def test_room_create_skill_not_granted_hint_names_the_chosen_skill(
+    room, capsys, monkeypatch
+) -> None:
+    _stdin(monkeypatch, "Robot vacuums")
+    room.routes[f"POST {RB}"] = httpx.Response(
+        422, json={"detail": "not granted", "code": "skill_not_granted"}
+    )
+    args = ["research-projects", "create", "--room", G, "x", "--file", "-", "--yes", "--json"]
+    rc, _, err = _run([*args, "--skill", "scout"], capsys)
+    assert rc == 1
+    assert f"pepper skills share scout --room {G}" in _error(err)["message"]
+
+
+def test_create_help_states_the_exact_name_rule(capsys) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["research-projects", "create", "--help"])
+    out = " ".join(capsys.readouterr().out.split())
+    assert "^[a-z0-9]+(-[a-z0-9]+)*$" in out
+    assert "at most 64 characters" in out
+    assert "a built-in if you own the room" in out
 
 
 def test_room_run_asks_and_names_who_pays(room, capsys, tty, monkeypatch) -> None:

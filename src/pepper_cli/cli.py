@@ -1334,12 +1334,14 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_skills_share = sub_skills.add_parser(
         "share",
         help=(
-            "Share one of YOUR skills with a room. The room gets a live reference, "
-            "not a copy: your later edits show there too."
+            "Share one of YOUR skills with a room, or a built-in one if you own the room. "
+            "The room gets a live reference, not a copy: your later edits show there too."
         ),
         parents=[_json_parent],
     )
-    p_skills_share.add_argument("name", help="Name of one of your own skills.")
+    p_skills_share.add_argument(
+        "name", help="Name of one of your own skills, or a built-in if you own the room."
+    )
     p_skills_share.add_argument("--room", required=True, help=_GROUP_ARG_HELP)
     p_skills_share.set_defaults(handler=cmd_skills_share)
 
@@ -3823,7 +3825,8 @@ def _room_skill_state_note(row: api_client.RoomSkill) -> str | None:
 
 
 def _room_skill_line(row: api_client.RoomSkill) -> str:
-    notes = [f"shared by {_room_skill_shared_by(row)}"]
+    notes = ["built-in"] if row.builtin else []
+    notes.append(f"shared by {_room_skill_shared_by(row)}")
     state = _room_skill_state_note(row)
     if state:
         notes.append(state)
@@ -3942,7 +3945,8 @@ def _cmd_room_skills_show(args: argparse.Namespace) -> int:
         detail = api.get_room_skill(group_id, _resolve_room_skill(api, args.name, group_id, args))
 
         def human() -> None:
-            note = f"(shared with this room by {_room_skill_shared_by(detail.row)}"
+            kind = "built-in skill, " if detail.row.builtin else ""
+            note = f"({kind}shared with this room by {_room_skill_shared_by(detail.row)}"
             state = _room_skill_state_note(detail.row)
             render.info(f"{note} — {state})" if state else f"{note})")
             render.write_document(skill_doc.compose_skill_md(_fields_from_detail(detail.skill)))
@@ -8219,7 +8223,10 @@ def _register_research_commands(sub: Any) -> None:
     p.add_argument(
         "name",
         metavar="NAME",
-        help="Short, lowercase and hyphenated; unique among your projects (or the room's).",
+        help=(
+            "Lowercase letters and digits joined by single hyphens, at most 64 characters "
+            "(^[a-z0-9]+(-[a-z0-9]+)*$); unique among your projects (or the room's)."
+        ),
     )
     p.add_argument(
         "--file",
@@ -8231,7 +8238,8 @@ def _register_research_commands(sub: Any) -> None:
         metavar="SKILL",
         help=(
             "The skill each run follows (default: the server's web-research). In a room it "
-            "must be granted to the room."
+            "must be granted to the room: one of your own skills, or a built-in if you own "
+            "the room (pepper skills share NAME --room ROOM)."
         ),
     )
     p.add_argument(
@@ -8478,6 +8486,12 @@ def _report_research_error(exc: api_client.ApiError, args: argparse.Namespace | 
                 return 1
             return _report_research_api_error(exc, args)
         _emit_error(args, "forbidden", message, status=403)
+        return 1
+    if room and exc.status == 422 and api_client.error_code(exc) == "skill_not_granted":
+        skill = shlex.quote(getattr(args, "skill", None) or "web-research")
+        hint = f"Grant it with: pepper skills share {skill} --room {shlex.quote(room)}"
+        message = f"{exc.detail} {hint}" if exc.detail else hint
+        _emit_error(args, "validation", message, status=422, soft_wrap=True)
         return 1
     if room and exc.status == 404 and not (exc.detail or "").lower().startswith("no such research"):
         return _report_room_error(exc, args)

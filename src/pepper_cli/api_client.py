@@ -235,7 +235,8 @@ class RoomSkill:
     """One skill shared with a room, from ``GET /api/v1/groups/{id}/skills``.
 
     A room never owns a skill: this is a *grant* — a live reference to a
-    skill one of its members owns — and ``id`` is the **grant's** id, which
+    skill one of its members owns (or a built-in one, which a room owner can
+    grant; ``builtin`` marks those) — and ``id`` is the **grant's** id, which
     is what show and revoke are addressed by. Two members can each share a
     skill of the same name, so ``name`` alone does not pick a row.
 
@@ -252,6 +253,7 @@ class RoomSkill:
     description: str
     granted_by: str | None
     owner_is_you: bool
+    builtin: bool
     toolsets: tuple[str, ...]
     state: str
     ungrantable_toolsets: tuple[str, ...]
@@ -276,6 +278,7 @@ def _room_skill_from_dict(row: dict) -> RoomSkill:
         description=row["description"],
         granted_by=row.get("granted_by"),
         owner_is_you=bool(row.get("owner_is_you", False)),
+        builtin=bool(row.get("builtin", False)),
         toolsets=tuple(row.get("toolsets") or ()),
         state=row.get("state", "active"),
         ungrantable_toolsets=tuple(row.get("ungrantable_toolsets") or ()),
@@ -797,7 +800,9 @@ class ResearchProjectSummary:
 @dataclass(frozen=True)
 class ResearchProjectDetail(ResearchProjectSummary):
     """``GET /api/v1/research-projects/{id}``: the summary plus brief, filters, ledger
-    counts, pending steering and the report's open questions (``q1``..)."""
+    counts, pending steering and the report's open questions (``q1``..). ``pending_steering``
+    is ``None`` when the server does not send it (an older server), so a renderer falls back to
+    ``pending_steering_count``."""
 
     brief: str
     source_url: str | None
@@ -807,16 +812,14 @@ class ResearchProjectDetail(ResearchProjectSummary):
     report_artifact_id: str | None
     open_questions: list[ResearchQuestion]
     owner: ResearchOwner | None
+    pending_steering: list[ResearchSteeringNote] | None
 
 
+# MIRROR: src/pepper/api/research_projects.py::ResearchSteeringOut
 @dataclass(frozen=True)
 class ResearchSteeringNote:
     """One entry of a project detail's ``pending_steering``: a note waiting for the next run,
-    oldest first. ``author_name`` is ``None`` when the server cannot name the author.
-
-    Not a ``MIRROR``: the server field (pepper#5175) is not in the vendored schema snapshot
-    until its next refresh; fold this and :class:`ResearchProjectWithSteering` into the
-    mirrored classes then."""
+    oldest first. ``author_name`` is ``None`` when the server cannot name the author."""
 
     id: str
     text: str
@@ -825,14 +828,6 @@ class ResearchSteeringNote:
     author_name: str | None
     created_at: str
     consumed_at: str | None
-
-
-@dataclass(frozen=True)
-class ResearchProjectWithSteering(ResearchProjectDetail):
-    """The detail plus ``pending_steering``; ``None`` when the server does not send the field
-    (an older server), so a renderer falls back to ``pending_steering_count``."""
-
-    pending_steering: list[ResearchSteeringNote] | None = None
 
 
 # MIRROR: src/pepper/api/research_projects.py::ResearchIterationOut
@@ -3903,7 +3898,7 @@ def _research_summary(row: dict[str, Any]) -> ResearchProjectSummary:
 def _research_detail(row: dict[str, Any]) -> ResearchProjectDetail:
     steering = row.get("pending_steering")
     return _fields(
-        ResearchProjectWithSteering,
+        ResearchProjectDetail,
         row,
         pending_steering=_nested_list(ResearchSteeringNote, steering)
         if isinstance(steering, list)
