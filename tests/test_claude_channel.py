@@ -744,6 +744,52 @@ def test_a_topic_the_map_cannot_place_is_a_single_resync(monkeypatch):
     assert result.kinds() == ["resync"], "a burst gives one push"
 
 
+def test_a_resync_names_its_cause_gives_room_ids_and_is_safe_on_a_first_run(monkeypatch):
+    fake = _Fake(_CONNECTED + _scope() + _event(7, kind="some.new.kind") + _PING)
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    (note,) = result.notifications
+    assert note["meta"] == {"kind": "resync"}
+    assert "some.new.kind" in note["content"]
+    assert "If you keep checkpoints" in note["content"]
+    assert f"{_TOPIC} (room_id {_ROOM}; Kitchen › Dinner)" in note["content"]
+
+
+def test_a_first_run_replay_of_old_room_events_owes_no_resync(monkeypatch):
+    """The retained window on a first run holds old room events of every kind (a rename, an
+    app install); none was missed, and the backlog already says to catch up."""
+    old = _now() - timedelta(days=3)
+    fake = _Fake(
+        _CONNECTED
+        + _scope()
+        + _event(3, created=old)
+        + _event(4, kind="group.renamed", created=old)
+        + _event(5, kind="app.installed", created=old)
+        + _PING
+    )
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    assert result.kinds() == ["backlog"]
+
+
+def test_an_old_unknown_event_after_a_restart_still_owes_a_resync(monkeypatch, tmp_path):
+    cursor_file = _scoped_cursor_file(tmp_path / "cursor", 3)
+    old = _now() - timedelta(days=3)
+    fake = _Fake(_CONNECTED + _scope() + _event(4, kind="group.renamed", created=old) + _PING)
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM, "--cursor-file", str(cursor_file)])
+
+    assert result.kinds() == ["resync"]
+
+
+def test_a_link_previews_event_is_silent(monkeypatch):
+    fake = _Fake(_CONNECTED + _scope() + _event(7, kind="message.link_previews_updated") + _PING)
+
+    assert run_channel(monkeypatch, fake, ["--room", _ROOM]).notifications == []
+
+
 def test_a_resync_is_pushed_before_the_next_message(monkeypatch):
     fake = _Fake(_CONNECTED + _scope() + _event(7, kind="new.kind") + _event(8, message=_MESSAGE))
 
@@ -859,8 +905,7 @@ def test_a_restart_pushes_one_backlog_summary_and_no_old_messages(monkeypatch, t
     assert note["meta"]["kind"] == "backlog"
     assert note["meta"]["count"] == "2"
     assert note["meta"]["oldest"] == old.isoformat()
-    assert _TOPIC in note["content"]
-    assert "Kitchen › Dinner" in note["content"]
+    assert f"{_TOPIC} (room_id {_ROOM}; Kitchen › Dinner)" in note["content"]
     assert json.loads(cursor_file.read_text())["cursor"] == 5
     assert fake.stream_requests()[0].url.params["since"] == "3"
     assert not [r for r in fake.requests if r.url.path.endswith("/messages")]
@@ -875,6 +920,7 @@ def test_a_first_run_says_so_and_gives_no_count(monkeypatch):
     (note,) = result.notifications
     assert note["meta"] == {"kind": "backlog", "first_run": "true"}
     assert "first run" in note["content"]
+    assert f"room_id {_ROOM}" in note["content"]
 
 
 def test_nothing_is_pushed_for_a_quiet_restart(monkeypatch):

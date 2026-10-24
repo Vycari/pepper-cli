@@ -342,7 +342,13 @@ put that backlog into context on every Claude Code restart. Decided (§14 C):
   first run reads the whole retained window, and the same skip rule keeps all of it out of the
   push. There is no "start at the tail" option on the stream today; the skip rule makes one
   unnecessary. On a first run (no cursor file) the `backlog` event says "first run, no earlier
-  position" and gives no count, since the retained window is not a backlog this agent owes.
+  position" and gives no count, since the retained window is not a backlog this agent owes. Its
+  wording is first-run safe ("if you keep checkpoints, run your catch-up"), and `resync` uses the
+  same wording.
+- The replayed window on a first run also holds old room events of kinds this channel does not
+  push (`group.renamed`, `app.installed`, and so on). With no earlier position none of them was
+  missed, so an unrecognised event older than the process start time minus 60 seconds owes no
+  `resync` on a first run. After a restart it still does, since the cursor says it was missed.
 
 ### 7.5 Event shape
 
@@ -378,6 +384,14 @@ The first line is the sender's display name and the room and topic names, saniti
 Control events have `kind` = `backlog`, `resync`, `gap` or `ended`, the ids that apply, and a
 one-paragraph `content` written for Claude ("Events between position 120 and 180 in room … could
 not be replayed. Catch up with messages_list for each topic, from your checkpoints.").
+
+`messages_list` needs a `room_id`, so every per-topic entry in a `backlog` or `resync` `content`
+carries it: `<topic_id> (room_id <room_id>; <room name> › <topic name>)`. A `resync` lists every
+topic the channel knows (the first 40, then "and N more"), since it cannot say which topics are
+affected, and names what set it: the unrecognised event kinds, a message event with no ids, or a
+topic outside the known rooms (the first five, then "and N more"). A `resync` says "if you keep
+checkpoints", as the first-run `backlog` does. `message.link_previews_updated` joins the kinds
+consumed silently (§7.1).
 
 ### 7.6 Instructions
 
