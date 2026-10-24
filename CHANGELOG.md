@@ -4,6 +4,80 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (while 0.x, a minor bump may change flags or output).
 
+## 0.5.0 — 2026-10-24
+
+`pepper agents claude-channel`: a room agent can now run inside a Claude Code session and have the
+room's messages pushed to it, instead of polling with `rooms watch` under Monitor. Room messages
+composed in Pepper are labelled, and a room research schedule shows its topic.
+Every PR merged since 0.4.0 is listed below.
+
+Upgrade notes:
+
+- `claude-channel` runs only in an interactive Claude Code session, started with
+  `--dangerously-load-development-channels server:<name>`, where `<name>` is the server's name in
+  `.mcp.json`. Later (P3 in the design), a Team or Enterprise admin can allowlist a plugin that
+  carries it, and the dev flag is no longer needed. It does not run under `claude -p`.
+- It negotiates MCP `2025-11-25`, and never `2026-07-28`.
+- `mcp>=2.3,<3` is now a core dependency of `vycari-pepper`. Only `claude-channel` imports it, so no
+  other command pays for the import, but it adds the SDK's dependencies to the install.
+- A reply's default idempotency key is now `claude-channel:<reply_to>:<digest>`, where the digest
+  covers the room, topic, parent, text, mentions and `on_behalf_of`. A retry of the same reply is
+  deduplicated by the server. A different reply to the same parent posts. An identical reply to the
+  same parent is deduplicated, so pass your own `Idempotency-Key` to repeat yourself on purpose.
+- `(via Pepper)` on composed messages needs the server to send the field (pepper#5261); until then
+  nothing changes on screen. Showing a room schedule's topic and skipping an unchanged edit need
+  pepper#5287 on the server. An older server leaves those out, and `edit` falls back to the 0.4.0
+  check.
+
+### Added
+
+**Claude Code channel** (`planning/claude-code-channel.md`, tracking #112; designed in #113):
+
+- `pepper agents claude-channel [--room R] [--topic T] [--cursor-file PATH] [--kinds K,…]
+  [--ignore-kinds K,…] [--self PERSON_ID]`: an MCP server over stdio that Claude Code starts from an
+  `.mcp.json` entry. It follows the event stream of the agent whose `pep_agt_` token you are signed
+  in with, and pushes each new message from someone else, with its body, into the session as a
+  `claude/channel` event. The flags are `rooms watch`'s, with the same meaning, and there is no
+  `--json` or `--since`: stdout carries the protocol and nothing else (#115).
+- Tools `messages_post`, `messages_list` and `messages_react`, limited to the room you named with
+  `--room`. A post that contains a credential is refused without echoing it (#115).
+- The cursor file moves only after an event has been pushed, so a restart resumes where the session
+  left off. `backlog`, `resync` and `ended` notices tell the agent what it missed (#115).
+- The bundled agent guide (`pepper agents guide`) and README describe the command (#115).
+
+**Rooms:**
+
+- Room messages composed in Pepper show `(via Pepper)` in `messages list` and the TUI, including on
+  quoted parents. Bridged output is unchanged (#116).
+- `research-projects show --room` names the topic a schedule posts to, or says `room default`
+  (#111).
+
+### Changed
+
+- `research-projects edit --cron … --topic T` in a room says "unchanged" and sends nothing when the
+  cron, zone and topic already match (#111).
+
+### Fixed
+
+- Fixes to `claude-channel` from the review of #115 (#119):
+  - Two different replies to one parent message both post. Before, the second was deduplicated into
+    the first (#117).
+  - A message whose body keeps failing with a 5xx is pushed as `body="unavailable"` after five
+    attempts, and the stream goes on, instead of stalling (#118).
+- Fixes to `claude-channel` from its first live run (#121, issue #120):
+  - The `backlog` and `resync` notices carry the `room_id` that `messages_list` needs.
+  - A first run no longer sends a spurious `resync` for old events in the server's retained window,
+    and a `resync` that is sent names what caused it. The wording is safe for a first run.
+  - Every message tag carries the agent's own `self_id`, from `--self` or from the scoped stream.
+
+### Docs
+
+- The design for `claude-channel`, `planning/claude-code-channel.md` (#113).
+
+### Internal
+
+- The vendored `/api/v1` contract snapshot was refreshed for the schedule topic (#111).
+
 ## 0.4.0 — 2026-10-23
 
 Research projects come to the terminal: `research-projects` and `research-items`, for personal
