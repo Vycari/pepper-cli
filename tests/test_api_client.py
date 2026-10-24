@@ -8,6 +8,8 @@ iOS/Android ports learn from — these tests pin that contract.
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -769,3 +771,123 @@ def test_device_poll_raises_api_error_on_other_4xx() -> None:
         api_client.device_poll("http://example.com", SecretStr("bogus"), client=_mock(handler))
     assert ei.value.status == 400
     assert ei.value.detail == "malformed device_code"
+
+
+# ---------------------------------------------------------------------------
+# client capabilities (client-capabilities phase 4)
+
+
+def test_stored_capabilities_declare_markdown_only() -> None:
+    declared = api_client.stored_capabilities()
+    assert declared["version"] == 1
+    assert declared["client"]["kind"] == "cli"
+    assert declared["render"] == {"profiles": ["md:pepper/1"]}
+    assert "tools" not in declared
+
+
+def test_turn_capabilities_follow_stdout() -> None:
+    assert api_client.turn_capabilities(True) is None
+    plain = api_client.turn_capabilities(False)
+    assert plain is not None
+    assert plain["render"] == {"profiles": ["text:plain/1"]}
+    # The CLI never draws a card or an image, so it declares neither.
+    assert "cards" not in plain["render"]
+    assert "media" not in plain["render"]
+
+
+def _chat_reply_json() -> dict:
+    return {
+        "reply": "hi",
+        "trajectory_id": None,
+        "user_message_id": "u",
+        "assistant_message_id": "a",
+        "steps": [],
+    }
+
+
+@pytest.mark.parametrize("tty", [True, False])
+def test_chat_send_declares_plain_only_when_piped(monkeypatch, tty: bool) -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_chat_reply_json())
+
+    monkeypatch.setattr(api_client.sys.stdout, "isatty", lambda: tty, raising=False)
+    with api_client.ApiClient(
+        server_url="http://example.com", token=SecretStr("pep_pat_abc"), client=_mock(handler)
+    ) as api:
+        api.chat_send("hi")
+
+    body = seen["body"]
+    assert isinstance(body, dict)
+    # The legacy booleans are not sent; the declaration replaces them.
+    assert "renders_cards" not in body and "sends_media" not in body
+    if tty:
+        assert "capabilities" not in body
+    else:
+        assert body["capabilities"]["render"]["profiles"] == ["text:plain/1"]
+
+
+def test_chat_send_stream_declares_plain_when_piped(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_chat_reply_json())
+
+    monkeypatch.setattr(api_client.sys.stdout, "isatty", lambda: False, raising=False)
+    with api_client.ApiClient(
+        server_url="http://example.com", token=SecretStr("pep_pat_abc"), client=_mock(handler)
+    ) as api:
+        list(api.chat_send_stream("hi"))
+
+    assert seen["body"]["capabilities"]["render"]["profiles"] == ["text:plain/1"]  # type: ignore[index]
+
+
+def test_put_client_capabilities_sends_the_stored_declaration() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"version": 1, "render": {"profile": "md:pepper/1"}})
+
+    with api_client.ApiClient(
+        server_url="http://example.com", token=SecretStr("pep_pat_abc"), client=_mock(handler)
+    ) as api:
+        accepted = api.put_client_capabilities()
+
+    assert seen["method"] == "PUT"
+    assert seen["url"] == "http://example.com/api/v1/client/capabilities"
+    assert seen["body"] == api_client.stored_capabilities()
+    assert accepted == {"version": 1, "render": {"profile": "md:pepper/1"}}
+
+
+def test_put_client_capabilities_treats_404_as_not_supported() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+    with api_client.ApiClient(
+        server_url="http://example.com", token=SecretStr("pep_pat_abc"), client=_mock(handler)
+    ) as api:
+        assert api.put_client_capabilities() is None
+    assert calls == ["PUT"]  # no retry
+
+
+def test_put_client_capabilities_raises_other_errors() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"detail": "no"})
+
+    with (
+        api_client.ApiClient(
+            server_url="http://example.com", token=SecretStr("pep_pat_abc"), client=_mock(handler)
+        ) as api,
+        pytest.raises(api_client.ApiError) as info,
+    ):
+        api.put_client_capabilities()
+    assert info.value.status == 403

@@ -151,11 +151,22 @@ def test_a_call_with_no_provider_is_answered_immediately(notes: Path) -> None:
     assert server.chat_bodies[0].get("client_tools") is None
 
 
-def test_without_a_root_the_request_is_unchanged() -> None:
+def test_without_a_root_the_request_is_unchanged_on_a_terminal(monkeypatch) -> None:
+    monkeypatch.setattr(api_client.sys.stdout, "isatty", lambda: True, raising=False)
     server = _FakeServer()
     with _client(server) as api:
         cli._stream_one_turn(api, "hi", provider=None, trace=False)
     assert server.chat_bodies == [{"message": "hi"}]
+
+
+def test_without_a_root_a_piped_request_only_adds_the_plain_declaration(monkeypatch) -> None:
+    monkeypatch.setattr(api_client.sys.stdout, "isatty", lambda: False, raising=False)
+    server = _FakeServer()
+    with _client(server) as api:
+        cli._stream_one_turn(api, "hi", provider=None, trace=False)
+    assert server.chat_bodies == [
+        {"message": "hi", "capabilities": api_client.turn_capabilities(False)}
+    ]
 
 
 def test_a_server_that_never_sends_the_new_frames_still_works(notes: Path) -> None:

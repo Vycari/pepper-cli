@@ -28,6 +28,8 @@ class _FakeApi:
     """
 
     instances: list[_FakeApi] = []
+    #: Raised by ``put_client_capabilities`` when set; reset by ``patch_api``.
+    capabilities_error: Exception | None = None
 
     def __init__(
         self,
@@ -50,6 +52,7 @@ class _FakeApi:
         self.trajectory_list_response = trajectory_list_response
         self.groups_response = groups_response
         self.closed = False
+        self.capabilities_puts = 0
         _FakeApi.instances.append(self)
 
     def __enter__(self) -> Self:
@@ -64,6 +67,12 @@ class _FakeApi:
         if self.whoami_response is None:
             raise AssertionError("test forgot to set whoami_response")
         return self.whoami_response
+
+    def put_client_capabilities(self) -> dict | None:
+        self.capabilities_puts += 1
+        if _FakeApi.capabilities_error is not None:
+            raise _FakeApi.capabilities_error
+        return {}
 
     def list_groups(self, *, archived: bool = False) -> api_client.GroupList:
         if isinstance(self.groups_response, Exception):
@@ -124,6 +133,7 @@ def patch_api(monkeypatch):
     ``ApiClient``. Tests pre-program responses via the kwargs the
     factory binds into the ``_FakeApi`` constructor."""
     _FakeApi.instances.clear()
+    _FakeApi.capabilities_error = None
 
     def install(
         *,
@@ -175,6 +185,37 @@ def test_login_with_flags_writes_credentials(tmp_home: Path, patch_api, capsys) 
     creds = credentials.load()
     assert creds.server_url == "http://example.com"
     assert creds.token.get_secret_value() == "pep_pat_abc"
+
+
+_WHO = api_client.Whoami(
+    user_id="u", email="alice@example.com", display_name="Alice", timezone="UTC"
+)
+
+
+def test_login_stores_the_client_capabilities(tmp_home: Path, patch_api) -> None:
+    patch_api(whoami=_WHO)
+    rc = cli.main(["login", "--server", "http://example.com", "--token", "pep_pat_abc"])
+    assert rc == 0
+    assert _FakeApi.instances[0].capabilities_puts == 1
+
+
+@pytest.mark.parametrize(
+    ("error", "noisy"),
+    [
+        (api_client.ApiError(403, "forbidden"), False),
+        (api_client.ApiError(422, "bad"), True),
+        (httpx.ConnectError("down"), True),
+    ],
+)
+def test_login_survives_a_capabilities_failure(
+    tmp_home: Path, patch_api, capsys, error: Exception, noisy: bool
+) -> None:
+    patch_api(whoami=_WHO)
+    _FakeApi.capabilities_error = error
+    rc = cli.main(["login", "--server", "http://example.com", "--token", "pep_pat_abc"])
+    assert rc == 0
+    assert credentials.load().token.get_secret_value() == "pep_pat_abc"
+    assert ("client capabilities" in capsys.readouterr().err) is noisy
 
 
 def test_login_with_an_agent_token_validates_against_the_rooms_list(

@@ -365,7 +365,16 @@ Notes:
 
 - **Output adapts to the pipe.** Replies render as rich Markdown when stdout is
   a TTY and as plain text when piped, so `pepper chat 'list my events' | jq`
-  works cleanly. One-shot chat waits for the final reply over a stream, allowing
+  works cleanly. The CLI also tells the server how it will show the reply (the
+  server's client-capabilities declaration): `pepper login` stores
+  `md:pepper/1` (Markdown) on the token, and a chat turn with stdout piped or
+  redirected sends `text:plain/1` for that turn, so a server that has the
+  feature on returns the reply already converted to plain text rather than
+  Markdown. On a terminal nothing extra is sent. The CLI declares no cards or
+  media, and does not send the older `renders_cards` / `sends_media` flags. A
+  server without the feature (404 on the store call, or an unknown field) is
+  not an error: sign-in and chat work as before. A token pasted with `--token`
+  cannot store a declaration and is left as is. One-shot chat waits for the final reply over a stream, allowing
   longer research turns without the ordinary 60-second request timeout. It
   prints only the final reply. If the connection times out or closes before
   that reply, check chat history before resending; the turn may have completed.

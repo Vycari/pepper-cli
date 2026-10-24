@@ -28,6 +28,7 @@ import json as _json
 import math
 import os
 import re as _re
+import sys
 import uuid
 from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field
@@ -35,7 +36,7 @@ from typing import Any, NoReturn, Self, cast
 
 import httpx
 
-from pepper_cli._version import USER_AGENT
+from pepper_cli._version import USER_AGENT, get_version
 from pepper_cli.secret import SecretStr
 from pepper_cli.terminal_text import CONTROL_CHAR_RE, sanitize_text, strip_sequences
 
@@ -1026,6 +1027,48 @@ class DevicePoll:
     token: SecretStr | None = None
     user: Whoami | None = None
     interval: int | None = None
+
+
+#: The profiles the CLI can show, named as the server's registry names them
+#: (pepper ``planning/client-capabilities.md`` section 6.1). Markdown is canonical, so a
+#: reader that declares it gets today's text unchanged.
+PROFILE_MARKDOWN = "md:pepper/1"
+PROFILE_PLAIN = "text:plain/1"
+
+
+def _capabilities(profile: str) -> dict[str, Any]:
+    # ``render.cards`` and ``render.media`` are left out on purpose: the CLI never draws a
+    # card or an image, and an absent namespace entry declares nothing.
+    return {
+        "version": 1,
+        "client": {"kind": "cli", "version": get_version()},
+        "render": {"profiles": [profile]},
+    }
+
+
+def stored_capabilities() -> dict[str, Any]:
+    """The declaration ``PUT /api/v1/client/capabilities`` stores at sign-in.
+
+    Always ``md:pepper/1``: sign-in says nothing about how a later invocation's stdout
+    will be wired, and markdown is what the server stores, so it is the declaration that
+    changes nothing for history. A piped invocation overrides it per turn
+    (:func:`turn_capabilities`).
+    """
+    return _capabilities(PROFILE_MARKDOWN)
+
+
+def turn_capabilities(stdout_is_tty: bool) -> dict[str, Any] | None:
+    """The per-turn ``capabilities`` object for ``POST /api/v1/chat/send``.
+
+    ``None`` on a terminal: the stored (or default) markdown already applies, and the
+    request body stays what it was. When stdout is piped or redirected the reader is a
+    script, so ask for ``text:plain/1``; the turn's declaration wins over the stored one.
+    A server without the feature ignores the unknown field, and one with the flag off
+    ignores the object.
+    """
+    if stdout_is_tty:
+        return None
+    return _capabilities(PROFILE_PLAIN)
 
 
 def device_start(
@@ -2393,6 +2436,27 @@ class ApiClient:
             json={"call_id": call_id, "content": content, "is_error": is_error},
         )
 
+    def put_client_capabilities(self) -> dict[str, Any] | None:
+        """``PUT /api/v1/client/capabilities``: store this client's declaration on
+        the token (see :func:`stored_capabilities`).
+
+        Returns the server's accepted set, or ``None`` when the server does not
+        offer the endpoint: a 404 means an older server, or one with
+        ``client_capabilities_enabled`` off, and is "not supported", not an
+        error. Any other failure (403 for a token not minted by the device flow,
+        422, 5xx) raises :class:`ApiError`; the caller decides how loud to be.
+        Never retried: the call is idempotent and the declaration is re-sent at
+        the next sign-in.
+        """
+        try:
+            resp = self._request("PUT", "/api/v1/client/capabilities", json=stored_capabilities())
+        except ApiError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        body = resp.json()
+        return body if isinstance(body, dict) else {}
+
     def chat_send(self, message: str, *, attachment_ids: list[str] | None = None) -> ChatReply:
         """``POST /api/v1/chat/send`` (JSON path).
 
@@ -2408,6 +2472,8 @@ class ApiClient:
         payload: dict[str, Any] = {"message": message}
         if attachment_ids:
             payload["attachment_ids"] = attachment_ids
+        if (capabilities := turn_capabilities(sys.stdout.isatty())) is not None:
+            payload["capabilities"] = capabilities
         resp = self._request("POST", "/api/v1/chat/send", json=payload)
         body = resp.json()
         return ChatReply(
@@ -2465,6 +2531,8 @@ class ApiClient:
         payload: dict[str, Any] = {"message": message}
         if attachment_ids:
             payload["attachment_ids"] = attachment_ids
+        if (capabilities := turn_capabilities(sys.stdout.isatty())) is not None:
+            payload["capabilities"] = capabilities
         if client_tools:
             # The manifest this process is offering to serve for this one
             # turn. An older server ignores the unknown field — pydantic

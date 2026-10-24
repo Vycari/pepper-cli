@@ -2016,6 +2016,25 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
 # Each handler accepts an ``argparse.Namespace`` and returns an exit code.
 
 
+def _declare_capabilities(api: api_client.ApiClient) -> None:
+    """Store this client's render declaration on the freshly validated token.
+
+    Best-effort and quiet: sign-in has already succeeded and nothing here may fail
+    it. A 404 means the server does not offer the endpoint (older, or
+    ``client_capabilities_enabled`` off), and a 403 means a token not minted by the
+    device flow, which cannot store one; both are normal and print nothing. Anything
+    else gets one stderr line. Per-turn declarations (piped output) still work either
+    way, and the call is not retried.
+    """
+    try:
+        api.put_client_capabilities()
+    except api_client.ApiError as exc:
+        if exc.status != 403:
+            render.info(f"Could not store client capabilities ({exc.status}); continuing without.")
+    except httpx.RequestError:
+        render.info("Could not store client capabilities (server unreachable); continuing without.")
+
+
 def cmd_login(args: argparse.Namespace) -> int:
     """Resolve the server URL, then dispatch to the device-login flow
     (the default) or the manual paste-a-PAT flow (``--token`` /
@@ -2062,6 +2081,7 @@ def _login_manual(server_url: str, raw_token: str | None) -> int:
     try:
         with api_client.ApiClient(server_url=server_url, token=token) as api:
             who = api.whoami()
+            _declare_capabilities(api)
     except api_client.ApiError as exc:
         if exc.status == 401:
             render.error("Token rejected (401). Double-check what you pasted.")
@@ -2208,6 +2228,7 @@ def _login_device(server_url: str, *, open_browser: bool) -> int:
     try:
         with api_client.ApiClient(server_url=server_url, token=token) as api:
             who = api.whoami()
+            _declare_capabilities(api)
     except api_client.ApiError as exc:
         if exc.status == 401:
             render.error("Token rejected (401) right after approval — run 'pepper login' again.")
