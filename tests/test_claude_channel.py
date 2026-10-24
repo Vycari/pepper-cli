@@ -1212,7 +1212,7 @@ def test_messages_post_sends_what_messages_post_sends(monkeypatch):
         "parent_message_id": _MESSAGE,
         "on_behalf_of_person_id": _ALICE,
     }
-    assert post.headers["Idempotency-Key"] == f"claude-channel:{_MESSAGE}"
+    assert post.headers["Idempotency-Key"].startswith(f"claude-channel:{_MESSAGE}:")
 
 
 def test_messages_post_without_a_reply_uses_a_random_key_and_honours_a_given_one(monkeypatch):
@@ -1231,6 +1231,24 @@ def test_messages_post_without_a_reply_uses_a_random_key_and_honours_a_given_one
     keys = [r.headers["Idempotency-Key"] for r in fake.requests if r.method == "POST"]
     assert keys[0] != keys[1]
     assert keys[2] == "mine"
+
+
+def test_two_replies_to_one_parent_get_distinct_default_keys_and_both_post(monkeypatch):
+    fake = _Fake(_CONNECTED)
+
+    def script(s: _Session) -> None:
+        for text in ("first reply", "follow-up the asker requested"):
+            s.call(
+                "messages_post",
+                {"room_id": _ROOM, "topic_id": _TOPIC, "text": text, "reply_to": _MESSAGE},
+            )
+
+    run_channel(monkeypatch, fake, script=script)
+
+    keys = [r.headers["Idempotency-Key"] for r in fake.requests if r.method == "POST"]
+    assert len(keys) == 2
+    assert keys[0] != keys[1]
+    assert all(k.startswith(f"claude-channel:{_MESSAGE}:") for k in keys)
 
 
 def test_messages_post_refuses_a_room_outside_room_and_a_bare_on_behalf_of(monkeypatch):

@@ -235,7 +235,8 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
   command's own error line.
 - `messages_post` threads and attributes the way a post from section 6 does. `on_behalf_of` is yours to
   pass; the channel never infers it, and it needs `reply_to`. `idempotency_key` defaults to
-  `claude-channel:` and the `reply_to` id, so a retried call posts once. A text that contains a
+  `claude-channel:`, the `reply_to` id and a fresh nonce, so two replies to one message both post;
+  to make a retry after a timeout post once, pass the same `idempotency_key` on both calls. A text that contains a
   token or key shape (`pep_agt_`, `pep_pat_`, GitHub, Anthropic, Slack and AWS keys, private-key
   blocks, Doppler tokens) is refused, and the refusal does not repeat what matched. Rewrite the
   post without it. With `--room`, every tool refuses a `room_id` other than that room.

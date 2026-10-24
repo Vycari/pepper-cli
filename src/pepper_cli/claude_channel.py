@@ -933,7 +933,7 @@ class ChannelTools:
             mentions=mentions or None,
             parent_message_id=reply_to,
             idempotency_key=key
-            or (f"claude-channel:{reply_to}" if reply_to else str(uuid.uuid4())),
+            or (f"claude-channel:{reply_to}:{uuid.uuid4()}" if reply_to else str(uuid.uuid4())),
             on_behalf_of_person_id=on_behalf_of,
         )
         message = api_client.group_message_from_dict(created)

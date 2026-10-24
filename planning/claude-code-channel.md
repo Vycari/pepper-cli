@@ -426,8 +426,12 @@ Rules the tools enforce, all of them restatements of the CLI's or the server's o
   infer it: whom a reply is for is the skill's call (room-agent §4: the asker, and only when the
   asker is human). If the service refuses it, the tool returns the error text so Claude can post
   again without it, as the guide says.
-- **Idempotency.** `idempotency_key` defaults to `claude-channel:<reply_to>` when `reply_to` is
-  given, so a retried tool call after a timeout posts once. Otherwise a random key, as today.
+- **Idempotency.** `idempotency_key` defaults to `claude-channel:<reply_to>:<nonce>` when `reply_to`
+  is given, with a fresh random nonce per call, and to a random key otherwise. A second, distinct
+  reply to the same parent therefore posts instead of collapsing into the first. The cost is that
+  the default key no longer dedups a retried call after a timeout; a caller that needs that passes
+  its own `idempotency_key` and reuses it on the retry, and a caller-supplied key is sent
+  unchanged.
 - **Mentions.** A `mentions` entry whose display name is not in `text` is the caller's problem, as
   on the CLI; the tool passes the ids through.
 - **Results.** Every tool returns the JSON the `--json` form of its command prints (J3/J5), as a
