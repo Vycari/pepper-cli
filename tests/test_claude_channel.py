@@ -1193,6 +1193,47 @@ def test_messages_post_refuses_a_room_outside_room_and_a_bare_on_behalf_of(monke
     assert not [r for r in fake.requests if r.method == "POST"], "nothing reached the server"
 
 
+_TRAVERSAL = f"../../{_OTHER_ROOM}/topics/{_TOPIC}"
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments", "field"),
+    [
+        ("messages_post", {"room_id": _ROOM, "topic_id": _TRAVERSAL, "text": "hi"}, "topic_id"),
+        ("messages_list", {"room_id": _ROOM, "topic_id": _TRAVERSAL}, "topic_id"),
+        (
+            "messages_react",
+            {
+                "room_id": _ROOM,
+                "message_id": f"../../{_OTHER_ROOM}/messages/{_MESSAGE}",
+                "emoji": "x",
+            },
+            "message_id",
+        ),
+        ("messages_list", {"room_id": f"{_ROOM}/../{_OTHER_ROOM}", "topic_id": _TOPIC}, "room_id"),
+        ("messages_list", {"room_id": _ROOM, "topic_id": "dinner"}, "topic_id"),
+    ],
+)
+@pytest.mark.parametrize("scoped", [True, False])
+def test_an_id_that_is_not_a_uuid_is_refused_so_a_tool_cannot_leave_the_room(
+    monkeypatch, tool, arguments, field, scoped
+):
+    fake = _Fake(_CONNECTED + (_scope() if scoped else ""))
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["call"] = s.call(tool, arguments)
+
+    run_channel(monkeypatch, fake, ["--room", _ROOM] if scoped else [], script=script)
+
+    text, is_error = out["call"]
+    assert is_error
+    assert f"{field} must be a UUID" in text
+    tool_paths = [p for p in fake.paths() if "/messages" in p or "/reactions" in p]
+    assert tool_paths == [], "nothing reached the server"
+    assert not [p for p in fake.paths() if _OTHER_ROOM in p]
+
+
 @pytest.mark.parametrize(
     "secret",
     [

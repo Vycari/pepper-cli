@@ -70,6 +70,7 @@ from pepper_cli.cli import (
     _same_id,
     _scoped_watch_target,
     _ScopedCursor,
+    _valid_uuid,
     _watch_frame_shows_health,
     _WatchStopError,
     _write_cursor_file,
@@ -794,6 +795,17 @@ def _text(args: dict[str, Any], name: str, *, required: bool = False) -> str | N
     return value
 
 
+def _uuid(args: dict[str, Any], name: str) -> str:
+    """A required id that goes into a request path: it must be a UUID, so a value such as
+    ``../../<room>/topics/<topic>`` cannot move the request to another room (the ``--room`` check
+    reads only ``room_id``)."""
+    value = _text(args, name, required=True)
+    assert value is not None
+    if not _valid_uuid(value):
+        raise ToolError(f"{name} must be a UUID, as the channel tag gives it")
+    return value
+
+
 def _api_error_line(exc: api_client.ApiError) -> str:
     if exc.status == 404:
         return "not found, or you are not a member of that room"
@@ -837,8 +849,7 @@ class ChannelTools:
         return json.dumps(result, separators=(",", ":"), default=str), False
 
     def _room(self, args: dict[str, Any]) -> str:
-        room_id = _text(args, "room_id", required=True)
-        assert room_id is not None
+        room_id = _uuid(args, "room_id")
         if self.allowed_rooms is not None and not any(
             _same_id(room_id, allowed) for allowed in self.allowed_rooms
         ):
@@ -850,7 +861,7 @@ class ChannelTools:
 
     def _post(self, args: dict[str, Any]) -> object:
         room_id = self._room(args)
-        topic_id = _text(args, "topic_id", required=True)
+        topic_id = _uuid(args, "topic_id")
         text = _text(args, "text", required=True)
         reply_to = _text(args, "reply_to")
         on_behalf_of = _text(args, "on_behalf_of")
@@ -862,7 +873,6 @@ class ChannelTools:
             raise ToolError("mentions must be a list of non-empty person ids")
         if on_behalf_of is not None and reply_to is None:
             raise ToolError("on_behalf_of needs reply_to (the requester's message)")
-        assert topic_id is not None
         assert text is not None
         if SECRET_PATTERN.search(text):
             raise ToolError(
@@ -884,7 +894,7 @@ class ChannelTools:
 
     def _list(self, args: dict[str, Any]) -> object:
         room_id = self._room(args)
-        topic_id = _text(args, "topic_id", required=True)
+        topic_id = _uuid(args, "topic_id")
         since, before, at = (_text(args, name) for name in ("since", "before", "at"))
         if sum(v is not None for v in (since, before, at)) > 1:
             raise ToolError("since, before and at cannot be used together")
@@ -893,7 +903,6 @@ class ChannelTools:
             isinstance(limit, bool) or not isinstance(limit, int) or limit < 1
         ):
             raise ToolError("limit must be a positive integer")
-        assert topic_id is not None
         page = self.api.list_group_messages(
             room_id, topic_id, since=since, before=before, at=at, limit=limit
         )
@@ -902,9 +911,8 @@ class ChannelTools:
 
     def _react(self, args: dict[str, Any]) -> object:
         room_id = self._room(args)
-        message_id = _text(args, "message_id", required=True)
+        message_id = _uuid(args, "message_id")
         emoji = _text(args, "emoji", required=True)
-        assert message_id is not None
         assert emoji is not None
         reactions = self.api.react_to_group_message(room_id, message_id, emoji=emoji)
         return _mutation_result(reactions, message_id)
