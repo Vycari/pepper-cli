@@ -189,6 +189,20 @@ def scope_groups(groups: api_client.GroupList, room_id: str | None) -> api_clien
     )
 
 
+def visible_groups(
+    api: api_client.ApiClient, listing: api_client.GroupList, room_id: str | None
+) -> api_client.GroupList:
+    """``listing`` (the default, unarchived rooms) plus the archived ones, narrowed to
+    ``room_id``. Archiving is a viewer preference, not leaving, so an archived room's messages
+    still arrive and its topics have to be placeable."""
+    groups = list(listing.groups)
+    if listing.archived_total:
+        known = {g.group_id for g in groups}
+        archived = api.list_groups(archived=True).groups
+        groups += [g for g in archived if g.group_id not in known]
+    return scope_groups(dataclasses.replace(listing, groups=groups), room_id)
+
+
 def build_topic_map(api: api_client.ApiClient, groups: api_client.GroupList) -> TopicMap:
     """Every topic of every room in ``groups``, keyed by topic id (design §5)."""
     mapping: TopicMap = {}
@@ -445,7 +459,7 @@ class ChannelWorker:
         try:
             room = self.bound.room_id if self.bound is not None else self.room_id
             self.topics.update(
-                build_topic_map(self.api, scope_groups(self.api.list_groups(), room))
+                build_topic_map(self.api, visible_groups(self.api, self.api.list_groups(), room))
             )
         except (api_client.ApiError, httpx.RequestError):
             return None
@@ -1182,7 +1196,7 @@ def run(args: argparse.Namespace) -> int:
                 room_id, topic_id = _scoped_watch_target(
                     stream_api, config.room, config.topic, args
                 )
-            groups = scope_groups(_group_list_or_error(stream_api), room_id)
+            groups = visible_groups(stream_api, _group_list_or_error(stream_api), room_id)
             topics = build_topic_map(stream_api, groups)
             allowed = {room_id} if room_id is not None else None
             stop = threading.Event()

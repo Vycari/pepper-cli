@@ -194,29 +194,31 @@ class _Fake:
         self.exhausted = threading.Event()
         self.on_stream = None
         self.unreachable = False
+        self.room_archived = False
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         path = request.url.path
         if path == "/api/v1/groups":
+            room = {
+                "group_id": _ROOM,
+                "display_name": "Kitchen",
+                "color": "#000",
+                "sub": "",
+                "member_count": 2,
+                "archived": self.room_archived,
+                "topics": [],
+            }
+            # ``archived=1`` lists the archived rooms; the default lists the others.
+            listed = (request.url.params.get("archived") == "1") == self.room_archived
             return httpx.Response(
                 200,
                 json={
                     "enabled": True,
                     "degraded": False,
-                    "total": 1,
-                    "archived_total": 0,
-                    "groups": [
-                        {
-                            "group_id": _ROOM,
-                            "display_name": "Kitchen",
-                            "color": "#000",
-                            "sub": "",
-                            "member_count": 2,
-                            "archived": False,
-                            "topics": [],
-                        }
-                    ],
+                    "total": 1 if listed else 0,
+                    "archived_total": 1 if self.room_archived else 0,
+                    "groups": [room] if listed else [],
                     "features": list(self.features),
                 },
             )
@@ -711,6 +713,17 @@ def test_an_unscoped_stream_maps_the_topic_to_its_room_and_refreshes_on_a_miss(m
     assert {n["meta"]["room_id"] for n in result.notifications} == {_ROOM}
     assert "Kitchen › Dessert" in result.notifications[1]["content"]
     assert fake.stream_requests()[0].url.path == _UNSCOPED_PATH
+
+
+@pytest.mark.parametrize("scoped", [True, False])
+def test_an_archived_rooms_messages_are_placed_and_pushed(monkeypatch, scoped):
+    fake = _Fake(_CONNECTED + (_scope() if scoped else "") + _event(7, scoped=scoped))
+    fake.room_archived = True
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM] if scoped else [])
+
+    assert result.kinds() == ["message"]
+    assert "Kitchen › Dinner" in result.notifications[0]["content"]
 
 
 def test_a_topic_the_map_cannot_place_is_a_single_resync(monkeypatch):
