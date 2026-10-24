@@ -37,7 +37,8 @@ dependencies = [
     # command pays its import time. It is large (it pulls in an HTTP server stack a stdio channel
     # never runs), a cost accepted because the command is Claude Code-specific and no native
     # client ports it. The ``<3`` bound is load-bearing: the command drives ``serve_loop`` to stay
-    # on the handshake protocol revision Claude Code registers channels on, and a test pins that.
+    # on the handshake protocol revision Claude Code registers channels on; the handshake tests
+    # assert that revision, so a release that moved it would fail them.
     "mcp>=2.3,<3",
 ]
 
