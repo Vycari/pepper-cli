@@ -99,7 +99,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$TAG" dist/* \
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
             --title "$TAG" \
             --generate-notes \
             --verify-tag
