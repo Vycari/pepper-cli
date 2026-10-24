@@ -154,6 +154,7 @@ class PepperApp(App[None]):
         # Priority: a focused TextArea would otherwise take Ctrl+K as "delete to line end".
         Binding("ctrl+k", "jump", "Jump", priority=True),
         Binding("i", "room_info", "Room info"),
+        Binding("f10", "upgrade", "Update"),
         Binding("ctrl+q", "quit_app", "Quit", priority=True),
     ]
 
@@ -188,6 +189,7 @@ class PepperApp(App[None]):
         open_url: Callable[[str], object] = webbrowser.open,
         now: Callable[[], datetime] | None = None,
         bell: bool = False,
+        update_checker: Callable[[], str | None] | None = None,
     ) -> None:
         super().__init__()
         self._api = api
@@ -250,6 +252,9 @@ class PepperApp(App[None]):
         self._answered_ids: set[str] = set()
         #: The DM status line when no turn is running (an error, "no reply yet").
         self.dm_note = ""
+        self.update_version: str | None = None
+        self.upgrade_requested: bool = False
+        self._update_checker = update_checker
         #: Set once quitting starts; workers and the turn thread then post nothing back.
         self._quitting = False
 
@@ -287,6 +292,7 @@ class PepperApp(App[None]):
         self.refresh_chrome()
         self.sidebar.focus()
         self._run("startup")
+        self._start_update_check()
 
     # ------------------------------------------------------------------ workers
 
@@ -403,14 +409,18 @@ class PepperApp(App[None]):
 
     def on_key(self, event: events.Key) -> None:
         self._last_input = time.monotonic()
-        if self.fatal:
+        if self.fatal and not isinstance(self.screen, ModalScreen):
+            if self.update_version and event.key == "f10":
+                return
             event.stop()
             self.exit(return_code=1)
 
-    def _composer_key(self, _event: events.Key) -> bool:
+    def _composer_key(self, event: events.Key) -> bool:
         """Every key the composer gets: counts as activity; in the fatal state, exits."""
         self._last_input = time.monotonic()
         if self.fatal:
+            if self.update_version and event.key == "f10":
+                return False
             self.exit(return_code=1)
             return True
         return False
@@ -704,11 +714,15 @@ class PepperApp(App[None]):
         header = sanitize_line(state.header_text(self.current, shown))
         if any(self._loops[kind].failures for kind in _LOOPS):
             header += "  · offline, retrying"
-        self.query_one("#header", Static).update(Text(header))
+        base_screen = self.screen_stack[0] if self.screen_stack else self.screen
+        for header_box in base_screen.query("#header"):
+            if isinstance(header_box, Static):
+                header_box.update(Text(header))
         notice = self._notice()
-        box = self.query_one("#notice", Static)
-        box.update(Text(notice))
-        box.set_class(not notice, "empty")
+        for notice_box in base_screen.query("#notice"):
+            if isinstance(notice_box, Static):
+                notice_box.update(Text(notice))
+                notice_box.set_class(not notice, "empty")
         self._update_subline()
         unread = state.any_unread(shown, self.marks, current=self.current, pepper_dot=self.dm.dot)
         mention = state.any_mention(shown, self.marks, self.mentions, current=self.current)
@@ -837,6 +851,70 @@ class PepperApp(App[None]):
 
     def action_quit_app(self) -> None:
         self.exit(return_code=0)
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "upgrade":
+            return bool(self.update_version)
+        return super().check_action(action, parameters)
+
+    def action_upgrade(self) -> None:
+        """``F10``: show confirmation to exit and upgrade Pepper."""
+        if not self.update_version or isinstance(self.screen, ModalScreen):
+            return
+        import sys
+
+        from pepper_cli.tui import detect_install_method
+
+        method = detect_install_method()
+        if method == "uv-tool":
+            detail = (
+                "Pepper will exit. Run 'uv tool upgrade vycari-pepper' in your terminal."
+                if sys.platform == "win32"
+                else "Pepper will exit and run 'uv tool upgrade vycari-pepper' in your terminal."
+            )
+        elif method == "pipx":
+            detail = "Pepper will exit. Run 'pipx upgrade vycari-pepper' in your terminal."
+        else:
+            detail = "Pepper will exit. Run 'pip install --upgrade vycari-pepper' in your terminal."
+
+        self.push_screen(
+            ConfirmScreen(
+                f"Upgrade Pepper to v{self.update_version}?",
+                detail,
+            ),
+            self._on_confirm_upgrade,
+        )
+
+    def _on_confirm_upgrade(self, confirmed: bool | None) -> None:
+        if confirmed:
+            self.upgrade_requested = True
+            self.exit(return_code=0)
+
+    def _start_update_check(self) -> None:
+        """Query for new releases in the background."""
+        checker = self._update_checker
+        if checker is None:
+            from pepper_cli import _version
+
+            checker = _version.check_latest_version
+
+        def run() -> None:
+            try:
+                latest = checker()
+            except Exception:
+                return
+            if latest:
+                self._post(self._on_update_available, latest)
+
+        self.run_worker(run, thread=True, group="update_check", exit_on_error=False)
+
+    def _on_update_available(self, version: str) -> None:
+        """Surface available update in footer."""
+        if self._quitting or not self._mounted():
+            return
+        self.update_version = version
+        self.refresh_bindings()
+        self.refresh_chrome()
 
     def action_focus_composer(self) -> None:
         self.composer.focus()

@@ -114,3 +114,24 @@ ModalScreen {
     height: auto;
     max-height: 14;
 }
+
+.dialog-title {
+    margin-bottom: 1;
+}
+
+.dialog-detail {
+    margin-bottom: 1;
+    color: $text-muted;
+}
+
+.dialog-buttons {
+    height: auto;
+    width: 100%;
+    align-horizontal: right;
+    margin-top: 1;
+}
+
+.dialog-buttons Button {
+    margin-left: 2;
+    min-width: 12;
+}
