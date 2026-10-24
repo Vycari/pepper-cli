@@ -484,13 +484,16 @@ class ChannelWorker:
         (``unavailable`` true). A network error is retried with the stream's backoff and does not
         return. A 5xx is retried the same way up to ``_FETCH_SERVER_ERROR_ATTEMPTS`` times, then
         the message is pushed as unavailable so one bad read cannot stall every event behind it.
-        A 401 or 403 is about the token and ends the run. Any other refusal is about this one read
-        (a topic or message gone, say), so the message is pushed as missing (design §7.3); losing
-        the room itself ends the stream.
+        A 429 (or any other retryable status below 500) is retried without bound and never makes
+        a message unavailable: being throttled says nothing about the message. A ``Retry-After``
+        on any retried status replaces the next backoff gap. A 401 or 403 is about the token and
+        ends the run. Any other refusal is about this one read (a topic or message gone, say), so
+        the message is pushed as missing (design §7.3); losing the room itself ends the stream.
         """
         attempt = 0
         server_errors = 0
         while True:
+            hint: float | None = None
             try:
                 page = self.api.list_group_messages(info.room_id, topic_id, at=message_id)
             except api_client.ApiError as exc:
@@ -499,10 +502,12 @@ class ChannelWorker:
                 if exc.status in _WATCH_FATAL_STATUSES:
                     return None, False
                 problem = f"HTTP {exc.status}"
-                server_errors += 1
-                if server_errors >= _FETCH_SERVER_ERROR_ATTEMPTS:
-                    render.error(f"Message fetch failed ({problem}); giving up on it.")
-                    return None, True
+                hint = exc.retry_after
+                if exc.status >= 500:
+                    server_errors += 1
+                    if server_errors >= _FETCH_SERVER_ERROR_ATTEMPTS:
+                        render.error(f"Message fetch failed ({problem}); giving up on it.")
+                        return None, True
             except httpx.RequestError as exc:
                 problem = type(exc).__name__
             else:
@@ -513,7 +518,9 @@ class ChannelWorker:
             attempt += 1
             if attempt >= _WATCH_QUIET_FAILURES:
                 render.error(f"Message fetch failed ({problem}); retrying.")
-            self._wait(min(_WATCH_BACKOFF_START * 2 ** (attempt - 1), _WATCH_BACKOFF_CAP))
+            if hint is None:
+                hint = min(_WATCH_BACKOFF_START * 2 ** (attempt - 1), _WATCH_BACKOFF_CAP)
+            self._wait(hint)
 
     @staticmethod
     def _fatal_reason(status: int) -> tuple[str, int]:

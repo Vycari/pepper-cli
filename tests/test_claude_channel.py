@@ -191,6 +191,8 @@ class _Fake:
         self.topics = {_TOPIC: "Dinner", _OTHER_TOPIC: "Chores"}
         self.message_status = 200
         self.fail_messages = 0
+        self.fail_status = 503
+        self.fail_headers: dict[str, str] = {}
         self.exhausted = threading.Event()
         self.on_stream = None
         self.unreachable = False
@@ -243,7 +245,9 @@ class _Fake:
                 raise httpx.ConnectError("refused")
             if self.fail_messages:
                 self.fail_messages -= 1
-                return httpx.Response(503, json={"detail": "down"})
+                return httpx.Response(
+                    self.fail_status, json={"detail": "down"}, headers=self.fail_headers
+                )
             if self.message_status != 200:
                 return httpx.Response(self.message_status, json={"detail": "nope"})
             at = request.url.params.get("at")
@@ -1498,6 +1502,34 @@ def test_a_persistent_5xx_reading_one_message_is_pushed_unavailable_and_the_stre
     assert first["meta"]["message_id"] == _MESSAGE
     assert "body" not in second["meta"], "the next message reads normally"
     assert json.loads(cursor_file.read_text())["cursor"] == 8
+
+
+def test_a_rate_limited_body_fetch_keeps_retrying_on_retry_after_and_is_never_unavailable(
+    monkeypatch, tmp_path
+):
+    waits: list[float] = []
+
+    def wait(self, seconds: float) -> None:
+        waits.append(seconds)
+        if self.stop.wait(0.001):
+            raise claude_channel._Ended(0)
+
+    monkeypatch.setattr(claude_channel.ChannelWorker, "_wait", wait)
+    fake = _Fake(_CONNECTED + _scope() + _event(7))
+    fake.fail_messages = claude_channel._FETCH_SERVER_ERROR_ATTEMPTS * 2
+    fake.fail_status = 429
+    fake.fail_headers = {"Retry-After": "7"}
+    cursor_file = tmp_path / "cursor"
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM, "--cursor-file", str(cursor_file)])
+
+    assert result.kinds() == ["message"]
+    (pushed,) = result.notifications
+    assert "body" not in pushed["meta"], "a throttled read is retried, not given up on"
+    assert json.loads(cursor_file.read_text())["cursor"] == 7
+    fetch_waits = waits[: claude_channel._FETCH_SERVER_ERROR_ATTEMPTS * 2]
+    assert fetch_waits == [7.0] * len(fetch_waits), "Retry-After replaces the backoff gap"
+    assert len([r for r in fake.requests if r.url.path.endswith("/messages")]) == 11
 
 
 def test_a_body_fetch_that_cannot_succeed_ends_the_channel(monkeypatch):

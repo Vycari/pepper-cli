@@ -308,8 +308,11 @@ the cursor, so delivery order is preserved. A fetch that fails with a 5xx is ret
 up to five attempts in all (about fifteen seconds of backoff). If every attempt fails, the event is
 pushed anyway with `content` saying the body could not be read and `body="unavailable"` in meta
 (as `missing` is for a body the server cannot find), and the cursor advances, so one message that
-keeps failing cannot stall every later event in the session. A 401 or 403 is about the token and
-ends the channel, unchanged. A 404 for the room means the agent was removed; that is the terminal
+keeps failing cannot stall every later event in the session. A 429 (or another retryable status
+below 500) does not count toward those five: it is retried without bound, since being throttled says
+nothing about the message, so a rate limit never turns a message into `unavailable`. A
+`Retry-After` on any retried status replaces the next backoff gap. A 401 or 403 is about the token
+and ends the channel, unchanged. A 404 for the room means the agent was removed; that is the terminal
 case in §9.
 
 ### 7.4 Cursor, restart and backlog
