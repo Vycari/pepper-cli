@@ -925,8 +925,14 @@ def group_message_tags(m: GroupMessage) -> tuple[str, str]:
 
     ``(via X)`` needs ``is_bridged`` as well as a name: the server stamps Pepper as the via
     of every ``/api/v1`` post as an audit marker, and the web shows the chip only for a
-    bridged message."""
+    bridged message.
+
+    A composed message (written in Pepper's composer) is native, not bridged, and shows
+    ``(via Pepper)``. A bridge label wins if both flags are somehow set, so a message never
+    carries two ``via`` tags."""
     via = f"(via {m.via_display_name})" if m.is_bridged and m.via_display_name else ""
+    if not via and m.composed_via:
+        via = "(via Pepper)"
     if not m.is_agent:
         return via, ""
     agent = f"(agent, for {m.for_display_name})" if m.for_display_name else "(agent)"

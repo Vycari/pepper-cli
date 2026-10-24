@@ -197,6 +197,8 @@ def _quote_line(quote: object) -> Text | None:
     excerpt = sanitize_line(str(quote.get("excerpt") or ""))
     if not (author or excerpt):
         return None
+    if quote.get("composed_via") or quote.get("is_composed"):
+        author = f"{author} (via Pepper)" if author else "(via Pepper)"
     return Text(f"{INDENT}┃ {author + ': ' if author else ''}{excerpt}", style="dim")
 
 

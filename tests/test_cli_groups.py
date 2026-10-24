@@ -780,6 +780,39 @@ def test_messages_list_hides_the_via_audit_marker_of_an_unbridged_post(
     assert "via Pepper" not in capsys.readouterr().out
 
 
+def test_messages_list_labels_composed_bridged_plain_and_missing_field(
+    tmp_home, patch_api, capsys
+) -> None:
+    _login(tmp_home)
+    patch_api(
+        messages_page=_page(
+            _message(id="m1", display_name="Composed", composed_via=True),
+            _message(id="m2", display_name="Bridged", via_display_name="#general", is_bridged=True),
+            _message(id="m3", display_name="Plain"),
+            _message(
+                id="m4",
+                display_name="Both",
+                via_display_name="#general",
+                is_bridged=True,
+                composed_via=True,
+            ),
+        )
+    )
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP, "--topic", _TID_GENERAL])
+    assert rc == 0
+    lines = {
+        name: line
+        for line in capsys.readouterr().out.splitlines()
+        for name in ("Composed", "Bridged", "Plain", "Both")
+        if name in line
+    }
+    assert "(via Pepper)" in lines["Composed"]
+    assert "(via #general)" in lines["Bridged"]
+    assert "(via" not in lines["Plain"]
+    assert "(via #general)" in lines["Both"]
+    assert "(via Pepper)" not in lines["Both"]
+
+
 def test_messages_list_help_describes_omitted_topic(capsys) -> None:
     with pytest.raises(SystemExit) as exc:
         cli.main(["messages", "list", "--help"])

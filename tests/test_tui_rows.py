@@ -55,6 +55,29 @@ def test_via_tag_needs_a_bridged_message() -> None:
     assert "(via" not in _text(rows.message_renderable(_m(is_bridged=True), you_id=ts.ME_PERSON))
 
 
+def test_via_pepper_tag_for_composed_but_not_plain_or_double_for_bridged() -> None:
+    composed = _text(rows.message_renderable(_m(composed_via=True), you_id=ts.ME_PERSON))
+    assert "(via Pepper)" in composed
+    assert "(via" not in _text(rows.message_renderable(_m(), you_id=ts.ME_PERSON))
+    both = _text(
+        rows.message_renderable(
+            _m(via_display_name="#general", is_bridged=True, composed_via=True),
+            you_id=ts.ME_PERSON,
+        )
+    )
+    assert "(via #general)" in both
+    assert "(via Pepper)" not in both
+
+
+def test_quote_of_a_composed_message_carries_the_label() -> None:
+    def quoted(**extra: object) -> str:
+        quote = {"id": "p1", "author": "Ada", "excerpt": "earlier", "deleted": False, **extra}
+        return _text(rows.message_renderable(_m(quote=quote)))
+
+    assert "Ada (via Pepper): earlier" in quoted(composed_via=True)
+    assert "(via" not in quoted()
+
+
 def test_tags_edited_quote_mentions_attachments_and_reactions() -> None:
     m = _m(
         raw_body="hi @Bob",

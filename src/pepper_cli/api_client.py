@@ -1290,6 +1290,10 @@ class GroupMessage:
     #: True when ``via_display_name`` names a real bridge (an email or chat mirror), not
     #: the audit marker. ``False`` on rows from an older server that does not send it.
     is_bridged: bool = False
+    #: True when the person wrote this in Pepper's composer and Pepper posted it for them
+    #: (groups#279's ``composed_via``): a native post, not a bridge. ``False`` on rows from
+    #: an older server that does not send it.
+    composed_via: bool = False
     is_edited: bool = False
     edited_at: str | None = None
     deleted_at: str | None = None
@@ -1422,6 +1426,9 @@ def group_message_from_dict(row: dict[str, Any]) -> GroupMessage:
         picture_url=row.get("picture_url"),
         via_display_name=row.get("via_display_name"),
         is_bridged=bool(row.get("is_bridged", False)),
+        # ``composed_via`` is groups' name; ``is_composed`` is the render-dict spelling that
+        # sits beside ``is_bridged``. Accept either so the label shows whichever pepper serves.
+        composed_via=bool(row.get("composed_via") or row.get("is_composed")),
         is_edited=row.get("is_edited", False),
         edited_at=row.get("edited_at"),
         deleted_at=row.get("deleted_at"),

@@ -219,6 +219,15 @@ def test_is_bridged_parses_and_old_rows_default_to_unbridged() -> None:
     assert old.is_bridged is False
 
 
+def test_composed_via_parses_and_a_missing_field_defaults_to_false() -> None:
+    composed = api_client.group_message_from_dict(_message_json(composed_via=True))
+    spelled = api_client.group_message_from_dict(_message_json(is_composed=True))
+    missing = api_client.group_message_from_dict(_message_json())
+    assert composed.composed_via is True
+    assert spelled.composed_via is True
+    assert missing.composed_via is False
+
+
 def test_agent_rows_parse_and_old_rows_default_to_a_person() -> None:
     """``is_agent`` / ``for_display_name`` ("*agent* · for *requester*")
     parse off a new server and default off an old one."""
