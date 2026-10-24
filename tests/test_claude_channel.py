@@ -1482,6 +1482,24 @@ def test_a_failing_body_fetch_is_retried_and_the_event_is_not_skipped(monkeypatc
     assert len([r for r in fake.requests if r.url.path.endswith("/messages")]) == 4
 
 
+def test_a_persistent_5xx_reading_one_message_is_pushed_unavailable_and_the_stream_goes_on(
+    monkeypatch, tmp_path
+):
+    fake = _Fake(_CONNECTED + _scope() + _event(7) + _event(8, message=_MESSAGE_2))
+    fake.fail_messages = claude_channel._FETCH_SERVER_ERROR_ATTEMPTS
+    fake.messages[_MESSAGE_2] = _message_json(_MESSAGE_2)
+    cursor_file = tmp_path / "cursor"
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM, "--cursor-file", str(cursor_file)])
+
+    assert result.kinds() == ["message", "message"]
+    first, second = result.notifications
+    assert first["meta"]["body"] == "unavailable"
+    assert first["meta"]["message_id"] == _MESSAGE
+    assert "body" not in second["meta"], "the next message reads normally"
+    assert json.loads(cursor_file.read_text())["cursor"] == 8
+
+
 def test_a_body_fetch_that_cannot_succeed_ends_the_channel(monkeypatch):
     fake = _Fake(_CONNECTED + _scope() + _event(7))
     fake.message_status = 403

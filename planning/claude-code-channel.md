@@ -303,9 +303,14 @@ window route that already exists) and picks the row whose `id` matches. If the r
 be read and `body="missing"` in meta, so the session can report it. That keeps the guide's rule
 that "not found" is an error to report, never "not addressed".
 
-A fetch that fails with a network error or 5xx is retried with the stream's backoff, without
-advancing the cursor, so delivery order is preserved. A 404 for the room means the agent was
-removed; that is the terminal case in §9.
+A fetch that fails with a network error is retried with the stream's backoff, without advancing
+the cursor, so delivery order is preserved. A fetch that fails with a 5xx is retried the same way
+up to five attempts in all (about fifteen seconds of backoff). If every attempt fails, the event is
+pushed anyway with `content` saying the body could not be read and `body="unavailable"` in meta
+(as `missing` is for a body the server cannot find), and the cursor advances, so one message that
+keeps failing cannot stall every later event in the session. A 401 or 403 is about the token and
+ends the channel, unchanged. A 404 for the room means the agent was removed; that is the terminal
+case in §9.
 
 ### 7.4 Cursor, restart and backlog
 

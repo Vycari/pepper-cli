@@ -102,6 +102,10 @@ ENDED_GRACE_SECONDS = 2.0
 #: The statuses on a message read that end the channel: the token, not the read, is refused.
 _FETCH_FATAL_STATUSES = frozenset({401, 403})
 
+#: How many reads of one message may fail with a 5xx before it is pushed as unavailable (design
+#: §7.3). With the stream's backoff that is about fifteen seconds of waiting, not forever.
+_FETCH_SERVER_ERROR_ATTEMPTS = 5
+
 #: Message ids the worker remembers having handled, to drop a replayed or doubled event.
 _SEEN_LIMIT = 4096
 
@@ -230,8 +234,13 @@ def message_event(
     message_id: str,
     row: api_client.GroupMessage | None,
     event: dict[str, Any],
+    unavailable: bool = False,
 ) -> tuple[str, dict[str, str]]:
-    """``(content, meta)`` for one message. ``row`` is ``None`` when the body could not be read."""
+    """``(content, meta)`` for one message. ``row`` is ``None`` when the body could not be read.
+
+    ``unavailable`` says the server kept failing on the read (``body="unavailable"``) rather than
+    not having the message (``body="missing"``).
+    """
     payload = event.get("payload")
     payload = payload if isinstance(payload, dict) else {}
     where = f"{sanitize_line(info.room_name)} › {sanitize_line(info.topic_name)}"
@@ -243,11 +252,12 @@ def message_event(
     }
     if row is None:
         content = (
-            f"A message in {where} (id {message_id}) could not be read, so its text is not "
+            f"A message in {where} (id {message_id}) could not be read"
+            f"{' (the server kept failing)' if unavailable else ''}, so its text is not "
             "here. Report this to your sponsor; do not treat it as not addressed to you. "
             "Try messages_list with `at` set to the message id."
         )
-        meta["body"] = "missing"
+        meta["body"] = "unavailable" if unavailable else "missing"
         author = payload.get("author_person_id")
         if isinstance(author, str) and author:
             meta["sender_id"] = author
@@ -467,15 +477,19 @@ class ChannelWorker:
 
     def _fetch(
         self, info: TopicInfo, topic_id: str, message_id: str
-    ) -> api_client.GroupMessage | None:
-        """The one message the event names, or ``None`` when the server cannot find it.
+    ) -> tuple[api_client.GroupMessage | None, bool]:
+        """``(row, unavailable)`` for the one message the event names.
 
-        A network error or a 5xx is retried with the stream's backoff and does not return, so the
-        cursor cannot move past an unread message. A 401 or 403 is about the token and ends the
-        run. Any other refusal is about this one read (a topic or message gone, say), so the
-        message is pushed as missing (design §7.3); losing the room itself ends the stream.
+        ``row`` is ``None`` when the server cannot find it (``unavailable`` false) or kept failing
+        (``unavailable`` true). A network error is retried with the stream's backoff and does not
+        return. A 5xx is retried the same way up to ``_FETCH_SERVER_ERROR_ATTEMPTS`` times, then
+        the message is pushed as unavailable so one bad read cannot stall every event behind it.
+        A 401 or 403 is about the token and ends the run. Any other refusal is about this one read
+        (a topic or message gone, say), so the message is pushed as missing (design §7.3); losing
+        the room itself ends the stream.
         """
         attempt = 0
+        server_errors = 0
         while True:
             try:
                 page = self.api.list_group_messages(info.room_id, topic_id, at=message_id)
@@ -483,14 +497,19 @@ class ChannelWorker:
                 if exc.status in _FETCH_FATAL_STATUSES:
                     raise self._ended(*self._fatal_reason(exc.status)) from exc
                 if exc.status in _WATCH_FATAL_STATUSES:
-                    return None
+                    return None, False
                 problem = f"HTTP {exc.status}"
+                server_errors += 1
+                if server_errors >= _FETCH_SERVER_ERROR_ATTEMPTS:
+                    render.error(f"Message fetch failed ({problem}); giving up on it.")
+                    return None, True
             except httpx.RequestError as exc:
                 problem = type(exc).__name__
             else:
                 if page.permalink_target_missing:
-                    return None
-                return next((m for m in page.messages if _same_id(m.id, message_id)), None)
+                    return None, False
+                row = next((m for m in page.messages if _same_id(m.id, message_id)), None)
+                return row, False
             attempt += 1
             if attempt >= _WATCH_QUIET_FAILURES:
                 render.error(f"Message fetch failed ({problem}); retrying.")
@@ -552,13 +571,18 @@ class ChannelWorker:
         if info is None:
             self.resync_pending = True
             return
-        row = self._fetch(info, topic_id, message_id)
+        row, unavailable = self._fetch(info, topic_id, message_id)
         self._remember(message_id)
         if row is not None and row.is_you:
             return
         self._flush_resync()
         content, meta = message_event(
-            info=info, topic_id=topic_id, message_id=message_id, row=row, event=event
+            info=info,
+            topic_id=topic_id,
+            message_id=message_id,
+            row=row,
+            event=event,
+            unavailable=unavailable,
         )
         self._push(content, meta)
 
