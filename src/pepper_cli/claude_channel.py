@@ -99,6 +99,9 @@ BACKLOG_SLACK = timedelta(seconds=60)
 #: How long the process stays up after pushing ``ended``, so the event is read before the tools go.
 ENDED_GRACE_SECONDS = 2.0
 
+#: The statuses on a message read that end the channel: the token, not the read, is refused.
+_FETCH_FATAL_STATUSES = frozenset({401, 403})
+
 #: Message ids the worker remembers having handled, to drop a replayed or doubled event.
 _SEEN_LIMIT = 4096
 
@@ -454,15 +457,19 @@ class ChannelWorker:
         """The one message the event names, or ``None`` when the server cannot find it.
 
         A network error or a 5xx is retried with the stream's backoff and does not return, so the
-        cursor cannot move past an unread message; a status reconnecting cannot fix ends the run.
+        cursor cannot move past an unread message. A 401 or 403 is about the token and ends the
+        run. Any other refusal is about this one read (a topic or message gone, say), so the
+        message is pushed as missing (design §7.3); losing the room itself ends the stream.
         """
         attempt = 0
         while True:
             try:
                 page = self.api.list_group_messages(info.room_id, topic_id, at=message_id)
             except api_client.ApiError as exc:
-                if exc.status in _WATCH_FATAL_STATUSES:
+                if exc.status in _FETCH_FATAL_STATUSES:
                     raise self._ended(*self._fatal_reason(exc.status)) from exc
+                if exc.status in _WATCH_FATAL_STATUSES:
+                    return None
                 problem = f"HTTP {exc.status}"
             except httpx.RequestError as exc:
                 problem = type(exc).__name__

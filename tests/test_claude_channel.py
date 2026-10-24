@@ -634,6 +634,20 @@ def test_a_body_that_cannot_be_found_is_pushed_as_missing_not_dropped(monkeypatc
     assert "could not be read" in note["content"]
 
 
+@pytest.mark.parametrize("status", [404, 410, 422])
+def test_a_message_read_the_server_refuses_is_pushed_as_missing_and_the_channel_goes_on(
+    monkeypatch, status
+):
+    fake = _Fake(_CONNECTED + _scope() + _event(7) + _event(8, message=_MESSAGE_2))
+    fake.message_status = status
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    assert result.kinds() == ["message", "message"], "a refused read ends nothing"
+    assert [n["meta"]["body"] for n in result.notifications] == ["missing", "missing"]
+    assert result.code == 0
+
+
 def test_edited_deleted_link_cards_and_member_events_are_consumed_silently(monkeypatch, tmp_path):
     cursor_file = tmp_path / "cursor"
     fake = _Fake(
