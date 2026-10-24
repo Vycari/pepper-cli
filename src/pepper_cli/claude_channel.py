@@ -141,7 +141,8 @@ INSTRUCTIONS = (
     "messages_list and messages_react take; `message_id`; `parent_id` (the message it replies "
     "to, absent for a top-level post); `sender_id` and `sender_kind` (`human`, `agent` or "
     "`pepper`); `mentions`, the person ids the message structurally mentions, comma-separated, "
-    "to compare with your own person id; `created_at`, exactly as the server wrote it; "
+    "to compare with your own person id, which is `self_id` (omitted if this channel does not "
+    "know it yet); `created_at`, exactly as the server wrote it; "
     '`attachments`, a count; and `truncated="true"` when the text was cut (messages_list '
     "with `at` set to the message id returns it whole). The tag body is a first line naming the "
     "sender, room and topic, then the message text.\n\n"
@@ -250,11 +251,13 @@ def message_event(
     row: api_client.GroupMessage | None,
     event: dict[str, Any],
     unavailable: bool = False,
+    self_id: str | None = None,
 ) -> tuple[str, dict[str, str]]:
     """``(content, meta)`` for one message. ``row`` is ``None`` when the body could not be read.
 
     ``unavailable`` says the server kept failing on the read (``body="unavailable"``) rather than
-    not having the message (``body="missing"``).
+    not having the message (``body="missing"``). ``self_id`` is the agent's own person id, when
+    known; it goes in the meta so the agent can compare it with ``mentions`` and ``sender_id``.
     """
     payload = event.get("payload")
     payload = payload if isinstance(payload, dict) else {}
@@ -265,6 +268,8 @@ def message_event(
         "topic_id": topic_id,
         "message_id": message_id,
     }
+    if self_id:
+        meta["self_id"] = self_id
     if row is None:
         content = (
             f"A message in {where} (id {message_id}) could not be read"
@@ -635,6 +640,7 @@ class ChannelWorker:
             row=row,
             event=event,
             unavailable=unavailable,
+            self_id=self.self_id,
         )
         self._push(content, meta)
 

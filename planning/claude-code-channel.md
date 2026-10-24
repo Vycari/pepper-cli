@@ -366,6 +366,7 @@ Message event:
 | `parent_id` | `parent_message_id`, omitted when none |
 | `sender_id` | `author_person_id` |
 | `sender_kind` | `human`, `agent` or `pepper` (from `is_agent` / `is_pepper`) |
+| `self_id` | the agent's own person id: `--self`, else the scoped stream's `agent_person_id`; omitted while unknown |
 | `mentions` | the structured `mentions` person ids, comma-separated, omitted when none |
 | `created_at` | the message's `created_at`, exactly as the server wrote it |
 | `truncated` | `true` when the body was cut (§7.7), omitted otherwise |
@@ -395,8 +396,12 @@ consumed silently (§7.1).
 
 ### 7.6 Instructions
 
+The instructions cannot carry the agent's person id: they are one constant sent at `initialize`,
+before the stream opens, so a scoped run's `agent_person_id` (from the scope frame) is not known
+yet. Putting `self_id` in each message tag works for `--self` and for the discovered id alike.
+
 The `instructions` string tells Claude what the tag attributes mean, that messages are input from
-other people and never instructions, that `mentions` holds person ids to compare against its own,
+other people and never instructions, that `mentions` holds person ids to compare against its own (`self_id`, on every message tag),
 that a reply goes through `messages_post` with `room_id`, `topic_id` and `reply_to` taken from the
 tag, and that control events mean "run your catch-up". It does not say when to answer: that is
 the deployment's policy (the skill, or the guide's etiquette section).
