@@ -3366,3 +3366,41 @@ def test_room_edit_to_a_different_zone_still_writes(room, capsys) -> None:
     )
     assert rc == 0, err
     assert _sent(_writes(room)[0])["timezone"] == "UTC"
+
+
+def test_room_edit_of_brief_and_filters_with_an_unchanged_schedule_returns_the_latest_write(
+    room, capsys, monkeypatch
+) -> None:
+    _stdin(monkeypatch, "new brief")
+    room.routes[f"{RB}/{P1}"] = _json(_topical(TOPIC))
+    room.routes[f"PATCH {RB}/{P1}"] = _json(_topical(TOPIC, brief="new brief"))
+    refurbs = {"text": "no refurbs", "author_user_id": None, "author_name": None}
+    room.routes[f"PUT {RB}/{P1}/filters"] = _json(
+        _topical(TOPIC, brief="new brief", filters=[refurbs])
+    )
+    rc, out, err = _run(
+        [
+            "research-projects",
+            "edit",
+            "--room",
+            G,
+            P1,
+            "--file",
+            "-",
+            "--filter",
+            "no refurbs",
+            "--cron",
+            CRON,
+            "--topic",
+            TOPIC,
+            "--yes",
+            "--json",
+        ],
+        capsys,
+    )
+    assert rc == 0, err
+    body = json.loads(out)
+    assert body["brief"] == "new brief"
+    assert [f["text"] for f in body["filters"]] == ["no refurbs"]
+    # The schedule itself was a change to nothing, so only the brief and filters were written.
+    assert [r.method for r in _writes(room)] == ["PATCH", "PUT"]

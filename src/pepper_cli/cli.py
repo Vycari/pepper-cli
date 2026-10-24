@@ -9081,6 +9081,7 @@ def cmd_research_projects_edit(args: argparse.Namespace) -> int:
                     group_id,
                     topic_id,
                     before=before,
+                    latest=result,
                     topic_name=args.topic,
                 )
             except (api_client.ApiError, httpx.RequestError) as exc:
@@ -9151,6 +9152,7 @@ def _research_schedule_step(
     topic_id: str | None,
     *,
     before: api_client.ResearchProjectDetail | None = None,
+    latest: api_client.ResearchProjectDetail | None = None,
     topic_name: str | None = None,
 ) -> tuple[api_client.ResearchProjectDetail, str]:
     """The schedule write of ``edit``: ``(the project, a line saying what happened)``.
@@ -9159,7 +9161,9 @@ def _research_schedule_step(
     given: the line names the topic scheduled runs post to, and says "unchanged" when a change
     leaves the cron and zone as they were. In a room whose server reports the schedule's topic a
     change to nothing is not sent at all; an older server leaves the topic unknown, so with a
-    ``--topic`` only the cron and zone are said to be unchanged."""
+    ``--topic`` only the cron and zone are said to be unchanged. ``latest`` is the response of
+    an earlier write in the same edit (the brief or filters); a change to nothing returns it
+    rather than ``before``, which was read before that write."""
     posting = f", posting to topic {sanitize_line(topic_name)!r}" if topic_name else ""
     if clear_schedule:
         detail = api.detach_research_schedule(project_id, group_id=group_id)
@@ -9187,7 +9191,11 @@ def _research_schedule_step(
     ):
         # The detail names the topic, so a change to nothing is known before it is sent.
         name = sanitize_line(before.name)
-        return before, f"The schedule of {name!r} is unchanged: {_schedule_words(before)}{posting}."
+        project = latest if latest is not None else before
+        return (
+            project,
+            f"The schedule of {name!r} is unchanged: {_schedule_words(before)}{posting}.",
+        )
     api.change_research_schedule(
         scheduled_task_id, cron=cron, timezone=zone, topic_id=topic_id, group_id=group_id
     )
