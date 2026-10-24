@@ -47,6 +47,24 @@ async def until(pilot, condition: Callable[[], bool], *, seconds: float = 5.0) -
         await pilot.pause(0.02)
 
 
+def notices(app: App) -> list[str]:
+    """Every notification the app raises from now on, as its message, in order.
+
+    Wait on this rather than ``app._notifications``: a toast leaves that list once its
+    timeout (2 seconds for most) passes on the wall clock, so a loaded runner slower than
+    that between the notify and the next poll never sees it (#124).
+    """
+    seen: list[str] = []
+    notify = app.notify
+
+    def record(message: str, *args: Any, **kwargs: Any) -> None:
+        seen.append(message)
+        notify(message, *args, **kwargs)
+
+    app.notify = record
+    return seen
+
+
 def plain(app: App, selector: str) -> str:
     """The text a Static currently shows, with Rich layout applied."""
     console = Console(width=100, file=io.StringIO(), record=True, force_terminal=False)

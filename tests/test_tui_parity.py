@@ -163,6 +163,7 @@ async def test_a_failed_edit_keeps_the_text_and_says_so() -> None:
     server = ts.standard_server()
     _a1(server, ts.message("m1", "2026-09-16T17:30:00+00:00", "old words", is_you=True))
     app = tui_app.PepperApp(server.client())
+    said = ts.notices(app)
     async with app.run_test(size=SIZE) as pilot:
         await _open_a1(app, pilot, "old words")
         await _select_newest(pilot)
@@ -171,7 +172,7 @@ async def test_a_failed_edit_keeps_the_text_and_says_so() -> None:
         app.composer.load_text("new words")
         server.fail[f"POST /api/v1/groups/{ts.ROOM_A}/messages/m1/edit"] = 500
         await pilot.press("enter")
-        await until(pilot, lambda: any("HTTP 500" in n.message for n in app._notifications))
+        await until(pilot, lambda: any("HTTP 500" in m for m in said))
         assert app.editing is not None
         assert app.composer.text == "new words"
         assert not app.composer.read_only  # editable again, to fix and retry
@@ -211,6 +212,7 @@ async def test_esc_during_a_save_then_e_waits_for_the_save_instead_of_losing_new
     gate = threading.Event()
     server.gates[f"POST /api/v1/groups/{ts.ROOM_A}/messages/m1/edit"] = gate
     app = tui_app.PepperApp(server.client())
+    said = ts.notices(app)
     async with app.run_test(size=SIZE) as pilot:
         await _open_a1(app, pilot, "old words")
         app.composer.load_text("my draft")
@@ -226,7 +228,7 @@ async def test_esc_during_a_save_then_e_waits_for_the_save_instead_of_losing_new
         assert not app.composer.read_only
         app.thread.focus_scroller()
         await pilot.press("e")  # a second edit of the same message, before the reply lands
-        await until(pilot, lambda: any("Still saving" in n.message for n in app._notifications))
+        await until(pilot, lambda: any("Still saving" in m for m in said))
         assert app.editing is None  # refused, so the reply has no newer edit to end
         gate.set()
         await until(pilot, lambda: "new words" in body_text(app))
