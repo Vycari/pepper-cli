@@ -2510,7 +2510,7 @@ class ApiClient:
 
     def watch_agent_events(
         self, *, since: int = 0, last_event_id: int | None = None
-    ) -> Iterator[FeedFrame]:
+    ) -> Generator[FeedFrame]:
         """``GET /api/v1/groups/events/stream`` — an agent member's roster-scoped
         event feed, as :class:`FeedFrame`s until the server closes it.
 

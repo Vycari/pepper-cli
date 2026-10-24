@@ -118,6 +118,9 @@ VERBS = frozenset(
         # `runs OBJECT` is the run history of an object that runs (IA §3.1).
         "runs",
         "guide",
+        # `agents claude-channel` is a named exception to IA §2 (planning/claude-code-channel.md
+        # §14 A): "claude-channel" is Anthropic's product term and the verb says which vendor.
+        "claude-channel",
         # Research projects (IA §3.1): `steer` queues guidance for an object's next run;
         # `take` and `reconsider` mark a ledger item.
         "steer",
@@ -136,7 +139,9 @@ DESTRUCTIVE = frozenset({"delete", "remove", "revoke", "uninstall", "leave"})
 #: ``chat MESSAGE`` takes the flag (§5.4); only its REPL path (no message) ignores
 #: ``--json`` and ``PEPPER_JSON``, which ``test_the_repl_...`` pins.
 #: ``tui`` is a full-screen interactive app with no data output to put in JSON.
-JSON_EXEMPT = frozenset({"login", "tui"})
+#: ``agents claude-channel`` serves JSON-RPC on stdout, so a ``--json`` switch would mean nothing
+#: (planning/claude-code-channel.md §4).
+JSON_EXEMPT = frozenset({"login", "tui", "agents claude-channel"})
 
 #: §5.4 fill list and every leaf that has no ``--json`` today (empty since phase 2d).
 JSON_PENDING: frozenset[str] = frozenset()
@@ -171,6 +176,8 @@ ROOM_NA = {
     "chat": "talking to Pepper in a room is `messages post --mention`",
     "takeout": "exports the account, not a room",
     "agents guide": "prints the bundled guide; nothing about it is per room",
+    "agents claude-channel": "--room is optional: without it the channel serves every room "
+    "the agent belongs to",
     "skills create": "a room holds a grant of someone's skill, never a skill",
     "skills edit": "a room holds a grant of someone's skill, never a skill",
     "skills delete": "a room holds a grant of someone's skill, never a skill",
@@ -192,6 +199,10 @@ YES_PENDING: frozenset[str] = frozenset()
 
 #: Leaves with a positional ``group`` (rule 2: none survives). Phase 2a/2b.
 GROUP_POSITIONAL_PENDING = frozenset({})
+
+#: Leaves allowed to say "channel": Anthropic's term for the Claude Code feature this verb adapts
+#: (planning/claude-code-channel.md §14 A). The exception covers this verb's help text only.
+WORDING_EXEMPT = frozenset({"agents claude-channel"})
 
 #: Leaves whose help still says "group" or "channel" (§2: the CLI says "room").
 #: Leaves under a ``RENAMED`` noun are not checked; their whole noun goes away.
@@ -442,7 +453,9 @@ def test_no_positional_group() -> None:
 
 def test_help_says_room_not_group_or_channel() -> None:
     failing = {
-        leaf for leaf, text in LEAVES.items() if _noun(leaf) not in RENAMED and not _words_ok(text)
+        leaf
+        for leaf, text in LEAVES.items()
+        if _noun(leaf) not in RENAMED and leaf not in WORDING_EXEMPT and not _words_ok(text)
     }
     _ratchet("wording", failing, WORDING_PENDING)
 

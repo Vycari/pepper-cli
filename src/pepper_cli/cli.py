@@ -1939,6 +1939,67 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "--force", action="store_true", help="With --write: overwrite an existing SKILL.md."
     )
     p_agents_guide.set_defaults(handler=cmd_agents_guide)
+    p_agents_channel = sub_agents.add_parser(
+        "claude-channel",
+        help=(
+            "Serve this agent's room events to a Claude Code session as a Claude Code channel, "
+            "over stdio (an MCP server; Claude Code starts it, not you)."
+        ),
+        description=(
+            "An MCP server over stdio that Claude Code starts from an .mcp.json entry. It "
+            "follows the event stream of the agent whose token you are signed in with (a "
+            "pep_agt_ token) and pushes each new message from someone else, with its body, "
+            "into the session, and serves messages_post, messages_list and messages_react as "
+            "tools. The flags are rooms watch's, with the same meaning. stdout carries the "
+            "protocol and nothing else, so there is no --json and no --since. Run it by "
+            "naming it in the session: claude --dangerously-load-development-channels "
+            "server:<name>."
+        ),
+    )
+    p_agents_channel.add_argument(
+        "--room",
+        default=None,
+        metavar="ROOM",
+        help="Only this room's events (an id, or a name or unique name prefix), and the only "
+        "room the tools may act in. Exit 2 if it does not resolve or you are not a member.",
+    )
+    p_agents_channel.add_argument(
+        "--topic",
+        default=None,
+        metavar="TOPIC",
+        help="Only this topic's events, within --room (required).",
+    )
+    p_agents_channel.add_argument(
+        "--cursor-file",
+        default=None,
+        metavar="PATH",
+        help="Persist the cursor here (atomically, after each event is pushed) and resume from "
+        "it. Use one file per scope, and not one a rooms watch wrote.",
+    )
+    p_agents_channel.add_argument(
+        "--kinds",
+        type=_kind_list,
+        default=None,
+        metavar="KIND[,KIND...]",
+        help="Push only these of the message kinds (message.created, mention.created); every "
+        "other event is skipped but the cursor still moves past it.",
+    )
+    p_agents_channel.add_argument(
+        "--ignore-kinds",
+        type=_kind_list,
+        default=None,
+        metavar="KIND[,KIND...]",
+        help="Do not push events of these kinds; the cursor still moves past them.",
+    )
+    p_agents_channel.add_argument(
+        "--self",
+        dest="self_id",
+        default=None,
+        metavar="PERSON_ID",
+        help="This agent's person id, so its own posts are dropped before any fetch. Default: "
+        "the id a scoped stream reports, else a post is dropped after it is read.",
+    )
+    p_agents_channel.set_defaults(handler=cmd_agents_claude_channel)
     _register_account_commands(sub)
     _register_research_commands(sub)
     _add_renamed_stub(sub, "agent-skill", "see 'pepper agents guide'")
@@ -7266,6 +7327,20 @@ def cmd_takeout(args: argparse.Namespace) -> int:
         return 0
 
     return _run_personal(args, run)
+
+
+def cmd_agents_claude_channel(args: argparse.Namespace) -> int:
+    """``pepper agents claude-channel [--room ROOM [--topic TOPIC]] [--cursor-file PATH]
+    [--kinds K,...] [--ignore-kinds K,...] [--self PERSON_ID]``.
+
+    An MCP server on stdio for Claude Code (``planning/claude-code-channel.md``). The server
+    module is imported here, not at the top, so no other command pays for the ``mcp`` import.
+    Exit codes are J9's: 0 when the session closes stdin or on interrupt, 1 for auth, API,
+    network and terminal stream conditions, 2 for usage and resolution errors.
+    """
+    from pepper_cli import claude_channel
+
+    return claude_channel.run(args)
 
 
 def cmd_agents_guide(args: argparse.Namespace) -> int:

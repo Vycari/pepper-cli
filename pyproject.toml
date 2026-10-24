@@ -30,6 +30,15 @@ dependencies = [
     # skips the rename instead. Widen the Python bound once a release ships
     # 3.15 wheels.
     "setproctitle>=1.3.7; platform_python_implementation == 'CPython' and python_version < '3.15' and (sys_platform == 'darwin' or (sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64' or platform_machine == 'ppc64le')))",
+    # The MCP server behind ``pepper agents claude-channel`` (``planning/claude-code-channel.md``
+    # §6, §14 B): a Claude Code channel pushes room events into a session over stdio. Core, not an
+    # extra, because the maintainer chose the SDK over a hand-rolled server and an extra would
+    # make the command a second install; imported only from that command's path, so no other
+    # command pays its import time. It is large (it pulls in an HTTP server stack a stdio channel
+    # never runs), a cost accepted because the command is Claude Code-specific and no native
+    # client ports it. The ``<3`` bound is load-bearing: the command drives ``serve_loop`` to stay
+    # on the handshake protocol revision Claude Code registers channels on, and a test pins that.
+    "mcp>=2.3,<3",
 ]
 
 [project.scripts]
