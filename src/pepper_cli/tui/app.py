@@ -712,11 +712,15 @@ class PepperApp(App[None]):
         header = sanitize_line(state.header_text(self.current, shown))
         if any(self._loops[kind].failures for kind in _LOOPS):
             header += "  · offline, retrying"
-        self.query_one("#header", Static).update(Text(header))
+        base_screen = self.screen_stack[0] if self.screen_stack else self.screen
+        for header_box in base_screen.query("#header"):
+            if isinstance(header_box, Static):
+                header_box.update(Text(header))
         notice = self._notice()
-        box = self.query_one("#notice", Static)
-        box.update(Text(notice))
-        box.set_class(not notice, "empty")
+        for notice_box in base_screen.query("#notice"):
+            if isinstance(notice_box, Static):
+                notice_box.update(Text(notice))
+                notice_box.set_class(not notice, "empty")
         self._update_subline()
         unread = state.any_unread(shown, self.marks, current=self.current, pepper_dot=self.dm.dot)
         mention = state.any_mention(shown, self.marks, self.mentions, current=self.current)

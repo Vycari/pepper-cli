@@ -80,10 +80,10 @@ def _cache_path() -> Path:
     return base / "pepper" / "update-check.json"
 
 
-def _read_cached_version(*, cache_ttl: float) -> str | bool | None:
+def _read_cached_version(*, cache_ttl: float) -> tuple[bool, str | None]:
     """Read cached latest version if within TTL.
 
-    Returns the cached version string, or False if cache is missing/expired.
+    Returns (hit, version) where hit is True if within TTL, False if missing/expired.
     """
     import json
     import time
@@ -95,10 +95,10 @@ def _read_cached_version(*, cache_ttl: float) -> str | bool | None:
             last_checked = float(data.get("last_checked", 0))
             if time.time() - last_checked < cache_ttl:
                 ver = data.get("latest_version")
-                return str(ver) if ver else None
+                return True, (str(ver) if ver else None)
     except Exception:
-        return False
-    return False
+        return False, None
+    return False, None
 
 
 def _write_cached_version(version: str | None) -> None:
@@ -129,10 +129,10 @@ def check_latest_version(*, timeout: float = 3.0, cache_ttl: float = 86400.0) ->
         return None
 
     if cache_ttl > 0:
-        cached = _read_cached_version(cache_ttl=cache_ttl)
-        if cached is not False:
+        hit, cached = _read_cached_version(cache_ttl=cache_ttl)
+        if hit:
             if (
-                cached
+                cached is not None
                 and _VERSION_RE.fullmatch(cached)
                 and parse_version(cached) > parse_version(current)
             ):
