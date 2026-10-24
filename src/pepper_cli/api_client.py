@@ -2440,7 +2440,8 @@ class ApiClient:
         """``PUT /api/v1/client/capabilities``: store this client's declaration on
         the token (see :func:`stored_capabilities`).
 
-        Returns the server's accepted set, or ``None`` when the server does not
+        Returns the server's accepted set (``{}`` when a success body is empty or
+        not a JSON object), or ``None`` when the server does not
         offer the endpoint: a 404 means an older server, or one with
         ``client_capabilities_enabled`` off, and is "not supported", not an
         error. Any other failure (403 for a token not minted by the device flow,
@@ -2454,7 +2455,12 @@ class ApiClient:
             if exc.status == 404:
                 return None
             raise
-        body = resp.json()
+        # The accepted set is informational; an empty, 204 or non-JSON success
+        # body still means the declaration was stored.
+        try:
+            body = resp.json()
+        except ValueError:
+            return {}
         return body if isinstance(body, dict) else {}
 
     def chat_send(self, message: str, *, attachment_ids: list[str] | None = None) -> ChatReply:

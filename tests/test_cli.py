@@ -205,6 +205,7 @@ def test_login_stores_the_client_capabilities(tmp_home: Path, patch_api) -> None
         (api_client.ApiError(403, "forbidden"), False),
         (api_client.ApiError(422, "bad"), True),
         (httpx.ConnectError("down"), True),
+        (ValueError("unexpected"), True),
     ],
 )
 def test_login_survives_a_capabilities_failure(

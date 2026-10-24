@@ -2023,8 +2023,9 @@ def _declare_capabilities(api: api_client.ApiClient) -> None:
     it. A 404 means the server does not offer the endpoint (older, or
     ``client_capabilities_enabled`` off), and a 403 means a token not minted by the
     device flow, which cannot store one; both are normal and print nothing. Anything
-    else gets one stderr line. Per-turn declarations (piped output) still work either
-    way, and the call is not retried.
+    else, including an unexpected exception such as an unreadable body, gets one
+    stderr line. Per-turn declarations (piped output) still work either way, and the
+    call is not retried.
     """
     try:
         api.put_client_capabilities()
@@ -2033,6 +2034,10 @@ def _declare_capabilities(api: api_client.ApiClient) -> None:
             render.info(f"Could not store client capabilities ({exc.status}); continuing without.")
     except httpx.RequestError:
         render.info("Could not store client capabilities (server unreachable); continuing without.")
+    except Exception as exc:  # best-effort: a declaration never fails sign-in
+        render.info(
+            f"Could not store client capabilities ({type(exc).__name__}); continuing without."
+        )
 
 
 def cmd_login(args: argparse.Namespace) -> int:

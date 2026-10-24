@@ -879,6 +879,30 @@ def test_put_client_capabilities_treats_404_as_not_supported() -> None:
     assert calls == ["PUT"]  # no retry
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(204),
+        httpx.Response(200, content=b"accepted", headers={"content-type": "text/plain"}),
+        httpx.Response(200, json=["not", "an", "object"]),
+    ],
+    ids=["204-empty", "200-non-json", "200-non-object"],
+)
+def test_put_client_capabilities_tolerates_a_success_body_it_cannot_read(
+    response: httpx.Response,
+) -> None:
+    """The accepted set is informational: a success whose body is empty or not a
+    JSON object is still a stored declaration, never a decode error."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return response
+
+    with api_client.ApiClient(
+        server_url="http://example.com", token=SecretStr("pep_pat_abc"), client=_mock(handler)
+    ) as api:
+        assert api.put_client_capabilities() == {}
+
+
 def test_put_client_capabilities_raises_other_errors() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(403, json={"detail": "no"})
