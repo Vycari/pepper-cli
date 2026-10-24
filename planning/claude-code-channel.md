@@ -434,12 +434,16 @@ Rules the tools enforce, all of them restatements of the CLI's or the server's o
   infer it: whom a reply is for is the skill's call (room-agent §4: the asker, and only when the
   asker is human). If the service refuses it, the tool returns the error text so Claude can post
   again without it, as the guide says.
-- **Idempotency.** `idempotency_key` defaults to `claude-channel:<reply_to>:<nonce>` when `reply_to`
-  is given, with a fresh random nonce per call, and to a random key otherwise. A second, distinct
-  reply to the same parent therefore posts instead of collapsing into the first. The cost is that
-  the default key no longer dedups a retried call after a timeout; a caller that needs that passes
-  its own `idempotency_key` and reuses it on the retry, and a caller-supplied key is sent
-  unchanged.
+- **Idempotency.** `idempotency_key` defaults to `claude-channel:<reply_to>:<digest>` when
+  `reply_to` is given, where the digest is a SHA-256 over what the post sends (room, topic,
+  `reply_to`, the stripped text, the sorted mentions, `on_behalf_of`), and to a fresh random key
+  otherwise. A retried call with the same arguments (a tool call re-issued after a timeout) carries
+  the same key, so the server replays the first post instead of posting twice; a second, distinct
+  reply to the same parent has a different digest and posts. The one thing it collapses is an
+  identical reply to the same parent, which the server answers with the original message (the
+  groups service keeps keys per principal and does not prune them, so this holds indefinitely); a
+  caller that really means to repeat itself, or wants retry safety for a post without `reply_to`,
+  passes its own `idempotency_key`, which is sent unchanged.
 - **Mentions.** A `mentions` entry whose display name is not in `text` is the caller's problem, as
   on the CLI; the tool passes the ids through.
 - **Results.** Every tool returns the JSON the `--json` form of its command prints (J3/J5), as a

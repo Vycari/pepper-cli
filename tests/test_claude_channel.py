@@ -1255,6 +1255,23 @@ def test_two_replies_to_one_parent_get_distinct_default_keys_and_both_post(monke
     assert all(k.startswith(f"claude-channel:{_MESSAGE}:") for k in keys)
 
 
+def test_a_retried_reply_with_the_same_arguments_reuses_its_default_key(monkeypatch):
+    fake = _Fake(_CONNECTED)
+    reply = {"room_id": _ROOM, "topic_id": _TOPIC, "text": "On it.", "reply_to": _MESSAGE}
+
+    def script(s: _Session) -> None:
+        s.call("messages_post", {**reply, "mentions": [_BOB, _ALICE]})
+        s.call("messages_post", {**reply, "text": "  On it.\n", "mentions": [_ALICE, _BOB]})
+        s.call("messages_post", {**reply, "mentions": [_BOB]})
+        s.call("messages_post", {**reply, "mentions": [_BOB, _ALICE], "on_behalf_of": _ALICE})
+
+    run_channel(monkeypatch, fake, script=script)
+
+    keys = [r.headers["Idempotency-Key"] for r in fake.requests if r.method == "POST"]
+    assert keys[0] == keys[1], "the same post retried carries the same key"
+    assert len(set(keys[1:])) == 3, "a change to what is sent is a different post"
+
+
 def test_messages_post_refuses_a_room_outside_room_and_a_bare_on_behalf_of(monkeypatch):
     fake = _Fake(_CONNECTED + _scope())
     out: dict = {}

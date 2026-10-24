@@ -26,6 +26,7 @@ import concurrent.futures
 import contextlib
 import dataclasses
 import functools
+import hashlib
 import json
 import os
 import re
@@ -827,7 +828,11 @@ TOOLS = [
             },
             "idempotency_key": {
                 **_STR,
-                "description": "Defaults to claude-channel:<reply_to> when reply_to is given.",
+                "description": "With reply_to, defaults to claude-channel:<reply_to>:<hash of "
+                "the post>, so retrying the same reply with the same arguments posts once and a "
+                "different reply to the same message posts too; without reply_to, defaults to a "
+                "fresh random key per call. To make any other retry post once, pass your own key "
+                "and reuse it on the retry.",
             },
         },
         ["room_id", "topic_id", "text"],
@@ -898,6 +903,33 @@ def _api_error_line(exc: api_client.ApiError) -> str:
     )
 
 
+def _reply_key(
+    room_id: str,
+    topic_id: str,
+    reply_to: str,
+    text: str,
+    mentions: list[str] | None,
+    on_behalf_of: str | None,
+) -> str:
+    """The default ``Idempotency-Key`` for a reply: ``claude-channel:<reply_to>:<digest>``.
+
+    The digest covers everything the post sends, so a retried call with the same arguments (a
+    tool call re-issued after a timeout) carries the same key and the server replays the first
+    post, while a different reply to the same parent gets a different key and posts (design
+    §9.1). Mentions are sorted because the server compares them as a set.
+    """
+    payload = {
+        "room_id": room_id,
+        "topic_id": topic_id,
+        "reply_to": reply_to,
+        "text": text,
+        "mentions": sorted(mentions or []),
+        "on_behalf_of": on_behalf_of,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return f"claude-channel:{reply_to}:{hashlib.sha256(encoded).hexdigest()[:32]}"
+
+
 class ChannelTools:
     """The three tools, over one ``ApiClient``. :meth:`call` is synchronous; the server runs it on
     a worker thread."""
@@ -964,7 +996,11 @@ class ChannelTools:
             mentions=mentions or None,
             parent_message_id=reply_to,
             idempotency_key=key
-            or (f"claude-channel:{reply_to}:{uuid.uuid4()}" if reply_to else str(uuid.uuid4())),
+            or (
+                _reply_key(room_id, topic_id, reply_to, text.strip(), mentions, on_behalf_of)
+                if reply_to
+                else str(uuid.uuid4())
+            ),
             on_behalf_of_person_id=on_behalf_of,
         )
         message = api_client.group_message_from_dict(created)
