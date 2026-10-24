@@ -862,6 +862,56 @@ def test_the_backlog_is_pushed_before_the_first_live_message(monkeypatch):
     assert result.kinds() == ["backlog", "message"]
 
 
+def _scoped_cursor_file(path: Path, cursor: int) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "v": 1,
+                "server": _SERVER,
+                "agent_person_id": _AGENT,
+                "room_id": _ROOM,
+                "topic_id": None,
+                "cursor": cursor,
+            }
+        )
+    )
+    return path
+
+
+@pytest.mark.parametrize(
+    ("event", "notice"),
+    [
+        (_event(4, created=_now() - timedelta(hours=2)), "backlog"),
+        (_event(4, kind="some.new.kind"), "resync"),
+    ],
+)
+def test_a_restart_before_a_pending_notice_is_pushed_still_owes_it(
+    monkeypatch, tmp_path, event, notice
+):
+    cursor_file = _scoped_cursor_file(tmp_path / "cursor", 3)
+    argv = ["--room", _ROOM, "--cursor-file", str(cursor_file)]
+
+    # The session ends after the event and before the heartbeat that would push the notice.
+    stopped = run_channel(monkeypatch, _Fake(_CONNECTED + _scope() + event + _cursor(6)), argv)
+
+    assert stopped.notifications == []
+    assert json.loads(cursor_file.read_text())["cursor"] == 3, "held behind the owed notice"
+
+    restarted = run_channel(monkeypatch, _Fake(_CONNECTED + _scope() + event + _PING), argv)
+
+    assert restarted.kinds() == [notice]
+    assert json.loads(cursor_file.read_text())["cursor"] == 4
+
+
+def test_a_pre_session_message_after_the_first_heartbeat_is_still_reported(monkeypatch):
+    old = _now() - timedelta(hours=2)
+    fake = _Fake(_CONNECTED + _scope() + _PING + _event(7, created=old) + _PING)
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    assert result.kinds() == ["backlog"]
+
+
 # --- reconnects, gaps and the end (design §9.4) ------------------------------
 
 

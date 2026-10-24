@@ -327,6 +327,7 @@ class ChannelWorker:
         self.topics = topics
         self.stored = stored
         self.cursor = cursor
+        self.persisted = cursor
         self.allowed_rooms = allowed_rooms
         self.stop = stop
         self.first_run = stored is None and cursor == 0
@@ -337,7 +338,6 @@ class ChannelWorker:
         self.seen: collections.OrderedDict[str, None] = collections.OrderedDict()
         self.skipped: dict[str, int] = {}
         self.skipped_times: list[datetime] = []
-        self.backlog_done = False
         self.resync_pending = False
         self.delay = _WATCH_BACKOFF_START
         self.failures = 0
@@ -366,10 +366,11 @@ class ChannelWorker:
     # -- control events -----------------------------------------------------------------
 
     def _flush_backlog(self) -> None:
-        """Push the one ``backlog`` summary, once the replay is over (design §7.4)."""
-        if self.backlog_done:
-            return
-        self.backlog_done = True
+        """Push the ``backlog`` summary of what was skipped, once the replay is over (design §7.4).
+
+        Normally that is once, after the replay. A pre-session message that reaches the stream
+        later still gets a summary at the next flush, rather than being dropped unreported.
+        """
         if not self.skipped:
             return
         per_topic = "; ".join(
@@ -399,6 +400,9 @@ class ChannelWorker:
                 "newest": newest.isoformat(),
             }
         self._push(content, meta)
+        self.skipped.clear()
+        self.skipped_times.clear()
+        self.first_run = False
 
     def _flush_resync(self) -> None:
         if not self.resync_pending:
@@ -422,6 +426,11 @@ class ChannelWorker:
     def _caught_up(self) -> None:
         self._flush_backlog()
         self._flush_resync()
+        self._persist()
+
+    def _notice_pending(self) -> bool:
+        """Whether a ``backlog`` or ``resync`` notice is owed but not yet pushed."""
+        return bool(self.skipped) or self.resync_pending
 
     # -- topics and bodies ----------------------------------------------------------------
 
@@ -564,8 +573,17 @@ class ChannelWorker:
 
     def _advance(self, new_cursor: int) -> None:
         self.cursor = max(self.cursor, new_cursor)
+        self._persist()
+
+    def _persist(self) -> None:
+        """Write the cursor file, unless a notice is still owed for events it would move past.
+
+        The owed notice lives only in memory, so a file written past those events would lose it on
+        a restart. Held back, the restart replays them and owes the notice again. The in-memory
+        cursor still moves, for in-process reconnects, which keep the pending notice.
+        """
         path = self.config.cursor_file
-        if path is None:
+        if path is None or self._notice_pending() or self.cursor == self.persisted:
             return
         if self.config.room is None:
             _write_cursor_file(path, self.cursor)
@@ -580,6 +598,9 @@ class ChannelWorker:
                     cursor=self.cursor,
                 ),
             )
+        else:
+            return
+        self.persisted = self.cursor
 
     def _accept_scope(self, frame: api_client.FeedFrame) -> None:
         """A scoped connection's first frame: it must be the scope asked for, and a reconnect must
