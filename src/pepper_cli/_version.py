@@ -140,6 +140,8 @@ def check_latest_version(*, timeout: float = 3.0, cache_ttl: float = 86400.0) ->
             return None
 
     try:
+        import contextlib
+
         import httpx
 
         latest: str | None = None
@@ -155,6 +157,35 @@ def check_latest_version(*, timeout: float = 3.0, cache_ttl: float = 86400.0) ->
                     name = str(data.get("tag_name") or "").lstrip("v")
                     if _VERSION_RE.fullmatch(name):
                         latest = name
+            if not latest:
+                resp = httpx.get(
+                    "https://api.github.com/repos/Vycari/pepper-cli/tags",
+                    timeout=timeout,
+                    headers={"User-Agent": USER_AGENT},
+                )
+                if resp.status_code == 200:
+                    tags = resp.json()
+                    if isinstance(tags, list):
+                        best_ver = None
+                        best_str = None
+                        for t in tags:
+                            name = str(t.get("name", "")).lstrip("v")
+                            if _VERSION_RE.fullmatch(name):
+                                with contextlib.suppress(Exception):
+                                    v_obj = parse_version(name)
+                                    if best_ver is None or v_obj > best_ver:
+                                        best_ver = v_obj
+                                        best_str = name
+                        latest = best_str
+            if not latest:
+                resp = httpx.get(
+                    f"https://pypi.org/pypi/{DISTRIBUTION}/json",
+                    timeout=timeout,
+                    headers={"User-Agent": USER_AGENT},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    latest = str(data.get("info", {}).get("version") or "")
         else:
             resp = httpx.get(
                 f"https://pypi.org/pypi/{DISTRIBUTION}/json",

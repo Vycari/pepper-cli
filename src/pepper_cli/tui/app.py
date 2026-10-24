@@ -415,10 +415,12 @@ class PepperApp(App[None]):
             event.stop()
             self.exit(return_code=1)
 
-    def _composer_key(self, _event: events.Key) -> bool:
+    def _composer_key(self, event: events.Key) -> bool:
         """Every key the composer gets: counts as activity; in the fatal state, exits."""
         self._last_input = time.monotonic()
         if self.fatal:
+            if self.update_version and event.key == "f10":
+                return False
             self.exit(return_code=1)
             return True
         return False

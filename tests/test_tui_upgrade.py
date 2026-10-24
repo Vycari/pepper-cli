@@ -120,6 +120,18 @@ async def test_f10_in_fatal_state_opens_confirm_screen() -> None:
         await until(pilot, lambda: isinstance(pilot.app.screen, ConfirmScreen))
 
 
+async def test_f10_in_fatal_state_works_when_composer_has_focus() -> None:
+    server = ts.standard_server()
+    app = tui_app.PepperApp(server.client(), update_checker=lambda: "0.4.0")
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: pilot.app.update_version == "0.4.0")
+        pilot.app.fatal = "Upgrade required to talk to this server."
+        pilot.app.composer.focus()
+        await pilot.pause()
+        await pilot.press("f10")
+        await until(pilot, lambda: isinstance(pilot.app.screen, ConfirmScreen))
+
+
 async def test_tui_upgrade_mouse_click_cancel() -> None:
     server = ts.standard_server()
     app = tui_app.PepperApp(server.client(), update_checker=lambda: "0.4.0")
