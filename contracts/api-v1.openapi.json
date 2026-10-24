@@ -5021,6 +5021,17 @@
               }
             ]
           },
+          "delivery_topic_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "timezone": {
             "anyOf": [
               {
@@ -5035,7 +5046,8 @@
         "required": [
           "cron",
           "timezone",
-          "active"
+          "active",
+          "delivery_topic_id"
         ],
         "type": "object"
       },

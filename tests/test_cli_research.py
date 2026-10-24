@@ -3254,3 +3254,115 @@ def test_a_room_schedules_topic_is_still_sent_when_the_cron_is_unchanged(room, c
     assert err.startswith("The cron and timezone of 'robot-vacuums' are unchanged")
     assert f"posting to topic '{TOPIC}'" in err
     assert _sent(_writes(room)[0])["delivery"]["topic"] == TOPIC
+
+
+# --- a room schedule's delivery topic (#110) --------------------------------------------------
+
+
+def _topical(topic: str | None, **over) -> dict:
+    schedule = {"cron": CRON, "timezone": "America/Los_Angeles", "active": True}
+    return _scheduled(schedule={**schedule, "delivery_topic_id": topic}, **over)
+
+
+def _schedule_line(out: str) -> str:
+    return next(line for line in out.splitlines() if line.startswith("Schedule"))
+
+
+def test_room_show_names_the_topic_the_schedule_posts_to(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(_topical(TOPIC))
+    rc, out, err = _run(["research-projects", "show", "--room", G, P1], capsys)
+    assert rc == 0, err
+    assert _schedule_line(out).endswith(f"{CRON} (America/Los_Angeles) → Research")
+    assert _paths(room).count(f"/api/v1/groups/{G}/topics") == 1
+
+
+def test_room_show_with_no_topic_says_room_default_and_skips_the_lookup(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(_topical(None))
+    rc, out, err = _run(["research-projects", "show", "--room", G, P1], capsys)
+    assert rc == 0, err
+    assert _schedule_line(out).endswith(f"{CRON} (America/Los_Angeles) → room default")
+    assert f"/api/v1/groups/{G}/topics" not in _paths(room)
+
+
+def test_room_show_falls_back_to_the_id_when_the_topic_lookup_fails(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(_topical(TOPIC))
+    room.routes[f"/api/v1/groups/{G}/topics"] = httpx.Response(500, json={"detail": "boom"})
+    rc, out, err = _run(["research-projects", "show", "--room", G, P1], capsys)
+    assert rc == 0, err
+    assert _schedule_line(out).endswith(f"(America/Los_Angeles) → {TOPIC}")
+
+
+def test_room_show_leaves_the_arrow_off_when_the_server_omits_the_field(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(_scheduled())
+    rc, out, _ = _run(["research-projects", "show", "--room", G, P1], capsys)
+    assert rc == 0
+    assert "→" not in _schedule_line(out)
+    assert f"/api/v1/groups/{G}/topics" not in _paths(room)
+
+
+def test_personal_show_has_no_arrow(server, capsys) -> None:
+    server.routes[f"{BASE}/{P1}"] = _json(_topical(None))
+    rc, out, _ = _run(["research-projects", "show", P1], capsys)
+    assert rc == 0
+    assert "→" not in _schedule_line(out)
+
+
+def test_room_edit_with_the_same_cron_zone_and_topic_is_unchanged_and_writes_nothing(
+    room, capsys
+) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(_topical(TOPIC))
+    rc, _, err = _run(
+        ["research-projects", "edit", "--room", G, P1, "--cron", CRON, "--topic", TOPIC, "--yes"],
+        capsys,
+    )
+    assert rc == 0, err
+    assert _writes(room) == []
+    assert err == (
+        f"The schedule of 'robot-vacuums' is unchanged: '{CRON}' (America/Los_Angeles), "
+        f"posting to topic '{TOPIC}'.\n"
+    )
+
+
+def test_room_edit_to_a_different_topic_still_writes(room, capsys) -> None:
+    other = "00000000-0000-0000-0000-0000000000b2"
+    room.routes[f"{RB}/{P1}"] = _json(_topical(other))
+    room.routes[f"PATCH {ROOM_TASK_PATH}"] = _json({"id": TASK})
+    rc, _, err = _run(
+        ["research-projects", "edit", "--room", G, P1, "--cron", CRON, "--topic", TOPIC, "--yes"],
+        capsys,
+    )
+    assert rc == 0, err
+    assert _sent(_writes(room)[0])["delivery"]["topic"] == TOPIC
+
+
+def test_room_edit_moving_off_the_default_to_a_topic_still_writes(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(_topical(None))
+    room.routes[f"PATCH {ROOM_TASK_PATH}"] = _json({"id": TASK})
+    rc, _, err = _run(
+        ["research-projects", "edit", "--room", G, P1, "--cron", CRON, "--topic", TOPIC, "--yes"],
+        capsys,
+    )
+    assert rc == 0, err
+    assert len(_writes(room)) == 1
+
+
+def test_room_edit_to_a_different_zone_still_writes(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(_topical(TOPIC))
+    room.routes[f"PATCH {ROOM_TASK_PATH}"] = _json({"id": TASK})
+    rc, _, err = _run(
+        [
+            "research-projects",
+            "edit",
+            "--room",
+            G,
+            P1,
+            "--cron",
+            CRON,
+            "--timezone",
+            "UTC",
+            "--yes",
+        ],
+        capsys,
+    )
+    assert rc == 0, err
+    assert _sent(_writes(room)[0])["timezone"] == "UTC"

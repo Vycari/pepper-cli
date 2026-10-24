@@ -8625,10 +8625,30 @@ def cmd_research_projects_show(args: argparse.Namespace) -> int:
             )
             return 0
         detail = api.get_research_project(project_id, group_id=group_id)
-        _emit(detail, args, lambda: render.render_research_project(detail, room=args.room))
+        topic_name = _research_delivery_topic_name(api, group_id, detail)
+        _emit(
+            detail,
+            args,
+            lambda: render.render_research_project(detail, room=args.room, topic_name=topic_name),
+        )
         return 0
 
     return _with_api(run, _report_research_error, args)
+
+
+def _research_delivery_topic_name(
+    api: api_client.ApiClient, group_id: str | None, detail: api_client.ResearchProjectDetail
+) -> str | None:
+    """The name of the room topic a schedule posts to, for ``show --room``. One extra call,
+    only when the schedule names a topic; a failed lookup leaves the id to be shown."""
+    schedule = detail.schedule
+    if group_id is None or schedule is None or schedule.delivery_topic_id is None:
+        return None
+    try:
+        topics = api.list_group_topics(group_id)
+    except (api_client.ApiError, httpx.RequestError):
+        return None
+    return next((t.name for t in topics if t.topic_id == schedule.delivery_topic_id), None)
 
 
 def cmd_research_projects_runs(args: argparse.Namespace) -> int:
@@ -9105,6 +9125,21 @@ def _schedule_words(detail: api_client.ResearchProjectDetail) -> str:
     return f"{schedule.cron!r}{zone}"
 
 
+def _room_schedule_matches(
+    before: api_client.ResearchProjectDetail, cron: str, zone: str | None, topic_id: str | None
+) -> bool:
+    """Whether a room schedule already has this cron, zone and topic. A zone or topic not given
+    is not being changed. False against an older server that does not report the topic."""
+    old = before.schedule
+    if old is None or not old.active or not old.delivery_topic_reported:
+        return False
+    return (
+        old.cron == cron
+        and (zone is None or old.timezone == zone)
+        and (topic_id is None or old.delivery_topic_id == topic_id)
+    )
+
+
 def _research_schedule_step(
     api: api_client.ApiClient,
     project_id: str,
@@ -9122,8 +9157,9 @@ def _research_schedule_step(
 
     ``before`` is the project as read before the write and ``topic_name`` the ``--topic`` as
     given: the line names the topic scheduled runs post to, and says "unchanged" when a change
-    leaves the cron and zone as they were (the topic is not in the detail, so with a
-    ``--topic`` only the cron and zone are said to be unchanged)."""
+    leaves the cron and zone as they were. In a room whose server reports the schedule's topic a
+    change to nothing is not sent at all; an older server leaves the topic unknown, so with a
+    ``--topic`` only the cron and zone are said to be unchanged."""
     posting = f", posting to topic {sanitize_line(topic_name)!r}" if topic_name else ""
     if clear_schedule:
         detail = api.detach_research_schedule(project_id, group_id=group_id)
@@ -9144,6 +9180,14 @@ def _research_schedule_step(
                 detail,
                 f"Scheduled {sanitize_line(detail.name)!r} on {_schedule_words(detail)}{posting}.",
             )
+    if (
+        group_id is not None
+        and before is not None
+        and _room_schedule_matches(before, cron, zone, topic_id)
+    ):
+        # The detail names the topic, so a change to nothing is known before it is sent.
+        name = sanitize_line(before.name)
+        return before, f"The schedule of {name!r} is unchanged: {_schedule_words(before)}{posting}."
     api.change_research_schedule(
         scheduled_task_id, cron=cron, timezone=zone, topic_id=topic_id, group_id=group_id
     )

@@ -731,9 +731,16 @@ class ResearchPerson:
 # MIRROR: src/pepper/api/research_projects.py::ResearchScheduleOut
 @dataclass(frozen=True)
 class ResearchSchedule:
+    """A project's schedule. ``delivery_topic_id`` is the room topic scheduled runs post to;
+    ``None`` is a personal project or the room's default delivery. An older server leaves the
+    field out: ``delivery_topic_reported`` is then False (it is not a wire field)."""
+
     cron: str | None
     timezone: str | None
     active: bool
+    delivery_topic_id: str | None
+
+    delivery_topic_reported = True  # class attribute, not a dataclass field
 
 
 # MIRROR: src/pepper/api/research_projects.py::ResearchLastIterationOut
@@ -3867,6 +3874,13 @@ def _fields[T](cls: type[T], row: dict[str, Any], **parsed: Any) -> T:
     return cls(**{**values, **parsed})
 
 
+def _research_schedule_from(row: object) -> ResearchSchedule | None:
+    schedule = _nested(ResearchSchedule, row)
+    if schedule is not None and isinstance(row, dict) and "delivery_topic_id" not in row:
+        object.__setattr__(schedule, "delivery_topic_reported", False)
+    return schedule
+
+
 def _nested[T](cls: type[T], row: object) -> T | None:
     return _fields(cls, row) if isinstance(row, dict) else None
 
@@ -3877,7 +3891,7 @@ def _nested_list[T](cls: type[T], rows: object) -> list[T]:
 
 def _research_summary_parts(row: dict[str, Any]) -> dict[str, Any]:
     return {
-        "schedule": _nested(ResearchSchedule, row.get("schedule")),
+        "schedule": _research_schedule_from(row.get("schedule")),
         "last_iteration": _nested(ResearchLastIteration, row.get("last_iteration")),
         "inflight_run": _research_inflight(row.get("inflight_run")),
     }

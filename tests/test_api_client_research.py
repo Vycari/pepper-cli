@@ -72,7 +72,7 @@ def test_list_projects_parses_nested_models_and_ignores_unknown_fields() -> None
     assert seen[0].url.path == "/api/v1/research-projects"
     assert dict(seen[0].url.params) == {"status": "paused", "limit": "20"}
     (project,) = page.items
-    assert project.schedule == api_client.ResearchSchedule("0 9 * * 0", "UTC", True)
+    assert project.schedule == api_client.ResearchSchedule("0 9 * * 0", "UTC", True, None)
     assert project.last_iteration is not None and project.last_iteration.status == "succeeded"
     assert project.inflight_run is not None
     assert project.inflight_run.requested_by == api_client.ResearchPerson("u1", "Chris")

@@ -1305,12 +1305,18 @@ def _plain_table(headers: list[str], rows: list[list[str]]) -> None:
         _stdout.print(text, markup=False, highlight=False, soft_wrap=True)
 
 
-def _research_schedule(schedule: Any) -> str:
+def _research_schedule(schedule: Any, *, room: bool = False, topic: str | None = None) -> str:
     """``cron (timezone)``, or ``manual`` for a project with no schedule. The cron stays as the
-    server holds it: reading it as prose is the server's job, not the CLI's."""
+    server holds it: reading it as prose is the server's job, not the CLI's. For a room project
+    ``→ topic`` follows (``topic`` is the delivery topic's name, or its id when the name is not
+    known; ``→ room default`` when the schedule names none); an older server that does not say
+    leaves it off."""
     if schedule is None or not schedule.cron:
         return "manual"
     text = schedule.cron + (f" ({schedule.timezone})" if schedule.timezone else "")
+    if room and schedule.delivery_topic_reported:
+        target = "room default" if schedule.delivery_topic_id is None else topic
+        text += f" → {sanitize_line(target or schedule.delivery_topic_id)}"
     return text if schedule.active else f"{text}, off"
 
 
@@ -1394,11 +1400,13 @@ def _render_steering(detail: Any) -> None:
         _labelled("", f"- {_steering_author(note)}, {stamp}: {note.text}")
 
 
-def render_research_project(detail: Any, *, room: str | None = None) -> None:
+def render_research_project(
+    detail: Any, *, room: str | None = None, topic_name: str | None = None
+) -> None:
     """``research-projects show``: the project, its ledger and what is waiting on the person.
 
     ``room`` is the ``--room`` the command was given: the hint lines repeat it, so they can be
-    pasted as they are."""
+    pasted as they are. ``topic_name`` is the name of the room topic the schedule posts to."""
     show = _show_command(detail, room)
     head = f"{sanitize_line(detail.name)}   {detail.status} · {detail.delivery_policy}"
     _stdout.print(f"{head} · skill {sanitize_line(detail.skill)}", markup=False, highlight=False)
@@ -1408,7 +1416,9 @@ def render_research_project(detail: Any, *, room: str | None = None) -> None:
             "Filters",
             "   ".join(f"{i}. {sanitize_line(f.text)}" for i, f in enumerate(detail.filters, 1)),
         )
-    _labelled("Schedule", _research_schedule(detail.schedule))
+    _labelled(
+        "Schedule", _research_schedule(detail.schedule, room=room is not None, topic=topic_name)
+    )
     _labelled("Source", sanitize_line(detail.source_url) if detail.source_url else "(none)")
     last = detail.last_iteration
     _labelled(
