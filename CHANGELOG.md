@@ -13,10 +13,11 @@ Every PR merged since 0.4.0 is listed below.
 
 Upgrade notes:
 
-- `claude-channel` runs only in an interactive Claude Code session, started with
+- For now `claude-channel` needs an interactive Claude Code session started with
   `--dangerously-load-development-channels server:<name>`, where `<name>` is the server's name in
-  `.mcp.json`. Later (P3 in the design), a Team or Enterprise admin can allowlist a plugin that
-  carries it, and the dev flag is no longer needed. It does not run under `claude -p`.
+  `.mcp.json`. Claude Code ignores that flag under `claude -p`. Later (P3 in the design), a Team or
+  Enterprise admin can allowlist a plugin that carries it, and the dev flag is no longer needed.
+  Whether an allowlisted plugin loads under `-p` is untested.
 - It negotiates MCP `2025-11-25`, and never `2026-07-28`.
 - `mcp>=2.3,<3` is now a core dependency of `vycari-pepper`. Only `claude-channel` imports it, so no
   other command pays for the import, but it adds the SDK's dependencies to the install.
