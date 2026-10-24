@@ -3276,6 +3276,14 @@ def test_room_show_names_the_topic_the_schedule_posts_to(room, capsys) -> None:
     assert _paths(room).count(f"/api/v1/groups/{G}/topics") == 1
 
 
+def test_room_show_json_makes_no_topics_call(room, capsys) -> None:
+    room.routes[f"{RB}/{P1}"] = _json(_topical(TOPIC))
+    rc, out, err = _run(["research-projects", "show", "--room", G, P1, "--json"], capsys)
+    assert rc == 0, err
+    assert json.loads(out)["schedule"]["delivery_topic_id"] == TOPIC
+    assert f"/api/v1/groups/{G}/topics" not in _paths(room)
+
+
 def test_room_show_with_no_topic_says_room_default_and_skips_the_lookup(room, capsys) -> None:
     room.routes[f"{RB}/{P1}"] = _json(_topical(None))
     rc, out, err = _run(["research-projects", "show", "--room", G, P1], capsys)

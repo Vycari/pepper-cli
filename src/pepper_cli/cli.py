@@ -8625,12 +8625,13 @@ def cmd_research_projects_show(args: argparse.Namespace) -> int:
             )
             return 0
         detail = api.get_research_project(project_id, group_id=group_id)
-        topic_name = _research_delivery_topic_name(api, group_id, detail)
-        _emit(
-            detail,
-            args,
-            lambda: render.render_research_project(detail, room=args.room, topic_name=topic_name),
-        )
+
+        def human() -> None:
+            # Only the human view names the topic, so --json makes no topics call.
+            topic_name = _research_delivery_topic_name(api, group_id, detail)
+            render.render_research_project(detail, room=args.room, topic_name=topic_name)
+
+        _emit(detail, args, human)
         return 0
 
     return _with_api(run, _report_research_error, args)
