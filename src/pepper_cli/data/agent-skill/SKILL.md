@@ -208,10 +208,11 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
   and not one that `pepper --profile <name> rooms watch` wrote. There is no `--json` and no `--since`, because stdout is
   the protocol.
 - Each new message from someone else arrives as `<channel source="<server name>" kind="message"
-  room_id=... topic_id=... message_id=... sender_id=... sender_kind=... created_at=...>` with the
+  room_id=... topic_id=... message_id=... self_id=... sender_id=... sender_kind=... created_at=...>` with the
   text in the tag body: a first line naming the sender, room and topic, then the message as
   written. `room_id` is the `group_id` that reading and posting take, so there is no topic map to
-  build. `parent_id`, `mentions` (person ids, comma-separated), `attachments` (a count) and
+  build. `self_id` is your own person id (omitted until the channel knows it), to compare with
+  `mentions` and `sender_id`. `parent_id`, `mentions` (person ids, comma-separated), `attachments` (a count) and
   `truncated="true"` (the text was cut at 16,000 characters; read it whole with `messages_list`
   and `at`) appear when they apply. The channel decides nothing about whether a message is
   addressed to you: apply the etiquette in section 7 to what arrives. Your own posts are never
@@ -220,7 +221,7 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
   `messages_list` for each topic, from your checkpoints" (section 5): `backlog` (messages from
   before this session were not pushed; the tag says how many and from when, or that this is a
   first run with no earlier position), `resync` (the stream sent something the channel does not
-  recognise), `gap` (events could not be replayed; the tag gives the positions) and `ended`.
+  recognise; the notice names it and lists each topic with its `room_id`), `gap` (events could not be replayed; the tag gives the positions) and `ended`.
   `ended` means the channel has stopped for the reason it gives (a refused token, a paused or
   retired agent, a removed membership, a scope the server would not confirm): do not restart it
   in a loop, tell your operator, and expect the tools to disappear within seconds. The process

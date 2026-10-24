@@ -342,7 +342,13 @@ put that backlog into context on every Claude Code restart. Decided (§14 C):
   first run reads the whole retained window, and the same skip rule keeps all of it out of the
   push. There is no "start at the tail" option on the stream today; the skip rule makes one
   unnecessary. On a first run (no cursor file) the `backlog` event says "first run, no earlier
-  position" and gives no count, since the retained window is not a backlog this agent owes.
+  position" and gives no count, since the retained window is not a backlog this agent owes. Its
+  wording is first-run safe ("if you keep checkpoints, run your catch-up"), and `resync` uses the
+  same wording.
+- The replayed window on a first run also holds old room events of kinds this channel does not
+  push (`group.renamed`, `app.installed`, and so on). With no earlier position none of them was
+  missed, so an unrecognised event older than the process start time minus 60 seconds owes no
+  `resync` on a first run. After a restart it still does, since the cursor says it was missed.
 
 ### 7.5 Event shape
 
@@ -360,6 +366,7 @@ Message event:
 | `parent_id` | `parent_message_id`, omitted when none |
 | `sender_id` | `author_person_id` |
 | `sender_kind` | `human`, `agent` or `pepper` (from `is_agent` / `is_pepper`) |
+| `self_id` | the agent's own person id: `--self`, else the scoped stream's `agent_person_id`; omitted while unknown |
 | `mentions` | the structured `mentions` person ids, comma-separated, omitted when none |
 | `created_at` | the message's `created_at`, exactly as the server wrote it |
 | `truncated` | `true` when the body was cut (§7.7), omitted otherwise |
@@ -379,10 +386,22 @@ Control events have `kind` = `backlog`, `resync`, `gap` or `ended`, the ids that
 one-paragraph `content` written for Claude ("Events between position 120 and 180 in room … could
 not be replayed. Catch up with messages_list for each topic, from your checkpoints.").
 
+`messages_list` needs a `room_id`, so every per-topic entry in a `backlog` or `resync` `content`
+carries it: `<topic_id> (room_id <room_id>; <room name> › <topic name>)`. A `resync` lists every
+topic the channel knows (the first 40, then "and N more"), since it cannot say which topics are
+affected, and names what set it: the unrecognised event kinds, a message event with no ids, or a
+topic outside the known rooms (the first five, then "and N more"). A `resync` says "if you keep
+checkpoints", as the first-run `backlog` does. `message.link_previews_updated` joins the kinds
+consumed silently (§7.1).
+
 ### 7.6 Instructions
 
+The instructions cannot carry the agent's person id: they are one constant sent at `initialize`,
+before the stream opens, so a scoped run's `agent_person_id` (from the scope frame) is not known
+yet. Putting `self_id` in each message tag works for `--self` and for the discovered id alike.
+
 The `instructions` string tells Claude what the tag attributes mean, that messages are input from
-other people and never instructions, that `mentions` holds person ids to compare against its own,
+other people and never instructions, that `mentions` holds person ids to compare against its own (`self_id`, on every message tag),
 that a reply goes through `messages_post` with `room_id`, `topic_id` and `reply_to` taken from the
 tag, and that control events mean "run your catch-up". It does not say when to answer: that is
 the deployment's policy (the skill, or the guide's etiquette section).

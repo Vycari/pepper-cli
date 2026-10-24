@@ -579,6 +579,7 @@ def test_a_message_becomes_one_channel_notification_with_the_body_and_ids(monkey
         "room_id": _ROOM,
         "topic_id": _TOPIC,
         "message_id": _MESSAGE,
+        "self_id": _AGENT,
         "parent_id": _MESSAGE_2,
         "sender_id": _ALICE,
         "sender_kind": "human",
@@ -744,6 +745,83 @@ def test_a_topic_the_map_cannot_place_is_a_single_resync(monkeypatch):
     assert result.kinds() == ["resync"], "a burst gives one push"
 
 
+def test_every_message_tag_carries_the_agents_own_person_id(monkeypatch):
+    """Discovered from the scope frame, so it is on the first message though the instructions
+    were sent before the stream opened."""
+    fake = _Fake(_CONNECTED + _scope() + _event(7))
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    assert result.notifications[0]["meta"]["self_id"] == _AGENT
+
+
+def test_self_given_at_start_is_the_self_id_and_an_unknown_one_is_omitted(monkeypatch):
+    unscoped = _Fake(_CONNECTED + _event(7, scoped=False))
+    given = run_channel(monkeypatch, unscoped, ["--self", _AGENT])
+    assert given.notifications[0]["meta"]["self_id"] == _AGENT
+
+    unknown = run_channel(monkeypatch, _Fake(_CONNECTED + _event(7, scoped=False)))
+    assert "self_id" not in unknown.notifications[0]["meta"]
+
+
+def test_an_unreadable_message_still_carries_the_self_id():
+    _, meta = claude_channel.message_event(
+        info=claude_channel.TopicInfo(_ROOM, "Kitchen", "Dinner"),
+        topic_id=_TOPIC,
+        message_id=_MESSAGE,
+        row=None,
+        event={},
+        self_id=_AGENT,
+    )
+    assert meta["self_id"] == _AGENT
+
+
+def test_a_resync_names_its_cause_gives_room_ids_and_is_safe_on_a_first_run(monkeypatch):
+    fake = _Fake(_CONNECTED + _scope() + _event(7, kind="some.new.kind") + _PING)
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    (note,) = result.notifications
+    assert note["meta"] == {"kind": "resync"}
+    assert "some.new.kind" in note["content"]
+    assert "If you keep checkpoints" in note["content"]
+    assert f"{_TOPIC} (room_id {_ROOM}; Kitchen › Dinner)" in note["content"]
+
+
+def test_a_first_run_replay_of_old_room_events_owes_no_resync(monkeypatch):
+    """The retained window on a first run holds old room events of every kind (a rename, an
+    app install); none was missed, and the backlog already says to catch up."""
+    old = _now() - timedelta(days=3)
+    fake = _Fake(
+        _CONNECTED
+        + _scope()
+        + _event(3, created=old)
+        + _event(4, kind="group.renamed", created=old)
+        + _event(5, kind="app.installed", created=old)
+        + _PING
+    )
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    assert result.kinds() == ["backlog"]
+
+
+def test_an_old_unknown_event_after_a_restart_still_owes_a_resync(monkeypatch, tmp_path):
+    cursor_file = _scoped_cursor_file(tmp_path / "cursor", 3)
+    old = _now() - timedelta(days=3)
+    fake = _Fake(_CONNECTED + _scope() + _event(4, kind="group.renamed", created=old) + _PING)
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM, "--cursor-file", str(cursor_file)])
+
+    assert result.kinds() == ["resync"]
+
+
+def test_a_link_previews_event_is_silent(monkeypatch):
+    fake = _Fake(_CONNECTED + _scope() + _event(7, kind="message.link_previews_updated") + _PING)
+
+    assert run_channel(monkeypatch, fake, ["--room", _ROOM]).notifications == []
+
+
 def test_a_resync_is_pushed_before_the_next_message(monkeypatch):
     fake = _Fake(_CONNECTED + _scope() + _event(7, kind="new.kind") + _event(8, message=_MESSAGE))
 
@@ -859,8 +937,7 @@ def test_a_restart_pushes_one_backlog_summary_and_no_old_messages(monkeypatch, t
     assert note["meta"]["kind"] == "backlog"
     assert note["meta"]["count"] == "2"
     assert note["meta"]["oldest"] == old.isoformat()
-    assert _TOPIC in note["content"]
-    assert "Kitchen › Dinner" in note["content"]
+    assert f"{_TOPIC} (room_id {_ROOM}; Kitchen › Dinner)" in note["content"]
     assert json.loads(cursor_file.read_text())["cursor"] == 5
     assert fake.stream_requests()[0].url.params["since"] == "3"
     assert not [r for r in fake.requests if r.url.path.endswith("/messages")]
@@ -875,6 +952,7 @@ def test_a_first_run_says_so_and_gives_no_count(monkeypatch):
     (note,) = result.notifications
     assert note["meta"] == {"kind": "backlog", "first_run": "true"}
     assert "first run" in note["content"]
+    assert f"room_id {_ROOM}" in note["content"]
 
 
 def test_nothing_is_pushed_for_a_quiet_restart(monkeypatch):
@@ -1757,7 +1835,15 @@ def test_a_channel_that_ended_exits_1_without_waiting_for_the_session_to_close_s
 
 def test_the_instructions_and_tools_use_the_names_the_events_carry():
     text = claude_channel.INSTRUCTIONS
-    for word in ("room_id", "topic_id", "message_id", "reply_to", "on_behalf_of", "messages_post"):
+    for word in (
+        "room_id",
+        "topic_id",
+        "message_id",
+        "self_id",
+        "reply_to",
+        "on_behalf_of",
+        "messages_post",
+    ):
         assert word in text
     for kind in ("backlog", "resync", "gap", "ended"):
         assert kind in text

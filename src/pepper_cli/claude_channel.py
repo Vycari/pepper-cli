@@ -89,7 +89,21 @@ MESSAGE_KINDS = frozenset({"message.created", "mention.created"})
 
 #: Kinds the guide lists that are consumed silently, with the cursor moving past them. ``member.*``
 #: is a prefix, matched in :func:`_is_known_silent`.
-_SILENT_KINDS = frozenset({"message.edited", "message.deleted", "message.link_cards_updated"})
+_SILENT_KINDS = frozenset(
+    {
+        "message.edited",
+        "message.deleted",
+        "message.link_cards_updated",
+        "message.link_previews_updated",
+    }
+)
+
+#: How many causes and topics a ``resync`` notice lists before it says "and N more".
+_RESYNC_CAUSES_SHOWN = 5
+_RESYNC_TOPICS_SHOWN = 40
+
+#: A kind from the wire is cut to this long in a notice: it is text the server chose.
+_CAUSE_CLIP = 64
 
 #: ``content`` is cut at this many characters (design §7.7).
 CONTENT_CAP = 16_000
@@ -127,7 +141,8 @@ INSTRUCTIONS = (
     "messages_list and messages_react take; `message_id`; `parent_id` (the message it replies "
     "to, absent for a top-level post); `sender_id` and `sender_kind` (`human`, `agent` or "
     "`pepper`); `mentions`, the person ids the message structurally mentions, comma-separated, "
-    "to compare with your own person id; `created_at`, exactly as the server wrote it; "
+    "to compare with your own person id, which is `self_id` (omitted if this channel does not "
+    "know it yet); `created_at`, exactly as the server wrote it; "
     '`attachments`, a count; and `truncated="true"` when the text was cut (messages_list '
     "with `at` set to the message id returns it whole). The tag body is a first line naming the "
     "sender, room and topic, then the message text.\n\n"
@@ -236,11 +251,13 @@ def message_event(
     row: api_client.GroupMessage | None,
     event: dict[str, Any],
     unavailable: bool = False,
+    self_id: str | None = None,
 ) -> tuple[str, dict[str, str]]:
     """``(content, meta)`` for one message. ``row`` is ``None`` when the body could not be read.
 
     ``unavailable`` says the server kept failing on the read (``body="unavailable"``) rather than
-    not having the message (``body="missing"``).
+    not having the message (``body="missing"``). ``self_id`` is the agent's own person id, when
+    known; it goes in the meta so the agent can compare it with ``mentions`` and ``sender_id``.
     """
     payload = event.get("payload")
     payload = payload if isinstance(payload, dict) else {}
@@ -251,6 +268,8 @@ def message_event(
         "topic_id": topic_id,
         "message_id": message_id,
     }
+    if self_id:
+        meta["self_id"] = self_id
     if row is None:
         content = (
             f"A message in {where} (id {message_id}) could not be read"
@@ -367,6 +386,7 @@ class ChannelWorker:
         self.skipped: dict[str, int] = {}
         self.skipped_times: list[datetime] = []
         self.resync_pending = False
+        self.resync_causes: dict[str, None] = {}
         self.delay = _WATCH_BACKOFF_START
         self.failures = 0
 
@@ -436,12 +456,22 @@ class ChannelWorker:
         if not self.resync_pending:
             return
         self.resync_pending = False
+        causes = "; ".join(list(self.resync_causes)[:_RESYNC_CAUSES_SHOWN])
+        more = len(self.resync_causes) - _RESYNC_CAUSES_SHOWN
+        if more > 0:
+            causes += f"; and {more} more"
+        self.resync_causes.clear()
+        known = list(self.topics)
+        topics = "; ".join(self._topic_words(topic_id) for topic_id in known[:_RESYNC_TOPICS_SHOWN])
+        if len(known) > _RESYNC_TOPICS_SHOWN:
+            topics += f"; and {len(known) - _RESYNC_TOPICS_SHOWN} more"
         self._push(
             *control_event(
                 "resync",
                 "The stream sent something this channel does not recognise, or a message it "
-                "could not place in a room. Run your catch-up with messages_list for each "
-                "topic, from your checkpoints.",
+                f"could not place in a room: {causes}. If you keep checkpoints, run your "
+                "catch-up with messages_list for each topic (room_id and topic_id are given "
+                f"here). Topics: {topics or 'none known'}.",
             )
         )
 
@@ -449,12 +479,18 @@ class ChannelWorker:
         info = self.topics.get(topic_id)
         if info is None:
             return topic_id
-        return f"{topic_id} ({sanitize_line(info.room_name)} › {sanitize_line(info.topic_name)})"
+        names = f"{sanitize_line(info.room_name)} › {sanitize_line(info.topic_name)}"
+        return f"{topic_id} (room_id {info.room_id}; {names})"
 
     def _caught_up(self) -> None:
         self._flush_backlog()
         self._flush_resync()
         self._persist()
+
+    def _resync(self, cause: str) -> None:
+        """Owe a ``resync`` notice, remembering ``cause`` so the notice can name it."""
+        self.resync_pending = True
+        self.resync_causes[cause] = None
 
     def _notice_pending(self) -> bool:
         """Whether a ``backlog`` or ``resync`` notice is owed but not yet pushed."""
@@ -542,12 +578,23 @@ class ChannelWorker:
         kinds = self.config.kinds
         return (kinds is not None and kind not in kinds) or kind in self.config.ignore_kinds
 
+    def _is_first_run_history(self, event: dict[str, Any]) -> bool:
+        """Whether ``event`` is replayed history on a first run, where nothing was resumed.
+
+        The first connection replays the server's retained window, which holds old room events
+        of every kind. With no earlier position, none of them was missed, and the first-run
+        ``backlog`` already says to catch up, so they owe no ``resync``.
+        """
+        created = _parse_time(event.get("created_at"))
+        return self.first_run and created is not None and created < self.cutoff
+
     def _handle_event(self, kind: str, event: dict[str, Any]) -> None:
         if _is_known_silent(kind):
             return
         if kind not in MESSAGE_KINDS:
-            if not self._filtered_out(kind):
-                self.resync_pending = True
+            if self._filtered_out(kind) or self._is_first_run_history(event):
+                return
+            self._resync(f"an event of kind {sanitize_line(kind)[:_CAUSE_CLIP]}")
             return
         if self._filtered_out(kind):
             return
@@ -557,7 +604,7 @@ class ChannelWorker:
         if not (
             isinstance(message_id, str) and message_id and isinstance(topic_id, str) and topic_id
         ):
-            self.resync_pending = True
+            self._resync(f"a {sanitize_line(kind)[:_CAUSE_CLIP]} event with no message or topic id")
             return
         if message_id in self.seen:
             return
@@ -577,7 +624,9 @@ class ChannelWorker:
         self._flush_backlog()
         info = self._topic(topic_id)
         if info is None:
-            self.resync_pending = True
+            self._resync(
+                f"a message in topic {topic_id}, which is not in a room this channel knows"
+            )
             return
         row, unavailable = self._fetch(info, topic_id, message_id)
         self._remember(message_id)
@@ -591,6 +640,7 @@ class ChannelWorker:
             row=row,
             event=event,
             unavailable=unavailable,
+            self_id=self.self_id,
         )
         self._push(content, meta)
 
