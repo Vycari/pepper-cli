@@ -93,6 +93,25 @@ This builds from the working tree every time and shares the same credentials
 file as the installed copy, so it's the right choice when developing the CLI
 or when you need a subcommand that hasn't been published yet.
 
+### Alternative installation: `pipx` or `pip`
+
+If you prefer using standard Python packaging tools:
+
+```bash
+# via pipx (recommended for isolated CLI tools)
+pipx install vycari-pepper
+
+# via pip
+pip install vycari-pepper
+```
+
+To upgrade:
+```bash
+pipx upgrade vycari-pepper
+# or
+pip install --upgrade vycari-pepper
+```
+
 ## 3. Log in
 
 ```bash
@@ -475,7 +494,7 @@ machine, and only for this session. A path that is not a directory exits 2.
 | `+`, `e`, `d`, `o` | In the thread, on a selected message: react, edit, delete, open link. |
 | `i` | Room info (members, topics, apps) for the open room. |
 | Ctrl+K | Fuzzy jump to any room or topic. |
-| Ctrl+U | When an update is available: confirm to exit and upgrade. |
+| F10 | When an update is available: confirm to exit and upgrade. |
 | Esc | Cancel the quote or edit, then leave the composer. |
 | Ctrl+N / Ctrl+P | Jump to the next / previous unread conversation. |
 | PgUp / PgDn | Scroll the thread. |

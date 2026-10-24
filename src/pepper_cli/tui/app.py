@@ -154,7 +154,7 @@ class PepperApp(App[None]):
         # Priority: a focused TextArea would otherwise take Ctrl+K as "delete to line end".
         Binding("ctrl+k", "jump", "Jump", priority=True),
         Binding("i", "room_info", "Room info"),
-        Binding("ctrl+u", "upgrade", "Update"),
+        Binding("f10", "upgrade", "Update"),
         Binding("ctrl+q", "quit_app", "Quit", priority=True),
     ]
 
@@ -409,7 +409,9 @@ class PepperApp(App[None]):
 
     def on_key(self, event: events.Key) -> None:
         self._last_input = time.monotonic()
-        if self.fatal:
+        if self.fatal and not isinstance(self.screen, ModalScreen):
+            if self.update_version and event.key == "f10":
+                return
             event.stop()
             self.exit(return_code=1)
 
@@ -850,16 +852,25 @@ class PepperApp(App[None]):
         return super().check_action(action, parameters)
 
     def action_upgrade(self) -> None:
-        """``Ctrl+U``: show confirmation to exit and upgrade Pepper."""
-        if not self.update_version or self.fatal or isinstance(self.screen, ModalScreen):
+        """``F10``: show confirmation to exit and upgrade Pepper."""
+        if not self.update_version or isinstance(self.screen, ModalScreen):
             return
         import sys
 
-        detail = (
-            "Pepper will exit. Run 'uv tool upgrade vycari-pepper' in your terminal."
-            if sys.platform == "win32"
-            else "Pepper will exit and run 'uv tool upgrade vycari-pepper' in your terminal."
-        )
+        from pepper_cli.tui import detect_install_method
+
+        method = detect_install_method()
+        if method == "uv-tool":
+            detail = (
+                "Pepper will exit. Run 'uv tool upgrade vycari-pepper' in your terminal."
+                if sys.platform == "win32"
+                else "Pepper will exit and run 'uv tool upgrade vycari-pepper' in your terminal."
+            )
+        elif method == "pipx":
+            detail = "Pepper will exit. Run 'pipx upgrade vycari-pepper' in your terminal."
+        else:
+            detail = "Pepper will exit. Run 'pip install --upgrade vycari-pepper' in your terminal."
+
         self.push_screen(
             ConfirmScreen(
                 f"Upgrade Pepper to v{self.update_version}?",

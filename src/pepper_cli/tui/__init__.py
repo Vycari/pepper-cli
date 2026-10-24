@@ -23,13 +23,34 @@ def bell_enabled() -> bool:
     return os.environ.get("PEPPER_TUI_BELL", "").strip().lower() not in ("", "0", "false", "no")
 
 
+def detect_install_method() -> str:
+    """Return 'uv-tool', 'pipx', or 'pip' based on sys.prefix and environment."""
+    import sys
+    from pathlib import Path
+
+    parts = [p.lower() for p in Path(sys.prefix).parts]
+    if "tools" in parts and parts[-1] in ("vycari-pepper", "pepper-cli"):
+        return "uv-tool"
+    if "pipx" in parts:
+        return "pipx"
+    return "pip"
+
+
 def _perform_upgrade(target_version: str) -> int:
-    """Run `uv tool upgrade vycari-pepper` after TUI exits cleanly."""
+    """Run upgrade command or print instructions based on the install method."""
     import shutil
     import subprocess
     import sys
 
     from pepper_cli import render
+
+    method = detect_install_method()
+    if method == "pipx":
+        render.info(f"To upgrade to v{target_version}, run:\n  pipx upgrade vycari-pepper")
+        return 0
+    if method == "pip":
+        render.info(f"To upgrade to v{target_version}, run:\n  pip install --upgrade vycari-pepper")
+        return 0
 
     if sys.platform == "win32":
         render.info(f"To upgrade to v{target_version}, run:\n  uv tool upgrade vycari-pepper")
