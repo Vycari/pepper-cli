@@ -1461,6 +1461,20 @@ def test_a_body_fetch_that_cannot_succeed_ends_the_channel(monkeypatch):
     assert result.code == 1
 
 
+def test_an_unexpected_failure_in_the_worker_still_pushes_ended(monkeypatch):
+    def broken(*_args, **_kw):
+        raise ValueError("not json")
+
+    monkeypatch.setattr(claude_channel, "message_event", broken)
+    fake = _Fake(_CONNECTED + _scope() + _event(7))
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM], script=_ended)
+
+    assert result.kinds() == ["ended"]
+    assert "internal error (ValueError" in result.notifications[0]["content"]
+    assert result.code == 1
+
+
 # --- stdout is the protocol ----------------------------------------------------
 
 

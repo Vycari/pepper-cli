@@ -684,6 +684,11 @@ class ChannelWorker:
             return ended.code
         except ChannelClosedError:
             return 0
+        except Exception as exc:
+            # Every terminal condition tells the session (design §9.4), this one too.
+            with contextlib.suppress(ChannelClosedError):
+                self._ended(f"an internal error ({type(exc).__name__}: {exc})", 1)
+            return 1
 
     def _open(self, reconnecting: bool) -> contextlib.AbstractContextManager[Any]:
         last = self.cursor if reconnecting else None
