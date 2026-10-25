@@ -12,6 +12,7 @@ import threading
 from datetime import datetime
 
 import pytest
+from textual import events
 from textual.widgets import Static
 
 from pepper_cli.tui import app as tui_app
@@ -310,3 +311,45 @@ async def test_reaching_the_end_marks_the_newest_row_read(monkeypatch: pytest.Mo
         assert (ts.TOPIC_A1, arrived) not in server.puts
         scroller.scroll_end(animate=False)
         await until(pilot, lambda: (ts.TOPIC_A1, arrived) in server.puts)
+
+
+def _topic_reads(server: ts.FakeServer, topic_id: str) -> int:
+    path = f"/api/v1/groups/{ts.ROOM_A}/topics/{topic_id}/messages"
+    return sum(1 for m, p, _q in server.requests if m == "GET" and p == path)
+
+
+async def test_a_message_event_while_blurred_waits_for_focus_to_read_the_topic() -> None:
+    server = ts.standard_server()
+    gate, hold = threading.Event(), threading.Event()
+    server.streams = [
+        ts.StreamScript(
+            frames=[
+                ts.CURSOR_HEAD,
+                ts.feed_frame("message.created", {"topic_id": ts.TOPIC_A1}, 2),
+            ],
+            gates={1: gate},
+            hold=hold,
+        )
+    ]
+    app = tui_app.PepperApp(server.client())
+    try:
+        async with app.run_test(size=(120, 40)) as pilot:
+            await until(pilot, lambda: len(app.rooms) == 2 and app._stream_healthy)
+            app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+            await until(pilot, lambda: "flight options" in body_text(app))
+            await _settled(pilot, server)
+            app.on_app_blur(events.AppBlur())
+            reads, polls = _topic_reads(server, ts.TOPIC_A1), _rail_polls(server)
+            server.messages[ts.TOPIC_A1].append(
+                ts.message("m7", "2026-09-16T18:05:00+00:00", "ping")
+            )
+            gate.set()
+            # The sidebar still follows the stream; the hidden thread does not fetch.
+            await until(pilot, lambda: _rail_polls(server) > polls)
+            await pilot.pause(0.3)
+            assert _topic_reads(server, ts.TOPIC_A1) == reads
+            assert "ping" not in body_text(app)
+            app.on_app_focus(events.AppFocus())
+            await until(pilot, lambda: "ping" in body_text(app))
+    finally:
+        hold.set()

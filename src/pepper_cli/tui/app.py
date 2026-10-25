@@ -400,7 +400,7 @@ class PepperApp(App[None]):
         self._schedule(kind)
         if kind in self._dirty:
             self._dirty.discard(kind)
-            self._run(kind)
+            self._want(kind)
 
     def _failed(
         self,
@@ -606,6 +606,10 @@ class PepperApp(App[None]):
         """Run ``kind`` now because an event says there is something new. A request already in
         flight may have been issued before the event, so it is run again once it lands."""
         if not self._started or self.fatal:
+            return
+        if kind == "topic" and self._blurred:
+            # Paused like its timer (``on_app_blur``): focus coming back reads the topic once
+            # (``_poll_now``), and a reconcile an edit asked for is still pending in the store.
             return
         loop = self._loops[kind]
         if loop.busy:
