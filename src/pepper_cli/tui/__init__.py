@@ -28,9 +28,9 @@ def detect_install_method() -> str:
     import sys
     from pathlib import Path
 
-    parts = [p.lower() for p in Path(sys.prefix).parts]
-    if "tools" in parts and parts[-1] in ("vycari-pepper", "pepper-cli"):
+    if (Path(sys.prefix) / "uv-receipt.toml").is_file():
         return "uv-tool"
+    parts = [p.lower() for p in Path(sys.prefix).parts]
     if "pipx" in parts:
         return "pipx"
     return "pip"

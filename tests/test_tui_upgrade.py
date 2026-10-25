@@ -227,8 +227,11 @@ def test_perform_upgrade_pip(monkeypatch, capsys) -> None:
     assert "To upgrade to v0.4.0, run:\n  pip install --upgrade vycari-pepper" in captured.err
 
 
-def test_detect_install_method_variants(monkeypatch) -> None:
-    monkeypatch.setattr("sys.prefix", "/home/user/.local/share/uv/tools/vycari-pepper")
+def test_detect_install_method_variants(monkeypatch, tmp_path) -> None:
+    uv_env = tmp_path / "custom-uv-env"
+    uv_env.mkdir()
+    (uv_env / "uv-receipt.toml").write_text("", encoding="utf-8")
+    monkeypatch.setattr("sys.prefix", str(uv_env))
     assert tui.detect_install_method() == "uv-tool"
 
     monkeypatch.setattr("sys.prefix", "/home/user/.local/pipx/venvs/vycari-pepper")

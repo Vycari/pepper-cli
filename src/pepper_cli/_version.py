@@ -59,14 +59,14 @@ def is_git_install() -> bool:
         data = json.loads(raw)
         if not isinstance(data, dict):
             return False
-        if data.get("dir_info", {}).get("editable") or "dir_info" in data:
+        if "dir_info" in data:
             return False
         vcs_info = data.get("vcs_info")
         if not isinstance(vcs_info, dict):
             return False
         if vcs_info.get("requested_revision"):
             return False
-        return vcs_info.get("vcs") == "git" or "vcs_info" in data
+        return vcs_info.get("vcs") == "git"
     except Exception:
         return False
 
@@ -93,7 +93,7 @@ def _read_cached_version(*, cache_ttl: float) -> tuple[bool, str | None]:
         if cache_file.is_file():
             data = json.loads(cache_file.read_text(encoding="utf-8"))
             last_checked = float(data.get("last_checked", 0))
-            if time.time() - last_checked < cache_ttl:
+            if 0 <= time.time() - last_checked < cache_ttl:
                 ver = data.get("latest_version")
                 return True, (str(ver) if ver else None)
     except Exception:
@@ -101,7 +101,7 @@ def _read_cached_version(*, cache_ttl: float) -> tuple[bool, str | None]:
     return False, None
 
 
-def _write_cached_version(version: str | None) -> None:
+def _write_cached_version(version: str) -> None:
     """Write check timestamp and detected version to cache."""
     import contextlib
     import json
@@ -202,8 +202,6 @@ def check_latest_version(*, timeout: float = 3.0, cache_ttl: float = 86400.0) ->
             if parse_version(latest) > parse_version(current):
                 return latest
             return None
-        if cache_ttl > 0:
-            _write_cached_version(None)
     except Exception:
         return None
     return None

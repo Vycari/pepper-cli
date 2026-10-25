@@ -419,6 +419,45 @@ def test_check_latest_version_pypi_error(monkeypatch, httpx_mock) -> None:
     assert _version.check_latest_version() is None
 
 
+def test_check_latest_version_pypi_error_not_cached(monkeypatch, httpx_mock) -> None:
+    monkeypatch.setattr(_version, "get_version", lambda: "0.3.0")
+    monkeypatch.setattr(_version, "is_git_install", lambda: False)
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "")
+    httpx_mock.add_response(
+        url="https://pypi.org/pypi/vycari-pepper/json",
+        status_code=500,
+    )
+    httpx_mock.add_response(
+        url="https://pypi.org/pypi/vycari-pepper/json",
+        json={"info": {"version": "0.4.0"}},
+    )
+    # First call fails, but does not write to cache, so second call succeeds
+    assert _version.check_latest_version() is None
+    assert _version.check_latest_version() == "0.4.0"
+
+
+def test_check_latest_version_future_cache_timestamp_ignored(monkeypatch, httpx_mock) -> None:
+    import json
+    import time
+
+    monkeypatch.setattr(_version, "get_version", lambda: "0.3.0")
+    monkeypatch.setattr(_version, "is_git_install", lambda: False)
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "")
+    cache_file = _version._cache_path()
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    cache_file.write_text(
+        json.dumps({"last_checked": time.time() + 10000, "latest_version": "0.4.0"}),
+        encoding="utf-8",
+    )
+    httpx_mock.add_response(
+        url="https://pypi.org/pypi/vycari-pepper/json",
+        json={"info": {"version": "0.5.0"}},
+    )
+    # Future timestamp is ignored as stale/invalid, so fresh response is returned
+    assert _version.check_latest_version() == "0.5.0"
+
+
+
 def test_check_latest_version_disabled(monkeypatch) -> None:
     monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "1")
     assert _version.check_latest_version() is None
@@ -474,3 +513,16 @@ def test_is_git_install_missing_metadata(monkeypatch) -> None:
 
     monkeypatch.setattr("importlib.metadata.distribution", lambda _name: FakeDist())
     assert _version.is_git_install() is False
+
+
+def test_is_git_install_other_vcs_ignored(monkeypatch) -> None:
+    class FakeDist:
+        def read_text(self, _name: str) -> str:
+            return (
+                '{"url": "https://example.com/repo", '
+                '"vcs_info": {"vcs": "hg", "commit_id": "abc1234"}}'
+            )
+
+    monkeypatch.setattr("importlib.metadata.distribution", lambda _name: FakeDist())
+    assert _version.is_git_install() is False
+
