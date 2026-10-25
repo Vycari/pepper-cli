@@ -39,6 +39,8 @@ if TYPE_CHECKING:
 #: Seconds to wait after the Nth consecutive failed connection: 1, 2, 4, ... capped.
 RECONNECT_FIRST = 1.0
 RECONNECT_MAX = 60.0
+#: Doublings past which the delay is the cap whatever the base (``2 ** 16`` seconds is a day).
+_MAX_DOUBLINGS = 16
 #: Client errors that mean the stream will not come back by retrying: 401 (the app's own
 #: polls report that), 403 (feature or token kind), 404/405/501 (an older server).
 _GIVE_UP_STATUSES = frozenset({401, 403, 404, 405, 501})
@@ -62,7 +64,9 @@ def reconnect_delay(failures: int) -> float:
     """Seconds before the next connection after ``failures`` in a row (``0`` when none)."""
     if failures <= 0:
         return 0.0
-    return min(RECONNECT_FIRST * 2 ** (failures - 1), RECONNECT_MAX)
+    # The exponent is clamped first: ``2 ** n`` for an outage of a thousand failures is too big
+    # for a float, and an OverflowError here would end the stream thread for the session.
+    return min(RECONNECT_FIRST * 2 ** min(failures - 1, _MAX_DOUBLINGS), RECONNECT_MAX)
 
 
 class PersonStream:

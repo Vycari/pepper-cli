@@ -261,3 +261,10 @@ def test_a_server_error_backs_off_and_retries(sse) -> None:
 def test_reconnect_delay_doubles_and_caps() -> None:
     assert [stream.reconnect_delay(n) for n in (0, 1, 2, 3)] == [0.0, 1.0, 2.0, 4.0]
     assert stream.reconnect_delay(50) == stream.RECONNECT_MAX
+
+
+def test_reconnect_delay_stays_capped_after_a_very_long_outage() -> None:
+    # 2 ** 1024 does not fit a float: an unclamped exponent raised OverflowError here and
+    # ended the stream thread for the rest of the session.
+    assert stream.reconnect_delay(1025) == stream.RECONNECT_MAX
+    assert stream.reconnect_delay(10**6) == stream.RECONNECT_MAX
