@@ -1,0 +1,312 @@
+"""The terminal UI on the person event stream (read-state sync phase 4).
+
+The stream says when to fetch; the polls stay as the fallback. These tests drive the app
+against the fake server's scripted ``GET /api/v1/groups/events/stream`` and check what the
+frames do: a read on another device clears a marker without touching the rail, nothing is
+marked read while the thread is scrolled up, and the polls speed up when the stream is down.
+"""
+
+from __future__ import annotations
+
+import threading
+from datetime import datetime
+
+import pytest
+from textual.widgets import Static
+
+from pepper_cli.tui import app as tui_app
+from pepper_cli.tui import state, stream
+from tests import tui_support as ts
+from tests.tui_support import body_text, until
+
+LATER = "2026-09-16T18:00:00.123456+00:00"
+
+
+@pytest.fixture(autouse=True)
+def _clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fast polls when there is no stream; very slow ones while it is healthy, so anything
+    that arrives in these tests came from a frame."""
+    monkeypatch.setattr(state, "ACTIVE_INTERVAL", 0.05)
+    monkeypatch.setattr(state, "COOLING_INTERVAL", 0.05)
+    monkeypatch.setattr(state, "IDLE_INTERVAL", 0.05)
+    monkeypatch.setattr(state, "RAIL_INTERVAL", 0.05)
+    monkeypatch.setattr(state, "RAIL_INTERVAL_LIVE", 1000.0)
+    monkeypatch.setattr(state, "TOPIC_INTERVAL_LIVE", 1000.0)
+    monkeypatch.setattr(state, "DM_INTERVAL", 1000.0)
+    monkeypatch.setattr(state, "BACKOFF_STEPS", (0.05, 0.05, 0.05, 0.05))
+    monkeypatch.setattr(stream, "RECONNECT_FIRST", 0.01)
+    monkeypatch.setattr(tui_app, "utcnow", lambda: ts.NOW)
+
+
+def _rail_polls(server: ts.FakeServer) -> int:
+    return sum(1 for _m, path, _q in server.requests if path == "/api/v1/groups")
+
+
+def _mark_fetches(server: ts.FakeServer) -> int:
+    return sum(1 for m, path, _q in server.requests if m == "GET" and path.endswith("/read"))
+
+
+def _room_unread(app: tui_app.PepperApp, room_id: str) -> bool:
+    return bool(app.sidebar._by_key[f"room:{room_id}"].data.unread)
+
+
+def _unread_room_b(server: ts.FakeServer, activity: str = LATER) -> None:
+    """Room B has activity past the mark the server holds, so it reads as unread."""
+    server.rooms[1]["topics"][0]["last_activity_at"] = activity
+    server.messages[ts.TOPIC_B1].append(ts.message("m9", activity, "newer"))
+    server.bump()
+
+
+async def _settled(pilot, server: ts.FakeServer) -> None:
+    """Wait until the app has stopped fetching on its own (the catch-up after the stream's
+    first frame has landed)."""
+    last = -1
+    while last != len(server.requests):
+        last = len(server.requests)
+        await pilot.pause(0.3)
+
+
+async def test_a_read_event_for_an_unfocused_room_clears_its_marker_without_a_rail_poll() -> None:
+    server = ts.standard_server()
+    _unread_room_b(server)
+    gate, hold = threading.Event(), threading.Event()
+    server.streams = [
+        ts.StreamScript(
+            frames=[ts.CURSOR_HEAD, ts.read_advanced(ts.TOPIC_B1, LATER, 2)],
+            gates={1: gate},
+            hold=hold,
+        )
+    ]
+    app = tui_app.PepperApp(server.client())
+    try:
+        async with app.run_test(size=(120, 40)) as pilot:
+            await until(pilot, lambda: len(app.rooms) == 2 and app._stream_healthy)
+            await until(pilot, lambda: f"room:{ts.ROOM_B}" in app.sidebar._by_key)
+            assert _room_unread(app, ts.ROOM_B)
+            await _settled(pilot, server)
+            polls, marks = _rail_polls(server), _mark_fetches(server)
+            gate.set()
+            await until(pilot, lambda: not _room_unread(app, ts.ROOM_B))
+            await pilot.pause(0.3)
+            # The marker cleared from the frame alone: no rail list, no mark fetch.
+            assert (_rail_polls(server), _mark_fetches(server)) == (polls, marks)
+            assert server.puts == []
+    finally:
+        hold.set()
+
+
+async def test_a_read_event_merges_forward_only_at_microsecond_precision() -> None:
+    server = ts.standard_server()
+    _unread_room_b(server)
+    behind = "2026-09-16T18:00:00.123455+00:00"  # one microsecond before the message
+    gate, hold = threading.Event(), threading.Event()
+    server.streams = [
+        ts.StreamScript(
+            frames=[
+                ts.CURSOR_HEAD,
+                ts.read_advanced(ts.TOPIC_B1, behind, 2),
+                ts.read_advanced(ts.TOPIC_B1, LATER, 3),
+                ts.read_advanced(ts.TOPIC_B1, "2026-09-16T17:00:00+00:00", 4),  # a replay
+            ],
+            gates={1: gate},
+            hold=hold,
+        )
+    ]
+    app = tui_app.PepperApp(server.client())
+    try:
+        async with app.run_test(size=(120, 40)) as pilot:
+            await until(pilot, lambda: len(app.rooms) == 2 and app._stream_healthy)
+            await _settled(pilot, server)
+            gate.set()
+            await until(pilot, lambda: app.marks.marks[ts.TOPIC_B1] == _at(LATER))
+            await pilot.pause(0.2)
+            assert app.marks.marks[ts.TOPIC_B1] == _at(LATER)  # the replay did not walk it back
+            assert not _room_unread(app, ts.ROOM_B)
+    finally:
+        hold.set()
+
+
+def _at(raw: str) -> datetime:
+    parsed = state.parse_ts(raw)
+    assert parsed is not None
+    return parsed
+
+
+def test_a_mark_one_microsecond_behind_the_message_leaves_it_unread() -> None:
+    marks = state.ReadMarks()
+    assert marks.merge_advanced({"topic_id": "t", "last_read_at": "2026-09-16T18:00:00.123455Z"})
+    assert marks.marks["t"] < _at("2026-09-16T18:00:00.123456+00:00")
+    assert marks.merge_advanced({"topic_id": "t", "last_read_at": "2026-09-16T18:00:00.123456Z"})
+    assert marks.marks["t"] == _at("2026-09-16T18:00:00.123456+00:00")
+    assert (
+        marks.merge_advanced({"topic_id": "t", "last_read_at": "2026-09-16T18:00:00.123455Z"})
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        [],
+        {},
+        {"topic_id": "t"},
+        {"topic_id": 3, "last_read_at": "x"},
+        {"topic_id": "t", "last_read_at": "no"},
+    ],
+)
+def test_a_malformed_read_event_is_ignored(payload: object) -> None:
+    marks = state.ReadMarks()
+    assert marks.merge_advanced(payload) is None
+    assert marks.marks == {}
+
+
+async def test_a_message_event_fetches_the_open_topic_and_the_rail_at_once() -> None:
+    server = ts.standard_server()
+    gate, hold = threading.Event(), threading.Event()
+    server.streams = [
+        ts.StreamScript(
+            frames=[
+                ts.CURSOR_HEAD,
+                ts.feed_frame("message.created", {"topic_id": ts.TOPIC_A1}, 2),
+            ],
+            gates={1: gate},
+            hold=hold,
+        )
+    ]
+    app = tui_app.PepperApp(server.client())
+    try:
+        async with app.run_test(size=(120, 40)) as pilot:
+            await until(pilot, lambda: len(app.rooms) == 2 and app._stream_healthy)
+            app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+            await until(pilot, lambda: "flight options" in body_text(app))
+            await _settled(pilot, server)
+            polls = _rail_polls(server)
+            server.messages[ts.TOPIC_A1].append(
+                ts.message("m7", "2026-09-16T18:05:00+00:00", "ping")
+            )
+            gate.set()
+            await until(pilot, lambda: "ping" in body_text(app))
+            await until(pilot, lambda: _rail_polls(server) > polls)
+    finally:
+        hold.set()
+
+
+async def test_the_polls_run_at_their_normal_rate_when_the_stream_is_down() -> None:
+    server = ts.standard_server()
+    hold = threading.Event()
+    # Healthy first, then the connection drops and the reconnect finds no stream (404).
+    server.streams = [ts.StreamScript(frames=[ts.CURSOR_HEAD], hold=hold)]
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2 and app._stream_healthy)
+        await _settled(pilot, server)
+        _unread_room_b(server)
+        await pilot.pause(0.4)
+        assert not _room_unread(app, ts.ROOM_B)  # healthy: the 120 s safety net has not run
+        hold.set()
+        await until(pilot, lambda: not app._stream_healthy)
+        await until(pilot, lambda: _room_unread(app, ts.ROOM_B))  # the poll found it
+        assert app._person_stream is not None
+        await until(pilot, lambda: app._person_stream is not None and app._person_stream.gave_up)
+
+
+async def test_cursor_ahead_catches_up_and_reopens_at_the_servers_position() -> None:
+    server = ts.standard_server()
+    hold = threading.Event()
+    server.streams = [
+        ts.StreamScript(
+            frames=[
+                ts.CURSOR_HEAD,
+                b'event: error\ndata: {"error":"cursor_ahead","retry":false,"next_after_id":3}\n\n',
+            ]
+        ),
+        ts.StreamScript(frames=[ts.HEARTBEAT], hold=hold),
+    ]
+    app = tui_app.PepperApp(server.client())
+    try:
+        async with app.run_test(size=(120, 40)) as pilot:
+            await until(pilot, lambda: len(server.stream_opens) == 2)
+            assert server.stream_opens[1] == (None, "3")
+            await until(pilot, lambda: len(app.rooms) == 2 and app._stream_healthy)
+    finally:
+        hold.set()
+
+
+async def _quiet(pilot, app: tui_app.PepperApp, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop the open-topic poll re-arming at its fast rate, so a re-render queued by an earlier
+    poll cannot scroll the thread back to the end under a test that has just scrolled it."""
+    for name in ("ACTIVE_INTERVAL", "COOLING_INTERVAL", "IDLE_INTERVAL"):
+        monkeypatch.setattr(state, name, 1000.0)
+    await pilot.pause(0.3)
+    await until(pilot, lambda: not app._loops["topic"].busy)
+    await pilot.pause(0.2)
+
+
+def _long_topic(server: ts.FakeServer) -> None:
+    server.messages[ts.TOPIC_A1] = [
+        ts.message(f"r{i:02d}", f"2026-09-16T17:{i:02d}:00+00:00", f"row {i}") for i in range(40)
+    ]
+
+
+async def test_nothing_is_marked_read_while_the_thread_is_scrolled_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = ts.standard_server()
+    _long_topic(server)
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 20)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: "row 39" in body_text(app))
+        scroller = app.thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and app.thread.pinned)
+        newest = "2026-09-16T17:39:00+00:00"
+        await until(pilot, lambda: (ts.TOPIC_A1, newest) in server.puts)
+        await _quiet(pilot, app, monkeypatch)
+        scroller.scroll_home(animate=False)
+        await until(pilot, lambda: not app.thread.pinned)
+        puts = len(server.puts)
+        # A message arrives while the person reads further up.
+        arrived = "2026-09-16T18:30:00.000007+00:00"
+        server.messages[ts.TOPIC_A1].append(ts.message("r99", arrived, "fresh"))
+        server.rooms[0]["topics"][0]["last_activity_at"] = arrived
+        server.bump()
+        app._run("topic")
+        app._run("rail")
+        await until(pilot, lambda: "r99" in app.store.rows)
+        await until(pilot, lambda: bool(app.query_one("#thread-new", Static).display))
+        await pilot.pause(0.4)
+        assert len(server.puts) == puts  # no PUT while scrolled up
+        assert app.marks.marks[ts.TOPIC_A1] < _at(arrived)
+        # Open, but with rows below the screen it is unread: the marker stays.
+        assert _room_unread(app, ts.ROOM_A)
+        # Leaving it scrolled up publishes nothing either.
+        app.open_conversation(state.PEPPER)
+        await pilot.pause(0.4)
+        assert len(server.puts) == puts
+        # Back at the end, the newest row has been on screen: now it is read.
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: (ts.TOPIC_A1, arrived) in server.puts)
+
+
+async def test_reaching_the_end_marks_the_newest_row_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    server = ts.standard_server()
+    _long_topic(server)
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 20)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: "row 39" in body_text(app))
+        scroller = app.thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and app.thread.pinned)
+        await _quiet(pilot, app, monkeypatch)
+        scroller.scroll_home(animate=False)
+        await until(pilot, lambda: not app.thread.pinned)
+        arrived = "2026-09-16T18:30:00+00:00"
+        server.messages[ts.TOPIC_A1].append(ts.message("r99", arrived, "fresh"))
+        app._run("topic")
+        await until(pilot, lambda: "r99" in app.store.rows)
+        assert (ts.TOPIC_A1, arrived) not in server.puts
+        scroller.scroll_end(animate=False)
+        await until(pilot, lambda: (ts.TOPIC_A1, arrived) in server.puts)
