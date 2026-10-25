@@ -457,7 +457,6 @@ def test_check_latest_version_future_cache_timestamp_ignored(monkeypatch, httpx_
     assert _version.check_latest_version() == "0.5.0"
 
 
-
 def test_check_latest_version_disabled(monkeypatch) -> None:
     monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "1")
     assert _version.check_latest_version() is None
@@ -525,4 +524,3 @@ def test_is_git_install_other_vcs_ignored(monkeypatch) -> None:
 
     monkeypatch.setattr("importlib.metadata.distribution", lambda _name: FakeDist())
     assert _version.is_git_install() is False
-
