@@ -380,6 +380,19 @@ class FakeServer:
     def _list_messages(self, topic_id: str, query: dict[str, str]) -> httpx.Response:
         rows = list(self.messages.get(topic_id, []))
         next_before = None
+        if (at := query.get("at")) is not None:
+            # The window around one message (a permalink): its neighbours on either side.
+            index = next((i for i, r in enumerate(rows) if r["id"] == at), None)
+            if index is None:
+                return httpx.Response(
+                    200,
+                    json={"messages": [], "next_before": None, "permalink_target_missing": True},
+                )
+            rows = rows[max(0, index - 2) : index + 3]
+            return httpx.Response(
+                200,
+                json={"messages": rows, "next_before": None, "permalink_target_missing": False},
+            )
         if (since := query.get("since")) is not None:
             from pepper_cli.tui.state import parse_ts
 

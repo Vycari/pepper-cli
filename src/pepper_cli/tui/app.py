@@ -128,6 +128,7 @@ _ON_DEMAND = (
     "info",
     "topics",
     "mentions",
+    "refresh",
 )
 #: Transport failures that mean a turn's request never reached the server, so it is safe to
 #: give the text back for the user to send again.
@@ -261,6 +262,9 @@ class PepperApp(App[None]):
         self._topic_error: str | None = None
         self._last_input = time.monotonic()
         self._blurred = False
+        #: Held rows of the open topic a stream event said changed, to be read again one at
+        #: a time (``_refresh_next``): a row on an older page is in no poll's window.
+        self._stale_rows: list[str] = []
         #: ``topic_id -> read_through`` the server has acknowledged.
         self._published: dict[str, str] = {}
         self._started = False
@@ -474,6 +478,8 @@ class PepperApp(App[None]):
         self._blurred = False
         self._last_input = time.monotonic()
         self._poll_now()
+        if self._stale_rows:
+            self._run("refresh")
 
     # ------------------------------------------------------------------ scheduling
 
@@ -534,6 +540,8 @@ class PepperApp(App[None]):
             self._fetch_roster()
         elif kind == "mentions":
             self._check_mentions()
+        elif kind == "refresh":
+            self._refresh_next()
         elif kind == "turn":
             self._start_turn()
         elif kind == "topic" and not self.current.is_pepper:
@@ -646,10 +654,20 @@ class PepperApp(App[None]):
             return  # additive API: a kind this client does not know is not an error
         self._want("rail")
         if kind.startswith("message.") and self.current.topic_id is not None:
+            topic_id = event.get("topic_id") if isinstance(event, dict) else None
+            message_id = event.get("message_id") if isinstance(event, dict) else None
+            held = isinstance(message_id, str) and message_id in self.store.rows
+            if kind != "message.created" and topic_id == self.current.topic_id and held:
+                # A row held here, maybe from an older page no poll re-reads: read it again
+                # by itself. Paused like the topic poll while blurred; focus reads it.
+                if message_id not in self._stale_rows:
+                    self._stale_rows.append(message_id)
+                if not self._blurred:
+                    self._run("refresh")
+                return
             if kind != "message.created":
                 # An edit, delete or preview changes a row the since-fetch will not return.
                 self.store.expect_reconcile()
-            topic_id = event.get("topic_id") if isinstance(event, dict) else None
             if topic_id in (None, self.current.topic_id):
                 self._want("topic")
 
@@ -714,6 +732,39 @@ class PepperApp(App[None]):
             lambda page: self._mentions_checked(topic, page),
             on_error=lambda exc: self._mentions_failed(topic, exc),
         )
+
+    def _refresh_next(self) -> None:
+        """Read the next changed row again: the window around it (``at``), from which only
+        that row is kept. One in flight; each delivery asks for the next."""
+        conv = self.current
+        while self._stale_rows:
+            message_id = self._stale_rows.pop(0)
+            if message_id in self.store.rows and conv.room_id and conv.topic_id:
+                break
+        else:
+            return
+        room_id, topic_id = conv.room_id, conv.topic_id
+        self._start(
+            "refresh",
+            lambda: self._api.list_group_messages(room_id, topic_id, at=message_id),
+            lambda page: self._refreshed(message_id, page),
+            on_error=lambda _exc: self._refresh_failed(),
+        )
+
+    def _refreshed(self, message_id: str, page: GroupMessagePage) -> None:
+        fresh = [m for m in page.messages if m.id == message_id]
+        if fresh:
+            self.store.add(fresh)
+        elif page.permalink_target_missing:
+            self.store.apply_delete(message_id, {})  # gone for good: show its tombstone
+        self._render_topic(new_rows=0, reset=False)
+        self._run("refresh")
+
+    def _refresh_failed(self) -> bool:
+        """A row that could not be read again waits for the next reconcile of the newest page
+        (which covers it only if it is there); the queue moves on."""
+        self.store.expect_reconcile()
+        return True
 
     def _mentions_checked(self, topic: GroupTopicSummary, page: GroupMessagePage) -> None:
         found = self.mentions.record(
@@ -919,6 +970,8 @@ class PepperApp(App[None]):
         topic.failures = 0
         topic.generation += 1
         self._loops["older"].generation += 1
+        self._loops["refresh"].generation += 1
+        self._stale_rows.clear()
         if conv.room_id is not None:
             self.manual.setdefault(conv.room_id, True)
             self._ensure_topics(conv.room_id)

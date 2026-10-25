@@ -407,3 +407,69 @@ async def test_the_catch_up_at_the_streams_head_loads_a_read_from_just_before_it
             await until(pilot, lambda: not _room_unread(app, ts.ROOM_B))
     finally:
         hold.set()
+
+
+async def test_a_stream_edit_or_delete_of_a_row_on_an_older_page_reads_that_row_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The newest page's reconcile never returns a row paged back to, so an event naming a
+    held row reads it again by itself (``at``)."""
+    monkeypatch.setattr(state, "OLDER_PAGE", 4)
+    server = ts.standard_server()
+    server.page_size = 4
+    server.messages[ts.TOPIC_A1] = [
+        ts.message(f"m{i:02d}", f"2026-09-16T10:{i:02d}:00+00:00", f"body {i}") for i in range(8)
+    ]
+    gate_edit, gate_delete, gate_gone, hold = (threading.Event() for _ in range(4))
+    server.streams = [
+        ts.StreamScript(
+            frames=[
+                ts.CURSOR_HEAD,
+                ts.feed_frame("message.edited", {"topic_id": ts.TOPIC_A1, "message_id": "m01"}, 2),
+                ts.feed_frame("message.deleted", {"topic_id": ts.TOPIC_A1, "message_id": "m02"}, 3),
+                ts.feed_frame("message.deleted", {"topic_id": ts.TOPIC_A1, "message_id": "m03"}, 4),
+            ],
+            gates={1: gate_edit, 2: gate_delete, 3: gate_gone},
+            hold=hold,
+        )
+    ]
+    app = tui_app.PepperApp(server.client())
+    try:
+        async with app.run_test(size=(120, 40)) as pilot:
+            await until(pilot, lambda: len(app.rooms) == 2 and app._stream_healthy)
+            app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+            await until(pilot, lambda: "body 7" in body_text(app))
+            app._load_older()
+            await until(pilot, lambda: "m01" in app.store.rows)
+            await _settled(pilot, server)
+            rows = server.messages[ts.TOPIC_A1]
+            app.on_app_blur(events.AppBlur())
+            rows[1].update(
+                raw_body="edited",
+                rendered_html="<p>edited</p>",
+                is_edited=True,
+                edited_at="2026-09-16T11:00:00+00:00",
+            )
+            gate_edit.set()
+            # While blurred the row waits, like the topic poll; focus reads it.
+            await until(pilot, lambda: "m01" in app._stale_rows)
+            await pilot.pause(0.3)
+            assert not any("at" in q for _m, _p, q in server.requests)
+            app.on_app_focus(events.AppFocus())
+            await until(pilot, lambda: app.store.rows["m01"].raw_body == "edited")
+            rows[2].update(
+                is_deleted=True,
+                raw_body="",
+                rendered_html="",
+                deleted_at="2026-09-16T11:01:00+00:00",
+            )
+            gate_delete.set()
+            await until(pilot, lambda: app.store.rows["m02"].is_deleted)
+            # A row the server no longer has at all becomes a tombstone too.
+            del rows[3]
+            gate_gone.set()
+            await until(pilot, lambda: app.store.rows["m03"].is_deleted)
+            ats = [q.get("at") for m, _p, q in server.requests if m == "GET" and "at" in q]
+            assert ats == ["m01", "m02", "m03"]
+    finally:
+        hold.set()
