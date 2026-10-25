@@ -162,7 +162,8 @@ them:
 - An edit, delete or preview event for a row of the open topic that is already on screen reads
   that row again by itself (`?at=` its id, keeping only that row; one request at a time), since
   a row paged back to is in no poll's window. A row the server no longer has becomes a
-  tombstone. An event for a row not held asks the next poll to reconcile the newest page.
+  tombstone; a failed read is retried with backoff, and paused while the terminal is blurred.
+  An event for a row not held asks the next poll to reconcile the newest page.
 - A connection that names no position starts at the feed's head and opens with a `cursor` frame;
   the app catches up with one fetch of everything. A drop reconnects with `Last-Event-ID`. The
   server's `cursor_ahead` error (the saved position is past every id it issued) catches up and

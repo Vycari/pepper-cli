@@ -11,6 +11,7 @@ from __future__ import annotations
 import threading
 from datetime import datetime
 
+import httpx
 import pytest
 from textual import events
 from textual.widgets import Static
@@ -471,5 +472,44 @@ async def test_a_stream_edit_or_delete_of_a_row_on_an_older_page_reads_that_row_
             await until(pilot, lambda: app.store.rows["m03"].is_deleted)
             ats = [q.get("at") for m, _p, q in server.requests if m == "GET" and "at" in q]
             assert ats == ["m01", "m02", "m03"]
+    finally:
+        hold.set()
+
+
+async def test_a_row_refresh_that_fails_in_transit_is_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(state, "BACKOFF_STEPS", (0.05, 0.05, 0.05, 0.05))
+    server = ts.standard_server()
+    gate, hold = threading.Event(), threading.Event()
+    server.streams = [
+        ts.StreamScript(
+            frames=[
+                ts.CURSOR_HEAD,
+                ts.feed_frame("message.edited", {"topic_id": ts.TOPIC_A1, "message_id": "m1"}, 2),
+            ],
+            gates={1: gate},
+            hold=hold,
+        )
+    ]
+    path = f"/api/v1/groups/{ts.ROOM_A}/topics/{ts.TOPIC_A1}/messages"
+    app = tui_app.PepperApp(server.client())
+    try:
+        async with app.run_test(size=(120, 40)) as pilot:
+            await until(pilot, lambda: len(app.rooms) == 2 and app._stream_healthy)
+            app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+            await until(pilot, lambda: "flight options" in body_text(app))
+            await _settled(pilot, server)
+            server.messages[ts.TOPIC_A1][0].update(
+                raw_body="edited", is_edited=True, edited_at="2026-09-16T18:00:00+00:00"
+            )
+            server.raise_on[path] = httpx.ConnectError("down")
+            gate.set()
+            await until(pilot, lambda: any("at" in q for _m, _p, q in server.requests))
+            server.raise_on.clear()
+            # Retried with backoff (not dropped for the next reconcile): the row is read again.
+            await until(pilot, lambda: app.store.rows["m1"].raw_body == "edited")
+            ats = [q["at"] for m, _p, q in server.requests if m == "GET" and "at" in q]
+            assert len(ats) >= 2 and set(ats) == {"m1"}
     finally:
         hold.set()

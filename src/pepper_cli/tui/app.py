@@ -662,8 +662,7 @@ class PepperApp(App[None]):
                 # by itself. Paused like the topic poll while blurred; focus reads it.
                 if message_id not in self._stale_rows:
                     self._stale_rows.append(message_id)
-                if not self._blurred:
-                    self._run("refresh")
+                self._run("refresh")
                 return
             if kind != "message.created":
                 # An edit, delete or preview changes a row the since-fetch will not return.
@@ -735,7 +734,10 @@ class PepperApp(App[None]):
 
     def _refresh_next(self) -> None:
         """Read the next changed row again: the window around it (``at``), from which only
-        that row is kept. One in flight; each delivery asks for the next."""
+        that row is kept. One in flight; each delivery asks for the next. Paused like the
+        topic poll while blurred (a retry's timer included): focus starts it again."""
+        if self._blurred:
+            return
         conv = self.current
         while self._stale_rows:
             message_id = self._stale_rows.pop(0)
@@ -748,7 +750,7 @@ class PepperApp(App[None]):
             "refresh",
             lambda: self._api.list_group_messages(room_id, topic_id, at=message_id),
             lambda page: self._refreshed(message_id, page),
-            on_error=lambda _exc: self._refresh_failed(),
+            on_error=lambda exc: self._refresh_failed(message_id, exc),
         )
 
     def _refreshed(self, message_id: str, page: GroupMessagePage) -> None:
@@ -760,11 +762,15 @@ class PepperApp(App[None]):
         self._render_topic(new_rows=0, reset=False)
         self._run("refresh")
 
-    def _refresh_failed(self) -> bool:
-        """A row that could not be read again waits for the next reconcile of the newest page
-        (which covers it only if it is there); the queue moves on."""
-        self.store.expect_reconcile()
-        return True
+    def _refresh_failed(self, message_id: str, exc: Exception) -> bool:
+        """A refusal (the topic can no longer be read) drops the row: the queue moves on and
+        the next reconcile of the newest page covers what it can. Anything else retries the
+        row first, with backoff."""
+        if isinstance(exc, ApiError) and exc.status in _PUBLISH_PERMANENT:
+            self.store.expect_reconcile()
+            return True
+        self._stale_rows.insert(0, message_id)
+        return False
 
     def _mentions_checked(self, topic: GroupTopicSummary, page: GroupMessagePage) -> None:
         found = self.mentions.record(
