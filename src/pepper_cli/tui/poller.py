@@ -48,6 +48,8 @@ class RailUpdate:
     server_marks: dict[str, str] = field(default_factory=dict)
     etag: str | None = None
     seen: dict[str, _Signature] | None = None
+    #: This step read every room's marks (after :meth:`RailPoller.refetch_all`).
+    full: bool = False
 
 
 def _signature(room: GroupSummary) -> _Signature:
@@ -66,15 +68,30 @@ class RailPoller:
         self._api = api
         self._etag: str | None = None
         self._seen: dict[str, _Signature] = {}
+        #: The next step reads every room's marks, moved or not (see :meth:`refetch_all`).
+        self._full = False
+
+    def refetch_all(self) -> None:
+        """Make the next step a 200 that reads every room's marks (UI thread).
+
+        A mark can move with no change to the room list (a read on another device), and the
+        signature a step compares is activity only. When the person stream starts at the feed's
+        head, a read committed just before it is in neither the stream nor the last poll, so the
+        catch-up asks for every mark once. The flag stays set until a step that saw it is
+        committed: a step already in flight read the old state, and committing it must not
+        cancel the request.
+        """
+        self._full = True
 
     def step(self) -> RailUpdate:
-        groups, etag = self._api.list_groups_conditional(if_none_match=self._etag)
+        full = self._full
+        groups, etag = self._api.list_groups_conditional(if_none_match=None if full else self._etag)
         if groups is None:
             return RailUpdate(groups=None, etag=self._etag)
         if not groups.enabled or groups.degraded:
             # "Could not ask" is not "all caught up": the app holds what it has.
             return RailUpdate(groups=groups, etag=etag)
-        moved = [r for r in groups.groups if self._seen.get(r.group_id) != _signature(r)]
+        moved = [r for r in groups.groups if full or self._seen.get(r.group_id) != _signature(r)]
         moved_ids = {r.group_id for r in moved}
         fetched = self._fetch_marks(moved)  # a transport error raises here, before any commit
         seen: dict[str, _Signature] = {}
@@ -90,7 +107,11 @@ class RailPoller:
         # A room whose marks could not be read is asked again on the next poll. That needs a
         # 200, so the ETag is only kept when every room's marks came back.
         return RailUpdate(
-            groups=groups, server_marks=merged, etag=etag if complete else None, seen=seen
+            groups=groups,
+            server_marks=merged,
+            etag=etag if complete else None,
+            seen=seen,
+            full=full and complete,
         )
 
     def commit(self, update: RailUpdate) -> None:
@@ -98,6 +119,8 @@ class RailPoller:
         self._etag = update.etag
         if update.seen is not None:
             self._seen = update.seen
+        if update.full:
+            self._full = False
 
     def forget_etag(self) -> None:
         """Ask for the full list next time (after a failed poll, §6.6)."""

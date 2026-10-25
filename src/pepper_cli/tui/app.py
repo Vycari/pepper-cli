@@ -619,7 +619,9 @@ class PepperApp(App[None]):
 
     def _catch_up(self) -> None:
         """One fetch of everything the stream would have said: it just started at the feed's
-        head, or the server said the saved position is past it (``cursor_ahead``)."""
+        head, or the server said the saved position is past it (``cursor_ahead``). A read on
+        another device in that gap changed no room's activity, so the rail reads every mark."""
+        self._rail.refetch_all()
         for kind in ("rail", "topic", "dm"):
             self._want(kind)
 

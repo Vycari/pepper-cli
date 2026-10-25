@@ -388,3 +388,22 @@ async def test_a_send_that_lands_while_scrolled_up_marks_nothing_read(
         assert app.marks.marks[ts.TOPIC_A1] < _at(theirs)
         scroller.scroll_end(animate=False)
         await until(pilot, lambda: any(_at(t) > _at(theirs) for _x, t in server.puts))
+
+
+async def test_the_catch_up_at_the_streams_head_loads_a_read_from_just_before_it() -> None:
+    server = ts.standard_server()
+    _unread_room_b(server)
+    gate, hold = threading.Event(), threading.Event()
+    server.streams = [ts.StreamScript(frames=[ts.CURSOR_HEAD], gates={0: gate}, hold=hold)]
+    app = tui_app.PepperApp(server.client())
+    try:
+        async with app.run_test(size=(120, 40)) as pilot:
+            await until(pilot, lambda: f"room:{ts.ROOM_B}" in app.sidebar._by_key)
+            assert _room_unread(app, ts.ROOM_B)
+            # Another device reads it before the stream's first cursor: no event will say so,
+            # and the room list (activity only) does not change.
+            server.marks[ts.TOPIC_B1] = LATER
+            gate.set()
+            await until(pilot, lambda: not _room_unread(app, ts.ROOM_B))
+    finally:
+        hold.set()
