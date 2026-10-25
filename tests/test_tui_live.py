@@ -353,3 +353,38 @@ async def test_a_message_event_while_blurred_waits_for_focus_to_read_the_topic()
             await until(pilot, lambda: "ping" in body_text(app))
     finally:
         hold.set()
+
+
+async def test_a_send_that_lands_while_scrolled_up_marks_nothing_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = ts.standard_server()
+    _long_topic(server)
+    post = f"POST /api/v1/groups/{ts.ROOM_A}/topics/{ts.TOPIC_A1}/messages"
+    gate = threading.Event()
+    server.gates[post] = gate
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 20)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: "row 39" in body_text(app))
+        scroller = app.thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and app.thread.pinned)
+        await _quiet(pilot, app, monkeypatch)
+        app.composer.focus()
+        app.composer.insert("mine")
+        await pilot.press("enter")
+        await until(pilot, lambda: "sending…" in body_text(app))
+        # During the round trip the person scrolls up, and someone else posts first.
+        scroller.scroll_home(animate=False)
+        await until(pilot, lambda: not app.thread.pinned)
+        theirs = "2026-09-16T17:59:30+00:00"
+        server.messages[ts.TOPIC_A1].append(ts.message("m-theirs", theirs, "theirs"))
+        gate.set()
+        await until(pilot, lambda: all(i.status != "sending" for i in app.pending.items))
+        await pilot.pause(0.4)
+        # Their row was never on screen: no PUT reaches it, and the local mark stays behind it.
+        assert all(_at(through) < _at(theirs) for _t, through in server.puts)
+        assert app.marks.marks[ts.TOPIC_A1] < _at(theirs)
+        scroller.scroll_end(animate=False)
+        await until(pilot, lambda: any(_at(t) > _at(theirs) for _x, t in server.puts))

@@ -1250,13 +1250,22 @@ class PepperApp(App[None]):
         )
 
     def _sent(self, key: str, message: GroupMessage) -> None:
-        """The server stored it. The row stays pending until a poll returns it; the topic
-        counts as read through it, so an own message never lights its own topic."""
+        """The server stored it. The row stays pending until a poll returns it.
+
+        The topic counts as read through it (§5.1 "own sends": the send put it on screen at the
+        foot), so an own message does not light its own topic, but only while that is still
+        true: the topic open, the terminal focused and the thread at its end. The mark is a
+        high-water mark, so raising it to this row would also claim every row stored before it,
+        and one that landed while the person scrolled up, or looked away, during the round trip
+        has not been on screen. Otherwise nothing is marked here; reaching the end does it
+        (:meth:`_note_viewed`), and groups does not advance a cursor on post (Q7).
+        """
         item = self.pending.get(key)
         if item is not None:
             item.status, item.server_id, item.created_at = "sent", message.id, message.created_at
             conv = item.conversation
-            if conv.topic_id is not None:
+            on_screen = conv == self.current and not self._blurred and not self._scrolled_up()
+            if conv.topic_id is not None and on_screen:
                 self.marks.merge(conv.topic_id, state.parse_ts(message.created_at))
                 self._owe(conv, message.created_at)
                 self._run("publish")

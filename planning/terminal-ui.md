@@ -194,7 +194,10 @@ There is one pure function in `tui/state.py`, ported from `groups_unread.js`/`gr
   and the thread at its end, the newest row's `created_at` is published as `PUT …/topics/{tid}/read`
   (the server's own string, never a device clock). **Scrolled up, nothing is marked**, and the open
   topic shows as unread while rows sit below the screen; reaching the end marks the newest row. Your
-  own send puts the thread back at the end and counts as read. Publishes are coalesced to at most
+  own send puts the thread back at the end and counts as read once the server stores it, if the
+  thread is still there: a send that lands after you scrolled up, blurred the terminal or left
+  the topic marks nothing (rows stored before it have not been on screen; groups does not advance
+  a cursor on post, Q7). Publishes are coalesced to at most
   one in flight. The server is monotonic, so a retry is harmless.
 - A read on another device arrives as `read_state.advanced` (§6.2) and is merged forward only, so
   its marker clears here without a rail poll.

@@ -168,9 +168,11 @@ class ReadMarks:
         """The unread rule: activity later than the mark, and not the topic on screen (unless
         its thread is scrolled up, ``scrolled_up``).
 
-        Own sends never light a topic: a pending row is not in the rail at all, and once the
-        server stores it the app raises the mark to that row's ``created_at``
-        (:meth:`PepperApp._sent`), so the activity it causes is already read.
+        An own send does not light a topic it was sent from at the thread's end: a pending row is
+        not in the rail at all, and once the server stores it the app raises the mark to that
+        row's ``created_at`` (:meth:`PepperApp._sent`), so the activity it causes is already
+        read. A send that lands after the person scrolled up, looked away or left the topic marks
+        nothing, since rows stored before it have not been on screen.
         """
         if topic.archived_at:
             return False

@@ -428,7 +428,9 @@ is marked, and a topic you read on another device clears here at once.
 The composer at the bottom posts to whatever is open:
 
 - **In a room topic**, Enter posts. Your message shows dimmed ("sending…") until the next poll
-  brings it back from the server, and your own messages never mark a topic unread. If a post
+  brings it back from the server, and a message you send from the end of the thread does not
+  mark its topic unread (one that lands after you scrolled up or left the topic waits for you to
+  reach the end, like anyone else's). If a post
   fails the row says "failed, r to retry": select it and press `r`. A retry carries the same
   idempotency key, so a post whose answer was lost (a timeout after the server stored it) is
   not posted twice.
