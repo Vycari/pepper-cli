@@ -454,12 +454,13 @@ async def test_a_result_that_lands_while_the_screen_is_torn_down_is_ignored() ->
     app = tui_app.PepperApp(server.client())
     async with app.run_test(size=(120, 40)) as pilot:
         await until(pilot, lambda: len(app.rooms) == 2)
-        app._running = False  # the state _shutdown leaves for the callbacks behind it
+        # The state _shutdown leaves for the callbacks behind it. Left in place: restoring
+        # is_running with the header gone would let a late poll result hit the same query.
+        app._running = False
         app.query_one("#header").remove()
         await pilot.pause()
         generation = app._loops["dm"].generation
         app._delivered("dm", app._on_dm, [], generation)  # would query the missing header
-        app._running = True
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="LinuxDriver imports termios")
