@@ -985,7 +985,29 @@ def group_message_tags(m: GroupMessage) -> tuple[str, str]:
     return via, agent
 
 
-def render_group_messages(page: GroupMessagePage) -> None:
+ANCHOR_QUOTE_CAP = 160
+
+
+def note_topic_header(note_id: str) -> str:
+    """One line naming a note's comment topic and how to read it as threads."""
+    return (
+        f"[note comments] This is the comments topic of note {sanitize_line(note_id)}; "
+        f"read it as threads with: pepper comments list --note {sanitize_line(note_id)}"
+    )
+
+
+def anchor_quote_line(anchor: dict[str, Any] | None) -> str:
+    """``> "quoted passage"`` for an anchored comment (truncated), else ``""``."""
+    exact = anchor.get("exact") if isinstance(anchor, dict) else None
+    if not isinstance(exact, str) or not exact.strip():
+        return ""
+    text = " ".join(sanitize_text(exact).split())
+    if len(text) > ANCHOR_QUOTE_CAP:
+        text = text[: ANCHOR_QUOTE_CAP - 1].rstrip() + "…"
+    return f'> "{text}"'
+
+
+def render_group_messages(page: GroupMessagePage, note_id: str | None = None) -> None:
     """Pretty-print one page of a topic's messages to stdout, oldest first.
 
     Timestamps use ``created_at_display`` verbatim — server-preformatted in
@@ -1013,6 +1035,8 @@ def render_group_messages(page: GroupMessagePage) -> None:
     than opening a blank one (the same guard as the web room's
     ``group_room.js``).
     """
+    if note_id:
+        _stdout.print(note_topic_header(note_id), markup=False, highlight=False)
     if not page.messages:
         _stdout.print("(no messages)")
     last_day_key: str | None = None
@@ -1039,6 +1063,12 @@ def render_group_messages(page: GroupMessagePage) -> None:
         _stdout.print(
             f"[dim]{_s(m.created_at_display)}[/dim] [bold]{display_name}[/bold]{via}{edited}:"
         )
+        quoted = anchor_quote_line(m.anchor)
+        if quoted:
+            _stdout.print(quoted, markup=False, highlight=False)
+        if m.resolved_at:
+            by = f" by {m.resolved_by_name}" if m.resolved_by_name else ""
+            _stdout.print(f"(resolved{by})", markup=False, highlight=False)
         if m.is_broken:
             _stdout.print("[dim](message could not be rendered)[/dim]")
         else:

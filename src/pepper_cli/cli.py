@@ -5529,10 +5529,20 @@ def cmd_messages_list(args: argparse.Namespace) -> int:
         if args.mark and page.messages:
             newest = max(m.created_at for m in page.messages)
             api.set_group_read_mark(group_id, topic_id, read_through=newest)
+        note_id = None
+        if not _json_mode(args):
+            note_id = next(
+                (
+                    t.subject_artifact_id
+                    for t in api.list_group_topics(group_id)
+                    if t.topic_id == topic_id
+                ),
+                None,
+            )
         _emit_list(
             page.messages,
             args,
-            lambda: render.render_group_messages(page),
+            lambda: render.render_group_messages(page, note_id),
             next_before=page.next_before,
         )
         return 0

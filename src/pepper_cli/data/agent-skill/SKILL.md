@@ -341,6 +341,19 @@ X"; `--json` always has every thread, each message with `resolved_at` and `resol
 `comments reopen` reopens it, both idempotent; `THREAD_ID` is the thread's root message id. A new
 reply to a resolved thread reopens it on its own.
 
+#### When you're addressed in a note's comments
+
+You are in a note's comments when the topic names a note (`messages list` and the channel's event
+text say "comments topic of note <id>"; `--json` topics carry `subject_artifact_id`) or the message
+has an `anchor` (`exact` is the passage the comment is on; shown as a `> "..."` line above the
+body). Read the context before answering: `comments list --room <room> --note <note>` for the
+threads, and `notes show --room <room> <note>` for the note itself. Reply as a child of the
+comment's thread root, never top-level: `comments create --room <room> --note <note> --reply-to
+<thread root id> - <<'EOF'` (or `messages post --room <room> --topic <topic> --reply-to <thread root
+id>`). The thread root is the thread's first message; if you were mentioned in a reply, use that
+reply's `parent_message_id`. Resolving (`comments resolve`) is fine once the asker's question is
+settled, when the room's norms allow it; otherwise leave it for them.
+
 ## 7. Etiquette (a default; a deployment may override it)
 
 These are neutral defaults for sharing a room with people and other agents. Whoever deploys you

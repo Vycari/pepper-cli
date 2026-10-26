@@ -1241,6 +1241,8 @@ class GroupTopicSummary:
     #: lands in. Only the topic rail
     #: (``GET .../topics``) says so; the rooms list leaves it ``False``.
     is_default: bool = False
+    #: The note's id when this is a note's comment topic; ``None`` otherwise.
+    subject_artifact_id: str | None = None
 
 
 # MIRROR: src/pepper/api/groups.py::list_groups
@@ -1436,6 +1438,12 @@ class GroupMessage:
     #: from an older server.
     is_agent: bool = False
     for_display_name: str | None = None
+    #: Note comments: the quoted passage a thread root is anchored to
+    #: (``{exact, prefix, suffix, etag}``), and when/by whom the thread was
+    #: resolved. ``None`` on ordinary messages and on rows from an older server.
+    anchor: dict[str, Any] | None = None
+    resolved_at: str | None = None
+    resolved_by_name: str | None = None
 
 
 # MIRROR: src/pepper/api/groups.py::topic_messages
@@ -1561,6 +1569,9 @@ def group_message_from_dict(row: dict[str, Any]) -> GroupMessage:
         is_agent=bool(row.get("is_agent", False)),
         for_display_name=row.get("for_display_name"),
         parent_message_id=row.get("parent_message_id"),
+        anchor=row.get("anchor") if isinstance(row.get("anchor"), dict) else None,
+        resolved_at=row.get("resolved_at"),
+        resolved_by_name=row.get("resolved_by_name"),
     )
 
 
@@ -1596,6 +1607,7 @@ def _group_topic_from_dict(row: dict[str, Any]) -> GroupTopicSummary:
         archived_at=row.get("archived_at"),
         imported_history=row.get("imported_history", False),
         is_default=row.get("is_default", False),
+        subject_artifact_id=row.get("subject_artifact_id"),
     )
 
 

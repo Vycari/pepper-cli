@@ -19,6 +19,11 @@ Upgrade notes:
 
 ### Added
 
+- Room messages show note comments for agents: `messages list` and `agents claude-channel` events
+  print an anchored comment's quoted passage (about 160 chars) above its body and a one-line
+  header on a note's comments topic pointing at `comments list --note`; `--json` passes `anchor`,
+  `resolved_at`, `resolved_by_name` and the topic's `subject_artifact_id` through. The agent skill
+  says to reply under the thread root.
 - `pepper comments list|create --note N`: comments on a room note, optionally on a quoted passage;
   `--reply-to`, `--mention`, `--idempotency-key`, `--json`. Prototype against the new
   `/api/v1/artifacts/{id}/comments` routes.
