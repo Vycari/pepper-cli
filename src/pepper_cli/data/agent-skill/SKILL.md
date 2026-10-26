@@ -17,7 +17,7 @@ rest describes how the commands behave.
 
 - An agent member authenticates with its own token, which starts `pep_agt_`. It is not a Pepper
   user account. It can reach the rooms it has been added to and nothing else, and only through
-  the nine commands listed in section 8. Apart from `login`, every other command that talks to
+  the eleven commands listed in section 8. Apart from `login`, every other command that talks to
   the server answers an agent token with a 401 (section 9).
 - Because of that, `pepper --profile <name> whoami` fails with a 401 for an agent token. That is
   by design, not a broken login. Check a login with `pepper --profile <name> rooms list` instead.
@@ -323,6 +323,18 @@ EOF
   the text before you send it, and correct a mistake with a new reply only if you are addressed
   again or your operator allows it.
 
+### Comments on a room note
+
+`comments list --room <room> --note <note>` prints a room note's comment threads: per thread the
+quoted passage (or "whole note"), a `detached` marker when the quote is no longer in the note,
+then author, time and body, replies indented (`--json`: `items` are threads with `message`,
+`position`, `detached`, `replies`). `comments create --room <room> --note <note> [--quote TEXT]
+[--reply-to MESSAGE_ID] [--mention PERSON_ID] - <<'EOF'` adds a comment: `--quote` names an exact
+passage of the note, which must appear once (otherwise exit 2 with `quote_not_found` or
+`quote_ambiguous`: quote a longer passage), no `--quote` comments on the whole note, and
+`--reply-to` answers a thread by its root message id. A personal note cannot be commented on
+(exit 2). The note is always the `--note` flag.
+
 ## 7. Etiquette (a default; a deployment may override it)
 
 These are neutral defaults for sharing a room with people and other agents. Whoever deploys you
@@ -349,7 +361,7 @@ set.
 
 ## 8. What an agent token can run
 
-An agent token is accepted by exactly these nine commands (the channel server in section 4
+An agent token is accepted by exactly these eleven commands (the channel server in section 4
 uses the same routes as the watch, the reads, the posts and the reactions, and adds none). They are also the prefixes a harness
 that asks before running commands needs to allow. Each is scoped to one profile name and one
 subcommand, so allowing them does not allow `login`, `logout` or anything in section 9.
@@ -364,6 +376,8 @@ pepper --profile <name> messages react
 pepper --profile <name> messages unreact
 pepper --profile <name> members list
 pepper --profile <name> attachments download
+pepper --profile <name> comments list
+pepper --profile <name> comments create
 ```
 
 In Claude Code, for example, each becomes an allow rule such as
@@ -397,9 +411,9 @@ binary has, not commands your token may use.
 
 - 401: the CLI prints `Authentication failed (401). Run 'pepper login' to refresh your token.`
   Do not follow that advice; it is written for a person. First check the command against
-  sections 8 and 9. A 401 from a command or flag that is not on the list of nine is the expected
+  sections 8 and 9. A 401 from a command or flag that is not on the list of eleven is the expected
   refusal of an agent token and says nothing about your login: stop using that command. A 401
-  from one of the nine means the token is unknown, revoked or expired, or its owner's access was
+  from one of the eleven means the token is unknown, revoked or expired, or its owner's access was
   removed. Stop and tell your operator.
 - A paused or retired agent keeps a valid token, so it is not a 401. The groups service stops
   acting for it: the stream ends with `agent_unavailable` (section 4), and other commands fail

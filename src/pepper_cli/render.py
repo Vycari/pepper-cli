@@ -52,6 +52,7 @@ if TYPE_CHECKING:
         GroupMessagePage,
         GroupRosterMember,
         GroupTopicSummary,
+        NoteComments,
         ScheduledTaskDetail,
         ScheduledTaskMessage,
         ScheduledTaskRunEntry,
@@ -895,6 +896,33 @@ def render_group_detail(detail: dict[str, Any]) -> None:
                 _stdout.print(f"  {_s(a.get('title') or a.get('app_key') or '')}")
         else:
             _stdout.print("apps: (none installed)")
+
+
+def render_note_comments(result: NoteComments) -> None:
+    """Pretty-print ``pepper comments list``: per thread the quote (or "whole note"), a
+    ``detached`` marker when the quote no longer appears in the note, then author, time and
+    body, with replies indented beneath."""
+    if not result.threads:
+        _stdout.print("(no comments)")
+        return
+    for i, thread in enumerate(result.threads):
+        if i:
+            _stdout.print("")
+        anchor = thread.message.anchor
+        quote = str(anchor.get("exact") or "") if anchor else ""
+        head = f"[bold]\u201c{_s(quote)}\u201d[/bold]" if quote else "[bold]whole note[/bold]"
+        if thread.detached:
+            head += "  [yellow]detached[/yellow]"
+        _stdout.print(head, soft_wrap=True)
+        for depth, msg in enumerate([thread.message, *thread.replies]):
+            pad = "  " if depth else ""
+            _stdout.print(
+                f"{pad}  [cyan]{_s(msg.author)}[/cyan]  "
+                f"[dim]{_s(_format_stamp(msg.created_at))}  {_s(msg.id)}[/dim]",
+                soft_wrap=True,
+            )
+            for line in sanitize_text(msg.body).splitlines() or [""]:
+                _stdout.print(f"{pad}  {escape(line)}", soft_wrap=True)
 
 
 def render_note_list(result: ArtifactListResponse) -> None:

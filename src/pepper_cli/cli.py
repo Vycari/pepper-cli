@@ -1902,6 +1902,62 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_notes_rm.add_argument("--room", help=_GROUP_ARG_HELP + " Omit for your own notes.")
     p_notes_rm.set_defaults(handler=cmd_notes_delete)
 
+    p_comments = sub.add_parser(
+        "comments",
+        help=(
+            "Comments on a room note, optionally on a quoted passage of it. ``list`` the "
+            "threads, ``create`` a comment or a reply. Every command takes --note (with "
+            "--room, a note of that room). Personal notes cannot be commented on."
+        ),
+    )
+    sub_comments: Any = p_comments.add_subparsers(
+        dest="comments_action", required=True, parser_class=_NoteFlagParser
+    )
+    p = sub_comments.add_parser(
+        "list",
+        help="List a note's comment threads, oldest first.",
+        parents=[_comments_room(), _note_parent(), _json_parent],
+    )
+    p.set_defaults(handler=cmd_comments_list)
+    p = sub_comments.add_parser(
+        "create",
+        help="Comment on a note: on a quoted passage (--quote), the whole note, or a reply.",
+        parents=[_comments_room(), _note_parent(), _json_parent],
+    )
+    p.add_argument(
+        "message",
+        nargs="*",
+        help="Comment text. Multi-word OK without quotes. Pass '-' alone to read stdin.",
+    )
+    p.add_argument(
+        "--quote",
+        metavar="TEXT",
+        help=(
+            "Comment on this exact passage of the note (the server finds it; it must appear "
+            "once). Omit to comment on the whole note."
+        ),
+    )
+    p.add_argument(
+        "--reply-to",
+        metavar="ID",
+        help="Reply in the thread whose root message has this id (from 'comments list --json').",
+    )
+    p.add_argument(
+        "--mention",
+        action="append",
+        metavar="PERSON_ID",
+        help=(
+            "Structurally mention this person id (from 'members list'); repeatable. "
+            "Keep their '@Display Name' in the text."
+        ),
+    )
+    p.add_argument(
+        "--idempotency-key",
+        metavar="KEY",
+        help="Send this Idempotency-Key instead of a fresh one, so a re-run cannot post twice.",
+    )
+    p.set_defaults(handler=cmd_comments_create)
+
     p_takeout = sub.add_parser(
         "takeout",
         help="Download a zip archive of everything Pepper holds about your account.",
@@ -6886,6 +6942,160 @@ def _resolve_note(
         where = "in that room" if room_principal else "of yours"
         _emit_error(args, "not_found", f"no note named {value!r} {where}")
     return None
+
+
+class _NoteFlagParser(argparse.ArgumentParser):
+    """A ``comments`` leaf: a missing ``--note`` says it is a flag (IA §3 rule 2)."""
+
+    def error(self, message: str) -> NoReturn:
+        if "--note" in message:
+            message += f" (the note is a flag here, not a positional: {self.prog} --note NAME)"
+        super().error(message)
+
+
+def _note_parent() -> argparse.ArgumentParser:
+    """``--note NOTE``, required: the container flag of ``comments``."""
+    parent = argparse.ArgumentParser(add_help=False)
+    parent.add_argument(
+        "--note",
+        metavar="NOTE",
+        required=True,
+        help=_NOTE_ARG_HELP + " Always this flag, never a positional.",
+    )
+    return parent
+
+
+def _comments_room() -> argparse.ArgumentParser:
+    """``--room ROOM`` for ``comments``: scopes note-name resolution to that room's notes."""
+    return _room_parent(omitted="Scopes the note name to that room's shared notes.")
+
+
+def _report_comments_api_error(exc: api_client.ApiError, args: argparse.Namespace | None) -> int:
+    """:func:`_report_notes_api_error` plus the comment routes' own refusals (all exit 2):
+    409 for a personal note, 422 ``quote_not_found`` / ``quote_ambiguous`` / ``quote_mismatch``."""
+    error: object = None
+    count: object = None
+    try:
+        payload = json.loads(exc.body)
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        detail = payload.get("detail")
+        found = detail if isinstance(detail, dict) else payload
+        error, count = found.get("error"), found.get("count")
+    if exc.status == 422 and error == "quote_not_found":
+        _emit_error(
+            args,
+            "validation",
+            "that quote does not appear in the note; copy it exactly as it reads",
+            status=422,
+        )
+        return 2
+    if exc.status == 422 and error == "quote_ambiguous":
+        _emit_error(
+            args,
+            "ambiguous",
+            f"that quote appears {count if isinstance(count, int) else 'more than once'} "
+            "times in the note; quote a longer, unique passage",
+            status=422,
+        )
+        return 2
+    if exc.status == 422 and error == "quote_mismatch":
+        _emit_error(args, "validation", "the quote does not match the note text", status=422)
+        return 2
+    if exc.status == 409:
+        _emit_error(
+            args,
+            "conflict",
+            exc.detail or "personal notes cannot be commented on; copy the note into a room",
+            status=409,
+        )
+        return 2
+    return _report_notes_api_error(exc, args)
+
+
+def _comments_note(api: api_client.ApiClient, args: argparse.Namespace) -> str | None:
+    room_principal = _opt_group(api, args.room, args=args)
+    return _resolve_note(api, room_principal=room_principal, value=args.note, args=args)
+
+
+def cmd_comments_list(args: argparse.Namespace) -> int:
+    """``pepper comments list --note N [--room R] [--json]``.
+
+    ``--json`` is the J3 envelope: ``items`` are the threads (``message``, ``position``,
+    ``detached``, ``replies``), with ``artifact_id``, ``group_id``, ``topic_id`` and ``etag``
+    beside them.
+    """
+
+    def run(api: api_client.ApiClient) -> int:
+        note_id = _comments_note(api, args)
+        if note_id is None:
+            return 2
+        result = api.list_note_comments(note_id)
+        _emit_list(
+            result.threads,
+            args,
+            lambda: render.render_note_comments(result),
+            artifact_id=result.artifact_id,
+            group_id=result.group_id,
+            topic_id=result.topic_id,
+            etag=result.etag,
+        )
+        return 0
+
+    return _with_api(run, _report_comments_api_error, args)
+
+
+def cmd_comments_create(args: argparse.Namespace) -> int:
+    """``pepper comments create --note N [--room R] [--quote Q] [--reply-to ID]
+    [--mention PERSON_ID ...] [MESSAGE | -] [--idempotency-key K] [--json]``.
+
+    The server finds ``--quote`` in the note, builds the anchor and creates the note's topic on
+    the first comment; the CLI sends the text through. ``--json`` prints the server's answer
+    (``thread_root_id``, ``message``, ``topic_id``). Exit 2 for bad input: an empty body, a quote
+    that is missing or ambiguous, a personal note, an unknown note.
+    """
+    for flag, value in (
+        ("--idempotency-key", args.idempotency_key),
+        ("--reply-to", args.reply_to),
+        ("--quote", args.quote),
+        *(("--mention", m) for m in args.mention or []),
+    ):
+        if value is not None and not value.strip():
+            _emit_error(args, "usage", f"{flag} cannot be empty")
+            return 2
+    if args.quote is not None and args.reply_to is not None:
+        _emit_error(args, "usage", "--quote and --reply-to are exclusive: a reply has no quote")
+        return 2
+    parts = args.message or []
+    text = sys.stdin.read().strip() if parts == ["-"] else " ".join(parts).strip()
+    if not text:
+        _emit_error(
+            args, "usage", "comment text cannot be empty (pass text, or '-' to read it from stdin)"
+        )
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        note_id = _comments_note(api, args)
+        if note_id is None:
+            return 2
+        created = api.create_note_comment(
+            note_id,
+            body=text,
+            quote=args.quote,
+            reply_to=args.reply_to,
+            mentions=args.mention or None,
+            idempotency_key=args.idempotency_key or str(uuid.uuid4()),
+        )
+
+        def human() -> None:
+            render.info("Commented.")
+            print(sanitize_line(str(created.get("thread_root_id") or "")))
+
+        _emit(created, args, human)
+        return 0
+
+    return _with_api(run, _report_comments_api_error, args)
 
 
 def _note_not_found(args: argparse.Namespace | None) -> None:

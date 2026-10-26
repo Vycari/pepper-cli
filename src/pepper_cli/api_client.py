@@ -1647,6 +1647,85 @@ class ArtifactListResponse:
     items: list[ArtifactListItem] = field(default_factory=list)
 
 
+# The note-comment routes answer untyped JSON the server has not published in the vendored
+# snapshot yet, so these are deliberately not ``MIRROR``ed. They follow the prototype contract
+# (GET/POST /api/v1/artifacts/{id}/comments) and read every field tolerantly.
+@dataclass(frozen=True)
+class NoteComment:
+    """One message of a note-comment thread (a root or a reply)."""
+
+    id: str
+    body: str
+    author: str
+    created_at: str
+    mentions: list[str] = field(default_factory=list)
+    anchor: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class NoteCommentThread:
+    """A thread: its root message, where the quote sits now, and its replies."""
+
+    message: NoteComment
+    position: dict[str, int] | None
+    detached: bool
+    replies: list[NoteComment] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class NoteComments:
+    """``GET /api/v1/artifacts/{id}/comments``."""
+
+    artifact_id: str
+    group_id: str | None
+    topic_id: str | None
+    etag: str | None
+    threads: list[NoteCommentThread] = field(default_factory=list)
+
+
+def _note_comment_author(row: dict[str, Any]) -> str:
+    author = row.get("author")
+    if isinstance(author, dict):
+        author = author.get("display_name") or author.get("name")
+    return str(author or row.get("display_name") or "")
+
+
+def _note_comment_from_dict(row: dict[str, Any]) -> NoteComment:
+    body = row.get("body")
+    if body is None:
+        body = row.get("raw_body", row.get("message", ""))
+    anchor = row.get("anchor")
+    return NoteComment(
+        id=str(row["id"]),
+        body=str(body or ""),
+        author=_note_comment_author(row),
+        created_at=str(row.get("created_at") or ""),
+        mentions=_mention_ids(row.get("mentions")),
+        anchor=anchor if isinstance(anchor, dict) else None,
+    )
+
+
+def _note_comments_from_dict(body: dict[str, Any]) -> NoteComments:
+    threads = []
+    for t in body.get("threads") or []:
+        position = t.get("position")
+        threads.append(
+            NoteCommentThread(
+                message=_note_comment_from_dict(t["message"]),
+                position=position if isinstance(position, dict) else None,
+                detached=bool(t.get("detached", False)),
+                replies=[_note_comment_from_dict(r) for r in t.get("replies") or []],
+            )
+        )
+    return NoteComments(
+        artifact_id=str(body.get("artifact_id") or ""),
+        group_id=body.get("group_id"),
+        topic_id=body.get("topic_id"),
+        etag=body.get("etag"),
+        threads=threads,
+    )
+
+
 # MIRROR: src/pepper/agent/artifacts/applet.py::read_detail
 # (the detail route answers an untyped JSONResponse, no snapshot schema)
 @dataclass(frozen=True)
@@ -3564,6 +3643,42 @@ class ApiClient:
         """
         body = self._request("GET", f"/api/v1/artifacts/{artifact_id}/detail").json()
         return _artifact_detail_from_dict(body)
+
+    def list_note_comments(self, artifact_id: str) -> NoteComments:
+        """``GET /api/v1/artifacts/{id}/comments`` — a note's comment threads, oldest first."""
+        body = self._request("GET", f"/api/v1/artifacts/{artifact_id}/comments").json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return _note_comments_from_dict(body)
+
+    def create_note_comment(
+        self,
+        artifact_id: str,
+        *,
+        body: str,
+        quote: str | None = None,
+        reply_to: str | None = None,
+        mentions: list[str] | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """``POST /api/v1/artifacts/{id}/comments`` — comment on a quote, the whole note, or
+        reply to a thread. The server finds the quote and builds the anchor; the answer
+        (``thread_root_id``, ``message``, ``topic_id``) is returned as the server's own dict."""
+        payload: dict[str, Any] = {"body": body, "quote": quote, "start": None}
+        payload["reply_to"] = reply_to
+        payload["mentions"] = mentions or []
+        if idempotency_key:
+            payload["idempotency_key"] = idempotency_key
+        headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
+        resp = self._request(
+            "POST",
+            f"/api/v1/artifacts/{artifact_id}/comments",
+            json=payload,
+            extra_headers=headers,
+        ).json()
+        if not isinstance(resp, dict):
+            raise ApiError(status=200, body=str(resp), detail="malformed response")
+        return resp
 
     def create_artifact(
         self,

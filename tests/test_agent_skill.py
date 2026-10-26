@@ -74,6 +74,8 @@ _AGENT_COMMANDS = frozenset(
         "messages unreact",
         "members list",
         "attachments download",
+        "comments list",
+        "comments create",
     }
 )
 _AGENT_REFUSED_FLAGS = frozenset({"--mark", "--attach"})

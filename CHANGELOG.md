@@ -17,6 +17,12 @@ Upgrade notes:
 - A server without `GET /api/v1/groups/unread` (older than read-state-sync phase 5b) shows no
   unread markers at all, where the local rule used to light them.
 
+### Added
+
+- `pepper comments list|create --note N`: comments on a room note, optionally on a quoted passage;
+  `--reply-to`, `--mention`, `--idempotency-key`, `--json`. Prototype against the new
+  `/api/v1/artifacts/{id}/comments` routes.
+
 ### Changed
 
 - Unread dots and `@` mention markers come from the server's `unread` rows (`unread_count`,
