@@ -2637,8 +2637,30 @@ class ApiClient:
             f"{path}/events/stream", since=since, last_event_id=last_event_id
         )
 
+    def watch_person_events(
+        self, *, since: int | None = None, last_event_id: int | None = None
+    ) -> Generator[FeedFrame]:
+        """``GET /api/v1/groups/events/stream`` as a signed-in person (a PAT): your own
+        feed, scoped by the server to the rooms you are in and the kinds a client needs.
+
+        Resumes after ``last_event_id`` (what a reconnect sends), else after ``since``;
+        with neither, the stream starts at the feed's current head and opens with a
+        ``cursor`` frame, so a caller catches up with one fetch of its own. Frames
+        beyond :meth:`watch_agent_events`' are ``"heartbeat"`` (``event: heartbeat``,
+        what a person's stream sends where an agent's sends ``: ping``) and
+        ``"chat.message"`` (Pepper wrote to your 1:1 thread; ``payload`` is
+        ``{"message_id": ...}``, no ``id``). A ``read_state.advanced`` frame's event
+        carries ``payload`` ``{topic_id, group_id, last_read_at, via_person_id}``.
+        Unknown frame kinds are the caller's to ignore (``/api/v1`` is additive).
+        """
+        # Frames: pepper's ``gateway/channels/groups_service/person_feed.py`` wraps the agent
+        # stream's (see :class:`FeedFrame`); not described by the snapshot.
+        yield from self._stream_feed(
+            "/api/v1/groups/events/stream", since=since, last_event_id=last_event_id
+        )
+
     def _stream_feed(
-        self, path: str, *, since: int, last_event_id: int | None
+        self, path: str, *, since: int | None, last_event_id: int | None
     ) -> Generator[FeedFrame]:
         """Open one SSE feed connection at ``path`` and yield its frames."""
         headers = {
@@ -2652,7 +2674,7 @@ class ApiClient:
         with self._client.stream(
             "GET",
             f"{self._server_url}{path}",
-            params={"since": since},
+            params={"since": since} if since is not None else None,
             headers=headers,
             timeout=httpx.Timeout(
                 connect=base_timeout.connect,

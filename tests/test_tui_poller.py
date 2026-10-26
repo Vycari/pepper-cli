@@ -46,6 +46,57 @@ def test_rail_refetches_marks_only_for_rooms_whose_topics_moved() -> None:
         assert len([r for r in server.requests if r[1].endswith("/read")]) == 3
 
 
+def _mark_reads(server: ts.FakeServer) -> int:
+    return len([r for r in server.requests if r[1].endswith("/read")])
+
+
+def test_refetch_all_reads_every_rooms_marks_once_with_nothing_moved() -> None:
+    server = ts.standard_server()
+    with server.client() as api:
+        rail = poller.RailPoller(api)
+        rail.commit(rail.step())
+        server.marks[ts.TOPIC_B1] = "2026-09-17T00:00:00+00:00"  # a read elsewhere: list unchanged
+        rail.refetch_all()
+        update = rail.step()
+        assert update.groups is not None  # a 200 despite the saved ETag
+        assert update.server_marks[ts.TOPIC_B1] == "2026-09-17T00:00:00+00:00"
+        rail.commit(update)
+        assert _mark_reads(server) == 4
+        assert rail.step().groups is None  # once: back to a 304
+        assert _mark_reads(server) == 4
+
+
+def test_refetch_all_survives_the_commit_of_a_step_already_in_flight() -> None:
+    server = ts.standard_server()
+    with server.client() as api:
+        rail = poller.RailPoller(api)
+        rail.commit(rail.step())
+        in_flight = rail.step()  # started before the request
+        rail.refetch_all()
+        rail.commit(in_flight)
+        update = rail.step()
+        assert update.groups is not None and update.full
+        rail.commit(update)
+        assert _mark_reads(server) == 4
+
+
+def test_a_catch_up_asked_for_during_a_full_step_gets_its_own() -> None:
+    server = ts.standard_server()
+    with server.client() as api:
+        rail = poller.RailPoller(api)
+        rail.commit(rail.step())
+        rail.refetch_all()
+        in_flight = rail.step()  # a full step, started before the second request
+        rail.refetch_all()  # cursor_ahead: another catch-up
+        server.marks[ts.TOPIC_B1] = "2026-09-17T00:00:00+00:00"  # read after that step's read
+        rail.commit(in_flight)
+        update = rail.step()
+        assert update.groups is not None  # not a 304: the second request still stands
+        assert update.server_marks[ts.TOPIC_B1] == "2026-09-17T00:00:00+00:00"
+        rail.commit(update)
+        assert rail.step().groups is None
+
+
 def _list_gets(server: ts.FakeServer) -> list[dict[str, str]]:
     return [h for h in server.headers_seen if "if-none-match" not in h]
 

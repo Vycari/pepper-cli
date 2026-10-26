@@ -83,9 +83,18 @@ class ThreadView(Vertical):
     class AtTop(Message):
         """The view reached its first line: the cue to load an older page."""
 
+    class PinChanged(Message):
+        """The view reached its last line (the newest row is on screen: the read cue, §5.2) or
+        left it (scrolled up: rows below are unseen)."""
+
+        def __init__(self, pinned: bool) -> None:
+            super().__init__()
+            self.pinned = pinned
+
     def __init__(self) -> None:
         super().__init__(id="thread")
         self._unseen = 0
+        self._was_pinned = True
 
     def compose(self) -> ComposeResult:
         with ThreadScroll(id="thread-scroll"):
@@ -139,7 +148,11 @@ class ThreadView(Vertical):
     def _scrolled(self, _old: float, new: float) -> None:
         if new <= 0 and self.scroller.max_scroll_y > 0:
             self.post_message(self.AtTop())
-        if self._unseen and self.pinned:
+        pinned = self.pinned
+        if pinned != self._was_pinned:
+            self._was_pinned = pinned
+            self.post_message(self.PinChanged(pinned))
+        if pinned and self._unseen:
             self._unseen = 0
             self._paint_marker()
 

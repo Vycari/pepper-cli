@@ -441,12 +441,15 @@ non-interactive run do not depend on any of this.
 
 A full-screen view of your messages: Pepper first, then your rooms by recency with their topics
 nested under the open room. Unread dots come from the server's read marks, and a topic you open
-is marked read.
+is marked read once its newest message has been on screen: with the thread scrolled up nothing
+is marked, and a topic you read on another device clears here at once.
 
 The composer at the bottom posts to whatever is open:
 
 - **In a room topic**, Enter posts. Your message shows dimmed ("sending…") until the next poll
-  brings it back from the server, and your own messages never mark a topic unread. If a post
+  brings it back from the server, and a message you send from the end of the thread does not
+  mark its topic unread (one that lands after you scrolled up or left the topic waits for you to
+  reach the end, like anyone else's). If a post
   fails the row says "failed, r to retry": select it and press `r`. A retry carries the same
   idempotency key, so a post whose answer was lost (a timeout after the server stored it) is
   not posted twice.
@@ -502,10 +505,11 @@ machine, and only for this session. A path that is not a directory exits 2.
 | Ctrl+Q, or `/quit` in the composer | Quit. |
 
 It needs an interactive terminal on both stdin and stdout: otherwise it prints one line to
-stderr and exits 2. A revoked token shows the login hint and exits 1 after a keypress. It polls
-every 3 to 15 seconds depending on activity (faster right after you post) and pauses while the
-terminal is unfocused, so it works over a flaky connection (it shows "offline, retrying" and
-backs off).
+stderr and exits 2. A revoked token shows the login hint and exits 1 after a keypress. It follows the
+server's live event stream for new messages and read marks, and polls as a fallback whenever the
+stream is down (every 3 to 15 seconds depending on activity, faster right after you post) and
+pauses while the terminal is unfocused, so it works over a flaky connection (it shows "offline,
+retrying" and backs off).
 
 ## `pepper next`
 

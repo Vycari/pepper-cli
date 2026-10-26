@@ -137,22 +137,18 @@ async def test_switching_conversations_while_a_send_is_pending() -> None:
         assert app.composer.text == ""  # drafts are per destination
         gate.set()
         await until(pilot, lambda: app.pending.items and app.pending.items[0].status == "sent")
-        # The topic it went to counts as read through it: an own message never lights it.
+        # The topic it went to is no longer on screen, so the send marks nothing: the mark is a
+        # high-water mark, and rows stored there before it have not been seen (§5.1).
         created = app.pending.items[0].created_at
-        await until(pilot, lambda: (ts.TOPIC_A1, created) in server.puts)
-        server.rooms[0]["topics"][0]["last_activity_at"] = created
-        server.bump()
-
-        def a1():
-            return next(t for t in app.rooms[0].topics if t.topic_id == ts.TOPIC_A1)
-
-        await until(pilot, lambda: a1().last_activity_at == created)
-        assert not app.marks.is_unread(a1(), open_topic_id=ts.TOPIC_A2)
+        await pilot.pause(0.3)
+        assert (ts.TOPIC_A1, created) not in server.puts
         app.open_conversation(A1)
         assert app.composer.text == "half a thought"
         await until(pilot, lambda: not app.pending.items)
         assert body_text(app).count("on my way") == 1
         assert len(server.posts) == 1
+        # Back at its end, the row has been on screen: now it is read.
+        await until(pilot, lambda: (ts.TOPIC_A1, created) in server.puts)
 
 
 # ---------------------------------------------------------------- room sends: §11 Pilot

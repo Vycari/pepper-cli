@@ -163,6 +163,49 @@ class ScriptedTurn:
     drop: bool = False
 
 
+def feed_frame(
+    kind: str,
+    payload: dict[str, Any],
+    event_id: int | None,
+    *,
+    group_id: str | None = None,
+) -> bytes:
+    """One person-stream event frame as pepper sends it: ``id`` plus the projected event."""
+    event = {
+        "id": event_id,
+        "kind": kind,
+        "group_id": group_id,
+        "person_id": ME_PERSON,
+        "payload": payload,
+        "created_at": "2026-09-16T18:00:00.000001+00:00",
+    }
+    head = f"id: {event_id}\n" if event_id is not None else ""
+    return f"{head}event: {kind}\ndata: {json.dumps(event)}\n\n".encode()
+
+
+def read_advanced(topic_id: str, last_read_at: str, event_id: int) -> bytes:
+    payload = {"topic_id": topic_id, "group_id": ROOM_A, "last_read_at": last_read_at}
+    return feed_frame("read_state.advanced", payload, event_id)
+
+
+HEARTBEAT = b"event: heartbeat\ndata: {}\n\n"
+CURSOR_HEAD = b'id: 1\nevent: cursor\ndata: {"cursor":1}\n\n'
+
+
+@dataclass
+class StreamScript:
+    """What the fake answers to one ``GET /api/v1/groups/events/stream``.
+
+    ``frames`` are sent in order, each held until its ``gates`` event (by index) is set. Then
+    the stream stays open until ``hold`` is set (``None``: it closes at once, a drop).
+    """
+
+    frames: list[bytes] = field(default_factory=list)
+    gates: dict[int, threading.Event] = field(default_factory=dict)
+    hold: threading.Event | None = None
+    status: int = 200
+
+
 @dataclass
 class FakeServer:
     rooms: list[dict[str, Any]] = field(default_factory=list)
@@ -203,6 +246,11 @@ class FakeServer:
     reactions_sent: list[tuple[str, str, str]] = field(default_factory=list)
     deleted: list[str] = field(default_factory=list)
     created_topics: list[str] = field(default_factory=list)
+    #: Answers to the person event stream, popped one per connection. With none the route is a
+    #: 404 (an older server), and the app falls back to its polls for good.
+    streams: list[StreamScript] = field(default_factory=list)
+    #: ``(Last-Event-ID, since)`` of each stream connection received.
+    stream_opens: list[tuple[str | None, str | None]] = field(default_factory=list)
     clock: int = 0
     rev: int = 1
     requests: list[tuple[str, str, dict[str, str]]] = field(default_factory=list)
@@ -332,6 +380,19 @@ class FakeServer:
     def _list_messages(self, topic_id: str, query: dict[str, str]) -> httpx.Response:
         rows = list(self.messages.get(topic_id, []))
         next_before = None
+        if (at := query.get("at")) is not None:
+            # The window around one message (a permalink): its neighbours on either side.
+            index = next((i for i, r in enumerate(rows) if r["id"] == at), None)
+            if index is None:
+                return httpx.Response(
+                    200,
+                    json={"messages": [], "next_before": None, "permalink_target_missing": True},
+                )
+            rows = rows[max(0, index - 2) : index + 3]
+            return httpx.Response(
+                200,
+                json={"messages": rows, "next_before": None, "permalink_target_missing": False},
+            )
         if (since := query.get("since")) is not None:
             from pepper_cli.tui.state import parse_ts
 
@@ -386,6 +447,22 @@ class FakeServer:
 
         return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=stream())
 
+    def _stream(self, request: httpx.Request, query: dict[str, str]) -> httpx.Response:
+        self.stream_opens.append((request.headers.get("Last-Event-ID"), query.get("since")))
+        script = self.streams.pop(0)
+        if script.status != 200:
+            return httpx.Response(script.status, json={"detail": "synthetic failure"})
+
+        def body() -> Any:
+            for i, frame in enumerate(script.frames):
+                if (gate := script.gates.get(i)) is not None:
+                    gate.wait(timeout=10)
+                yield frame
+            if script.hold is not None:
+                script.hold.wait(timeout=10)
+
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body())
+
     def _answer(self, request: httpx.Request, path: str, query: dict[str, str]) -> httpx.Response:
         if path == "/api/v1/whoami":
             return httpx.Response(
@@ -412,6 +489,8 @@ class FakeServer:
                 "groups": self.rooms,
             }
             return httpx.Response(200, json=body, headers={"ETag": etag})
+        if path == "/api/v1/groups/events/stream" and self.streams:
+            return self._stream(request, query)
         if path == "/api/v1/chat/history":
             return httpx.Response(200, json=list(self.history))
         if path == "/api/v1/chat/send":

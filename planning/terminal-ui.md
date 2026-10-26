@@ -69,9 +69,14 @@ scope, so the Messages section described here is stable.
 1. **The DM is not a room.** It is `/api/v1/chat/*`: one persistent conversation per user. The PAT
    history route (`api/router.py` `GET /chat/history`) returns today's live thread only, with no
    pagination and no `since`. It has no read mark and no unread dot on the web.
-2. **Humans don't get a push stream.** `pepper rooms watch` and the `/groups/…/events/stream` routes
-   are agent-token only. A PAT gets 403, "the event feed is available to agent members only"
-   (`api/groups.py` `_agent_only`). The web and iOS **poll**, so the TUI polls too.
+2. **Humans do get a push stream, and the TUI follows it.** `GET /api/v1/groups/events/stream`
+   serves a signed-in person (session cookie or PAT) their own feed: their rooms' events, the kinds a
+   client needs, and `read_state.advanced` for their own read cursor, as `text/event-stream` with an
+   `event: heartbeat` every ~15s and `Last-Event-ID` resume (`api/groups.py` `agent_events_stream`,
+   `person_feed.py`). This note once said a PAT got 403 here ("agent members only"); that was true
+   of the room-scoped and agent routes and stopped being true for this one when the person feed
+   landed (pepper `planning/ui-snappiness.md` Phase 13). The stream carries metadata only, so the TUI
+   uses it as the cue to fetch, and keeps its polls as the fallback (§6.2).
 
 ## 4. Layout
 
@@ -142,7 +147,32 @@ needed. The spike in §8 checked this pattern.
 5. Open the Pepper DM by default. Optionally, reopen the last conversation (its id is the only
    local state, kept beside the REPL history file).
 
-### 6.2 Live updates (polling, same as web/iOS)
+### 6.2 Live updates (the person stream, with polling as the fallback)
+
+The TUI opens the person event stream (§1 surprise 2, `tui/stream.py`) once `whoami` has answered,
+as the web does (`groups_stream.js`) and iOS does (`GroupsLiveStream`). The stream carries ids and
+kinds, never bodies, so a frame is a cue to fetch through the paths below, not a replacement for
+them:
+
+- `read_state.advanced` (`{topic_id, group_id, last_read_at}`) is merged into the read marks
+  directly, forward only, comparing at the server's full (microsecond) precision
+  (`ReadMarks.merge_advanced`). The sidebar repaints from the marks; no rail request is made.
+- A message, mention, member, room or app event fetches the rail now (a 304 when nothing changed),
+  and the open topic too when the event names it. `chat.message` fetches the Pepper DM.
+- An edit, delete or preview event for a row of the open topic that is already on screen reads
+  that row again by itself (`?at=` its id, keeping only that row; one request at a time), since
+  a row paged back to is in no poll's window. A row the server no longer has becomes a
+  tombstone; a failed read is retried with backoff, and paused while the terminal is blurred.
+  An event for a row not held asks the next poll to reconcile the newest page.
+- A connection that names no position starts at the feed's head and opens with a `cursor` frame;
+  the app catches up with one fetch of everything. A drop reconnects with `Last-Event-ID`. The
+  server's `cursor_ahead` error (the saved position is past every id it issued) catches up and
+  reopens with `?since=` the id it names. Unknown frame kinds are ignored.
+- While the stream is healthy the rail and open-topic polls run as a safety net (120s and 60s). When
+  it drops they return to the cadence below; a 401/403/404 on the stream, or a final `retry: false`
+  error, ends it for the session and the polls stay at their normal rate.
+
+The cadence below is what runs with no stream.
 
 - **Sidebar**: `GET /api/v1/groups` every 15s with `If-None-Match`. On a change, recompute order and
   dots.
@@ -165,9 +195,17 @@ There is one pure function in `tui/state.py`, ported from `groups_unread.js`/`gr
 - A room is unread when any of its non-archived topics is.
 - **First sight**: a topic with no server mark is seeded as read at its current `last_activity_at`,
   so a new install does not light up every room. The web does the same.
-- **Open = read**: while a topic is open and the app has focus, every poll that returns rows
-  publishes `PUT …/topics/{tid}/read` with the newest `created_at`. Publishes are coalesced to at
-  most one in flight. The server is monotonic, so a retry is harmless.
+- **Read = the newest row has been on screen** (read-state-sync §5.2): with the terminal focused
+  and the thread at its end, the newest row's `created_at` is published as `PUT …/topics/{tid}/read`
+  (the server's own string, never a device clock). **Scrolled up, nothing is marked**, and the open
+  topic shows as unread while rows sit below the screen; reaching the end marks the newest row. Your
+  own send puts the thread back at the end and counts as read once the server stores it, if the
+  thread is still there: a send that lands after you scrolled up, blurred the terminal or left
+  the topic marks nothing (rows stored before it have not been on screen; groups does not advance
+  a cursor on post, Q7). Publishes are coalesced to at most
+  one in flight. The server is monotonic, so a retry is harmless.
+- A read on another device arrives as `read_state.advanced` (§6.2) and is merged forward only, so
+  its marker clears here without a rail poll.
 - Marks are held in memory. Nothing goes to a local file: the server is the store of record, and
   that keeps the TUI and web in agreement.
 
@@ -335,8 +373,7 @@ These are optional, all additive under `/api/v1`, and open as server issues only
 
 1. `GET /chat/history?since=` (or an id cursor). Lets the DM poll fetch only new rows instead of the
    whole day.
-2. A PAT-authed person event stream: unread and mention changes across all of a person's rooms. It
-   would replace polling, and it would give mention badges for topics that aren't open.
+2. ~~A PAT-authed person event stream~~ Landed server-side (§1) and followed by the TUI (§6.2).
 3. `inactive` on `/api/v1/groups` rows, matching the web rail. Today the client computes it.
 
 ## 13. Phases

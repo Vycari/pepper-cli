@@ -46,6 +46,11 @@ COOLING_INTERVAL = 10.0
 IDLE_INTERVAL = 15.0
 #: Rail (sidebar) and Pepper DM history poll interval.
 RAIL_INTERVAL = 15.0
+#: The same polls while the person event stream is healthy: a safety net, not the source. The
+#: stream says when to fetch (a message, a read on another device), so these only cover a
+#: frame the stream dropped.
+RAIL_INTERVAL_LIVE = 120.0
+TOPIC_INTERVAL_LIVE = 60.0
 DM_INTERVAL = 15.0
 #: Seconds to wait after the Nth consecutive failure: 3, 6, 12, then 30 and no more.
 BACKOFF_STEPS = (3.0, 6.0, 12.0, 30.0)
@@ -117,6 +122,9 @@ class ReadMarks:
     """
 
     marks: dict[str, datetime] = field(default_factory=dict)
+    #: The open topic while its thread is scrolled up (§5.2): rows below the screen have not been
+    #: seen, so it stays subject to the unread rule instead of counting as read for being open.
+    scrolled_up: str | None = None
 
     def merge(self, topic_id: str, at: datetime | None) -> bool:
         """Raise the mark for ``topic_id`` to ``at`` if that is newer. True when it moved."""
@@ -132,6 +140,22 @@ class ReadMarks:
         for topic_id, raw in server_marks.items():
             self.merge(topic_id, parse_ts(raw))
 
+    def merge_advanced(self, payload: object) -> str | None:
+        """Fold a ``read_state.advanced`` event payload (``{topic_id, group_id, last_read_at}``)
+        into the marks. Forward only, and at the server's own precision: ``last_read_at`` is a
+        stored ``created_at`` with microseconds, and ``datetime`` compares at microseconds, so a
+        mark one microsecond behind the message it names still leaves that message unread.
+
+        Returns the topic id when the mark moved (the sidebar should repaint), else ``None``;
+        a malformed payload is ignored.
+        """
+        if not isinstance(payload, dict):
+            return None
+        topic_id, raw = payload.get("topic_id"), payload.get("last_read_at")
+        if not isinstance(topic_id, str) or not isinstance(raw, str):
+            return None
+        return topic_id if self.merge(topic_id, parse_ts(raw)) else None
+
     def seed_first_sight(self, rooms: Iterable[GroupSummary]) -> None:
         """A topic with no mark is read as of its current activity, so a fresh install does
         not light up every room (the web does the same)."""
@@ -141,13 +165,18 @@ class ReadMarks:
                     self.merge(topic.topic_id, parse_ts(topic.last_activity_at))
 
     def is_unread(self, topic: GroupTopicSummary, *, open_topic_id: str | None) -> bool:
-        """The unread rule: activity later than the mark, and not the topic on screen.
+        """The unread rule: activity later than the mark, and not the topic on screen (unless
+        its thread is scrolled up, ``scrolled_up``).
 
-        Own sends never light a topic: a pending row is not in the rail at all, and once the
-        server stores it the app raises the mark to that row's ``created_at``
-        (:meth:`PepperApp._sent`), so the activity it causes is already read.
+        An own send does not light a topic it was sent from at the thread's end: a pending row is
+        not in the rail at all, and once the server stores it the app raises the mark to that
+        row's ``created_at`` (:meth:`PepperApp._sent`), so the activity it causes is already
+        read. A send that lands after the person scrolled up, looked away or left the topic marks
+        nothing, since rows stored before it have not been on screen.
         """
-        if topic.topic_id == open_topic_id or topic.archived_at:
+        if topic.archived_at:
+            return False
+        if topic.topic_id == open_topic_id and topic.topic_id != self.scrolled_up:
             return False
         activity = parse_ts(topic.last_activity_at)
         if activity is None:

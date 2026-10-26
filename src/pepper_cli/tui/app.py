@@ -51,7 +51,7 @@ from textual.widgets import Footer, Static
 from pepper_cli import turn as turns
 from pepper_cli.api_client import ApiError, UpgradeRequiredError
 from pepper_cli.terminal_text import sanitize_line
-from pepper_cli.tui import poller, rows, state
+from pepper_cli.tui import poller, rows, state, stream
 from pepper_cli.tui.composer import Composer, MentionMenu
 from pepper_cli.tui.screens import (
     ConfirmScreen,
@@ -74,6 +74,7 @@ if TYPE_CHECKING:
     from pepper_cli.api_client import (
         ApiClient,
         ChatHistoryEntry,
+        FeedFrame,
         GroupList,
         GroupMessage,
         GroupMessagePage,
@@ -88,6 +89,28 @@ LOGIN_HINT = "Authentication failed (401). Run 'pepper login' to refresh your to
 #: 426) shown as a fatal notice. Anything else is a bug and should surface as a traceback
 #: rather than as an endless "offline" banner.
 _EXPECTED = (ApiError, UpgradeRequiredError, httpx.RequestError, ValueError, KeyError, TypeError)
+#: Feed event kinds that mean a room, a topic or a message changed: the rail is fetched again
+#: (an unchanged list is a 304). ``read_state.advanced`` and ``chat.message`` have their own
+#: handling; anything else is ignored.
+_ROOM_EVENT_KINDS = frozenset(
+    {
+        "message.created",
+        "message.edited",
+        "message.deleted",
+        "message.link_previews_updated",
+        "message.link_cards_updated",
+        "mention.created",
+        "member.joined",
+        "member.removed",
+        "member.role_changed",
+        "member.agent_profile_changed",
+        "member.room_deleted",
+        "group.renamed",
+        "group.archived",
+        "app.installed",
+        "app.uninstalled",
+    }
+)
 #: Loops whose failures put "offline, retrying" in the header.
 _LOOPS = ("startup", "rail", "dm", "topic", "publish")
 #: On-demand loops. A failed send is not retried by itself (it waits for ``r``), so it does not
@@ -105,6 +128,7 @@ _ON_DEMAND = (
     "info",
     "topics",
     "mentions",
+    "refresh",
 )
 #: Transport failures that mean a turn's request never reached the server, so it is safe to
 #: give the text back for the user to send again.
@@ -189,6 +213,7 @@ class PepperApp(App[None]):
         open_url: Callable[[str], object] = webbrowser.open,
         now: Callable[[], datetime] | None = None,
         bell: bool = False,
+        live: bool = True,
         update_checker: Callable[[], str | None] | None = None,
     ) -> None:
         super().__init__()
@@ -203,6 +228,14 @@ class PepperApp(App[None]):
         #: The ``--root`` filesystem toolset served to Pepper's client-tool calls, if any.
         self._provider = provider
         self._rail = poller.RailPoller(api)
+        #: Follow the person event stream once ``whoami`` has answered (the polls keep running
+        #: at a slow rate while it is healthy, and at the normal rate whenever it is not).
+        self._live = live
+        self._person_stream: stream.PersonStream | None = None
+        self._stream_healthy = False
+        #: Loops an event asked to run while a request of theirs was already in flight; run
+        #: again as soon as that one lands, so the event is not lost behind it.
+        self._dirty: set[str] = set()
         self.rooms: list[GroupSummary] = []
         self.groups_enabled = True
         self.groups_degraded = False
@@ -231,6 +264,9 @@ class PepperApp(App[None]):
         self._topic_error: str | None = None
         self._last_input = time.monotonic()
         self._blurred = False
+        #: Held rows of the open topic a stream event said changed, to be read again one at
+        #: a time (``_refresh_next``): a row on an older page is in no poll's window.
+        self._stale_rows: list[str] = []
         #: ``topic_id -> read_through`` the server has acknowledged.
         self._published: dict[str, str] = {}
         self._started = False
@@ -338,6 +374,8 @@ class PepperApp(App[None]):
 
     def exit(self, *args: Any, **kwargs: Any) -> None:
         self._quitting = True
+        if self._person_stream is not None:
+            self._person_stream.stop()
         super().exit(*args, **kwargs)
 
     def _finish(self, kind: str, generation: int) -> bool:
@@ -370,6 +408,9 @@ class PepperApp(App[None]):
         deliver(result)
         self.refresh_chrome()
         self._schedule(kind)
+        if kind in self._dirty:
+            self._dirty.discard(kind)
+            self._want(kind)
 
     def _failed(
         self,
@@ -447,6 +488,8 @@ class PepperApp(App[None]):
         self._blurred = False
         self._last_input = time.monotonic()
         self._poll_now()
+        if self._stale_rows:
+            self._run("refresh")
 
     # ------------------------------------------------------------------ scheduling
 
@@ -455,13 +498,18 @@ class PepperApp(App[None]):
         if failures:
             return state.backoff_delay(failures)
         if kind == "rail":
-            return state.RAIL_INTERVAL
+            return state.RAIL_INTERVAL_LIVE if self._stream_healthy else state.RAIL_INTERVAL
         if kind == "dm":
             if any(turn.phase == "checking" for turn in self.turns):
                 return state.DM_RECONCILE_INTERVAL
             return state.DM_INTERVAL
         if kind == "topic":
-            return state.poll_interval(time.monotonic() - self._last_input, hidden=self._blurred)
+            interval = state.poll_interval(
+                time.monotonic() - self._last_input, hidden=self._blurred
+            )
+            if interval is not None and self._stream_healthy:
+                return max(interval, state.TOPIC_INTERVAL_LIVE)
+            return interval
         # startup runs once; publish and send run when there is something to send; the
         # roster is fetched when a room opens; the turn runs when one is composed.
         return None
@@ -502,6 +550,8 @@ class PepperApp(App[None]):
             self._fetch_roster()
         elif kind == "mentions":
             self._check_mentions()
+        elif kind == "refresh":
+            self._refresh_next()
         elif kind == "turn":
             self._start_turn()
         elif kind == "topic" and not self.current.is_pepper:
@@ -540,6 +590,95 @@ class PepperApp(App[None]):
         self._started = True
         self._run("rail")
         self._run("dm")
+        self._start_stream()
+
+    # ------------------------------------------------------------------ person stream
+
+    def _start_stream(self) -> None:
+        """Follow ``GET /api/v1/groups/events/stream`` (read-state sync phase 4). The stream
+        only says *when* to fetch: a message or a read mark moving elsewhere. Every fetch goes
+        through the paths the polls already use, and the polls stay armed, slower while the
+        stream is healthy."""
+        if not self._live or self._person_stream is not None:
+            return
+        handler = stream.StreamHandler(
+            on_frame=lambda frame: self._post(self._on_stream_frame, frame),
+            on_live=lambda healthy: self._post(self._on_stream_state, healthy),
+            on_resync=lambda: self._post(self._catch_up),
+        )
+        self._person_stream = stream.PersonStream(self._api, handler)
+        self._person_stream.start()
+
+    def _on_stream_state(self, healthy: bool) -> None:
+        if healthy == self._stream_healthy:
+            return
+        self._stream_healthy = healthy
+        # The cadence changed (slow while healthy, normal when not): re-arm the loops it
+        # governs, unless one is failing (its backoff owns the timer) or has a request out.
+        for kind in ("rail", "topic"):
+            loop = self._loops[kind]
+            if loop.failures == 0 and not loop.busy:
+                self._schedule(kind)
+
+    def _want(self, kind: str) -> None:
+        """Run ``kind`` now because an event says there is something new. A request already in
+        flight may have been issued before the event, so it is run again once it lands."""
+        if not self._started or self.fatal:
+            return
+        if kind == "topic" and self._blurred:
+            # Paused like its timer (``on_app_blur``): focus coming back reads the topic once
+            # (``_poll_now``), and a reconcile an edit asked for is still pending in the store.
+            return
+        loop = self._loops[kind]
+        if loop.busy:
+            self._dirty.add(kind)
+        elif loop.failures == 0:
+            self._run(kind)
+
+    def _catch_up(self) -> None:
+        """One fetch of everything the stream would have said: it just started at the feed's
+        head, or the server said the saved position is past it (``cursor_ahead``). A read on
+        another device in that gap changed no room's activity, so the rail reads every mark."""
+        self._rail.refetch_all()
+        for kind in ("rail", "topic", "dm"):
+            self._want(kind)
+
+    def _on_stream_frame(self, frame: FeedFrame) -> None:
+        kind = frame.kind
+        if kind == "chat.message":
+            self._want("dm")
+            return
+        event = frame.payload.get("payload")
+        if kind == "read_state.advanced":
+            topic_id = self.marks.merge_advanced(event)
+            if topic_id is not None and isinstance(event, dict):
+                # The server's cursor moved (another device read): a mark still owed for
+                # this topic that it has passed is obsolete, and the rail repaints as is.
+                raw = event.get("last_read_at")
+                stamp, done = state.parse_ts(raw), state.parse_ts(self._published.get(topic_id))
+                if isinstance(raw, str) and stamp is not None and (done is None or stamp > done):
+                    self._published[topic_id] = raw
+                self.refresh_chrome()
+            return
+        if kind not in _ROOM_EVENT_KINDS:
+            return  # additive API: a kind this client does not know is not an error
+        self._want("rail")
+        if kind.startswith("message.") and self.current.topic_id is not None:
+            topic_id = event.get("topic_id") if isinstance(event, dict) else None
+            message_id = event.get("message_id") if isinstance(event, dict) else None
+            held = isinstance(message_id, str) and message_id in self.store.rows
+            if kind != "message.created" and topic_id == self.current.topic_id and held:
+                # A row held here, maybe from an older page no poll re-reads: read it again
+                # by itself. Paused like the topic poll while blurred; focus reads it.
+                if message_id not in self._stale_rows:
+                    self._stale_rows.append(message_id)
+                self._run("refresh")
+                return
+            if kind != "message.created":
+                # An edit, delete or preview changes a row the since-fetch will not return.
+                self.store.expect_reconcile()
+            if topic_id in (None, self.current.topic_id):
+                self._want("topic")
 
     # ------------------------------------------------------------------ results
 
@@ -603,6 +742,46 @@ class PepperApp(App[None]):
             on_error=lambda exc: self._mentions_failed(topic, exc),
         )
 
+    def _refresh_next(self) -> None:
+        """Read the next changed row again: the window around it (``at``), from which only
+        that row is kept. One in flight; each delivery asks for the next. Paused like the
+        topic poll while blurred (a retry's timer included): focus starts it again."""
+        if self._blurred:
+            return
+        conv = self.current
+        while self._stale_rows:
+            message_id = self._stale_rows.pop(0)
+            if message_id in self.store.rows and conv.room_id and conv.topic_id:
+                break
+        else:
+            return
+        room_id, topic_id = conv.room_id, conv.topic_id
+        self._start(
+            "refresh",
+            lambda: self._api.list_group_messages(room_id, topic_id, at=message_id),
+            lambda page: self._refreshed(message_id, page),
+            on_error=lambda exc: self._refresh_failed(message_id, exc),
+        )
+
+    def _refreshed(self, message_id: str, page: GroupMessagePage) -> None:
+        fresh = [m for m in page.messages if m.id == message_id]
+        if fresh:
+            self.store.add(fresh)
+        elif page.permalink_target_missing:
+            self.store.apply_delete(message_id, {})  # gone for good: show its tombstone
+        self._render_topic(new_rows=0, reset=False)
+        self._run("refresh")
+
+    def _refresh_failed(self, message_id: str, exc: Exception) -> bool:
+        """A refusal (the topic can no longer be read) drops the row: the queue moves on and
+        the next reconcile of the newest page covers what it can. Anything else retries the
+        row first, with backoff."""
+        if isinstance(exc, ApiError) and exc.status in _PUBLISH_PERMANENT:
+            self.store.expect_reconcile()
+            return True
+        self._stale_rows.insert(0, message_id)
+        return False
+
     def _mentions_checked(self, topic: GroupTopicSummary, page: GroupMessagePage) -> None:
         found = self.mentions.record(
             topic,
@@ -650,7 +829,7 @@ class PepperApp(App[None]):
         self.loaded_topic = True
         self._render_topic(new_rows=len(fresh), reset=first)
         if not self._blurred:
-            self._note_viewed()
+            self._note_viewed(landed_at_end=first)
             self._run("publish")
 
     # ------------------------------------------------------------------ rendering
@@ -696,6 +875,7 @@ class PepperApp(App[None]):
     def refresh_chrome(self) -> None:
         """Sidebar, header, notice, subline and terminal title from the current state."""
         shown = self.rooms if self.groups_enabled else []
+        self.marks.scrolled_up = self.current.topic_id if self._scrolled_up() else None
         current_key = "pepper" if self.current.is_pepper else f"topic:{self.current.topic_id}"
         self.sidebar.set_rows(
             state.build_sidebar(
@@ -810,6 +990,8 @@ class PepperApp(App[None]):
         topic.failures = 0
         topic.generation += 1
         self._loops["older"].generation += 1
+        self._loops["refresh"].generation += 1
+        self._stale_rows.clear()
         if conv.room_id is not None:
             self.manual.setdefault(conv.room_id, True)
             self._ensure_topics(conv.room_id)
@@ -955,10 +1137,19 @@ class PepperApp(App[None]):
 
     # ------------------------------------------------------------------ read marks
 
-    def _note_viewed(self) -> None:
-        """The open topic counts as read through its newest row; publish that mark."""
+    def _scrolled_up(self) -> bool:
+        """The open topic's thread shows an earlier part of it: its newest rows are below."""
+        return self.loaded_topic and not self.current.is_pepper and not self.thread.pinned
+
+    def _note_viewed(self, *, landed_at_end: bool = False) -> None:
+        """The open topic counts as read through its newest row, once that row has been on
+        screen (§5.2): the terminal is focused and the thread is at its end. Scrolled up,
+        nothing is read. ``landed_at_end``: the thread was just shown from scratch and is on its
+        way to the end, which the scroll position does not say yet. Publishes the mark."""
         conv = self.current
-        if conv.is_pepper or conv.topic_id is None:
+        if conv.is_pepper or conv.topic_id is None or self._blurred:
+            return
+        if self._scrolled_up() and not landed_at_end:
             return
         newest = self.store.newest_created_at()
         stamp = state.parse_ts(newest)
@@ -1198,13 +1389,22 @@ class PepperApp(App[None]):
         )
 
     def _sent(self, key: str, message: GroupMessage) -> None:
-        """The server stored it. The row stays pending until a poll returns it; the topic
-        counts as read through it, so an own message never lights its own topic."""
+        """The server stored it. The row stays pending until a poll returns it.
+
+        The topic counts as read through it (§5.1 "own sends": the send put it on screen at the
+        foot), so an own message does not light its own topic, but only while that is still
+        true: the topic open, the terminal focused and the thread at its end. The mark is a
+        high-water mark, so raising it to this row would also claim every row stored before it,
+        and one that landed while the person scrolled up, or looked away, during the round trip
+        has not been on screen. Otherwise nothing is marked here; reaching the end does it
+        (:meth:`_note_viewed`), and groups does not advance a cursor on post (Q7).
+        """
         item = self.pending.get(key)
         if item is not None:
             item.status, item.server_id, item.created_at = "sent", message.id, message.created_at
             conv = item.conversation
-            if conv.topic_id is not None:
+            on_screen = conv == self.current and not self._blurred and not self._scrolled_up()
+            if conv.topic_id is not None and on_screen:
                 self.marks.merge(conv.topic_id, state.parse_ts(message.created_at))
                 self._owe(conv, message.created_at)
                 self._run("publish")
@@ -1426,6 +1626,13 @@ class PepperApp(App[None]):
 
     def on_thread_view_at_top(self, _event: ThreadView.AtTop) -> None:
         self._load_older()
+
+    def on_thread_view_pin_changed(self, _event: ThreadView.PinChanged) -> None:
+        """Reached the end (the newest row is on screen, so it is read) or scrolled away from
+        it (rows below are unseen: the open topic shows as unread)."""
+        self._note_viewed()
+        self._run("publish")
+        self.refresh_chrome()
 
     def _load_older(self) -> None:
         conv, before = self.current, self.store.older
