@@ -76,6 +76,8 @@ _AGENT_COMMANDS = frozenset(
         "attachments download",
         "comments list",
         "comments create",
+        "comments resolve",
+        "comments reopen",
     }
 )
 _AGENT_REFUSED_FLAGS = frozenset({"--mark", "--attach"})

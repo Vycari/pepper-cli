@@ -115,6 +115,8 @@ VERBS = frozenset(
         "done",
         "dismiss",
         "reopen",
+        # `resolve`/`reopen THREAD` close and reopen a comment thread (IA §3.1).
+        "resolve",
         "download",
         "run",
         # `runs OBJECT` is the run history of an object that runs (IA §3.1).
@@ -637,6 +639,20 @@ _RESEARCH_DETAIL = {
 }
 
 #: path -> body for every GET the leaves below make (query strings are ignored).
+_COMMENT_THREAD = {
+    "message": {
+        "id": "m1",
+        "body": "hi",
+        "author": {"id": "p1", "display_name": "Ada", "is_agent": False},
+        "created_at": "2026-10-26T10:00:00Z",
+        "resolved_at": "2026-10-26T11:00:00Z",
+        "resolved_by": {"id": "p1", "display_name": "Ada", "is_agent": False},
+    },
+    "position": None,
+    "detached": False,
+    "replies": [],
+}
+
 ROUTES: dict[str, object] = {
     "/api/v1/whoami": {"user_id": "u", "display_name": "U", "timezone": "UTC"},
     f"/api/v1/trajectories/{_TRAJ}": {
@@ -852,6 +868,7 @@ ROUTES: dict[str, object] = {
         "topic_id": None,
         "etag": "e1",
         "threads": [],
+        "resolved_count": 0,
     },
 }
 
@@ -899,6 +916,8 @@ POST_ROUTES: dict[str, object] = {
     f"/api/v1/artifacts/{_NOTE}/edit": {
         "artifact": {**_NOTE_ROW, "shared": False, "body": "changed"}
     },
+    f"/api/v1/artifacts/{_NOTE}/comments/m1/resolve": {"thread": _COMMENT_THREAD},
+    f"/api/v1/artifacts/{_NOTE}/comments/m1/reopen": {"thread": _COMMENT_THREAD},
     f"/api/v1/artifacts/{_NOTE}/comments": {
         "thread_root_id": "m1",
         "topic_id": "t1",
@@ -1105,6 +1124,8 @@ JSON_CASES: dict[str, list[str]] = {
     "notes edit": ["notes", "edit", _NOTE, "--file", "body.md"],
     "notes delete": ["notes", "delete", _NOTE, "--yes"],
     "comments list": ["comments", "list", "--note", _NOTE],
+    "comments resolve": ["comments", "resolve", "--note", _NOTE, "m1"],
+    "comments reopen": ["comments", "reopen", "--note", _NOTE, "m1"],
     "comments create": ["comments", "create", "--note", _NOTE, "--quote", "hello", "Nice"],
     "artifacts list": ["artifacts", "list", "--kind", "file"],
     "artifacts show": ["artifacts", "show", _BLOB],

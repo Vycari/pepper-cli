@@ -898,14 +898,17 @@ def render_group_detail(detail: dict[str, Any]) -> None:
             _stdout.print("apps: (none installed)")
 
 
-def render_note_comments(result: NoteComments) -> None:
+def render_note_comments(result: NoteComments, *, show_resolved: bool = False) -> None:
     """Pretty-print ``pepper comments list``: per thread the quote (or "whole note"), a
     ``detached`` marker when the quote no longer appears in the note, then author, time and
-    body, with replies indented beneath."""
-    if not result.threads:
-        _stdout.print("(no comments)")
-        return
-    for i, thread in enumerate(result.threads):
+    body, with replies indented beneath. Resolved threads are hidden unless ``show_resolved``
+    (a display filter only), with a footer counting what was hidden; shown, they carry a
+    "resolved by X" marker."""
+    threads = [t for t in result.threads if show_resolved or not t.message.resolved_at]
+    hidden = len(result.threads) - len(threads)
+    if not threads:
+        _stdout.print("(no comments)" if not hidden else "(no open comments)")
+    for i, thread in enumerate(threads):
         if i:
             _stdout.print("")
         anchor = thread.message.anchor
@@ -913,6 +916,9 @@ def render_note_comments(result: NoteComments) -> None:
         head = f"[bold]\u201c{_s(quote)}\u201d[/bold]" if quote else "[bold]whole note[/bold]"
         if thread.detached:
             head += "  [yellow]detached[/yellow]"
+        if thread.message.resolved_at:
+            by = f" by {_s(thread.message.resolved_by)}" if thread.message.resolved_by else ""
+            head += f"  [green]resolved{by}[/green]"
         _stdout.print(head, soft_wrap=True)
         for depth, msg in enumerate([thread.message, *thread.replies]):
             pad = "  " if depth else ""
@@ -923,6 +929,8 @@ def render_note_comments(result: NoteComments) -> None:
             )
             for line in sanitize_text(msg.body).splitlines() or [""]:
                 _stdout.print(f"{pad}  {escape(line)}", soft_wrap=True)
+    if hidden and not show_resolved:
+        _stdout.print(f"\n{hidden} resolved hidden \u2014 use --all", soft_wrap=True)
 
 
 def render_note_list(result: ArtifactListResponse) -> None:

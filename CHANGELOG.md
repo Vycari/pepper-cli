@@ -22,6 +22,9 @@ Upgrade notes:
 - `pepper comments list|create --note N`: comments on a room note, optionally on a quoted passage;
   `--reply-to`, `--mention`, `--idempotency-key`, `--json`. Prototype against the new
   `/api/v1/artifacts/{id}/comments` routes.
+- `pepper comments resolve|reopen --note N THREAD_ID`; `comments list` hides resolved threads
+  (`--all` shows them, marked "resolved by X"; `--json` always has every thread plus
+  `resolved_count`). `resolve` joins the verb set (IA §3.1).
 
 ### Changed
 

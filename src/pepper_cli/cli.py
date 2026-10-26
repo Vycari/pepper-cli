@@ -1906,7 +1906,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "comments",
         help=(
             "Comments on a room note, optionally on a quoted passage of it. ``list`` the "
-            "threads, ``create`` a comment or a reply. Every command takes --note (with "
+            "threads, ``create`` a comment or a reply, ``resolve``/``reopen`` a thread. Every "
+            "command takes --note (with "
             "--room, a note of that room). Personal notes cannot be commented on."
         ),
     )
@@ -1915,10 +1916,28 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     )
     p = sub_comments.add_parser(
         "list",
-        help="List a note's comment threads, oldest first.",
+        help="List a note's comment threads, oldest first; resolved ones are hidden.",
         parents=[_comments_room(), _note_parent(), _json_parent],
     )
+    p.add_argument(
+        "--all",
+        action="store_true",
+        help="Also show resolved threads (human output only; --json always has every thread).",
+    )
     p.set_defaults(handler=cmd_comments_list)
+    for verb, handler, text in (
+        ("resolve", cmd_comments_resolve, "Mark a comment thread resolved."),
+        ("reopen", cmd_comments_reopen, "Reopen a resolved comment thread."),
+    ):
+        p = sub_comments.add_parser(
+            verb, help=text, parents=[_comments_room(), _note_parent(), _json_parent]
+        )
+        p.add_argument(
+            "thread_id",
+            metavar="THREAD_ID",
+            help="The thread's root message id (from 'comments list --json').",
+        )
+        p.set_defaults(handler=handler)
     p = sub_comments.add_parser(
         "create",
         help="Comment on a note: on a quoted passage (--quote), the whole note, or a reply.",
@@ -7023,8 +7042,9 @@ def cmd_comments_list(args: argparse.Namespace) -> int:
     """``pepper comments list --note N [--room R] [--json]``.
 
     ``--json`` is the J3 envelope: ``items`` are the threads (``message``, ``position``,
-    ``detached``, ``replies``), with ``artifact_id``, ``group_id``, ``topic_id`` and ``etag``
-    beside them.
+    ``detached``, ``replies``), with ``artifact_id``, ``group_id``, ``topic_id``, ``etag`` and
+    ``resolved_count`` beside them. ``--all`` is a display filter of the human output only: the
+    server returns every thread, and ``--json`` passes them all through.
     """
 
     def run(api: api_client.ApiClient) -> int:
@@ -7035,15 +7055,50 @@ def cmd_comments_list(args: argparse.Namespace) -> int:
         _emit_list(
             result.threads,
             args,
-            lambda: render.render_note_comments(result),
+            lambda: render.render_note_comments(result, show_resolved=args.all),
             artifact_id=result.artifact_id,
             group_id=result.group_id,
             topic_id=result.topic_id,
             etag=result.etag,
+            resolved_count=result.resolved_count,
         )
         return 0
 
     return _with_api(run, _report_comments_api_error, args)
+
+
+def _cmd_comments_set_resolved(args: argparse.Namespace, *, resolve: bool) -> int:
+    thread_id = args.thread_id.strip()
+    if not thread_id:
+        _emit_error(args, "usage", "THREAD_ID cannot be empty")
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        note_id = _comments_note(api, args)
+        if note_id is None:
+            return 2
+        call = api.resolve_note_thread if resolve else api.reopen_note_thread
+        thread = call(note_id, thread_id)
+
+        def human() -> None:
+            render.info("Resolved." if resolve else "Reopened.")
+            print(sanitize_line(thread.message.id))
+
+        _emit(thread, args, human)
+        return 0
+
+    return _with_api(run, _report_comments_api_error, args)
+
+
+def cmd_comments_resolve(args: argparse.Namespace) -> int:
+    """``pepper comments resolve --note N [--room R] THREAD_ID [--json]``: idempotent. A thread
+    id that is not a top-level comment of the note is a 404 (exit 1, as elsewhere)."""
+    return _cmd_comments_set_resolved(args, resolve=True)
+
+
+def cmd_comments_reopen(args: argparse.Namespace) -> int:
+    """``pepper comments reopen --note N [--room R] THREAD_ID [--json]``: idempotent."""
+    return _cmd_comments_set_resolved(args, resolve=False)
 
 
 def cmd_comments_create(args: argparse.Namespace) -> int:

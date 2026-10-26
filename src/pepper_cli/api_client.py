@@ -1649,7 +1649,7 @@ class ArtifactListResponse:
 
 # The note-comment routes answer untyped JSON the server has not published in the vendored
 # snapshot yet, so these are deliberately not ``MIRROR``ed. They follow the prototype contract
-# (GET/POST /api/v1/artifacts/{id}/comments) and read every field tolerantly.
+# (GET/POST /api/v1/artifacts/{id}/comments, POST .../{thread_id}/resolve|reopen).
 @dataclass(frozen=True)
 class NoteComment:
     """One message of a note-comment thread (a root or a reply)."""
@@ -1660,6 +1660,8 @@ class NoteComment:
     created_at: str
     mentions: list[str] = field(default_factory=list)
     anchor: dict[str, Any] | None = None
+    resolved_at: str | None = None
+    resolved_by: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1681,48 +1683,43 @@ class NoteComments:
     topic_id: str | None
     etag: str | None
     threads: list[NoteCommentThread] = field(default_factory=list)
-
-
-def _note_comment_author(row: dict[str, Any]) -> str:
-    author = row.get("author")
-    if isinstance(author, dict):
-        author = author.get("display_name") or author.get("name")
-    return str(author or row.get("display_name") or "")
+    resolved_count: int = 0
 
 
 def _note_comment_from_dict(row: dict[str, Any]) -> NoteComment:
-    body = row.get("body")
-    if body is None:
-        body = row.get("raw_body", row.get("message", ""))
     anchor = row.get("anchor")
+    resolver = row.get("resolved_by")
     return NoteComment(
         id=str(row["id"]),
-        body=str(body or ""),
-        author=_note_comment_author(row),
+        body=str(row.get("body") or ""),
+        author=str((row.get("author") or {}).get("display_name") or ""),
         created_at=str(row.get("created_at") or ""),
         mentions=_mention_ids(row.get("mentions")),
         anchor=anchor if isinstance(anchor, dict) else None,
+        resolved_at=row.get("resolved_at"),
+        resolved_by=str(resolver.get("display_name") or "") if isinstance(resolver, dict) else None,
+    )
+
+
+def _note_thread_from_dict(t: dict[str, Any]) -> NoteCommentThread:
+    position = t.get("position")
+    return NoteCommentThread(
+        message=_note_comment_from_dict(t["message"]),
+        position=position if isinstance(position, dict) else None,
+        detached=bool(t.get("detached", False)),
+        replies=[_note_comment_from_dict(r) for r in t.get("replies") or []],
     )
 
 
 def _note_comments_from_dict(body: dict[str, Any]) -> NoteComments:
-    threads = []
-    for t in body.get("threads") or []:
-        position = t.get("position")
-        threads.append(
-            NoteCommentThread(
-                message=_note_comment_from_dict(t["message"]),
-                position=position if isinstance(position, dict) else None,
-                detached=bool(t.get("detached", False)),
-                replies=[_note_comment_from_dict(r) for r in t.get("replies") or []],
-            )
-        )
+    threads = [_note_thread_from_dict(t) for t in body.get("threads") or []]
     return NoteComments(
         artifact_id=str(body.get("artifact_id") or ""),
         group_id=body.get("group_id"),
         topic_id=body.get("topic_id"),
         etag=body.get("etag"),
         threads=threads,
+        resolved_count=int(body.get("resolved_count") or 0),
     )
 
 
@@ -3679,6 +3676,25 @@ class ApiClient:
         if not isinstance(resp, dict):
             raise ApiError(status=200, body=str(resp), detail="malformed response")
         return resp
+
+    def _set_note_thread_resolved(
+        self, artifact_id: str, thread_id: str, action: str
+    ) -> NoteCommentThread:
+        resp = self._request(
+            "POST", f"/api/v1/artifacts/{artifact_id}/comments/{thread_id}/{action}"
+        ).json()
+        thread = resp.get("thread") if isinstance(resp, dict) else None
+        if not isinstance(thread, dict):
+            raise ApiError(status=200, body=str(resp), detail="malformed response")
+        return _note_thread_from_dict(thread)
+
+    def resolve_note_thread(self, artifact_id: str, thread_id: str) -> NoteCommentThread:
+        """``POST /api/v1/artifacts/{id}/comments/{thread_id}/resolve`` (idempotent)."""
+        return self._set_note_thread_resolved(artifact_id, thread_id, "resolve")
+
+    def reopen_note_thread(self, artifact_id: str, thread_id: str) -> NoteCommentThread:
+        """``POST /api/v1/artifacts/{id}/comments/{thread_id}/reopen`` (idempotent)."""
+        return self._set_note_thread_resolved(artifact_id, thread_id, "reopen")
 
     def create_artifact(
         self,
