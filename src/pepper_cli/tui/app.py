@@ -382,6 +382,10 @@ class PepperApp(App[None]):
         return not self.fatal and generation == loop.generation
 
     def _mounted(self) -> bool:
+        if not self.is_running:
+            # Textual's shutdown clears this first, then closes the widgets one by one: a
+            # callback queued behind it can find the sidebar still there and the header gone.
+            return False
         try:
             return bool(self.query(Sidebar))
         except ScreenStackError:
