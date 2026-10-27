@@ -1236,6 +1236,8 @@ class GroupSummary:
     topics: list[GroupTopicSummary] = field(default_factory=list)
 
 
+# MIRROR: src/pepper/api/groups.py::read_marks
+# (route handler; untyped dict response, no snapshot schema)
 @dataclass(frozen=True)
 class GroupUnreadRow:
     """One topic's unread answer, as the server computed it (read-state-sync §6).
@@ -1250,6 +1252,8 @@ class GroupUnreadRow:
     floor: str | None = None
 
 
+# MIRROR: src/pepper/api/groups.py::read_marks
+# (route handler; untyped dict response, no snapshot schema)
 @dataclass(frozen=True)
 class GroupReadState:
     """``GET /api/v1/groups/{gid}/read``: read marks plus the room's unread rows."""
