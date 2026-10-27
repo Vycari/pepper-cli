@@ -741,6 +741,20 @@ def test_a_number_out_of_range_names_todos_list(tmp_home, patch_api, capsys) -> 
     assert _calls() == []
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [["done"], ["reopen"], ["dismiss"], ["edit", "--title", "X"]],
+)
+def test_a_non_ascii_digit_is_a_usage_error_not_a_crash(tmp_home, patch_api, capsys, argv) -> None:
+    _login(tmp_home)
+    _listed(patch_api)
+    capsys.readouterr()
+    cmd, *rest = argv
+    assert cli.main(["todos", cmd, "\u00b2", *rest, "--json"]) == 2
+    assert json.loads(capsys.readouterr().err)["error"]["code"] == "usage"
+    assert _calls() == []
+
+
 def test_a_number_from_your_list_refuses_with_room(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     _listed(patch_api)
