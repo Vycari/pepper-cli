@@ -42,6 +42,7 @@ from rich.markup import escape
 from rich.segment import Segment
 from rich.text import Text
 
+from pepper_cli import credentials
 from pepper_cli.terminal_text import sanitize_line, sanitize_text
 
 if TYPE_CHECKING:
@@ -995,7 +996,8 @@ def note_topic_header(note_id: str) -> str:
     """One line naming a note's comment topic and how to read it as threads."""
     return (
         f"[note comments] This is the comments topic of note {sanitize_line(note_id)}; "
-        f"read it as threads with: pepper comments list --note {sanitize_line(note_id)}"
+        f"read it as threads with: {credentials.command_prefix()} comments list "
+        f"--note {sanitize_line(note_id)}"
     )
 
 

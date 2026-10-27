@@ -493,6 +493,16 @@ def test_messages_list_in_a_note_topic_prints_header_quote_and_resolved(
     assert long_line.endswith('…"') and len(long_line) < 175
 
 
+def test_messages_list_note_header_keeps_the_profile(tmp_home, monkeypatch, capsys) -> None:
+    credentials.set_profile("helper")
+    _login(tmp_home)
+    _patch_room(monkeypatch, _NID, _group_message())
+    argv = ["--profile", "helper", "messages", "list", "--room", _GID, "--topic", _TID]
+    assert cli.main(argv) == 0
+    first = capsys.readouterr().out.splitlines()[0]
+    assert f"pepper --profile helper comments list --note {_NID}" in first
+
+
 def test_messages_list_in_an_ordinary_topic_has_no_note_lines(
     tmp_home, monkeypatch, capsys
 ) -> None:

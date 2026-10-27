@@ -97,6 +97,13 @@ def active_profile() -> str | None:
     return _profile
 
 
+def command_prefix() -> str:
+    """``pepper``, plus ``--profile NAME`` when one is selected: the start of a command the CLI
+    suggests, so following it runs as the same login (an agent's is always a named profile).
+    Profile names are validated by :func:`set_profile`, so the name needs no quoting."""
+    return f"pepper --profile {_profile}" if _profile else "pepper"
+
+
 def _config_dir() -> Path:
     """Return the directory the credentials file lives in.
 

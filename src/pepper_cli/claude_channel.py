@@ -46,7 +46,7 @@ from mcp.server.runner import serve_loop
 from mcp.server.stdio import stdio_server
 from mcp.shared.message import SessionMessage
 
-from pepper_cli import api_client, render
+from pepper_cli import api_client, credentials, render
 from pepper_cli._version import get_version
 from pepper_cli.cli import (
     _WATCH_BACKOFF_CAP,
@@ -294,7 +294,7 @@ def message_event(
         note = sanitize_line(info.subject_artifact_id)
         preface += (
             f"[comments topic of note {note}; read it with "
-            f"`pepper comments list --note {note} --room {info.room_id}`; "
+            f"`{credentials.command_prefix()} comments list --note {note} --room {info.room_id}`; "
             "reply under the thread root, never top-level]\n"
         )
     if row.anchor and isinstance(row.anchor.get("exact"), str):

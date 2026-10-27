@@ -624,6 +624,22 @@ def test_a_comment_in_a_note_topic_carries_the_note_header_quote_and_note_id(mon
     assert all(_META_KEY.match(k) and isinstance(v, str) for k, v in note["meta"].items())
 
 
+def test_the_note_header_command_keeps_the_channel_profile(monkeypatch):
+    credentials.set_profile("helper")
+    credentials.save(server_url=_SERVER, token=SecretStr("pep_agt_abc"))
+    fake = _Fake(_CONNECTED + _scope() + _event(7))
+    fake.subjects[_TOPIC] = _NOTE
+    fake.messages[_MESSAGE] = _message_json()
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    (note,) = result.notifications
+    assert (
+        f"`pepper --profile helper comments list --note {_NOTE} --room {_ROOM}`"
+        in (note["content"])
+    )
+
+
 def test_a_long_anchor_quote_is_cut_and_a_plain_topic_has_no_note_fields(monkeypatch):
     fake = _Fake(_CONNECTED + _scope() + _event(7) + _event(8, message=_MESSAGE_2))
     fake.subjects[_TOPIC] = _NOTE
