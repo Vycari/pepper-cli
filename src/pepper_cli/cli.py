@@ -3078,6 +3078,8 @@ def cmd_next(args: argparse.Namespace) -> int:
         if _listing_unusable(args, problem):
             return 1
         if args.json:
+            # Under ``todos``: the top-level ``note`` is the calendar's.
+            result["todos"].update(_unsaved_meta(problem))
             _print_json(result)
         else:
             render.render_next(result)

@@ -524,7 +524,8 @@ doesn't enforce this, and a few of those GETs update server-side caches (the req
 Google token refresh).
 
 `--json` prints `{"generated_at", "timezone", "source": "todos", "note", "now", "next_event",
-"calendar": [event], "todos": {"count", "items": [todo]}}`:
+"calendar": [event], "todos": {"count", "items": [todo]}}`. `todos` also carries a `note` when its
+numbers could not be saved (the top-level `note` is the calendar's):
 
 - `timezone` is the account's IANA zone name (for example `America/Los_Angeles`), or null when it
   could not be read. `generated_at` carries that zone's current offset.

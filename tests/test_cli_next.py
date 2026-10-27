@@ -598,3 +598,24 @@ def test_next_with_a_room_records_the_room_for_the_numbers(server, capsys) -> No
     server.add(f"/api/v1/groups/{gid}/todos", [_todo("One")])
     assert cli.main(["next", "--room", "Trip", "--json"]) == 0
     assert (todos_view.VIEW.load() or ([], {}))[1] == {"room_id": gid}
+
+
+def test_next_json_says_under_todos_when_its_numbers_could_not_be_saved(
+    server, capsys, monkeypatch
+) -> None:
+    from pepper_cli import numbered_view
+
+    def refuse(*_a, **_k):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(numbered_view.tempfile, "mkstemp", refuse)
+    server.add("/api/v1/whoami", {"user_id": "u", "display_name": "U", "timezone": "UTC"})
+    server.add("/api/v1/calendars/range", {"detail": "boom"}, 500)
+    data = _json(server, capsys, todos=[_todo("A")], plan=False)
+    assert "numbers were not saved" in data["todos"]["note"]
+    assert data["note"] == next_view.NO_CALENDAR_NOTE  # the calendar's note is kept
+
+
+def test_next_json_has_no_todos_note_when_the_numbers_were_saved(server, capsys) -> None:
+    data = _json(server, capsys, todos=[_todo("A")])
+    assert "note" not in data["todos"]
