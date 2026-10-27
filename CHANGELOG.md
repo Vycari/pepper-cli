@@ -4,6 +4,32 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (while 0.x, a minor bump may change flags or output).
 
+## Unreleased
+
+The terminal UI no longer decides what is unread: it shows the server's `unread` rows
+(read-state-sync phase 5c, tracked by Vycari/groups#274).
+
+Upgrade notes:
+
+- A fresh profile now matches the web: unread markers are what the server counts, with your own
+  messages and anything from before you joined left out. Before, the first poll marked every topic
+  read as of its last activity.
+- A server without `unread` rows on `GET /api/v1/groups/{gid}/read` (older than phase 5b) shows no
+  unread markers at all, where the local rule used to light them.
+
+### Changed
+
+- Unread dots and `@` mention markers come from the server's `unread` rows (`unread_count`,
+  `has_unread_mention`). The mention marker no longer reads a topic's newest page of messages to look
+  for you. The local read marks are a cache of the server's answer: `read_state.advanced` and the
+  poll fallback still update them, and a mark that passes a topic's newest activity clears its row
+  until the server's next answer (#145).
+
+### Removed
+
+- `ReadMarks.seed_first_sight`, the local "activity later than the mark" unread rule, the
+  open-topic exception that went with it, and the per-topic mention fetch (`Mentions`) (#145).
+
 ## 0.6.0 — 2026-10-26
 
 The CLI now declares how it renders replies, and the terminal UI follows the person event stream so

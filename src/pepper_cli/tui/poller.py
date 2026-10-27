@@ -20,9 +20,11 @@ if TYPE_CHECKING:
         ChatHistoryEntry,
         GroupList,
         GroupMessage,
+        GroupReadState,
         GroupRosterMember,
         GroupSummary,
         GroupTopicSummary,
+        GroupUnreadRow,
     )
     from pepper_cli.tui.state import Conversation, PendingSend
 
@@ -46,6 +48,8 @@ class RailUpdate:
     groups: GroupList | None
     #: ``topic_id -> read_through`` for the rooms whose topics moved since the last 200.
     server_marks: dict[str, str] = field(default_factory=dict)
+    #: The server's unread rows for those rooms (read-state-sync §6).
+    unread: list[GroupUnreadRow] = field(default_factory=list)
     etag: str | None = None
     seen: dict[str, _Signature] | None = None
     #: The newest :meth:`RailPoller.refetch_all` request this step answered by reading every
@@ -105,14 +109,17 @@ class RailPoller:
             elif (old := self._seen.get(room.group_id)) is not None:
                 seen[room.group_id] = old  # its marks failed: it still counts as moved
         merged: dict[str, str] = {}
-        for marks in fetched.values():
-            merged.update(marks)
+        rows: list[GroupUnreadRow] = []
+        for answer in fetched.values():
+            merged.update(answer.marks)
+            rows.extend(answer.unread)
         complete = len(fetched) == len(moved)
         # A room whose marks could not be read is asked again on the next poll. That needs a
         # 200, so the ETag is only kept when every room's marks came back.
         return RailUpdate(
             groups=groups,
             server_marks=merged,
+            unread=rows,
             etag=etag if complete else None,
             seen=seen,
             full=asked if full and complete else 0,
@@ -129,8 +136,8 @@ class RailPoller:
         """Ask for the full list next time (after a failed poll, §6.6)."""
         self._etag = None
 
-    def _fetch_marks(self, rooms: list[GroupSummary]) -> dict[str, dict[str, str]]:
-        """``group_id -> marks`` for each room whose marks could be read."""
+    def _fetch_marks(self, rooms: list[GroupSummary]) -> dict[str, GroupReadState]:
+        """``group_id -> read state`` (marks and unread rows) for each room that answered."""
         if not rooms:
             return {}
         with ThreadPoolExecutor(max_workers=MARK_FETCH_WORKERS) as pool:
@@ -141,12 +148,13 @@ class RailPoller:
             if marks is not None
         }
 
-    def _marks_or_none(self, group_id: str) -> dict[str, str] | None:
-        # One room's marks failing must not hide the rest of the rail. A room whose marks
-        # cannot be read is seeded read on first sight and asked again on the next poll. A
-        # transport error is not caught: the whole step fails and nothing is committed.
+    def _marks_or_none(self, group_id: str) -> GroupReadState | None:
+        # One room's read state failing must not hide the rest of the rail. A room that cannot
+        # be read keeps whatever the cache held (nothing, on first sight: not unread) and is
+        # asked again on the next poll. A transport error is not caught: the whole step fails
+        # and nothing is committed.
         try:
-            return self._api.get_group_read_marks(group_id)
+            return self._api.get_group_read_state(group_id)
         except ApiError as exc:
             if exc.status == 401:
                 raise

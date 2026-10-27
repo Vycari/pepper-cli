@@ -421,9 +421,11 @@ or `no`). `pepper <message>` and every other command are unchanged: exit codes a
 non-interactive run do not depend on any of this.
 
 A full-screen view of your messages: Pepper first, then your rooms by recency with their topics
-nested under the open room. Unread dots come from the server's read marks, and a topic you open
-is marked read once its newest message has been on screen: with the thread scrolled up nothing
-is marked, and a topic you read on another device clears here at once.
+nested under the open room. Unread dots come from the server's own `unread` answer (the same one
+the web shows, with your own messages and anything from before you joined already left out), so
+a fresh install matches the web. A topic you open is marked read once its newest message has
+been on screen: with the thread scrolled up nothing is marked, and a topic you read on another
+device clears here at once.
 
 The composer at the bottom posts to whatever is open:
 
@@ -454,12 +456,12 @@ The composer at the bottom posts to whatever is open:
   fold, an "Inactive" fold for rooms quiet for a week, and a "New topic" row.
 - Each conversation keeps its own draft while you move around.
 - **Mentions**: a topic (or a collapsed room) with unread activity that mentions you shows `@`
-  in place of the dot, and the terminal title reads `@ Pepper`. The room list carries no mention
-  flag, so when a topic turns unread the TUI reads its newest page of messages once (one request
-  per new activity, one at a time) and looks for your id. A topic with more unread messages than
-  one page can miss an older mention. The open topic needs none of this: a message that mentions
-  you shows in the accent colour. Set `PEPPER_TUI_BELL=1` to also ring the terminal bell when a
-  mention is first found in another topic; it is off by default.
+  in place of the dot, and the terminal title reads `@ Pepper`. The server says which topics
+  have an unread mention, so the TUI reads no messages to find one. In the open topic a message
+  that mentions you shows in the accent colour. Set `PEPPER_TUI_BELL=1` to also ring the
+  terminal bell when the server first reports an unread mention in another topic; it is off by
+  default. A server that does not send unread rows (older than read-state-sync phase 5b) shows
+  no unread markers.
 
 `pepper tui --root PATH` (repeatable; `--tools-root` is an alias) lets Pepper read files under
 `PATH` during chat turns, exactly as `pepper chat --root` does: read-only, enforced on this

@@ -221,6 +221,7 @@ async def test_a_rail_poll_in_flight_when_focus_returns_is_not_duplicated_or_los
         await until(pilot, lambda: len(app.rooms) == 2)
         gate = threading.Event()
         server.gates["/api/v1/groups"] = gate
+        server.messages[ts.TOPIC_B1].append(ts.message("m-new", "2026-09-16T18:00:00+00:00", "hi"))
         server.rooms[1]["topics"][0]["last_activity_at"] = "2026-09-16T18:00:00+00:00"
         server.bump()
         before = _count(server, "/api/v1/groups")
@@ -234,7 +235,7 @@ async def test_a_rail_poll_in_flight_when_focus_returns_is_not_duplicated_or_los
         # Its result is applied (not dropped as stale behind a saved ETag): room B lights.
         await until(
             pilot,
-            lambda: state.any_unread(app.rooms, app.marks, current=app.current, pepper_dot=False),
+            lambda: state.any_unread(app.rooms, app.marks, pepper_dot=False),
         )
 
 
