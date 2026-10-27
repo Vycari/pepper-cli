@@ -301,13 +301,16 @@ class FakeServer:
             if tid in self.unread_override:
                 rows.append({"topic_id": tid, "floor": self.floor, **self.unread_override[tid]})
                 continue
-            cutoff = datetime.fromisoformat(max(filter(None, [self.marks.get(tid), self.floor])))
+            from pepper_cli.tui.state import parse_ts
+
+            bounds = [parse_ts(self.marks.get(tid)), parse_ts(self.floor)]
+            cutoff = max((b for b in bounds if b is not None), default=None)
             counted = [
                 m
                 for m in self.messages.get(tid, [])
                 if not m["is_you"]
                 and not m["is_deleted"]
-                and datetime.fromisoformat(m["created_at"]) > cutoff
+                and (cutoff is None or (parse_ts(m["created_at"]) or cutoff) > cutoff)
             ]
             rows.append(
                 {

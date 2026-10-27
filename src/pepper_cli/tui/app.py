@@ -707,7 +707,7 @@ class PepperApp(App[None]):
     def _apply_groups(
         self, groups: GroupList, server_marks: dict[str, str], unread: list[GroupUnreadRow]
     ) -> None:
-        had = self.marks.mentioned_topics(self.rooms)
+        had = self.marks.mentioned_topics(self.rooms) if self._bell else set()
         self.rooms = groups.groups
         self.marks.merge_unread(unread, server_marks)
         self.marks.settle(self.rooms)

@@ -144,7 +144,7 @@ class ReadMarks:
         self.marks[topic_id] = at
         return True
 
-    def merge_server(self, server_marks: dict[str, str]) -> None:
+    def merge_server(self, server_marks: Mapping[str, str]) -> None:
         for topic_id, raw in server_marks.items():
             self.merge(topic_id, parse_ts(raw))
 
@@ -157,7 +157,7 @@ class ReadMarks:
         remembers the cursor it was counted from, and :meth:`settle` applies only a cursor that
         moved after it.
         """
-        self.merge_server(dict(marks))
+        self.merge_server(marks)
         for row in rows:
             self.unread[row.topic_id] = row
             self.counted_from[row.topic_id] = parse_ts(marks.get(row.topic_id))
