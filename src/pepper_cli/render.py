@@ -927,6 +927,9 @@ def render_note_comments(result: NoteComments, *, show_resolved: bool = False) -
                 f"[dim]{_s(_format_stamp(msg.created_at))}  {_s(msg.id)}[/dim]",
                 soft_wrap=True,
             )
+            if msg.deleted:
+                _stdout.print(f"{pad}  [dim](deleted)[/dim]", soft_wrap=True)
+                continue
             for line in sanitize_text(msg.body).splitlines() or [""]:
                 _stdout.print(f"{pad}  {escape(line)}", soft_wrap=True)
     if hidden and not show_resolved:
