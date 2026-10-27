@@ -78,13 +78,42 @@ def test_a_cursor_past_the_activity_clears_a_row_and_a_partial_one_does_not() ->
     assert marks.settle([room]) is False  # nothing left to clear
 
 
-def test_a_stale_answer_does_not_relight_a_topic_read_since() -> None:
+def test_an_answer_that_crossed_a_read_is_kept_and_settled_by_that_read() -> None:
+    (room,) = _rooms(ts.room(ts.ROOM_A, "A", [ts.topic("t1", "One", "2026-02-01T00:00:00Z")]))
+    (topic,) = room.topics
+    marks = state.ReadMarks()
+    marks.merge("t1", state.parse_ts("2026-02-01T00:00:00Z"))  # read here, PUT not landed yet
+    marks.merge_unread([_row("t1", 2)], {"t1": "2026-01-01T00:00:00Z"})  # counted from before it
+    assert marks.unread["t1"].unread_count == 2  # kept: it may count a message newer than the read
+    assert marks.settle([room]) is True  # the read covers the activity, so it clears
+    assert not marks.is_unread(topic)
+
+
+def test_an_answer_that_crossed_a_read_still_shows_a_message_past_it() -> None:
+    (room,) = _rooms(ts.room(ts.ROOM_A, "A", [ts.topic("t1", "One", "2026-02-02T00:00:00Z")]))
+    (topic,) = room.topics
     marks = state.ReadMarks()
     marks.merge("t1", state.parse_ts("2026-02-01T00:00:00Z"))
-    marks.merge_unread([_row("t1", 2)], {"t1": "2026-01-01T00:00:00Z"})  # read before the cursor
-    assert "t1" not in marks.unread
-    marks.merge_unread([_row("t1", 1)], {"t1": "2026-02-01T00:00:00Z"})
-    assert marks.unread["t1"].unread_count == 1
+    marks.merge_unread([_row("t1", 2, mention=True)], {"t1": "2026-01-01T00:00:00Z"})
+    assert marks.settle([room]) is False
+    assert marks.is_unread(topic) and marks.is_mentioned(topic)
+
+
+def test_a_cursor_the_server_counted_from_does_not_settle_its_answer() -> None:
+    # /groups is read before /read: a message landing between the two leaves the room's
+    # activity at the cursor while the answer counts the new message.
+    (room,) = _rooms(ts.room(ts.ROOM_A, "A", [ts.topic("t1", "One", "2026-02-01T00:00:00Z")]))
+    (topic,) = room.topics
+    marks = state.ReadMarks()
+    marks.merge("t1", state.parse_ts("2026-02-01T00:00:00Z"))
+    marks.merge_unread([_row("t1", 1, mention=True)], {"t1": "2026-02-01T00:00:00Z"})
+    assert marks.settle([room]) is False
+    assert marks.settle([room]) is False  # nor does a later repaint against the same rooms
+    assert marks.is_unread(topic) and marks.is_mentioned(topic)
+    marks.merge_advanced({"topic_id": "t1", "last_read_at": "2026-02-01T00:00:01Z"})
+    later = _rooms(ts.room(ts.ROOM_A, "A", [ts.topic("t1", "One", "2026-02-01T00:00:01Z")]))
+    assert marks.settle(later) is True  # a cursor that moved after the answer does clear it
+    assert not marks.is_unread(topic)
 
 
 def _big_room() -> list[api_client.GroupSummary]:

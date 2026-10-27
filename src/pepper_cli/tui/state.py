@@ -121,8 +121,9 @@ class ReadMarks:
     The server decides what is unread (its floor, your own messages, tombstones, a carried
     topic's reach) and answers it as ``unread`` rows; this holds the latest answer per topic
     and the read cursors that came with it. The one thing the client adds is that a cursor can
-    only ever clear: a mark at or after a topic's newest activity leaves nothing in it unread
-    under any rule, so :meth:`settle` drops the cached row until the server's next answer.
+    only ever clear: a mark that moved after the server counted, and is at or after the topic's
+    newest activity, leaves nothing in it unread under any rule, so :meth:`settle` drops the
+    cached row until the server's next answer.
     Nothing here ever *raises* a count, and a topic the server has no row for is not unread.
     Mark merges are "take the max", so a late answer cannot walk a mark backwards.
     """
@@ -130,6 +131,8 @@ class ReadMarks:
     marks: dict[str, datetime] = field(default_factory=dict)
     #: ``topic_id -> the server's unread row`` (zero-count rows are kept: they say "read").
     unread: dict[str, GroupUnreadRow] = field(default_factory=dict)
+    #: ``topic_id -> the cursor the server counted that row from`` (``None``: it had none).
+    counted_from: dict[str, datetime | None] = field(default_factory=dict)
 
     def merge(self, topic_id: str, at: datetime | None) -> bool:
         """Raise the mark for ``topic_id`` to ``at`` if that is newer. True when it moved."""
@@ -148,16 +151,16 @@ class ReadMarks:
     def merge_unread(self, rows: Iterable[GroupUnreadRow], marks: Mapping[str, str]) -> None:
         """Take the server's unread rows (and the cursors answered with them).
 
-        A row older than a cursor already held here (an answer that crossed a read on this
-        device or another) is stale for that topic and is skipped; the next answer covers it.
+        Every row is kept, even one counted from a cursor older than one held here (an answer
+        that crossed a read on this device or another): it may count a message newer than that
+        read, and dropping it would hide the message until the room moved again. Each row
+        remembers the cursor it was counted from, and :meth:`settle` applies only a cursor that
+        moved after it.
         """
         self.merge_server(dict(marks))
         for row in rows:
-            held = self.marks.get(row.topic_id)
-            answered = parse_ts(marks.get(row.topic_id))
-            if held is not None and (answered is None or answered < held):
-                continue
             self.unread[row.topic_id] = row
+            self.counted_from[row.topic_id] = parse_ts(marks.get(row.topic_id))
 
     def merge_advanced(self, payload: object) -> str | None:
         """Fold a ``read_state.advanced`` event payload (``{topic_id, group_id, last_read_at}``)
@@ -178,8 +181,11 @@ class ReadMarks:
     def settle(self, rooms: Iterable[GroupSummary]) -> bool:
         """Clear the cached row of every topic whose mark has passed its newest activity.
 
-        True when a row was cleared. A mark short of the activity (a partial read) clears
-        nothing: the count is the server's, and the caller asks it again.
+        Only a mark newer than the cursor the row was counted from can clear it: ``rooms`` is
+        read before the rows (the rail asks ``/groups``, then ``/read``), so its activity can
+        be older than the answer, and a cursor the server already counted from says nothing
+        the row does not. True when a row was cleared. A mark short of the activity (a partial
+        read) clears nothing: the count is the server's, and the caller asks it again.
         """
         cleared = False
         for room in rooms:
@@ -188,7 +194,10 @@ class ReadMarks:
                 if row is None or (row.unread_count == 0 and not row.has_unread_mention):
                     continue
                 mark, activity = self.marks.get(topic.topic_id), parse_ts(topic.last_activity_at)
-                if mark is not None and activity is not None and mark >= activity:
+                if mark is None or activity is None or mark < activity:
+                    continue
+                since = self.counted_from.get(topic.topic_id)
+                if since is None or mark > since:
                     self.unread[topic.topic_id] = replace(
                         row, unread_count=0, has_unread_mention=False
                     )
