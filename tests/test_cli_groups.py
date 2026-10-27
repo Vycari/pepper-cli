@@ -137,6 +137,9 @@ class _FakeGroupsApi:
 
     def list_group_topics(self, group_id):
         self.calls.append(("list_group_topics", group_id))
+        # ``messages list`` looks the topic up for a note header; most tests need no topics.
+        if "topics" not in self._canned:
+            return []
         return self._result("topics")
 
     def list_group_messages(

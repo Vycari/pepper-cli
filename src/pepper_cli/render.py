@@ -1039,7 +1039,7 @@ def render_group_messages(page: GroupMessagePage, note_id: str | None = None) ->
     ``group_room.js``).
     """
     if note_id:
-        _stdout.print(note_topic_header(note_id), markup=False, highlight=False)
+        _stdout.print(note_topic_header(note_id), markup=False, highlight=False, soft_wrap=True)
     if not page.messages:
         _stdout.print("(no messages)")
     last_day_key: str | None = None
@@ -1068,7 +1068,7 @@ def render_group_messages(page: GroupMessagePage, note_id: str | None = None) ->
         )
         quoted = anchor_quote_line(m.anchor)
         if quoted:
-            _stdout.print(quoted, markup=False, highlight=False)
+            _stdout.print(quoted, markup=False, highlight=False, soft_wrap=True)
         if m.resolved_at:
             by = f" by {m.resolved_by_name}" if m.resolved_by_name else ""
             _stdout.print(f"(resolved{by})", markup=False, highlight=False)

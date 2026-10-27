@@ -189,6 +189,8 @@ class _Fake:
         self.requests: list[httpx.Request] = []
         self.messages: dict[str, dict] = {_MESSAGE: _message_json()}
         self.topics = {_TOPIC: "Dinner", _OTHER_TOPIC: "Chores"}
+        #: topic id -> the note id when that topic holds a note's comments.
+        self.subjects: dict[str, str] = {}
         self.message_status = 200
         self.fail_messages = 0
         self.fail_status = 503
@@ -226,7 +228,12 @@ class _Fake:
             )
         if path == f"/api/v1/groups/{_ROOM}/topics":
             rows = [
-                {"topic_id": tid, "name": name, "last_activity_at": None}
+                {
+                    "topic_id": tid,
+                    "name": name,
+                    "last_activity_at": None,
+                    "subject_artifact_id": self.subjects.get(tid),
+                }
                 for tid, name in self.topics.items()
             ]
             return httpx.Response(200, json={"topics": rows})
@@ -592,6 +599,50 @@ def test_a_message_becomes_one_channel_notification_with_the_body_and_ids(monkey
     assert [r.url.params["at"] for r in reads] == [_MESSAGE], "the mention is the same message"
     assert reads[0].url.path == f"/api/v1/groups/{_ROOM}/topics/{_TOPIC}/messages"
     assert result.code == 0
+
+
+_NOTE = "00000000-0000-0000-0000-0000000000e9"
+
+
+def test_a_comment_in_a_note_topic_carries_the_note_header_quote_and_note_id(monkeypatch):
+    fake = _Fake(_CONNECTED + _scope() + _event(7))
+    fake.subjects[_TOPIC] = _NOTE
+    fake.messages[_MESSAGE] = _message_json(anchor={"exact": "the  oven\ndoor"})
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    (note,) = result.notifications
+    assert note["content"] == (
+        "Alice Example in Kitchen \u203a Dinner:\n"
+        f"[comments topic of note {_NOTE}; read it with "
+        f"`pepper comments list --note {_NOTE} --room {_ROOM}`; "
+        "reply under the thread root, never top-level]\n"
+        '> on the passage: "the oven door"\n'
+        "Can you check the oven?"
+    )
+    assert note["meta"]["note_id"] == _NOTE
+    assert all(_META_KEY.match(k) and isinstance(v, str) for k, v in note["meta"].items())
+
+
+def test_a_long_anchor_quote_is_cut_and_a_plain_topic_has_no_note_fields(monkeypatch):
+    fake = _Fake(_CONNECTED + _scope() + _event(7) + _event(8, message=_MESSAGE_2))
+    fake.subjects[_TOPIC] = _NOTE
+    fake.messages[_MESSAGE] = _message_json(anchor={"exact": "w" * 400})
+    fake.messages[_MESSAGE_2] = _message_json(_MESSAGE_2)
+    fake.topics[_OTHER_TOPIC] = "Chores"
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    quoted = next(
+        ln for ln in result.notifications[0]["content"].splitlines() if ln.startswith("> on")
+    )
+    assert quoted.endswith('\u2026"') and len(quoted) < 200
+
+    plain = _Fake(_CONNECTED + _scope() + _event(7))
+    plain.messages[_MESSAGE] = _message_json(anchor={"exact": "ignored"})
+    (note,) = run_channel(monkeypatch, plain, ["--room", _ROOM]).notifications
+    assert "note_id" not in note["meta"]
+    assert "comments topic" not in note["content"]
 
 
 def test_sender_kind_is_agent_or_pepper_and_a_top_level_post_has_no_parent(monkeypatch):

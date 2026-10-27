@@ -1660,8 +1660,9 @@ class ArtifactListResponse:
 
 
 # The note-comment routes answer untyped JSON the server has not published in the vendored
-# snapshot yet, so these are deliberately not ``MIRROR``ed. They follow the prototype contract
-# (GET/POST /api/v1/artifacts/{id}/comments, POST .../{thread_id}/resolve|reopen).
+# snapshot yet, so these carry no contract marker; add one once the snapshot refresh lands.
+# They follow the prototype contract (GET/POST /api/v1/artifacts/{id}/comments, and
+# POST .../{thread_id}/resolve|reopen).
 @dataclass(frozen=True)
 class NoteComment:
     """One message of a note-comment thread (a root or a reply)."""
@@ -1707,7 +1708,12 @@ def _note_comment_from_dict(row: dict[str, Any]) -> NoteComment:
         body=str(row.get("body") or ""),
         author=str((row.get("author") or {}).get("display_name") or ""),
         created_at=str(row.get("created_at") or ""),
-        mentions=_mention_ids(row.get("mentions")),
+        mentions=_mention_ids(
+            [
+                {"person_id": m["id"]} if isinstance(m, dict) and "id" in m else m
+                for m in row.get("mentions") or []
+            ]
+        ),
         anchor=anchor if isinstance(anchor, dict) else None,
         resolved_at=row.get("resolved_at"),
         resolved_by=str(resolver.get("display_name") or "") if isinstance(resolver, dict) else None,

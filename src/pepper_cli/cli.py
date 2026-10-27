@@ -5525,20 +5525,25 @@ def cmd_messages_list(args: argparse.Namespace) -> int:
         page = api.list_group_messages(
             group_id, topic_id, since=args.since, before=args.before, limit=args.limit
         )
+        # A note's comments topic gets a header line. Best effort and human output only: the
+        # lookup failing must not stop the messages from printing.
+        note_id = None
+        if not _json_mode(args):
+            try:
+                note_id = next(
+                    (
+                        t.subject_artifact_id
+                        for t in api.list_group_topics(group_id)
+                        if t.topic_id == topic_id
+                    ),
+                    None,
+                )
+            except api_client.ApiError:
+                note_id = None
         # Mark before printing: a failed mark exits non-zero with nothing on stdout.
         if args.mark and page.messages:
             newest = max(m.created_at for m in page.messages)
             api.set_group_read_mark(group_id, topic_id, read_through=newest)
-        note_id = None
-        if not _json_mode(args):
-            note_id = next(
-                (
-                    t.subject_artifact_id
-                    for t in api.list_group_topics(group_id)
-                    if t.topic_id == topic_id
-                ),
-                None,
-            )
         _emit_list(
             page.messages,
             args,
@@ -7036,7 +7041,9 @@ def _report_comments_api_error(exc: api_client.ApiError, args: argparse.Namespac
         _emit_error(
             args,
             "conflict",
-            exc.detail or "personal notes cannot be commented on; copy the note into a room",
+            "personal notes cannot be commented on; copy the note into a room"
+            if error == "personal_note" or not exc.detail
+            else exc.detail,
             status=409,
         )
         return 2

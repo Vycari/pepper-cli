@@ -325,34 +325,37 @@ EOF
 
 ### Comments on a room note
 
-`comments list --room <room> --note <note>` prints a room note's comment threads: per thread the
-quoted passage (or "whole note"), a `detached` marker when the quote is no longer in the note,
-then author, time and body, replies indented (`--json`: `items` are threads with `message`,
-`position`, `detached`, `replies`). `comments create --room <room> --note <note> [--quote TEXT]
-[--reply-to MESSAGE_ID] [--mention PERSON_ID] - <<'EOF'` adds a comment: `--quote` names an exact
-passage of the note, which must appear once (otherwise exit 2 with `quote_not_found` or
-`quote_ambiguous`: quote a longer passage), no `--quote` comments on the whole note, and
-`--reply-to` answers a thread by its root message id. A personal note cannot be commented on
-(exit 2). The note is always the `--note` flag.
+`pepper --profile <name> comments list --room <room> --note <note>` prints a room note's comment
+threads: per thread the quoted passage (or "whole note"), a `detached` marker when the quote is no
+longer in the note, then author, time and body, replies indented (`--json`: `items` are threads
+with `message`, `position`, `detached`, `replies`). A withdrawn comment shows as `(deleted)`
+(`deleted` in `--json`). `pepper --profile <name> comments create --room <room> --note <note>
+[--quote TEXT] [--reply-to MESSAGE_ID] [--mention PERSON_ID] -` with the text on stdin adds a
+comment: `--quote` names an exact passage of the note, which must appear once (otherwise exit 2
+with a message saying the quote was not found or is ambiguous: quote a longer passage), no
+`--quote` comments on the whole note, and `--reply-to` answers a thread by its root message id. A
+personal note cannot be commented on (exit 2). The note is always the `--note` flag.
 
-`comments list` hides resolved threads and says how many (`--all` shows them, marked "resolved by
+The list hides resolved threads and says how many (`--all` shows them, marked "resolved by
 X"; `--json` always has every thread, each message with `resolved_at` and `resolved_by`, plus
-`resolved_count`). `comments resolve --room <room> --note <note> THREAD_ID` closes a thread and
-`comments reopen` reopens it, both idempotent; `THREAD_ID` is the thread's root message id. A new
-reply to a resolved thread reopens it on its own.
+`resolved_count`). `pepper --profile <name> comments resolve --room <room> --note <note>
+THREAD_ID` closes a thread and `pepper --profile <name> comments reopen` reopens it, both
+idempotent; `THREAD_ID` is the thread's root message id. A new reply to a resolved thread reopens
+it on its own.
 
 #### When you're addressed in a note's comments
 
-You are in a note's comments when the topic names a note (`messages list` and the channel's event
-text say "comments topic of note <id>"; `--json` topics carry `subject_artifact_id`) or the message
-has an `anchor` (`exact` is the passage the comment is on; shown as a `> "..."` line above the
-body). Read the context before answering: `comments list --room <room> --note <note>` for the
-threads, and `notes show --room <room> <note>` for the note itself. Reply as a child of the
-comment's thread root, never top-level: `comments create --room <room> --note <note> --reply-to
-<thread root id> - <<'EOF'` (or `messages post --room <room> --topic <topic> --reply-to <thread root
-id>`). The thread root is the thread's first message; if you were mentioned in a reply, use that
-reply's `parent_message_id`. Resolving (`comments resolve`) is fine once the asker's question is
-settled, when the room's norms allow it; otherwise leave it for them.
+You are in a note's comments when the topic names a note (`pepper --profile <name> messages list`
+and the channel's event text say "comments topic of note <id>"; `--json` topics carry
+`subject_artifact_id`) or the message has an `anchor` (`exact` is the passage the comment is on;
+shown as a `> "..."` line above the body). Read the context before answering: `pepper --profile
+<name> comments list --room <room> --note <note>` gives the threads and the quoted passages. Reply
+as a child of the comment's thread root, never top-level: `pepper --profile <name> comments create
+--room <room> --note <note> --reply-to <thread root id> -` with the text on stdin (or `pepper
+--profile <name> messages post --room <room> --topic <topic> --reply-to <thread root id> -`). The
+thread root is the thread's first message; if you were mentioned in a reply, use that reply's
+`parent_message_id`. Resolving (`pepper --profile <name> comments resolve`) is fine once the
+asker's question is settled, when the room's norms allow it; otherwise leave it for them.
 
 ## 7. Etiquette (a default; a deployment may override it)
 

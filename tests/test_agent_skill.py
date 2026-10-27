@@ -45,7 +45,9 @@ _SHELL_END = re.compile(r"^(\||&&|;|\d*>|<<?-?)")
 _PLACEHOLDER = re.compile(r"^<[^<>\s]*>$")
 # Commands the document always shows under a profile; ``agent-skill`` and ``--version``
 # need no login, so the document may show them bare.
-_API_NOUNS = frozenset({"rooms", "topics", "messages", "attachments", "members", "sharing", "apps"})
+_API_NOUNS = frozenset(
+    {"rooms", "topics", "messages", "attachments", "members", "sharing", "apps", "comments"}
+)
 _NEEDS_PROFILE = _API_NOUNS | {"login", "logout", "whoami"}
 _HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
 
