@@ -18,6 +18,7 @@ from textual.widgets import Static
 
 from pepper_cli.tui import app as tui_app
 from pepper_cli.tui import state, stream
+from pepper_cli.tui.thread import ThreadView
 from tests import tui_support as ts
 from tests.tui_support import body_text, until
 
@@ -290,6 +291,18 @@ async def test_nothing_is_marked_read_while_the_thread_is_scrolled_up(
         # Back at the end, the newest row has been on screen: now it is read.
         app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
         await until(pilot, lambda: (ts.TOPIC_A1, arrived) in server.puts)
+
+
+async def test_a_pin_change_delivered_after_the_thread_is_gone_is_ignored() -> None:
+    """The cue can be dispatched during teardown, once the thread is gone (#139): no crash."""
+    server = ts.standard_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 20)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: app.loaded_topic)
+        await app.thread.remove()
+        app.on_thread_view_pin_changed(ThreadView.PinChanged(True))
 
 
 async def test_reaching_the_end_marks_the_newest_row_read(monkeypatch: pytest.MonkeyPatch) -> None:
