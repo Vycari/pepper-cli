@@ -434,7 +434,11 @@ def test_a_mention_shows_only_while_the_topic_is_unread() -> None:
     assert marks.is_mentioned(t1) and not marks.is_mentioned(t2)
     assert marks.room_mentioned(room)
     assert state.any_mention([room], marks)
-    assert marks.mentioned_topics() == {"t1"}
+    assert marks.mentioned_topics([room]) == {"t1"}
+    (archived,) = _rooms(
+        ts.room(ts.ROOM_A, "A", [ts.topic("t1", "One", "2026-02-01T00:00:00Z", archived_at="x")])
+    )
+    assert marks.mentioned_topics([archived]) == set()  # an archived topic shows no mention
     marks.merge_unread([_row("t1", 0, mention=True)], {})  # a flag on a read topic is not shown
     assert not marks.is_mentioned(t1)
     assert not state.any_mention([room], marks)

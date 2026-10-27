@@ -221,9 +221,9 @@ class ReadMarks:
     def room_mentioned(self, room: GroupSummary) -> bool:
         return any(self.is_mentioned(t) for t in room.topics)
 
-    def mentioned_topics(self) -> set[str]:
-        """Topic ids whose unread rows carry a mention (for spotting a new one)."""
-        return {t for t, row in self.unread.items() if row.has_unread_mention}
+    def mentioned_topics(self, rooms: Iterable[GroupSummary]) -> set[str]:
+        """Ids of the topics shown as mentioned (for spotting a new one; archived ones are not)."""
+        return {t.topic_id for room in rooms for t in room.topics if self.is_mentioned(t)}
 
 
 def topics_by_recency(room: GroupSummary) -> list[GroupTopicSummary]:

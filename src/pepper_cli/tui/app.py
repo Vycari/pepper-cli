@@ -707,11 +707,11 @@ class PepperApp(App[None]):
     def _apply_groups(
         self, groups: GroupList, server_marks: dict[str, str], unread: list[GroupUnreadRow]
     ) -> None:
+        had = self.marks.mentioned_topics(self.rooms)
         self.rooms = groups.groups
-        had = self.marks.mentioned_topics()
         self.marks.merge_unread(unread, server_marks)
         self.marks.settle(self.rooms)
-        if self._bell and (self.marks.mentioned_topics() - had - {self.current.topic_id}):
+        if self._bell and (self.marks.mentioned_topics(self.rooms) - had - {self.current.topic_id}):
             self.bell()
 
     def _refresh_next(self) -> None:
