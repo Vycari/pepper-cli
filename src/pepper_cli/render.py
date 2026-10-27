@@ -409,10 +409,13 @@ def render_todo_list(rows: list[TodoEntry], *, numbered: bool = False) -> None:
     if not rows:
         _stdout.print("(no todos)")
         return
-    pad = "  " if numbered else ""
+    # Every number takes the widest one's width, so titles and the lines under them stay
+    # in one column past row 99.
+    width = max(2, len(str(len(rows))))
+    pad = " " * width if numbered else ""
     for n, row in enumerate(rows, 1):
         marker = _TODO_MARKERS.get(row.status, "•")
-        line = f"{n:>2}. " if numbered else ""
+        line = f"{n:>{width}}. " if numbered else ""
         line += f"{marker} {_s(row.title)}"
         if row.due_date:
             line += f"  due {_s(_format_due(row.due_date, row.due_is_date_only))}"

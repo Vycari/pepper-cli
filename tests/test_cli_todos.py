@@ -433,6 +433,21 @@ def test_list_shows_the_next_action_and_pepper_suggestion(tmp_home, patch_api, c
     assert len(lines) == 6  # "Plain" has no extra lines
 
 
+def test_list_keeps_titles_and_next_actions_in_one_column_past_row_99(
+    tmp_home, patch_api, capsys
+) -> None:
+    _login(tmp_home)
+    action = api_client.TodoNextAction(text="Go", by="user", updated_at="2026-10-20T00:00Z")
+    patch_api(todo_list=[_todo(title=f"T{i}", next_action=action) for i in range(1, 101)])
+    assert cli.main(["todos", "list"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("  1. ") and lines[198].startswith("100. ")
+    title_col = lines[198].index("T100")
+    assert lines[0].index("T1") == title_col
+    assert lines[199] == " " * title_col + "Next: Go"
+    assert lines[1] == lines[199]
+
+
 def test_list_json_passes_the_next_action_fields_through(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     action = api_client.TodoNextAction(text="Call Bob", by="model", updated_at="2026-10-20T00:00Z")
