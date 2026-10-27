@@ -391,7 +391,7 @@ def render_trajectory_list(rows: list[TrajectoryListEntry]) -> None:
 _TODO_MARKERS = {"open": "☐", "done": "✓", "dismissed": "✗"}
 
 
-def render_todo_list(rows: list[TodoEntry]) -> None:
+def render_todo_list(rows: list[TodoEntry], *, numbered: bool = False) -> None:
     """Pretty-print a todo list to stdout.
 
     One line per todo: status glyph, title, optional localized due date
@@ -402,13 +402,18 @@ def render_todo_list(rows: list[TodoEntry]) -> None:
     Plain text — no Rich tables — so the output stays grep-able, matching
     ``render_trajectory_list``. Due dates are localized to the machine's
     zone (the CLI runs on the user's own machine).
+
+    ``numbered`` puts ``1.``, ``2.`` ... first, in the server's order: the handle for
+    ``todos done 3``. A list that was not saved (a just-created todo) stays unnumbered.
     """
     if not rows:
         _stdout.print("(no todos)")
         return
-    for row in rows:
+    pad = "  " if numbered else ""
+    for n, row in enumerate(rows, 1):
         marker = _TODO_MARKERS.get(row.status, "•")
-        line = f"{marker} {_s(row.title)}"
+        line = f"{n:>2}. " if numbered else ""
+        line += f"{marker} {_s(row.title)}"
         if row.due_date:
             line += f"  due {_s(_format_due(row.due_date, row.due_is_date_only))}"
         if row.priority:
@@ -420,9 +425,9 @@ def render_todo_list(rows: list[TodoEntry]) -> None:
             text = f"Next: {_s(row.next_action.text)}"
             if row.next_action.by == "model":
                 text = f"[dim]{text}[/dim]"
-            _stdout.print(f"    {text}")
+            _stdout.print(f"{pad}    {text}")
         if row.next_action_suggestion:
-            _stdout.print(f"    [dim]  Or: {_s(row.next_action_suggestion.text)}[/dim]")
+            _stdout.print(f"{pad}    [dim]  Or: {_s(row.next_action_suggestion.text)}[/dim]")
 
 
 #: What a person with no display name on the wire is shown as.
