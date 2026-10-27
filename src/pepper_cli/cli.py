@@ -2192,7 +2192,7 @@ def _login_manual(server_url: str, raw_token: str | None) -> int:
 
 #: An agent member's token. It authenticates as the agent, not a Pepper account, so it reaches
 #: only the room routes — ``whoami`` refuses it by design.
-AGENT_TOKEN_PREFIX = "pep_agt_"
+AGENT_TOKEN_PREFIX = api_client.AGENT_TOKEN_PREFIX
 
 
 def _login_agent(server_url: str, token: SecretStr) -> int:
@@ -7051,6 +7051,17 @@ def _report_comments_api_error(exc: api_client.ApiError, args: argparse.Namespac
 
 
 def _comments_note(api: api_client.ApiClient, args: argparse.Namespace) -> str | None:
+    """The note ``--note`` names. A note name resolves through ``GET /api/v1/artifacts``,
+    which an agent token may call only with the room named (``?principal=``); without
+    ``--room`` the server would refuse it, so say what to pass instead of reporting that."""
+    if args.room is None and not _valid_uuid(args.note) and api.is_agent_token:
+        _emit_error(
+            args,
+            "usage",
+            "an agent finds a note by name only within a room: add --room ROOM, "
+            "or give the note's id",
+        )
+        return None
     room_principal = _opt_group(api, args.room, args=args)
     return _resolve_note(api, room_principal=room_principal, value=args.note, args=args)
 

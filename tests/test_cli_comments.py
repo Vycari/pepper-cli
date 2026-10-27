@@ -54,6 +54,7 @@ class _FakeApi:
     def __init__(self, *, server_url, token, **canned) -> None:
         self._canned = canned
         self.calls: list[tuple] = []
+        self.is_agent_token = token.get_secret_value().startswith(api_client.AGENT_TOKEN_PREFIX)
         _FakeApi.instances.append(self)
 
     def __enter__(self):
@@ -69,6 +70,13 @@ class _FakeApi:
         if value is None:
             raise AssertionError(f"test forgot to set {key}")
         return value
+
+    def list_artifacts(self, *, principal=None, **kwargs):
+        # The server's rule for an agent token: notes of a room it names, nothing else.
+        self.calls.append(("artifacts", principal, kwargs))
+        if self.is_agent_token and principal is None:
+            raise _err(422, {"detail": "an agent names the room with ?principal="})
+        return self._result("notes")
 
     def list_note_comments(self, artifact_id):
         self.calls.append(("list", artifact_id))
@@ -104,6 +112,47 @@ def _calls() -> list[tuple]:
 def _err(status: int, payload: object = None) -> api_client.ApiError:
     body = json.dumps(payload) if payload is not None else ""
     return api_client.ApiError(status=status, body=body, detail="x")
+
+
+# --- note names under an agent token -----------------------------------------------------
+
+
+def _agent_login(tmp_home) -> None:
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_agt_abc"))
+
+
+def _notes(*names: str) -> api_client.ArtifactListResponse:
+    items = [
+        api_client.ArtifactListItem(
+            id=_NID, name=n, kind="inline_text", updated_at="2026-10-26T10:00:00+00:00", etag="e"
+        )
+        for n in names
+    ]
+    return api_client.ArtifactListResponse(truncated=False, items=items)
+
+
+def test_agent_resolves_a_note_name_within_the_named_room(tmp_home, patch_api, capsys) -> None:
+    _agent_login(tmp_home)
+    patch_api(notes=_notes("Runbook"), comments=_comments(_thread(_c("m1", "hi"))))
+    assert cli.main(["comments", "list", "--room", _GID, "--note", "Runbook"]) == 0
+    assert _calls()[0][:2] == ("artifacts", _GID)
+    assert _calls()[-1] == ("list", _NID)
+    assert "hi" in capsys.readouterr().out
+
+
+def test_agent_note_name_without_room_says_to_add_one(tmp_home, patch_api, capsys) -> None:
+    _agent_login(tmp_home)
+    patch_api()
+    assert cli.main(["comments", "list", "--note", "Runbook"]) == 2
+    assert "--room" in capsys.readouterr().err
+    assert _calls() == []
+
+
+def test_agent_note_id_without_room_needs_no_lookup(tmp_home, patch_api) -> None:
+    _agent_login(tmp_home)
+    patch_api(comments=_comments())
+    assert cli.main(["comments", "list", "--note", _NID]) == 0
+    assert _calls() == [("list", _NID)]
 
 
 # --- list ---------------------------------------------------------------------------------

@@ -240,3 +240,10 @@ def test_group_message_and_topic_parse_the_note_fields() -> None:
         {k: v for k, v in row.items() if k not in ("anchor", "resolved_at", "resolved_by_name")}
     )
     assert plain.anchor is None and plain.resolved_at is None
+
+
+@pytest.mark.parametrize(("token", "agent"), [("pep_agt_abc", True), ("pep_pat_abc", False)])
+def test_is_agent_token_reads_the_token_prefix(token, agent) -> None:
+    api = api_client.ApiClient(server_url="http://example.com", token=SecretStr(token))
+    with api:
+        assert api.is_agent_token is agent

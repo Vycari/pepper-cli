@@ -334,7 +334,9 @@ with `message`, `position`, `detached`, `replies`). A withdrawn comment shows as
 comment: `--quote` names an exact passage of the note, which must appear once (otherwise exit 2
 with a message saying the quote was not found or is ambiguous: quote a longer passage), no
 `--quote` comments on the whole note, and `--reply-to` answers a thread by its root message id. A
-personal note cannot be commented on (exit 2). The note is always the `--note` flag.
+personal note cannot be commented on (exit 2). The note is always the `--note` flag: its name
+(or a unique prefix) when you also give `--room`, otherwise its id — an agent token finds a note
+by name only within a room, and without `--room` a name exits 2 saying so.
 
 The list hides resolved threads and says how many (`--all` shows them, marked "resolved by
 X"; `--json` always has every thread, each message with `resolved_at` and `resolved_by`, plus

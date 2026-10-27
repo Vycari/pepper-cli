@@ -43,6 +43,10 @@ from pepper_cli.terminal_text import CONTROL_CHAR_RE, sanitize_text, strip_seque
 #: Ordinary API request timeout (seconds). Chat streams may have long gaps
 #: between frames while the agent works, so they get a separate read limit.
 DEFAULT_TIMEOUT = 60.0
+
+#: An agent member's token. It authenticates as the agent, not a Pepper account, so it reaches
+#: only the room routes (and a room's notes, named with ``?principal=``).
+AGENT_TOKEN_PREFIX = "pep_agt_"
 DEFAULT_CHAT_STREAM_READ_TIMEOUT = 600.0
 #: Longest the agent event stream may go without a byte before the read is
 #: abandoned and the caller reconnects. The server sends a ``: ping`` comment
@@ -1871,6 +1875,12 @@ class ApiClient:
         """The server's base URL, without a trailing slash (a client resolves the
         server-relative links a message carries against it)."""
         return self._server_url
+
+    @property
+    def is_agent_token(self) -> bool:
+        """Whether this client authenticates as a room's agent member (a ``pep_agt_`` token),
+        which the server lets list notes only of a room it names."""
+        return self._token.get_secret_value().startswith(AGENT_TOKEN_PREFIX)
 
     def __enter__(self) -> Self:
         return self
