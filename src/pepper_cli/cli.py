@@ -5526,7 +5526,7 @@ def cmd_messages_list(args: argparse.Namespace) -> int:
             group_id, topic_id, since=args.since, before=args.before, limit=args.limit
         )
         # A note's comments topic gets a header line. Best effort and human output only: the
-        # lookup failing must not stop the messages from printing.
+        # lookup failing (an HTTP error or a transport one) must not stop the messages printing.
         note_id = None
         if not _json_mode(args):
             try:
@@ -5538,7 +5538,7 @@ def cmd_messages_list(args: argparse.Namespace) -> int:
                     ),
                     None,
                 )
-            except api_client.ApiError:
+            except (api_client.ApiError, httpx.RequestError):
                 note_id = None
         # Mark before printing: a failed mark exits non-zero with nothing on stdout.
         if args.mark and page.messages:

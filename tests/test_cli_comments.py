@@ -10,6 +10,7 @@ import io
 import json
 import sys
 
+import httpx
 import pytest
 
 from pepper_cli import api_client, cli, credentials
@@ -462,15 +463,20 @@ def test_messages_list_json_skips_the_topic_lookup(tmp_home, monkeypatch, capsys
     assert row["anchor"] == {"exact": "a"} and row["resolved_at"] == "t"
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [_err(500), httpx.ReadTimeout("timed out")],
+    ids=["http-500", "transport-timeout"],
+)
 def test_messages_list_still_prints_when_the_topic_lookup_fails(
-    tmp_home, monkeypatch, capsys
+    tmp_home, monkeypatch, capsys, failure
 ) -> None:
     _login(tmp_home)
     page = api_client.GroupMessagePage(messages=[_group_message()], next_before=None)
     monkeypatch.setattr(
         api_client,
         "ApiClient",
-        lambda **kw: _FakeRoomApi(topics=_err(500), page=page, **kw),
+        lambda **kw: _FakeRoomApi(topics=failure, page=page, **kw),
     )
     assert cli.main(["messages", "list", "--room", _GID, "--topic", _TID]) == 0
     assert "see this" in capsys.readouterr().out
