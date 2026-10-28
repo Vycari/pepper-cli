@@ -1815,17 +1815,23 @@ class PepperApp(App[None]):
         room_id = self.current.room_id
         if slug is None or room_id is None:
             return False
-        draft = self._draft()
-        draft.text = ""
-        self.composer.load_text("")
         title = state.APP_TITLES[slug]
+
+        def consume() -> None:
+            # The command stays in the composer until the room's apps answer, so a busy or
+            # failed read leaves it there to send again. Text typed since is the user's.
+            if self.composer.text.strip() == text:
+                self._draft().text = ""
+                self.composer.load_text("")
 
         def decide(tiles: list[GroupAppTile], unavailable: bool) -> None:
             if any(t.slug == slug for t in tiles):
+                consume()
                 self._open_pane(room_id, slug)
             elif unavailable:
                 self.notify("Apps unavailable right now.", timeout=3)
             else:
+                consume()
                 self.notify(
                     f"{title} isn't installed in this room. Install it from Room info on the web.",
                     timeout=4,
