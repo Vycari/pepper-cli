@@ -229,3 +229,80 @@ def test_rail_step_carries_the_servers_unread_rows_for_the_rooms_it_read() -> No
         update = poller.RailPoller(api).step()
     by_topic = {row.topic_id: row.unread_count for row in update.unread}
     assert by_topic == {ts.TOPIC_A1: 1, ts.TOPIC_A2: 0, ts.TOPIC_B1: 1}
+
+
+def _apps_server() -> ts.FakeServer:
+    server = ts.standard_server()
+    server.launchers[ts.ROOM_A] = [ts.tile("todo", "Todos", ts.ROOM_A)]
+    server.todos[ts.ROOM_A] = [
+        ts.todo("a", "asked", assignee={"user_id": ts.ME_PERSON, "label": "Me"}),
+        ts.todo("b", "plain"),
+        ts.todo("c", "closed", status="done", done_at="2026-10-01T00:00:00Z"),
+    ]
+    server.notes[ts.ROOM_A] = [ts.note_item("n1", "Packing", "2026-10-27T10:00:00+00:00")]
+    server.note_details["n1"] = {
+        "id": "n1",
+        "name": "Packing",
+        "kind": "inline_text",
+        "updated_at": "2026-10-27T10:00:00+00:00",
+        "etag": '"n1-1"',
+        "shared": True,
+        "body": "text",
+    }
+    server.note_details["f1"] = {**server.note_details["n1"], "id": "f1", "kind": "file"}
+    return server
+
+
+def test_the_shelf_lists_installed_apps_none_installed_and_the_unavailable_flag() -> None:
+    server = _apps_server()
+    server.apps_unavailable.add(ts.ROOM_B)
+    with server.client() as api:
+        tiles, unavailable = poller.fetch_room_shelf(api, ts.ROOM_A)
+        assert [t.slug for t in tiles] == ["todo"]
+        assert not unavailable
+        assert poller.fetch_room_shelf(api, "no-apps-room") == ([], False)
+        assert poller.fetch_room_shelf(api, ts.ROOM_B) == ([], True)
+
+
+def test_a_rooms_todos_are_one_call_for_every_status_and_mine_sends_assignee_me() -> None:
+    server = _apps_server()
+    with server.client() as api:
+        everything = poller.fetch_todos(api, ts.ROOM_A, mine=False)
+        asked = poller.fetch_todos(api, ts.ROOM_A, mine=True)
+    assert [t.id for t in everything] == ["a", "b", "c"]
+    assert [t.id for t in asked] == ["a"]
+    reads = [q for _m, p, q in server.requests if p.endswith(f"/groups/{ts.ROOM_A}/todos")]
+    assert reads == [{"status": "all"}, {"status": "all", "assignee": "me"}]
+
+
+def test_a_room_the_caller_left_is_an_api_error_the_app_can_act_on() -> None:
+    server = _apps_server()
+    server.fail[f"/api/v1/groups/{ts.ROOM_A}/todos"] = 404
+    server.fail["/api/v1/artifacts"] = 403
+    with server.client() as api:
+        with pytest.raises(api_client.ApiError) as todos:
+            poller.fetch_todos(api, ts.ROOM_A, mine=False)
+        with pytest.raises(api_client.ApiError) as notes:
+            poller.fetch_notes(api, ts.ROOM_A)
+    assert (todos.value.status, notes.value.status) == (404, 403)
+
+
+def test_notes_ask_for_the_rooms_inline_text_artifacts_up_to_200_and_carry_truncated() -> None:
+    server = _apps_server()
+    server.notes_truncated = True
+    with server.client() as api:
+        found = poller.fetch_notes(api, ts.ROOM_A)
+    assert found.truncated
+    assert [n.id for n in found.items] == ["n1"]
+    sent = [q for _m, p, q in server.requests if p == "/api/v1/artifacts"]
+    assert sent == [{"kind": "inline_text", "limit": "200", "principal": ts.ROOM_A}]
+
+
+def test_a_note_opens_by_detail_and_anything_else_is_refused() -> None:
+    server = _apps_server()
+    with server.client() as api:
+        assert poller.fetch_note(api, "n1").body == "text"
+        with pytest.raises(ValueError, match="not a note"):
+            poller.fetch_note(api, "f1")
+        with pytest.raises(api_client.ApiError):
+            poller.fetch_note(api, "missing")

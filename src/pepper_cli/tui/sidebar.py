@@ -27,6 +27,8 @@ def row_label(row: SidebarRow, *, current: bool) -> Text:
     if row.kind == "room":
         label.append("■ ", style=safe_color(row.color) or "")
     name = sanitize_line(row.label)
+    if row.kind == "app":
+        label.append("▌ ", style="bold")  # the open room app: its row exists only while open
     if row.kind in ("more", "archived", "newtopic", "inactive"):
         label.append(name, style="dim italic")
     else:

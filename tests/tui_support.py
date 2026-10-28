@@ -39,6 +39,9 @@ TOPIC_A2 = "00000000-0000-0000-0000-0000000000b2"
 TOPIC_B1 = "00000000-0000-0000-0000-0000000000b3"
 
 
+APP_ROUTES = ("apps", "todos")
+
+
 async def until(pilot, condition: Callable[[], bool], *, seconds: float = 5.0) -> None:
     deadline = asyncio.get_running_loop().time() + seconds
     while not condition():
@@ -136,6 +139,45 @@ def message(mid: str, at: str, body: str = "hello", **over: Any) -> dict[str, An
         "is_permalink_target": False,
         **over,
     }
+
+
+def todo(tid: str, title: str, **over: Any) -> dict[str, Any]:
+    """A ``TodoEntry`` as ``/api/v1/todos`` answers it."""
+    return {
+        "id": tid,
+        "title": title,
+        "details": None,
+        "status": "open",
+        "source": "user",
+        "priority": None,
+        "due_date": None,
+        "due_is_date_only": None,
+        "created_at": "2026-09-10T09:00:00+00:00",
+        "done_at": None,
+        "source_ref": None,
+        "remind_at": None,
+        "assignee": None,
+        "requested_by": None,
+        **over,
+    }
+
+
+def note_item(nid: str, name: str, at: str, **over: Any) -> dict[str, Any]:
+    """One row of ``GET /api/v1/artifacts``."""
+    return {
+        "id": nid,
+        "name": name,
+        "kind": "inline_text",
+        "updated_at": at,
+        "etag": f'"{nid}-1"',
+        "labels": [],
+        "summary": None,
+        **over,
+    }
+
+
+def tile(slug: str, title: str, group_id: str) -> dict[str, Any]:
+    return {"app_key": slug, "slug": slug, "title": title, "principal": group_id, "icon": None}
 
 
 def history_entry(hid: str, role: str, text: str, at: str) -> dict[str, Any]:
@@ -259,6 +301,17 @@ class FakeServer:
     streams: list[StreamScript] = field(default_factory=list)
     #: ``(Last-Event-ID, since)`` of each stream connection received.
     stream_opens: list[tuple[str | None, str | None]] = field(default_factory=list)
+    #: ``group_id -> launcher tiles`` (dicts as the route answers them); none: nothing installed.
+    launchers: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    #: Rooms whose launcher answers ``installed_unavailable``.
+    apps_unavailable: set[str] = field(default_factory=set)
+    #: ``group_id -> todos`` (dicts), filtered by ``status`` and ``assignee=me`` on read.
+    todos: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    #: ``group_id -> notes list rows``, and whether the list says it was cut.
+    notes: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    notes_truncated: bool = False
+    #: ``artifact id -> detail JSON``.
+    note_details: dict[str, dict[str, Any]] = field(default_factory=dict)
     clock: int = 0
     rev: int = 1
     requests: list[tuple[str, str, dict[str, str]]] = field(default_factory=list)
@@ -303,6 +356,23 @@ class FakeServer:
         distinct = {r["topic_id"]: r["unread_count"] for r in topics}
         total = self.unread_total if self.unread_total is not None else sum(distinct.values())
         return {"topics": topics, "unread_total": total}
+
+    def _app_route(self, parts: list[str], query: dict[str, str]) -> httpx.Response:
+        """``/groups/{gid}/apps/launcher`` and ``/groups/{gid}/todos``."""
+        group_id = parts[3]
+        if parts[4] == "apps" and parts[5:] == ["launcher"]:
+            return httpx.Response(
+                200,
+                json={
+                    "tiles": self.launchers.get(group_id, []),
+                    "installed_unavailable": group_id in self.apps_unavailable,
+                },
+            )
+        status = query.get("status", "open")
+        rows = [t for t in self.todos.get(group_id, []) if status in ("all", t["status"])]
+        if query.get("assignee") == "me":
+            rows = [t for t in rows if (t["assignee"] or {}).get("user_id") == ME_PERSON]
+        return httpx.Response(200, json=rows)
 
     def _unread_rows(self, group_id: str) -> list[dict[str, Any]]:
         """The room's ``unread`` rows as the server computes them (read-state-sync §6): messages
@@ -561,6 +631,16 @@ class FakeServer:
                 return httpx.Response(404, json={"detail": "not found"})
             return httpx.Response(200, json=self._all_unread())
         parts = path.strip("/").split("/")
+        if parts[:3] == ["api", "v1", "groups"] and len(parts) >= 5 and parts[4] in APP_ROUTES:
+            return self._app_route(parts, query)
+        if path == "/api/v1/artifacts":
+            rows = self.notes.get(query.get("principal", ""), [])
+            return httpx.Response(200, json={"truncated": self.notes_truncated, "items": rows})
+        if parts[:3] == ["api", "v1", "artifacts"] and parts[-1:] == ["detail"]:
+            detail = self.note_details.get(parts[3])
+            if detail is None:
+                return httpx.Response(404, json={"detail": "no such note"})
+            return httpx.Response(200, json=detail)
         if parts[:3] == ["api", "v1", "groups"] and len(parts) >= 5:
             if len(parts) == 7 and parts[4] == "topics" and parts[6] == "read":
                 through = json.loads(request.content)["read_through"]

@@ -114,3 +114,12 @@ ModalScreen {
     height: auto;
     max-height: 14;
 }
+
+#apppane {
+    height: 1fr;
+}
+
+#pane-scroll {
+    height: 1fr;
+    padding: 0 1;
+}

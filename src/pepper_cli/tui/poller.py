@@ -16,7 +16,10 @@ from pepper_cli.api_client import ApiError, GroupMessagePage, group_message_from
 if TYPE_CHECKING:
     from pepper_cli.api_client import (
         ApiClient,
+        ArtifactDetail,
+        ArtifactListResponse,
         ChatHistoryEntry,
+        GroupAppTile,
         GroupList,
         GroupMessage,
         GroupRosterMember,
@@ -24,6 +27,7 @@ if TYPE_CHECKING:
         GroupsUnread,
         GroupTopicSummary,
         GroupUnreadRow,
+        TodoEntry,
     )
     from pepper_cli.tui.state import Conversation, PendingSend
 
@@ -232,3 +236,28 @@ def fetch_room_info(api: ApiClient, room_id: str) -> dict[str, Any]:
 def fetch_topic_rail(api: ApiClient, room_id: str) -> list[GroupTopicSummary]:
     """Every topic of a room, archived included (the rooms list may carry only live ones)."""
     return api.list_group_topics(room_id)
+
+
+def fetch_room_shelf(api: ApiClient, room_id: str) -> tuple[list[GroupAppTile], bool]:
+    """A room's installed apps in install order, and whether the registry was unavailable
+    (which is not the same as an empty shelf)."""
+    return api.group_app_launcher(room_id)
+
+
+def fetch_todos(api: ApiClient, owner: str | None, *, mine: bool) -> list[TodoEntry]:
+    """Every todo of one owner, open and closed, in one call: a room's (``owner`` is its id) or
+    your own (``None``). ``mine`` keeps what someone asked of you."""
+    return api.list_todos(status="all", group_id=owner, mine=mine)
+
+
+def fetch_notes(api: ApiClient, owner: str | None) -> ArtifactListResponse:
+    """The owner's notes (``inline_text`` artifacts), up to the route's cap of 200."""
+    return api.list_artifacts(kind="inline_text", limit=200, principal=owner)
+
+
+def fetch_note(api: ApiClient, note_id: str) -> ArtifactDetail:
+    """One note's full text. Anything that is not a note is refused, as ``pepper notes`` does."""
+    detail = api.get_artifact_detail(note_id)
+    if detail.kind != "inline_text":
+        raise ValueError("That is not a note.")
+    return detail

@@ -37,6 +37,7 @@ import webbrowser
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
+from urllib.parse import quote
 
 import httpx
 from rich.console import Group
@@ -51,7 +52,8 @@ from textual.widgets import Footer, Static
 from pepper_cli import turn as turns
 from pepper_cli.api_client import ApiError, UpgradeRequiredError
 from pepper_cli.terminal_text import sanitize_line
-from pepper_cli.tui import poller, rows, state, stream
+from pepper_cli.tui import apps_pane, poller, rows, state, stream
+from pepper_cli.tui.apps_pane import AppPane, PaneScroll
 from pepper_cli.tui.composer import Composer, MentionMenu
 from pepper_cli.tui.screens import (
     ConfirmScreen,
@@ -73,14 +75,18 @@ if TYPE_CHECKING:
 
     from pepper_cli.api_client import (
         ApiClient,
+        ArtifactDetail,
+        ArtifactListResponse,
         ChatHistoryEntry,
         FeedFrame,
+        GroupAppTile,
         GroupList,
         GroupMessage,
         GroupMessagePage,
         GroupRosterMember,
         GroupSummary,
         GroupTopicSummary,
+        TodoEntry,
     )
     from pepper_cli.provider.fs import FilesystemProvider
 
@@ -128,6 +134,11 @@ _ON_DEMAND = (
     "info",
     "topics",
     "refresh",
+    # The Todos/Notes pane (planning/tui-room-todos-notes.md): ``apps`` reads the open pane's
+    # list (and is polled while it is open), ``note`` an open note, ``shelf`` a room's launcher.
+    "apps",
+    "note",
+    "shelf",
 )
 #: Transport failures that mean a turn's request never reached the server, so it is safe to
 #: give the text back for the user to send again.
@@ -177,6 +188,7 @@ class PepperApp(App[None]):
         # Priority: a focused TextArea would otherwise take Ctrl+K as "delete to line end".
         Binding("ctrl+k", "jump", "Jump", priority=True),
         Binding("i", "room_info", "Room info"),
+        Binding("a", "room_apps", "Apps"),
         Binding("ctrl+q", "quit_app", "Quit", priority=True),
     ]
 
@@ -253,6 +265,15 @@ class PepperApp(App[None]):
         #: Your groups person id: what ``mentions`` and ``author_person_id`` carry. Not the
         #: core user id (``whoami().user_id``), which never appears in a group payload.
         self.you_person_id: str | None = None
+        #: Your core user id (``whoami``): a todo's ask names people by an id that is not
+        #: documented as either, so both mean "you".
+        self.you_user_id: str | None = None
+        #: The open Todos/Notes pane, or ``None``. While one is open the thread and the
+        #: composer box are hidden (a room's composer would not say where a post lands).
+        self.pane: state.AppPaneState | None = None
+        #: ``room_id -> (tiles, installed_unavailable)``: a room's launcher, read when first
+        #: needed. An unavailable answer is not kept, so the next ask reads it again.
+        self._shelves: dict[str, tuple[list[GroupAppTile], bool]] = {}
         self.hour24 = False
         self.loaded_topic = False
         self.fatal: str | None = None
@@ -296,6 +317,7 @@ class PepperApp(App[None]):
         with Vertical(id="right"):
             yield Static("Pepper · Today", id="header")
             yield Static("", id="notice", classes="empty")
+            yield AppPane()
             yield ThreadView()
             with Vertical(id="compose-box"):
                 yield Static("", id="dm-status", classes="empty")
@@ -472,20 +494,25 @@ class PepperApp(App[None]):
         are not marked read until focus returns (§6.3: open *and focused* = read). A backoff
         retry stays armed: recovering from a failure does not wait for focus."""
         self._blurred = True
-        topic = self._loops["topic"]
-        if topic.failures == 0:
-            topic.stop_timer()
+        for kind in ("topic", "apps"):
+            loop = self._loops[kind]
+            if loop.failures == 0:
+                loop.stop_timer()
 
     def on_app_focus(self, _event: events.AppFocus) -> None:
         self._blurred = False
         self._last_input = time.monotonic()
         self._poll_now()
+        if self.pane is not None:
+            self._run("apps")
         if self._stale_rows:
             self._run("refresh")
 
     # ------------------------------------------------------------------ scheduling
 
     def _interval(self, kind: str) -> float | None:
+        if kind == "apps" and self.pane is None:
+            return None  # nothing is polled while no pane is open
         failures = self._loops[kind].failures
         if failures:
             return state.backoff_delay(failures)
@@ -502,6 +529,8 @@ class PepperApp(App[None]):
             if interval is not None and self._stream_healthy:
                 return max(interval, state.TOPIC_INTERVAL_LIVE)
             return interval
+        if kind == "apps":
+            return None if self._blurred else state.PANE_INTERVAL
         # startup runs once; publish and send run when there is something to send; the
         # roster is fetched when a room opens; the turn runs when one is composed.
         return None
@@ -544,6 +573,8 @@ class PepperApp(App[None]):
             self._refresh_next()
         elif kind == "turn":
             self._start_turn()
+        elif kind == "apps":
+            self._read_pane()
         elif kind == "topic" and not self.current.is_pepper:
             conv = self.current
             reconcile = self.store.next_is_reconcile()
@@ -569,12 +600,12 @@ class PepperApp(App[None]):
 
     # ------------------------------------------------------------------ startup
 
-    def _load_identity(self) -> tuple[str | None, bool]:
+    def _load_identity(self) -> tuple[str | None, bool, str | None]:
         who = self._api.whoami()
-        return who.person_id, who.time_format == "24h"
+        return who.person_id, who.time_format == "24h", who.user_id
 
-    def _on_identity(self, result: tuple[str | None, bool]) -> None:
-        person_id, self.hour24 = result
+    def _on_identity(self, result: tuple[str | None, bool, str | None]) -> None:
+        person_id, self.hour24, self.you_user_id = result
         if person_id:
             self._learn_person_id(person_id)
         self._started = True
@@ -824,6 +855,8 @@ class PepperApp(App[None]):
         shown = self.rooms if self.groups_enabled else []
         self.marks.settle(shown)
         current_key = "pepper" if self.current.is_pepper else f"topic:{self.current.topic_id}"
+        if self.pane is not None:
+            current_key = self.pane.key
         self.sidebar.set_rows(
             state.build_sidebar(
                 shown,
@@ -834,10 +867,15 @@ class PepperApp(App[None]):
                 pepper_dot=self.dm.dot,
                 folds=self.folds,
                 now=self._now(),
+                pane=self.pane,
             ),
             current_key=current_key,
         )
-        header = sanitize_line(state.header_text(self.current, shown))
+        header = sanitize_line(
+            state.pane_header(self.pane, shown)
+            if self.pane is not None
+            else state.header_text(self.current, shown)
+        )
         if any(self._loops[kind].failures for kind in _LOOPS):
             header += "  · offline, retrying"
         self.query_one("#header", Static).update(Text(header))
@@ -898,6 +936,8 @@ class PepperApp(App[None]):
             self.refresh_chrome()
         elif row.kind == "newtopic" and row.room_id:
             self._prompt_topic(row.room_id)
+        elif row.kind == "app":
+            self._pane_home()
         elif (conv := row.conversation) is not None:
             self.open_conversation(conv)
 
@@ -913,9 +953,18 @@ class PepperApp(App[None]):
         The composer's text is kept per destination; a send still in flight for the topic
         being left keeps going, and its row is there when the topic is opened again.
         """
+        had_pane = self.pane is not None
+        if had_pane:
+            self._hide_pane()
+            if conv == self.current:
+                self._render_topic(new_rows=0, reset=True)
+                self._note_viewed(landed_at_end=True)
+                self.refresh_chrome()
+                return
         if conv == self.current:
             return
-        self._note_viewed()
+        if not had_pane:
+            self._note_viewed()  # (a pane hid the thread: what arrived behind it was not seen)
         self._run("publish")
         self._end_edit()
         self._draft().text = self.composer.text
@@ -968,15 +1017,17 @@ class PepperApp(App[None]):
         self.query_one("#left").toggle_class("hidden")
 
     def action_page_up(self) -> None:
-        self.thread.scroll_page(down=False)
+        (self.query_one(AppPane) if self.pane is not None else self.thread).scroll_page(down=False)
 
     def action_page_down(self) -> None:
-        self.thread.scroll_page(down=True)
+        (self.query_one(AppPane) if self.pane is not None else self.thread).scroll_page(down=True)
 
     def action_quit_app(self) -> None:
         self.exit(return_code=0)
 
     def action_focus_composer(self) -> None:
+        if self.pane is not None and self.pane.owner is not None:
+            return  # a room's pane has no composer: nothing would say where a post lands
         self.composer.focus()
 
     def action_jump(self) -> None:
@@ -1006,11 +1057,12 @@ class PepperApp(App[None]):
         self._start(
             "info",
             lambda: poller.fetch_room_info(self._api, room_id),
-            self._show_info,
+            lambda info: self._show_info(info, room_id),
             on_error=lambda exc: self._action_failed("load the room info", exc),
         )
 
-    def _show_info(self, info: dict[str, Any]) -> None:
+    def _show_info(self, info: dict[str, Any], room_id: str) -> None:
+        self._shelves.pop(room_id, None)  # the room's apps may have changed: read them again
         self.push_screen(InfoScreen(room_info_text(info)))
 
     # ------------------------------------------------------------------ read marks
@@ -1025,8 +1077,8 @@ class PepperApp(App[None]):
         nothing is read. ``landed_at_end``: the thread was just shown from scratch and is on its
         way to the end, which the scroll position does not say yet. Publishes the mark."""
         conv = self.current
-        if conv.is_pepper or conv.topic_id is None or self._blurred:
-            return
+        if conv.is_pepper or conv.topic_id is None or self._blurred or self.pane is not None:
+            return  # an open Todos/Notes pane hides the thread: its rows are not on screen
         if self._scrolled_up() and not landed_at_end:
             return
         newest = self.store.newest_created_at()
@@ -1146,6 +1198,8 @@ class PepperApp(App[None]):
         self._last_input = time.monotonic()
         if self.editing is not None:
             self._submit_edit(text)
+            return
+        if self._slash_app(text.strip()):
             return
         if self.current.is_pepper:
             self._send_turn(text)
@@ -1325,6 +1379,19 @@ class PepperApp(App[None]):
 
     # ------------------------------------------------------------------ P3: parity
 
+    def _browse(self, url: str) -> None:
+        """Hand ``url`` to the system browser and say whether that worked."""
+        try:
+            opened = bool(self._open_url(url))
+        except webbrowser.Error:
+            opened = False
+        shown = sanitize_line(url)
+        self.notify(
+            f"Opened {shown}" if opened else f"Couldn't open a browser for {shown}",
+            markup=False,
+            timeout=3,
+        )
+
     def _action_failed(self, what: str, exc: Exception) -> bool:
         """A key-started request failed: say so. Never retried by itself (False: back off)."""
         self.notify(f"Couldn't {what} ({_short_error(exc)}).", severity="error", timeout=4)
@@ -1489,16 +1556,7 @@ class PepperApp(App[None]):
         if url is None:
             self.notify("No link in this message.", timeout=2)
             return
-        try:
-            opened = bool(self._open_url(url))
-        except webbrowser.Error:
-            opened = False
-        shown = sanitize_line(url)
-        self.notify(
-            f"Opened {shown}" if opened else f"Couldn't open a browser for {shown}",
-            markup=False,
-            timeout=3,
-        )
+        self._browse(url)
 
     # load older
 
@@ -1595,6 +1653,331 @@ class PepperApp(App[None]):
             if room_id not in self.folds.fetched:
                 self._ensure_topics(room_id)
                 return
+
+    # ------------------------------------------------------------------ Todos and Notes panes
+    # planning/tui-room-todos-notes.md. The pane takes the thread's place; a room's pane also
+    # hides the composer box (its draft is kept). Reads go through the ``apps`` loop (the list,
+    # polled every 30s while open), ``note`` (one note) and ``shelf`` (a room's launcher).
+
+    @property
+    def you_ids(self) -> set[str]:
+        return {i for i in (self.you_person_id, self.you_user_id) if i}
+
+    def action_room_apps(self) -> None:
+        """``a``: a picker of the installed apps of the room under the cursor (or the open one)."""
+        if self.fatal or isinstance(self.screen, ModalScreen):
+            return
+        row = self.sidebar.highlighted_row if self.sidebar.has_focus else None
+        room_id = (row.room_id if row is not None else None) or self.current.room_id
+        if room_id is None:
+            self.notify("Open a room first.", timeout=2)
+            return
+        self._with_shelf(
+            room_id, lambda tiles, unavailable: self._launcher(room_id, tiles, unavailable)
+        )
+
+    def _with_shelf(self, room_id: str, then: Callable[[list[GroupAppTile], bool], None]) -> None:
+        """Hand ``then`` the room's installed apps, reading them first when not held."""
+        if (held := self._shelves.get(room_id)) is not None:
+            then(*held)
+            return
+        if self._loops["shelf"].busy:
+            self.notify("Still checking this room's apps.", timeout=2)
+            return
+
+        def got(shelf: tuple[list[GroupAppTile], bool]) -> None:
+            if not shelf[1]:
+                self._shelves[room_id] = shelf
+            then(*shelf)
+
+        self._start(
+            "shelf",
+            lambda: poller.fetch_room_shelf(self._api, room_id),
+            got,
+            on_error=lambda exc: self._action_failed("load the room's apps", exc),
+        )
+
+    def _launcher(self, room_id: str, tiles: list[GroupAppTile], unavailable: bool) -> None:
+        if not tiles:
+            self.notify(
+                "Apps unavailable right now." if unavailable else "No apps installed in this room.",
+                timeout=3,
+            )
+            return
+        room = next((r for r in self.rooms if r.group_id == room_id), None)
+        title = f"Apps in {room.display_name}" if room is not None else "Apps"
+        choices = [(t.slug, t.title) for t in tiles]
+        self.push_screen(PickerScreen(title, choices), lambda slug: self._picked_app(room_id, slug))
+
+    def _picked_app(self, room_id: str, slug: str | None) -> None:
+        if slug is None:
+            return
+        if slug in state.APP_TITLES:
+            self._open_pane(room_id, slug)
+            return
+        # Any other app has no pane here: it opens in the browser, as the web's launcher does.
+        url = f"{self._api.server_url.rstrip('/')}/groups/{room_id}?open={quote(slug, safe='')}"
+        self._browse(url)
+
+    def _slash_app(self, text: str) -> bool:
+        """``/todo`` or ``/notes`` typed alone in a room's composer: open that room's pane (when
+        the room has the app). True when the text was one of them."""
+        slug = {"/todo": "todo", "/notes": "notes"}.get(text)
+        room_id = self.current.room_id
+        if slug is None or room_id is None:
+            return False
+        draft = self._draft()
+        draft.text = ""
+        self.composer.load_text("")
+        title = state.APP_TITLES[slug]
+
+        def decide(tiles: list[GroupAppTile], unavailable: bool) -> None:
+            if any(t.slug == slug for t in tiles):
+                self._open_pane(room_id, slug)
+            elif unavailable:
+                self.notify("Apps unavailable right now.", timeout=3)
+            else:
+                self.notify(
+                    f"{title} isn't installed in this room. Install it from Room info on the web.",
+                    timeout=4,
+                )
+
+        self._with_shelf(room_id, decide)
+        return True
+
+    def _open_pane(self, room_id: str, slug: str) -> None:
+        """Show a room's Todos or Notes in place of its thread."""
+        if self.pane is not None:
+            self._hide_pane()
+        if self.current.room_id != room_id and (
+            room := next((r for r in self.rooms if r.group_id == room_id), None)
+        ):
+            topics = state.topics_by_recency(room)
+            if topics:
+                self.open_conversation(state.Conversation(room_id, topics[0].topic_id))
+        self.pane = state.AppPaneState(owner=room_id, slug=slug)
+        self._pane_layout()
+        for kind in ("apps", "note"):
+            loop = self._loops[kind]
+            loop.stop_timer()
+            loop.failures = 0
+            loop.generation += 1
+        self._render_pane(reset=True)
+        self.refresh_chrome()
+        self.sidebar.select_key(self.pane.key)
+        self.query_one(AppPane).focus_scroller()
+        self._run("apps")
+
+    def _pane_layout(self) -> None:
+        """Thread and composer box, or the pane: whichever the state says is on screen."""
+        pane = self.pane
+        self.query_one(AppPane).display = pane is not None
+        self.thread.display = pane is None
+        self.query_one("#compose-box").display = pane is None or pane.owner is None
+
+    def _hide_pane(self) -> None:
+        """Drop the pane and put the thread back. Its reads are dropped as stale."""
+        self.pane = None
+        for kind in ("apps", "note"):
+            loop = self._loops[kind]
+            loop.stop_timer()
+            loop.generation += 1
+        self._pane_layout()
+
+    def _close_pane(self, *, notice: str = "") -> None:
+        """Back to the topic the pane was opened from, at its newest rows."""
+        self._hide_pane()
+        self._render_topic(new_rows=0, reset=True)
+        self._note_viewed(landed_at_end=True)
+        self.refresh_chrome()
+        self.thread.focus_scroller()
+        if notice:
+            self.notify(notice, timeout=4)
+
+    def _pane_home(self) -> None:
+        """Enter on the room's app row: back to the pane's list, read again."""
+        pane = self.pane
+        if pane is None:
+            return
+        self._end_note()
+        self._render_pane(reset=True)
+        self.query_one(AppPane).focus_scroller()
+        self._run("apps")
+
+    def _render_pane(self, *, reset: bool = False) -> None:
+        pane = self.pane
+        if pane is None or not self._mounted():
+            return
+        now = self._now()
+        if pane.slug == "todo":
+            items = apps_pane.todo_items(pane, you_ids=self.you_ids, now=now, hour24=self.hour24)
+        elif pane.note_id is not None:
+            items = apps_pane.note_items(pane, now=now)
+        else:
+            items = apps_pane.notes_items(pane, now=now)
+        self.query_one(AppPane).show(items, pane.selected, slug=pane.slug, reset=reset)
+
+    def _read_pane(self) -> None:
+        """Read the open pane's list (the Notes list also when a note is open: it is behind it)."""
+        pane = self.pane
+        if pane is None:
+            return
+        if pane.slug == "todo":
+            self._start(
+                "apps",
+                lambda: poller.fetch_todos(self._api, pane.owner, mine=pane.mine),
+                lambda todos: self._got_todos(pane, todos),
+                on_error=lambda exc: self._pane_failed(pane, exc),
+            )
+        else:
+            self._start(
+                "apps",
+                lambda: poller.fetch_notes(self._api, pane.owner),
+                lambda found: self._got_notes(pane, found),
+                on_error=lambda exc: self._pane_failed(pane, exc),
+            )
+
+    def _got_todos(self, pane: state.AppPaneState, todos: list[TodoEntry]) -> None:
+        if pane is not self.pane:
+            return
+        pane.todos, pane.error = todos, None
+        pane.selected = state.settle_selection(state.pane_rows(pane), pane.selected)
+        self._render_pane()
+
+    def _got_notes(self, pane: state.AppPaneState, found: ArtifactListResponse) -> None:
+        if pane is not self.pane:
+            return
+        pane.notes, pane.truncated, pane.error = found.items, found.truncated, None
+        pane.selected = state.settle_selection(state.pane_rows(pane), pane.selected)
+        self._render_pane()
+
+    def _pane_failed(self, pane: state.AppPaneState, exc: Exception) -> bool:
+        """A pane read failed. The last good list stays up with the error over it; ``r`` (or the
+        backoff) tries again. A room the caller has left closes its pane. Never True: the loop
+        would re-run at once."""
+        if pane is not self.pane:
+            return False
+        if pane.owner is not None and isinstance(exc, ApiError) and exc.status in (403, 404):
+            self._close_pane(notice=f"You can't open this room's {pane.title} any more.")
+            return False
+        pane.error = f"Couldn't load {pane.title} ({_short_error(exc)}). r tries again."
+        self._render_pane()
+        return False
+
+    def _end_note(self) -> None:
+        """Leave an open note for the list (its read, if still running, is dropped as stale)."""
+        pane = self.pane
+        if pane is None or pane.note_id is None:
+            return
+        pane.note_id, pane.note_name, pane.note, pane.error = None, "", None, None
+        self._loops["note"].generation += 1
+
+    def _open_note(self, note_id: str, name: str) -> None:
+        pane = self.pane
+        if pane is None:
+            return
+        pane.note_id, pane.note_name, pane.note, pane.error = note_id, name, None, None
+        self._loops["note"].generation += 1
+        self._render_pane(reset=True)
+        self.refresh_chrome()
+        self._read_note()
+
+    def _read_note(self) -> None:
+        pane = self.pane
+        if pane is None or pane.note_id is None or self._loops["note"].busy:
+            return
+        note_id = pane.note_id
+        self._start(
+            "note",
+            lambda: poller.fetch_note(self._api, note_id),
+            lambda detail: self._got_note(pane, note_id, detail),
+            on_error=lambda exc: self._note_failed(pane, note_id, exc),
+        )
+
+    def _got_note(self, pane: state.AppPaneState, note_id: str, detail: ArtifactDetail) -> None:
+        if pane is not self.pane or pane.note_id != note_id:
+            return
+        pane.note, pane.note_name, pane.error = detail, detail.name, None
+        self._render_pane()
+        self.refresh_chrome()
+
+    def _note_failed(self, pane: state.AppPaneState, note_id: str, exc: Exception) -> bool:
+        if pane is not self.pane or pane.note_id != note_id:
+            return False
+        pane.error = f"Couldn't open the note ({_short_error(exc)}). r tries again."
+        self._render_pane()
+        return False
+
+    def on_pane_scroll_move(self, event: PaneScroll.Move) -> None:
+        pane = self.pane
+        if pane is None or pane.note_id is not None:
+            if pane is not None:
+                self.query_one(AppPane).scroller.scroll_relative(y=event.step, animate=False)
+            return
+        pane.selected = state.move_selection(state.pane_rows(pane), pane.selected, event.step)
+        self._render_pane()
+
+    def on_pane_scroll_activate(self, _event: PaneScroll.Activate) -> None:
+        pane = self.pane
+        if pane is None or pane.note_id is not None:
+            return
+        row = next((r for r in state.pane_rows(pane) if r.key == pane.selected), None)
+        if row is None:
+            return
+        if row.kind == "fold":
+            pane.closed_open = not pane.closed_open
+            self._render_pane()
+        elif row.kind == "note" and row.note is not None:
+            self._open_note(row.note.id, row.note.name)
+        elif row.kind == "todo" and row.todo is not None:
+            text = apps_pane.todo_detail_text(
+                row.todo, you_ids=self.you_ids, now=self._now(), hour24=self.hour24
+            )
+            self.push_screen(InfoScreen(text))
+
+    def on_pane_scroll_back(self, _event: PaneScroll.Back) -> None:
+        """Esc: an open note goes back to its list; a list closes the pane."""
+        pane = self.pane
+        if pane is None:
+            return
+        if pane.note_id is not None:
+            self._end_note()
+            self._render_pane(reset=False)
+            self.refresh_chrome()
+            return
+        self._close_pane()
+
+    def on_pane_scroll_asks(self, _event: PaneScroll.Asks) -> None:
+        pane = self.pane
+        if pane is None or pane.slug != "todo":
+            return
+        pane.mine = not pane.mine
+        pane.todos, pane.error = None, None
+        self._loops["apps"].generation += 1
+        self._render_pane(reset=True)
+        self._run("apps")
+
+    def on_pane_scroll_refresh(self, _event: PaneScroll.Refresh) -> None:
+        if self.pane is None:
+            return
+        self._run("apps")
+        self._read_note()
+
+    def on_pane_scroll_open_link(self, _event: PaneScroll.OpenLink) -> None:
+        pane = self.pane
+        if pane is None:
+            return
+        base = self._api.server_url
+        url = None
+        if pane.slug == "todo":
+            row = next((r for r in state.pane_rows(pane) if r.key == pane.selected), None)
+            url = state.todo_source_url(row.todo, base=base) if row and row.todo else None
+        elif pane.note is not None:
+            url = state.first_text_url(pane.note.body or "", base=base)
+        if url is None:
+            self.notify("No link here.", timeout=2)
+            return
+        self._browse(url)
 
     # ------------------------------------------------------------------ Pepper turns (§6.5)
 

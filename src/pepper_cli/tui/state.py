@@ -23,12 +23,15 @@ if TYPE_CHECKING:
     from collections.abc import Set as AbstractSet
 
     from pepper_cli.api_client import (
+        ArtifactDetail,
+        ArtifactListItem,
         ChatHistoryEntry,
         GroupMessage,
         GroupRosterMember,
         GroupSummary,
         GroupTopicSummary,
         GroupUnreadRow,
+        TodoEntry,
     )
 
 #: How far behind the newest ``created_at`` a topic poll asks (§6.2, pepper#4829). A row that
@@ -53,6 +56,9 @@ RAIL_INTERVAL = 15.0
 RAIL_INTERVAL_LIVE = 120.0
 TOPIC_INTERVAL_LIVE = 60.0
 DM_INTERVAL = 15.0
+#: An open Todos or Notes pane re-reads this often: the person stream carries no todo or note
+#: frames (``planning/tui-room-todos-notes.md`` §6.6).
+PANE_INTERVAL = 30.0
 #: Seconds to wait after the Nth consecutive failure: 3, 6, 12, then 30 and no more.
 BACKOFF_STEPS = (3.0, 6.0, 12.0, 30.0)
 #: After a DM stream drops, how long history is re-read for the reply before giving up (§6.5).
@@ -252,7 +258,8 @@ class SidebarRow:
     """One line of the Messages tree. ``key`` is stable across rebuilds."""
 
     key: str
-    kind: str  # "pepper" | "room" | "topic" | "more" | "archived" | "newtopic" | "inactive"
+    #: "pepper" | "room" | "topic" | "more" | "archived" | "newtopic" | "inactive" | "app"
+    kind: str
     label: str
     depth: int
     room_id: str | None = None
@@ -320,6 +327,7 @@ def build_sidebar(
     pepper_dot: bool,
     folds: SidebarFolds | None = None,
     now: datetime | None = None,
+    pane: AppPaneState | None = None,
 ) -> list[SidebarRow]:
     """The Messages tree as flat rows: Pepper first, then rooms in server (recency) order.
 
@@ -366,6 +374,7 @@ def build_sidebar(
                     current=current,
                     folds=folds,
                     show_all=room.group_id in show_all,
+                    pane=pane if pane is not None and pane.owner == room.group_id else None,
                 )
             )
     if folded:
@@ -390,6 +399,7 @@ def _room_children(
     current: Conversation,
     folds: SidebarFolds,
     show_all: bool,
+    pane: AppPaneState | None = None,
 ) -> list[SidebarRow]:
     open_topic_id = current.topic_id
     topics = topics_by_recency(room)
@@ -398,7 +408,8 @@ def _room_children(
         extra = next((t for t in topics if t.topic_id == open_topic_id), None)
         if extra is not None and extra not in shown:
             shown = [*shown, extra]
-    out = [
+    out = [pane_row(pane)] if pane is not None else []
+    out.extend(
         SidebarRow(
             key=f"topic:{t.topic_id}",
             kind="topic",
@@ -410,7 +421,7 @@ def _room_children(
             mention=marks.is_mentioned(t),
         )
         for t in shown
-    ]
+    )
     if (hidden := len(topics) - len(shown)) > 0:
         out.append(
             SidebarRow(
@@ -1051,3 +1062,281 @@ def fuzzy_filter(query: str, targets: Sequence[JumpTarget]) -> list[JumpTarget]:
     hits = [(sc, i, t) for sc, i, t in scored if sc is not None]
     hits.sort(key=lambda h: (-h[0], h[1]))
     return [t for _, _, t in hits]
+
+
+# ---------------------------------------------------------------------------
+# App panes: Todos and Notes (planning/tui-room-todos-notes.md)
+
+#: The apps the TUI draws itself, by launcher slug. Any other installed app opens in the browser.
+APP_TITLES = {"todo": "Todos", "notes": "Notes"}
+#: Notes asked of ``GET /api/v1/artifacts`` (the route's cap), and the "Showing N" row's number.
+NOTES_LIMIT = 200
+#: What the closing line of a truncated notes list says, after the count.
+NOTES_TRUNCATED = "Showing {limit} notes. `pepper notes list` searches the rest."
+
+
+@dataclass
+class AppPaneState:
+    """One open Todos or Notes pane: whose it is, what it last read, and where the cursor is.
+
+    ``owner`` is a room's id, or ``None`` for your own (the shape P1b reuses). The pane holds
+    the last good read, so a failed re-read leaves the list on screen with ``error`` set.
+    """
+
+    owner: str | None
+    slug: str
+    #: ``m``: only the todos someone asked of you.
+    mine: bool = False
+    todos: list[TodoEntry] | None = None
+    notes: list[ArtifactListItem] | None = None
+    #: The notes list was cut at :data:`NOTES_LIMIT`.
+    truncated: bool = False
+    #: The note being read, once its detail has arrived; ``note_id`` is set as soon as it is asked.
+    note_id: str | None = None
+    note_name: str = ""
+    note: ArtifactDetail | None = None
+    #: The selected row's key (see :func:`pane_rows`).
+    selected: str | None = None
+    closed_open: bool = False
+    error: str | None = None
+
+    @property
+    def title(self) -> str:
+        return APP_TITLES.get(self.slug, self.slug)
+
+    @property
+    def key(self) -> str:
+        """The key of its sidebar row (and of the tree's current row while it is open)."""
+        return f"app:{self.owner or 'me'}:{self.slug}"
+
+    @property
+    def loaded(self) -> bool:
+        return (self.todos if self.slug == "todo" else self.notes) is not None
+
+
+def pane_row(pane: AppPaneState) -> SidebarRow:
+    """The web's room-app rail row: nested first under the open room while its app is open."""
+    return SidebarRow(
+        key=pane.key, kind="app", label=pane.title, depth=1, room_id=pane.owner, expanded=True
+    )
+
+
+def pane_header(pane: AppPaneState, rooms: list[GroupSummary]) -> str:
+    """``Room › Todos``, ``Room › Notes`` or, over an open note, ``Room › Notes › Name``."""
+    parts = [pane.title]
+    if pane.slug == "notes" and pane.note_id is not None:
+        parts.append(pane.note_name or "Note")
+    if pane.owner is not None:
+        room = next((r for r in rooms if r.group_id == pane.owner), None)
+        parts.insert(0, room.display_name if room is not None else "Room")
+    return " › ".join(parts)
+
+
+def _due_key(entry: TodoEntry) -> tuple[bool, datetime]:
+    due = parse_ts(entry.due_date)
+    return (due is None, due or _EPOCH)
+
+
+def todo_sections(entries: Sequence[TodoEntry]) -> tuple[list[TodoEntry], list[TodoEntry]]:
+    """``(open, closed)`` as ``todo.html`` orders them.
+
+    Open: due date soonest first, undated last, then created, then the server's order. Closed
+    (done and dismissed alike): ``done_at`` (else ``created_at``), newest first.
+    """
+    opened = [e for e in entries if e.status == "open"]
+    closed = [e for e in entries if e.status != "open"]
+    opened.sort(key=lambda e: (*_due_key(e), _ts_or_epoch(e.created_at)))
+    closed.sort(key=lambda e: _ts_or_epoch(e.done_at or e.created_at), reverse=True)
+    return opened, closed
+
+
+def _person_name(person: Any, you_ids: AbstractSet[str]) -> str:
+    if person.user_id is not None and person.user_id in you_ids:
+        return "you"
+    return person.label or "someone"
+
+
+def ask_line(entry: TodoEntry, you_ids: AbstractSet[str]) -> str | None:
+    """``asked of Sam by you`` under a todo that is an ask, or ``None`` for a plain one.
+
+    ``you_ids`` holds the ids that mean you (your groups person id, and your user id, since
+    the server's ``TodoPerson.user_id`` is not documented as either).
+    """
+    parts = []
+    if entry.assignee is not None:
+        parts.append(f"of {_person_name(entry.assignee, you_ids)}")
+    if entry.requested_by is not None:
+        parts.append(f"by {_person_name(entry.requested_by, you_ids)}")
+    return "asked " + " ".join(parts) if parts else None
+
+
+def day_label(moment: datetime, *, now: datetime) -> str:
+    """``Oct 30``, with the year when it is not this one. ``moment`` is read in its own zone."""
+    label = f"{moment.strftime('%b')} {moment.day}"
+    return label if moment.year == now.year else f"{label}, {moment.year}"
+
+
+def due_label(entry: TodoEntry, *, now: datetime, hour24: bool = False) -> str:
+    """``due Oct 30``. A date-only due is that bare day with no zone conversion; a timed one is
+    shown in the machine's zone with its time."""
+    due = parse_ts(entry.due_date)
+    if due is None:
+        return ""
+    if entry.due_is_date_only:
+        return f"due {day_label(due, now=now)}"
+    local = due.astimezone()
+    clock = local.strftime("%H:%M") if hour24 else f"{local.hour % 12 or 12}:{local:%M} {local:%p}"
+    return f"due {day_label(local, now=now.astimezone())} {clock}"
+
+
+def edited_label(value: str | None, *, now: datetime) -> str:
+    """``Today``, ``Yesterday`` or ``Oct 21`` for when a note was last edited (machine zone)."""
+    moment = parse_ts(value)
+    if moment is None:
+        return ""
+    local, here = moment.astimezone(), now.astimezone()
+    days = (here.date() - local.date()).days
+    if days == 0:
+        return "Today"
+    if days == 1:
+        return "Yesterday"
+    return day_label(local, now=here)
+
+
+def todo_source_label(entry: TodoEntry) -> str:
+    """``from <producer>`` for a todo a producer made; nothing for one you typed."""
+    return f"from {entry.source}" if entry.source and entry.source != "user" else ""
+
+
+def todo_source_url(entry: TodoEntry, *, base: str) -> str | None:
+    """The producer's back-link when ``source_ref`` carries an http(s) one (``o``)."""
+    ref = entry.source_ref
+    if not isinstance(ref, dict):
+        return None
+    for key in ("url", "href"):
+        value = ref.get(key)
+        if isinstance(value, str) and (url := safe_http_url(value, base=base)) is not None:
+            return url
+    return None
+
+
+def notes_order(items: Sequence[ArtifactListItem]) -> list[ArtifactListItem]:
+    """Most recently edited first. The list route orders by creation, so the client re-sorts;
+    exact while the list is whole, which is what the "Showing 200" row is for."""
+    return sorted(items, key=lambda n: _ts_or_epoch(n.updated_at), reverse=True)
+
+
+@dataclass(frozen=True)
+class PaneRow:
+    """One row of a pane's list. ``kind`` is ``todo``, ``fold`` ("Closed (N)"), ``note`` or
+    ``limit`` (the "Showing 200" line); the last is never selectable."""
+
+    key: str
+    kind: str
+    todo: TodoEntry | None = None
+    note: ArtifactListItem | None = None
+    #: A ``fold`` row's closed count.
+    count: int = 0
+
+    @property
+    def selectable(self) -> bool:
+        return self.kind != "limit"
+
+
+def pane_rows(pane: AppPaneState) -> list[PaneRow]:
+    """The pane's list as flat rows: open todos, the Closed fold (and its todos once unfolded),
+    or the notes with the truncation line last."""
+    if pane.slug == "todo":
+        opened, closed = todo_sections(pane.todos or [])
+        rows = [PaneRow(f"todo:{e.id}", "todo", todo=e) for e in opened]
+        if closed:
+            rows.append(PaneRow("fold", "fold", count=len(closed)))
+            if pane.closed_open:
+                rows.extend(PaneRow(f"todo:{e.id}", "todo", todo=e) for e in closed)
+        return rows
+    rows = [PaneRow(f"note:{n.id}", "note", note=n) for n in notes_order(pane.notes or [])]
+    if pane.truncated:
+        rows.append(PaneRow("limit", "limit"))
+    return rows
+
+
+def open_todo_count(pane: AppPaneState) -> int:
+    return len(todo_sections(pane.todos or [])[0])
+
+
+def move_selection(rows: Sequence[PaneRow], selected: str | None, step: int) -> str | None:
+    """The key ``step`` selectable rows from ``selected`` (clamped), or the first when nothing
+    (or a row that has since gone) is selected."""
+    keys = [r.key for r in rows if r.selectable]
+    if not keys:
+        return None
+    if selected not in keys:
+        return keys[0]
+    return keys[max(0, min(len(keys) - 1, keys.index(selected) + step))]
+
+
+def settle_selection(rows: Sequence[PaneRow], selected: str | None) -> str | None:
+    """Keep the selection across a re-read when its row is still there, else the first row."""
+    return move_selection(rows, selected, 0)
+
+
+# The server's own rule for what a checklist line is (agent/artifacts/notes/checklist.py), so
+# the viewer draws a box for exactly the lines the web does. A mirror, not a second opinion.
+_CHECKLIST_RE = re.compile(r"^(\s*[-*+]\s+)\[([ xX])\](\s?.*)$")
+_FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})(.*)$")
+
+
+def _fence_opens(line: str) -> str | None:
+    match = _FENCE_RE.match(line)
+    if match is None:
+        return None
+    run, info = match.group(1), match.group(2)
+    if run[0] == "`" and "`" in info:
+        return None
+    return run
+
+
+def _fence_closes(line: str, opening: str) -> bool:
+    match = _FENCE_RE.match(line)
+    if match is None:
+        return False
+    run, info = match.group(1), match.group(2)
+    return run[0] == opening[0] and len(run) >= len(opening) and not info.strip()
+
+
+def checklist_lines(body: str | None) -> list[tuple[int, bool, str]]:
+    """Every task line in ``body`` as ``(line number, checked, text)``, skipping fenced code."""
+    out: list[tuple[int, bool, str]] = []
+    fence: str | None = None
+    for number, line in enumerate((body or "").splitlines()):
+        if fence is not None:
+            if _fence_closes(line, fence):
+                fence = None
+            continue
+        opening = _fence_opens(line)
+        if opening is not None:
+            fence = opening
+            continue
+        match = _CHECKLIST_RE.match(line)
+        if match is not None:
+            out.append((number, match.group(2).lower() == "x", match.group(3).strip()))
+    return out
+
+
+def draw_checklist(body: str) -> str:
+    """``body`` with each checklist box drawn as ``☐`` / ``☑`` (only on the lines the server
+    counts, so a box inside a code fence stays as typed)."""
+    lines = body.splitlines()
+    for number, checked, _text in checklist_lines(body):
+        match = _CHECKLIST_RE.match(lines[number])
+        if match is not None:
+            lines[number] = f"{match.group(1)}{'☑' if checked else '☐'}{match.group(3)}"
+    return "\n".join(lines)
+
+
+def first_text_url(text: str, *, base: str) -> str | None:
+    """The first http(s) link in a note's body (``o`` in the viewer)."""
+    for found in _URL_IN_TEXT.findall(text):
+        if (url := safe_http_url(found.rstrip(_URL_TRAILING), base=base)) is not None:
+            return url
+    return None

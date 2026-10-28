@@ -23,7 +23,7 @@ from rich.text import Text
 
 from pepper_cli import render
 from pepper_cli.terminal_text import sanitize_line, sanitize_text
-from pepper_cli.tui.state import parse_ts, url_domain
+from pepper_cli.tui.state import draw_checklist, parse_ts, url_domain
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -125,6 +125,19 @@ def _markdown_body(text: str) -> RenderableType | None:
         return Padding(Markdown(text, hyperlinks=False), (0, 0, 0, len(INDENT)))
     except (ValueError, TypeError, RecursionError):
         return None
+
+
+def note_body_renderable(body: str) -> RenderableType:
+    """A note's text as the viewer shows it: sanitized, its checklist boxes drawn as ``☐``/``☑``,
+    and markdown rendered the way a message's is (links as text, never terminal hyperlinks), so
+    a note can't style itself beyond what a message can."""
+    clean = draw_checklist(sanitize_text(body))
+    if looks_like_markdown(clean):
+        try:
+            return Markdown(clean, hyperlinks=False)
+        except (ValueError, TypeError, RecursionError):
+            pass
+    return Text(clean)
 
 
 def _body(m: GroupMessage, *, mentions_you: bool) -> RenderableType:

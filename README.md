@@ -480,6 +480,9 @@ machine, and only for this session. A path that is not a directory exits 2.
 | Up / Down, `r` | In the thread: select a message; quote it (or retry a failed post). |
 | `+`, `e`, `d`, `o` | In the thread, on a selected message: react, edit, delete, open link. |
 | `i` | Room info (members, topics, apps) for the open room. |
+| `a`, or `/todo` / `/notes` in a room's composer | The room's installed apps. Todos and Notes open in place of the thread (read-only, re-read every 30 seconds); any other app opens in the browser. A room that lacks the app says so. |
+| Up / Down, Enter, Esc | In a Todos or Notes pane: move; open a todo's details, fold Closed, or open a note; back from a note to the list, then out of the pane. |
+| `m`, `r`, `o` | In a pane: only the todos asked of you (Todos); read again; open a todo's source link or a note's first link. |
 | Ctrl+K | Fuzzy jump to any room or topic. |
 | Esc | Cancel the quote or edit, then leave the composer. |
 | Ctrl+N / Ctrl+P | Jump to the next / previous unread conversation. |
