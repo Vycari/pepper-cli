@@ -260,3 +260,88 @@ def test_tui_run_performs_upgrade_when_requested(monkeypatch) -> None:
     rc = tui.run(server_url=creds.server_url, token=creds.token)
     assert rc == 0
     assert called == ["0.4.0"]
+
+
+def test_quitting_does_not_wait_for_a_blocked_update_check() -> None:
+    """Exercise asyncio executor shutdown and interpreter exit in a child process."""
+    import sys
+    import textwrap
+
+    code = textwrap.dedent(
+        """
+        import threading
+        from pathlib import Path
+        from pepper_cli.tui import app as tui_app
+        from tests import tui_support as ts
+
+        started = threading.Event()
+        blocked = threading.Event()
+        def check():
+            started.set()
+            blocked.wait()
+            return None
+
+        class Probe(tui_app.PepperApp):
+            CSS_PATH = str(Path(tui_app.__file__).with_name('styles.tcss'))
+            def on_mount(self):
+                # Compose the real app, but skip the unrelated network poll loops.
+                self._start_update_check()
+                self.set_interval(0.01, self.quit_when_checking)
+            def quit_when_checking(self):
+                if started.is_set():
+                    self.exit()
+
+        app = Probe(ts.standard_server().client(), live=False, update_checker=check)
+        app.run(headless=True, size=(120, 40))
+        assert started.is_set()
+        assert app._quitting
+        assert not blocked.is_set()
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=10, check=False
+    )
+    assert result.returncode == 0, result.stderr
+
+
+async def test_update_result_after_quit_is_dropped(monkeypatch) -> None:
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+    posted = threading.Event()
+    delivered = []
+
+    stopped = []
+
+    def check(*, should_stop):
+        started.set()
+        release.wait()
+        stopped.append(should_stop())
+        return "99.0.0"
+
+    monkeypatch.setattr("pepper_cli._version.check_latest_version", check)
+    app = tui_app.PepperApp(ts.standard_server().client(), live=False)
+    update_callback = delivered.append
+    original_post = app._post
+
+    def post(*args):
+        try:
+            original_post(*args)
+        finally:
+            if args[0] == update_callback:
+                posted.set()
+
+    monkeypatch.setattr(app, "_post", post)
+    monkeypatch.setattr(app, "_on_update_available", update_callback)
+    try:
+        async with app.run_test(size=SIZE) as pilot:
+            await until(pilot, started.is_set)
+            app.exit()
+        release.set()
+        assert posted.wait(2)
+        assert stopped == [True]
+        assert delivered == []
+        assert app.update_version is None
+    finally:
+        release.set()

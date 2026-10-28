@@ -7,6 +7,7 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from packaging.version import Version
@@ -114,14 +115,22 @@ def _write_cached_version(version: str) -> None:
         cache_file.write_text(payload, encoding="utf-8")
 
 
-def check_latest_version(*, timeout: float = 3.0, cache_ttl: float = 86400.0) -> str | None:
+def check_latest_version(
+    *,
+    timeout: float = 3.0,
+    cache_ttl: float = 86400.0,
+    should_stop: Callable[[], bool] | None = None,
+) -> str | None:
     """Check PyPI or GitHub for the latest release of ``vycari-pepper``.
 
     Returns the latest version string if newer than current, else ``None``.
     Never raises: network failures, timeouts, and unexpected responses return ``None``.
+    ``should_stop`` abandons the check between requests when the caller is closing.
     """
     import os
 
+    if should_stop is not None and should_stop():
+        return None
     if os.environ.get("PEPPER_NO_UPDATE_CHECK", "").strip().lower() in ("1", "true", "yes"):
         return None
     current = get_version()
@@ -146,6 +155,8 @@ def check_latest_version(*, timeout: float = 3.0, cache_ttl: float = 86400.0) ->
 
         latest: str | None = None
         if is_git_install():
+            if should_stop is not None and should_stop():
+                return None
             resp = httpx.get(
                 "https://api.github.com/repos/Vycari/pepper-cli/releases/latest",
                 timeout=timeout,
@@ -158,6 +169,8 @@ def check_latest_version(*, timeout: float = 3.0, cache_ttl: float = 86400.0) ->
                     if _VERSION_RE.fullmatch(name):
                         latest = name
             if not latest:
+                if should_stop is not None and should_stop():
+                    return None
                 resp = httpx.get(
                     "https://api.github.com/repos/Vycari/pepper-cli/tags",
                     timeout=timeout,
@@ -178,6 +191,8 @@ def check_latest_version(*, timeout: float = 3.0, cache_ttl: float = 86400.0) ->
                                         best_str = name
                         latest = best_str
             if not latest:
+                if should_stop is not None and should_stop():
+                    return None
                 resp = httpx.get(
                     f"https://pypi.org/pypi/{DISTRIBUTION}/json",
                     timeout=timeout,
@@ -187,6 +202,8 @@ def check_latest_version(*, timeout: float = 3.0, cache_ttl: float = 86400.0) ->
                     data = resp.json()
                     latest = str(data.get("info", {}).get("version") or "")
         else:
+            if should_stop is not None and should_stop():
+                return None
             resp = httpx.get(
                 f"https://pypi.org/pypi/{DISTRIBUTION}/json",
                 timeout=timeout,
@@ -196,6 +213,8 @@ def check_latest_version(*, timeout: float = 3.0, cache_ttl: float = 86400.0) ->
                 data = resp.json()
                 latest = str(data.get("info", {}).get("version") or "")
 
+        if should_stop is not None and should_stop():
+            return None
         if latest and _VERSION_RE.fullmatch(latest):
             if cache_ttl > 0:
                 _write_cached_version(latest)

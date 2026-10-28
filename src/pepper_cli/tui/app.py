@@ -24,6 +24,8 @@ one read for minutes, and Textual's thread workers run on asyncio's default exec
 ``asyncio.run`` joins on exit: quitting mid-turn would hang until the read timed out. So the
 turn runs on its own daemon thread, posts back through :meth:`PepperApp._post` (which drops
 everything once the app is closing), and is simply abandoned on quit. It never resends.
+The optional update check also runs on a daemon thread, so release lookups cannot delay quit;
+it stops trying fallback sources once the app starts closing.
 """
 
 from __future__ import annotations
@@ -1034,9 +1036,12 @@ class PepperApp(App[None]):
         if checker is None:
             from pepper_cli import _version
 
-            checker = _version.check_latest_version
+            def checker() -> str | None:
+                return _version.check_latest_version(should_stop=lambda: self._quitting)
 
         def run() -> None:
+            if self._quitting:
+                return
             try:
                 latest = checker()
             except Exception:
@@ -1044,7 +1049,7 @@ class PepperApp(App[None]):
             if latest:
                 self._post(self._on_update_available, latest)
 
-        self.run_worker(run, thread=True, group="update_check", exit_on_error=False)
+        threading.Thread(target=run, name="pepper-update-check", daemon=True).start()
 
     def _on_update_available(self, version: str) -> None:
         """Surface available update in footer."""

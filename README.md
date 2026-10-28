@@ -484,6 +484,7 @@ The composer at the bottom posts to whatever is open:
   default. A server that does not send unread rows (older than read-state-sync phase 5b) shows
   no unread markers.
   Set `PEPPER_NO_UPDATE_CHECK=1` to disable the background release check on startup.
+  Quitting does not wait for an in-flight release check; any remaining fallback lookups are skipped.
 
 `pepper tui --root PATH` (repeatable; `--tools-root` is an alias) lets Pepper read files under
 `PATH` during chat turns, exactly as `pepper chat --root` does: read-only, enforced on this

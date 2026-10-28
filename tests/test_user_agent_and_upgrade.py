@@ -524,3 +524,25 @@ def test_is_git_install_other_vcs_ignored(monkeypatch) -> None:
 
     monkeypatch.setattr("importlib.metadata.distribution", lambda _name: FakeDist())
     assert _version.is_git_install() is False
+
+
+@pytest.mark.parametrize("stop_after", [0, 1, 2])
+def test_update_check_stops_before_starting_another_request(monkeypatch, httpx_mock, stop_after):
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "")
+    monkeypatch.setattr(_version, "get_version", lambda: "0.3.0")
+    monkeypatch.setattr(_version, "is_git_install", lambda: True)
+    calls = []
+
+    def missing(request):
+        calls.append(str(request.url))
+        return httpx.Response(404)
+
+    for url in (
+        "https://api.github.com/repos/Vycari/pepper-cli/releases/latest",
+        "https://api.github.com/repos/Vycari/pepper-cli/tags",
+    )[:stop_after]:
+        httpx_mock.add_callback(missing, url=url)
+
+    assert _version.check_latest_version(should_stop=lambda: len(calls) >= stop_after) is None
+    assert len(calls) == stop_after
+    assert not _version._cache_path().exists()
