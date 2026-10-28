@@ -700,6 +700,13 @@ class PepperApp(App[None]):
         if kind not in _ROOM_EVENT_KINDS:
             return  # additive API: a kind this client does not know is not an error
         self._want("rail")
+        if kind in ("app.installed", "app.uninstalled"):
+            # The room's launcher changed: the next ``a``, ``/todo`` or ``/notes`` reads it again.
+            group_id = frame.payload.get("group_id")
+            if isinstance(group_id, str):
+                self._shelves.pop(group_id, None)
+            else:
+                self._shelves.clear()
         if kind.startswith("message.") and self.current.topic_id is not None:
             topic_id = event.get("topic_id") if isinstance(event, dict) else None
             message_id = event.get("message_id") if isinstance(event, dict) else None

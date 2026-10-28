@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import httpx
 import pytest
 
+from pepper_cli import api_client
 from pepper_cli.tui import app as tui_app
 from pepper_cli.tui import state
 from pepper_cli.tui.apps_pane import AppPane, PaneScroll
@@ -130,6 +131,12 @@ async def open_notes(app: tui_app.PepperApp, pilot: Pilot) -> None:
     await until(pilot, lambda: "Packing list" in pane_text(app))
 
 
+async def type_command(app: tui_app.PepperApp, pilot: Pilot, text: str) -> None:
+    app.composer.load_text(text)
+    app.composer.focus()
+    await pilot.press("enter")
+
+
 def header(app: tui_app.PepperApp) -> str:
     return plain(app, "#header").strip()
 
@@ -220,6 +227,26 @@ async def test_unavailable_registry_is_not_taken_for_no_apps_and_is_asked_again(
         await until(pilot, lambda: isinstance(app.screen, PickerScreen))
         launches = [p for _m, p, _q in server.requests if p.endswith("/apps/launcher")]
         assert len(launches) == 2
+
+
+async def test_an_app_installed_on_the_web_is_offered_without_reopening_room_info() -> None:
+    server = server_with_apps()
+    server.launchers[ts.ROOM_A] = [ts.tile("notes", "Notes", ts.ROOM_A)]
+    app = tui_app.PepperApp(server.client())
+    seen = notices(app)
+    async with app.run_test(size=SIZE) as pilot:
+        await open_a1(app, pilot)
+        await type_command(app, pilot, "/todo")
+        await until(pilot, lambda: any("Todos isn't installed" in n for n in seen))
+        server.launchers[ts.ROOM_A].insert(0, ts.tile("todo", "Todos", ts.ROOM_A))
+        frame = api_client.FeedFrame(
+            kind="app.installed",
+            id=7,
+            payload={"id": 7, "kind": "app.installed", "group_id": ts.ROOM_A, "payload": {}},
+        )
+        app._on_stream_frame(frame)
+        await type_command(app, pilot, "/todo")
+        await until(pilot, lambda: "Pack the cooler" in pane_text(app))
 
 
 async def test_slash_todo_and_slash_notes_open_the_rooms_panes_and_keep_the_draft() -> None:
