@@ -2323,6 +2323,7 @@ class PepperApp(App[None]):
                 self.turns.remove(turn)
                 turn.phase = "done"
                 self.dm_note = "No reply yet. It may still arrive; check back in a moment."
+                self._turn_finished(turn)
         if any(turn.phase == "queued" for turn in self.turns):
             self._run("turn")
         self._paint_dm_status()

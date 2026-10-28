@@ -621,3 +621,25 @@ async def test_the_list_is_read_again_whenever_a_pane_sent_turn_ends_and_not_for
         await say(pilot, app, "from the DM")
         await until(pilot, lambda: not app.turns and len(app.dm.entries) >= 6)
         assert todo_reads() == settled  # no pane is open: nothing polled, nothing re-read
+
+
+async def test_a_dropped_stream_that_never_answers_ends_the_strips_waiting(monkeypatch) -> None:
+    monkeypatch.setattr(state, "DM_RECONCILE_WINDOW", 0.2)
+    server = own_server()
+    server.turns = [ts.ScriptedTurn(drop=True)]
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_own(app, pilot)
+        await say(pilot, app, "anyone?")
+        await until(pilot, lambda: "No reply yet" in plain(app, "#dm-status"))
+        assert "checking for the answer" not in strip(app)
+        assert "(no answer)" in strip(app)
+
+
+async def test_the_cursor_starts_on_pepper_not_on_the_first_row() -> None:
+    app = tui_app.PepperApp(own_server().client())
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        await pilot.pause()
+        assert app.sidebar.highlighted_row is not None
+        assert app.sidebar.highlighted_row.kind == "pepper"

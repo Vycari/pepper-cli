@@ -95,11 +95,13 @@ class Sidebar(Tree[SidebarRow]):
             else:
                 node = parent.add_leaf(label, data=row)
             self._by_key[row.key] = node
-        self.call_after_refresh(self._restore_cursor, keep)
+        self.call_after_refresh(self._restore_cursor, keep, current_key)
 
-    def _restore_cursor(self, key: str | None) -> None:
+    def _restore_cursor(self, key: str | None, current_key: str | None = None) -> None:
         key = self._wanted or key
         node = self._by_key.get(key) if key else None
+        if node is None and current_key is not None:
+            node = self._by_key.get(current_key)  # (first draw: rest on the open conversation)
         if node is None:
             node = next(iter(self._by_key.values()), None)
         if node is not None:
