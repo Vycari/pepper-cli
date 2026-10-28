@@ -421,6 +421,36 @@ async def test_a_note_opens_rendered_and_esc_walks_note_then_list_then_topic() -
         assert isinstance(app.focused, type(app.thread.scroller))
 
 
+async def test_the_room_app_row_drops_the_notes_name_from_the_header_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Nothing else may redraw the chrome for it: the polls sit still and the list read is held.
+    for name in (
+        "ACTIVE_INTERVAL",
+        "COOLING_INTERVAL",
+        "IDLE_INTERVAL",
+        "RAIL_INTERVAL",
+        "DM_INTERVAL",
+    ):
+        monkeypatch.setattr(state, name, 600.0)
+    server = server_with_apps()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_notes(app, pilot)
+        await pilot.press("enter")
+        await until(pilot, lambda: header(app) == "Trip planning › Notes › Packing list")
+        server.gates["/api/v1/artifacts"] = gate = threading.Event()
+        app.sidebar.focus()
+        app.sidebar.select_key(f"app:{ts.ROOM_A}:notes")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        try:
+            assert header(app) == "Trip planning › Notes"
+        finally:
+            gate.set()
+
+
 async def test_server_text_is_never_parsed_as_markup_or_escape_sequences() -> None:
     server = server_with_apps()
     server.todos[ts.ROOM_A] = [ts.todo("x", "[bold red]boom[/] \x1b[31mred", details="d\x1b[2J")]

@@ -1882,7 +1882,10 @@ class PepperApp(App[None]):
         self._pane_layout()
 
     def _close_pane(self, *, notice: str = "") -> None:
-        """Back to the topic the pane was opened from, at its newest rows."""
+        """Back to the room's current topic (the one under the pane), at its newest rows.
+
+        A pane belongs to one room (design §10): moving to another room's app lands on that
+        room's topic, so closing returns there, not to the room the user came from."""
         self._hide_pane()
         self._render_topic(new_rows=0, reset=True)
         self._note_viewed(landed_at_end=True)
@@ -1898,6 +1901,7 @@ class PepperApp(App[None]):
             return
         self._end_note()
         self._render_pane(reset=True)
+        self.refresh_chrome()  # the header drops the note's name
         self.query_one(AppPane).focus_scroller()
         self._run("apps")
 
