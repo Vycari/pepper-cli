@@ -250,6 +250,33 @@ async def test_an_app_installed_on_the_web_is_offered_without_reopening_room_inf
         await until(pilot, lambda: "Pack the cooler" in pane_text(app))
 
 
+async def test_a_launcher_read_in_flight_when_an_app_is_installed_is_not_held() -> None:
+    server = server_with_apps()
+    server.launchers[ts.ROOM_A] = [ts.tile("notes", "Notes", ts.ROOM_A)]
+    path = f"/api/v1/groups/{ts.ROOM_A}/apps/launcher"
+    server.gates[path] = gate = threading.Event()
+    app = tui_app.PepperApp(server.client())
+    seen = notices(app)
+    async with app.run_test(size=SIZE) as pilot:
+        await open_a1(app, pilot)
+        await type_command(app, pilot, "/todo")
+        await until(pilot, lambda: any(p == path for _m, p, _q in server.requests))
+        frame = api_client.FeedFrame(
+            kind="app.installed",
+            id=7,
+            payload={"id": 7, "kind": "app.installed", "group_id": ts.ROOM_A, "payload": {}},
+        )
+        app._on_stream_frame(frame)  # lands while the pre-install read is still out
+        gate.set()
+        await pilot.pause(0.3)
+        assert not any("isn't installed" in n for n in seen)
+        assert app.composer.text == "/todo"  # dropped, so the command waits to be sent again
+        del server.gates[path]
+        server.launchers[ts.ROOM_A].insert(0, ts.tile("todo", "Todos", ts.ROOM_A))
+        await type_command(app, pilot, "/todo")
+        await until(pilot, lambda: "Pack the cooler" in pane_text(app))
+
+
 async def test_slash_todo_and_slash_notes_open_the_rooms_panes_and_keep_the_draft() -> None:
     server = server_with_apps()
     app = tui_app.PepperApp(server.client())
@@ -670,9 +697,47 @@ async def test_an_open_note_is_read_again_when_the_polled_list_says_it_changed(
         await pilot.pause(0.3)
         assert detail_reads() == 1  # an unchanged note is not read again on the poll
         edited = "2026-10-27T12:00:00+00:00"
-        server.note_details["n-pack"].update(body="- [ ] Camp stove\n", updated_at=edited)
-        server.notes[ts.ROOM_A][1]["updated_at"] = edited
+        server.note_details["n-pack"].update(
+            body="- [ ] Camp stove\n", updated_at=edited, etag='"n-pack-2"'
+        )
+        server.notes[ts.ROOM_A][1].update(updated_at=edited, etag='"n-pack-2"')
         await until(pilot, lambda: "Camp stove" in pane_text(app))
+
+
+async def test_a_failing_notes_list_shows_over_the_open_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(state, "PANE_INTERVAL", 0.05)
+    server = server_with_apps()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_notes(app, pilot)
+        await pilot.press("enter")
+        await until(pilot, lambda: "Sleeping bags" in pane_text(app))
+        server.fail["/api/v1/artifacts"] = 500  # the poll reads only the list: it fails
+        await until(pilot, lambda: "Couldn't load Notes" in pane_text(app))
+        assert "Sleeping bags" in pane_text(app)
+
+
+async def test_leaving_a_scrolled_note_shows_the_list_at_its_selection() -> None:
+    server = server_with_apps()
+    long_body = "".join(f"line {n}\n\n" for n in range(120))
+    server.note_details["n-pack"]["body"] = long_body
+    server.notes[ts.ROOM_A] += [
+        ts.note_item(f"n-{n}", f"Old note {n}", "2026-01-01T10:00:00+00:00") for n in range(60)
+    ]  # a list long enough to keep a stale scroll offset
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_notes(app, pilot)
+        scroller = app.query_one(PaneScroll)
+        await pilot.press("enter")
+        await until(pilot, lambda: "line 0" in pane_text(app))
+        await pilot.press("pagedown", "pagedown")
+        await until(pilot, lambda: scroller.scroll_y > 20)
+        await pilot.press("escape")
+        await until(pilot, lambda: "Cabin wifi" in pane_text(app))
+        await pilot.pause()
+        assert scroller.scroll_y <= 2  # the selected row, under the heading, is in view again
 
 
 async def test_a_detail_that_is_not_a_note_is_refused() -> None:

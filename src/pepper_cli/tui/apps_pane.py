@@ -137,8 +137,9 @@ class AppPane(Vertical):
             scroller.scroll_home(animate=False)
         keys = [key for key, _ in items]
         reveal = reset or selected != self._revealed
-        if selected in keys:
-            self._revealed = selected
+        # A selection that is not drawn (an open note, a list still loading) is forgotten, so
+        # the list it comes back to scrolls to it again.
+        self._revealed = selected if selected in keys else None
         if reveal and selected in keys:
             index = keys.index(selected)
             width = max(scroller.scrollable_content_region.width, 1)
@@ -305,6 +306,7 @@ def note_items(pane: state.AppPaneState, *, now: datetime) -> list[Item]:
     return [
         (None, _line(name, f"edited {sanitize_line(edited)}" if edited else "", style="bold")),
         (None, Text("")),
-        *_status(pane.note_error, stale=False),
+        # The list behind the note is what notices an edit, so its failure shows here too.
+        *(_status(pane.note_error, stale=False) or _status(pane.error, stale=True)),
         (None, rows.note_body_renderable(detail.body or "")),
     ]

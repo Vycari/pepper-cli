@@ -701,7 +701,9 @@ class PepperApp(App[None]):
             return  # additive API: a kind this client does not know is not an error
         self._want("rail")
         if kind in ("app.installed", "app.uninstalled"):
-            # The room's launcher changed: the next ``a``, ``/todo`` or ``/notes`` reads it again.
+            # The room's launcher changed: the next ``a``, ``/todo`` or ``/notes`` reads it again,
+            # and a read already in flight (from before the change) is dropped, not cached.
+            self._loops["shelf"].generation += 1
             group_id = frame.payload.get("group_id")
             if isinstance(group_id, str):
                 self._shelves.pop(group_id, None)
@@ -1885,7 +1887,8 @@ class PepperApp(App[None]):
         """Back to the room's current topic (the one under the pane), at its newest rows.
 
         A pane belongs to one room (design §10): moving to another room's app lands on that
-        room's topic, so closing returns there, not to the room the user came from."""
+        room's newest topic when it has one, so closing returns there, not to the room the user
+        came from."""
         self._hide_pane()
         self._render_topic(new_rows=0, reset=True)
         self._note_viewed(landed_at_end=True)
@@ -1951,14 +1954,10 @@ class PepperApp(App[None]):
         pane.notes, pane.truncated, pane.error = found.items, found.truncated, None
         pane.selected = state.settle_selection(state.pane_rows(pane), pane.selected)
         self._render_pane()
-        # An open note is re-read when the list says it changed since it was read (§6.6): the
-        # list is the poll, so an unchanged note costs no extra call.
+        # An open note is re-read when the list's etag says it changed since it was read
+        # (§6.6): the list is the poll, so an unchanged note costs no extra call.
         listed = next((n for n in found.items if n.id == pane.note_id), None)
-        if (
-            pane.note is not None
-            and listed is not None
-            and listed.updated_at != pane.note.updated_at
-        ):
+        if pane.note is not None and listed is not None and listed.etag != pane.note.etag:
             self._read_note()
 
     def _pane_failed(self, pane: state.AppPaneState, exc: Exception) -> bool:
