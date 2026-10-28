@@ -104,6 +104,9 @@ class AppPane(Vertical):
     def __init__(self) -> None:
         super().__init__(id="apppane")
         self.display = False
+        #: The selection last scrolled into view: a redraw that leaves it where it was (a
+        #: background re-read) keeps the user's scroll position.
+        self._revealed: str | None = None
 
     def compose(self) -> ComposeResult:
         with PaneScroll(id="pane-scroll"):
@@ -121,7 +124,10 @@ class AppPane(Vertical):
         (self.scroller.scroll_page_down if down else self.scroller.scroll_page_up)(animate=False)
 
     def show(self, items: Sequence[Item], selected: str | None, *, slug: str, reset: bool) -> None:
-        """Draw ``items``. A re-read keeps the scroll position; ``reset`` goes back to the top."""
+        """Draw ``items``. A re-read keeps the scroll position; ``reset`` goes back to the top.
+
+        The selection is scrolled into view when it moves (or on ``reset``), never just because
+        the list was drawn again: paging past it must survive the 30s poll."""
         scroller = self.scroller
         scroller.slug = slug
         scroller.refresh_bindings()
@@ -130,7 +136,10 @@ class AppPane(Vertical):
         if reset:
             scroller.scroll_home(animate=False)
         keys = [key for key, _ in items]
+        reveal = reset or selected != self._revealed
         if selected in keys:
+            self._revealed = selected
+        if reveal and selected in keys:
             index = keys.index(selected)
             width = max(scroller.scrollable_content_region.width, 1)
             options = self.app.console.options.update_width(width)

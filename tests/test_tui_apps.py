@@ -488,6 +488,28 @@ async def test_the_open_pane_is_polled_and_a_closed_one_is_not(
         assert reads() == count
 
 
+async def test_a_reread_keeps_the_users_scroll_position_past_the_selection() -> None:
+    server = server_with_apps()
+    server.todos[ts.ROOM_A] += [ts.todo(f"t-{n}", f"Chore number {n}") for n in range(80)]
+    app = tui_app.PepperApp(server.client())
+
+    def reads() -> int:
+        return len([1 for _m, p, _q in server.requests if p.endswith(f"/{ts.ROOM_A}/todos")])
+
+    async with app.run_test(size=SIZE) as pilot:
+        await open_todos(app, pilot)
+        scroller = app.query_one(PaneScroll)
+        scroller.focus()
+        await pilot.press("pagedown")
+        await until(pilot, lambda: scroller.scroll_y > 10)
+        paged = scroller.scroll_y  # the selected row is now above the view
+        count = reads()
+        await pilot.press("r")  # the same re-read the 30s poll makes
+        await until(pilot, lambda: reads() > count)
+        await pilot.pause(0.2)
+        assert scroller.scroll_y == paged
+
+
 async def test_tab_cycles_sidebar_and_pane_only_and_a_topic_row_closes_the_pane() -> None:
     server = server_with_apps()
     app = tui_app.PepperApp(server.client())
@@ -544,7 +566,9 @@ async def test_rows_that_arrive_behind_an_open_pane_are_not_marked_read_until_it
         assert server.puts[-1] == (ts.TOPIC_A1, "2026-09-16T18:30:00+00:00")
 
 
-async def test_moving_from_one_rooms_pane_to_anothers_does_not_mark_the_hidden_thread_read() -> None:
+async def test_moving_from_one_rooms_pane_to_anothers_does_not_mark_the_hidden_thread_read() -> (
+    None
+):
     server = server_with_apps()
     server.launchers[ts.ROOM_B] = [ts.tile("notes", "Notes", ts.ROOM_B)]
     server.notes[ts.ROOM_B] = [ts.note_item("b1", "Reading list", "2026-10-20T10:00:00+00:00")]
