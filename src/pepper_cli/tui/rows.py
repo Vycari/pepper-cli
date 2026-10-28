@@ -127,17 +127,28 @@ def _markdown_body(text: str) -> RenderableType | None:
         return None
 
 
-def note_body_renderable(body: str) -> RenderableType:
-    """A note's text as the viewer shows it: sanitized, its checklist boxes drawn as ``☐``/``☑``,
-    and markdown rendered the way a message's is (links as text, never terminal hyperlinks), so
-    a note can't style itself beyond what a message can."""
-    clean = draw_checklist(sanitize_text(body))
+def _markdown_or_text(clean: str) -> RenderableType:
+    """Sanitized ``clean`` as Rich ``Markdown`` when it uses markdown syntax (links as text,
+    never terminal hyperlinks), else as plain ``Text``."""
     if looks_like_markdown(clean):
         try:
             return Markdown(clean, hyperlinks=False)
         except (ValueError, TypeError, RecursionError):
             pass
     return Text(clean)
+
+
+def note_body_renderable(body: str) -> RenderableType:
+    """A note's text as the viewer shows it: sanitized, its checklist boxes drawn as ``☐``/``☑``,
+    and markdown rendered the way a message's is (links as text, never terminal hyperlinks), so
+    a note can't style itself beyond what a message can."""
+    return _markdown_or_text(draw_checklist(sanitize_text(body)))
+
+
+def reply_renderable(text: str) -> RenderableType:
+    """Pepper's answer as the reply strip shows it: sanitized, then markdown like a note body
+    (but with no checklist boxes drawn: it is a message, not a note)."""
+    return _markdown_or_text(sanitize_text(text))
 
 
 def _body(m: GroupMessage, *, mentions_you: bool) -> RenderableType:

@@ -306,3 +306,94 @@ def test_a_note_opens_by_detail_and_anything_else_is_refused() -> None:
             poller.fetch_note(api, "f1")
         with pytest.raises(api_client.ApiError):
             poller.fetch_note(api, "missing")
+
+
+def _own_server() -> ts.FakeServer:
+    server = _apps_server()
+    server.own_todos = [
+        ts.todo("o1", "Renew passport"),
+        ts.todo("o2", "Asked", source="request"),
+        ts.todo("o3", "Done", status="done", done_at="2026-10-01T00:00:00+00:00"),
+    ]
+    server.room_todos = {
+        ts.ROOM_A: (
+            "Trip planning",
+            [
+                ts.stored_todo(
+                    "r1",
+                    "Book flights",
+                    source="request",
+                    source_ref={"assignee_user_id": ts.ME, "assignee_label": "Me"},
+                ),
+                ts.stored_todo("r2", "Pack"),
+            ],
+        )
+    }
+    return server
+
+
+def test_your_own_todos_read_your_list_and_your_rooms_in_two_calls() -> None:
+    server = _own_server()
+    with server.client() as api:
+        found = poller.fetch_own_todos(api, mine=False)
+    assert [t.id for t in found.todos] == ["o1", "o2", "o3"]
+    assert found.rooms is not None
+    assert [(r.name, [i.id for i in r.items]) for r in found.rooms] == [
+        ("Trip planning", ["r1", "r2"])
+    ]
+    assert found.rooms[0].items[0].assignee is not None
+    reads = [(p, q) for _m, p, q in server.requests if p.startswith("/api/v1/todos")]
+    assert reads == [("/api/v1/todos", {"status": "all"}), ("/api/v1/todos/rooms", {})]
+
+
+def test_mine_asks_both_reads_for_what_was_asked_of_you() -> None:
+    server = _own_server()
+    with server.client() as api:
+        found = poller.fetch_own_todos(api, mine=True)
+    assert [t.id for t in found.todos] == ["o2"]
+    assert found.rooms is not None
+    assert [[i.id for i in r.items] for r in found.rooms] == [["r1"]]
+    reads = [(p, q) for _m, p, q in server.requests if p.startswith("/api/v1/todos")]
+    assert reads == [
+        ("/api/v1/todos", {"status": "all", "asked_of_me": "true"}),
+        ("/api/v1/todos/rooms", {"assignee": "me"}),
+    ]
+
+
+@pytest.mark.parametrize("how", ["status", "transport", "degraded", "malformed"])
+def test_a_failed_rooms_read_leaves_your_own_items(how: str) -> None:
+    server = _own_server()
+    if how == "status":
+        server.fail["/api/v1/todos/rooms"] = 500
+    elif how == "transport":
+        server.raise_on["/api/v1/todos/rooms"] = httpx.ConnectError("down")
+    elif how == "degraded":
+        server.rooms_degraded = True
+    else:  # an item with no title: the wire shape was not what we know
+        server.room_todos = {ts.ROOM_A: ("Trip planning", [{"id": "x"}])}
+    with server.client() as api:
+        found = poller.fetch_own_todos(api, mine=False)
+    assert [t.id for t in found.todos] == ["o1", "o2", "o3"]
+    assert found.rooms is None
+
+
+def test_your_own_list_failing_or_a_401_on_the_rooms_read_raises() -> None:
+    server = _own_server()
+    server.fail["/api/v1/todos/rooms"] = 401
+    with server.client() as api, pytest.raises(api_client.ApiError) as expired:
+        poller.fetch_own_todos(api, mine=False)
+    assert expired.value.status == 401
+    server = _own_server()
+    server.fail["/api/v1/todos"] = 500
+    with server.client() as api, pytest.raises(api_client.ApiError):
+        poller.fetch_own_todos(api, mine=False)
+
+
+def test_your_own_notes_are_asked_for_with_no_principal() -> None:
+    server = _own_server()
+    server.notes[""] = [ts.note_item("mine", "My note", "2026-10-01T00:00:00+00:00")]
+    with server.client() as api:
+        found = poller.fetch_notes(api, None)
+    assert [n.id for n in found.items] == ["mine"]
+    sent = [q for _m, p, q in server.requests if p == "/api/v1/artifacts"]
+    assert sent == [{"kind": "inline_text", "limit": "200"}]

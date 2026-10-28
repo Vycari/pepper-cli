@@ -296,3 +296,93 @@ def test_next_action_fields_parse_and_are_optional() -> None:
     assert with_fields.next_action_suggestion is not None
     assert with_fields.next_action_suggestion.text == "Book it"
     assert without.next_action is None and without.next_action_suggestion is None
+
+
+def _stored(**over) -> dict:
+    """An item as ``/api/v1/todos/rooms`` carries it: the stored document, no ``assignee``."""
+    return {**_todo_json(), "dedup_key": None, **over}
+
+
+def test_list_room_todos_reads_each_rooms_items_and_the_degraded_flag() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        body = {
+            "rooms": [
+                {"group_id": "g1", "name": "Family", "items": [_stored(), _stored(id="2")]},
+                {"group_id": "g2", "items": []},
+                "junk",
+                {"name": "no id"},
+            ],
+            "degraded": False,
+        }
+        return httpx.Response(200, json=body)
+
+    with _client(handler) as api:
+        found = api.list_room_todos()
+        asked = api.list_room_todos(mine=True)
+
+    assert seen == [
+        "http://example.com/api/v1/todos/rooms",
+        "http://example.com/api/v1/todos/rooms?assignee=me",
+    ]
+    assert [(r.group_id, r.name, len(r.items)) for r in found.rooms] == [
+        ("g1", "Family", 2),
+        ("g2", "", 0),
+    ]
+    assert isinstance(found.rooms[0].items[0], api_client.TodoEntry)
+    assert not found.degraded
+    assert asked.rooms == found.rooms
+
+
+def test_list_room_todos_degraded_and_malformed() -> None:
+    def degraded(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"rooms": [], "degraded": True})
+
+    with _client(degraded) as api:
+        assert api.list_room_todos().degraded
+
+    def malformed(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=["not", "an", "object"])
+
+    with _client(malformed) as api:
+        import pytest
+
+        with pytest.raises(api_client.ApiError):
+            api.list_room_todos()
+
+
+def test_a_room_items_ask_is_read_from_source_ref_as_the_server_does() -> None:
+    ask = _stored(
+        source="request",
+        source_ref={
+            "assignee_user_id": "u-me",
+            "assignee_label": "Me",
+            "requester_id": "u-sam",
+            "requester_label": "Sam",
+            "state": "pending",
+        },
+    )
+    label_only = _stored(
+        id="3", source="request", source_ref={"requester_label": "Pat", "assignee_user_id": None}
+    )
+    # Only a request's copy names parties; another producer's source_ref is left alone.
+    not_an_ask = _stored(id="4", source="notes", source_ref={"assignee_user_id": "u-me"})
+    bare = _stored(id="5", source="request", source_ref=None)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        items = [ask, label_only, not_an_ask, bare]
+        return httpx.Response(
+            200, json={"rooms": [{"group_id": "g", "name": "R", "items": items}], "degraded": False}
+        )
+
+    with _client(handler) as api:
+        got = api.list_room_todos().rooms[0].items
+
+    assert got[0].assignee == api_client.TodoPerson(user_id="u-me", label="Me")
+    assert got[0].requested_by == api_client.TodoPerson(user_id="u-sam", label="Sam")
+    assert got[1].assignee is None
+    assert got[1].requested_by == api_client.TodoPerson(user_id=None, label="Pat")
+    assert got[2].assignee is None
+    assert got[3].assignee is None

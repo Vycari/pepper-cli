@@ -349,3 +349,28 @@ def test_retry_attempt_with_nothing_streamed_prints_nothing(capsys) -> None:
     baseline = _stream_stderr(thought + _REPLY_FRAME, capsys)
     retried = _stream_stderr(_frame("retry_attempt", "{}") + thought + _REPLY_FRAME, capsys)
     assert retried == baseline
+
+
+def test_chat_send_stream_names_the_app_on_screen_only_when_asked() -> None:
+    import json
+
+    bodies: list[dict] = []
+    reply = _frame("reply", '{"reply": "ok"}')
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, content=reply, headers={"content-type": "text/event-stream"})
+
+    with api_client.ApiClient(
+        server_url="http://example.com", token=SecretStr("pep_pat_abc"), client=_mock(handler)
+    ) as api:
+        list(api.chat_send_stream("plain"))
+        list(api.chat_send_stream("todos", subject="app:todo"))
+        list(api.chat_send_stream("note", subject="app:notes", client_context={"note_id": "n-1"}))
+
+    assert "subject" not in bodies[0]
+    assert "client_context" not in bodies[0]
+    assert bodies[1]["subject"] == "app:todo"
+    assert "client_context" not in bodies[1]
+    assert bodies[2]["subject"] == "app:notes"
+    assert bodies[2]["client_context"] == {"note_id": "n-1"}

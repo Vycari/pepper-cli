@@ -179,7 +179,7 @@ async def test_a_picks_todos_and_opens_the_rooms_pane_in_the_threads_place() -> 
         assert "▸ Closed (2)" in text
         assert "Old chore" not in text
         # The room's app row is nested first under the room, with the marker.
-        labels = [str(n.label) for n in app.sidebar.root.children[1].children]
+        labels = [str(n.label) for n in app.sidebar.root.children[4].children]
         assert labels[0] == "▌ Todos"
         # Every read named the room, once, with every status in one call.
         reads = [q for _m, p, q in server.requests if p.endswith(f"/groups/{ts.ROOM_A}/todos")]

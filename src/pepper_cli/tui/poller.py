@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+import httpx
+
 from pepper_cli.api_client import ApiError, GroupMessagePage, group_message_from_dict
 
 if TYPE_CHECKING:
@@ -27,6 +29,7 @@ if TYPE_CHECKING:
         GroupsUnread,
         GroupTopicSummary,
         GroupUnreadRow,
+        RoomTodos,
         TodoEntry,
     )
     from pepper_cli.tui.state import Conversation, PendingSend
@@ -248,6 +251,34 @@ def fetch_todos(api: ApiClient, owner: str | None, *, mine: bool) -> list[TodoEn
     """Every todo of one owner, open and closed, in one call: a room's (``owner`` is its id) or
     your own (``None``). ``mine`` keeps what someone asked of you."""
     return api.list_todos(status="all", group_id=owner, mine=mine)
+
+
+@dataclass(frozen=True)
+class OwnTodos:
+    """Your own list and, beside it, your rooms' (``None`` when that read failed)."""
+
+    todos: list[TodoEntry]
+    rooms: list[RoomTodos] | None
+
+
+def fetch_own_todos(api: ApiClient, *, mine: bool) -> OwnTodos:
+    """Your own todos plus each room's (``GET /todos/rooms``) for your own Todos pane.
+
+    The rooms' read is a second request and the pane does not depend on it: when it fails
+    (or the server says it is degraded) ``rooms`` is ``None`` and your own items still show.
+    A failure of your own list raises, as any pane read does; a 401 on either one too, so
+    the app takes its login path (an upgrade-required answer is not caught here either).
+    """
+    todos = api.list_todos(status="all", mine=mine)
+    try:
+        listed = api.list_room_todos(mine=mine)
+    except ApiError as exc:
+        if exc.status == 401:
+            raise
+        return OwnTodos(todos, None)
+    except (httpx.RequestError, ValueError, KeyError, TypeError):
+        return OwnTodos(todos, None)
+    return OwnTodos(todos, None if listed.degraded else listed.rooms)
 
 
 def fetch_notes(api: ApiClient, owner: str | None) -> ArtifactListResponse:

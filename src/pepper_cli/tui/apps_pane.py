@@ -6,7 +6,8 @@ the app's. Every string that came from the server is drawn as a ``Text`` after `
 (``sanitize_text`` for a body) and none is ever parsed as Rich markup.
 
 The pane knows an *owner* (a room, or ``None`` for your own), not "a room", so your own panes
-(``planning/tui-room-todos-notes.md`` P1b) reuse all of it.
+(``planning/tui-room-todos-notes.md`` P1b) reuse all of it. Under your own pane the Pepper
+composer stays and a :class:`ReplyStrip` at the pane's foot shows the last two exchanges.
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ class PaneScroll(VerticalScroll):
         Binding("m", "asks", "Asks of me"),
         Binding("r", "refresh", "Refresh"),
         Binding("o", "open_link", "Open link"),
+        Binding("tab", "composer", "Composer"),
     ]
 
     class Move(Message):
@@ -75,9 +77,16 @@ class PaneScroll(VerticalScroll):
 
     #: ``todo`` or ``notes``; ``m`` is a Todos key and is hidden elsewhere.
     slug: str = "todo"
+    #: Your own pane: the Pepper composer is the next stop, and the footer says so.
+    composer_below: bool = False
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "composer":
+            return self.composer_below
         return not (action == "asks" and self.slug != "todo")
+
+    def action_composer(self) -> None:
+        self.app.action_focus_next()
 
     def action_move(self, step: int) -> None:
         self.post_message(self.Move(step))
@@ -98,6 +107,22 @@ class PaneScroll(VerticalScroll):
         self.post_message(self.OpenLink())
 
 
+class ReplyStrip(VerticalScroll):
+    """Pepper's answers at the foot of your own pane: the exchange in flight and the one before.
+
+    Scrolls with the wheel when longer than its cap (about eight lines, in the stylesheet) and
+    is never a focus stop: the Tab cycle is sidebar, pane, composer."""
+
+    can_focus = False
+
+    def __init__(self) -> None:
+        super().__init__(id="reply-strip")
+        self.display = False
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="reply-body")
+
+
 class AppPane(Vertical):
     """Replaces the thread while a Todos or Notes pane is open."""
 
@@ -111,6 +136,7 @@ class AppPane(Vertical):
     def compose(self) -> ComposeResult:
         with PaneScroll(id="pane-scroll"):
             yield Static("", id="pane-body")
+        yield ReplyStrip()
 
     @property
     def scroller(self) -> PaneScroll:
@@ -120,16 +146,33 @@ class AppPane(Vertical):
         self.scroller.focus()
         return self.scroller
 
+    def show_strip(self, parts: Sequence[RenderableType]) -> None:
+        """Draw the reply strip (nothing: hide it). It follows the newest line."""
+        strip = self.query_one(ReplyStrip)
+        strip.display = bool(parts)
+        self.query_one("#reply-body", Static).update(Group(*parts))
+        if parts:
+            strip.scroll_end(animate=False)
+
     def scroll_page(self, *, down: bool) -> None:
         (self.scroller.scroll_page_down if down else self.scroller.scroll_page_up)(animate=False)
 
-    def show(self, items: Sequence[Item], selected: str | None, *, slug: str, reset: bool) -> None:
+    def show(
+        self,
+        items: Sequence[Item],
+        selected: str | None,
+        *,
+        slug: str,
+        reset: bool,
+        composer_below: bool = False,
+    ) -> None:
         """Draw ``items``. A re-read keeps the scroll position; ``reset`` goes back to the top.
 
         The selection is scrolled into view when it moves (or on ``reset``), never just because
         the list was drawn again: paging past it must survive the 30s poll."""
         scroller = self.scroller
         scroller.slug = slug
+        scroller.composer_below = composer_below
         scroller.refresh_bindings()
         body = self.query_one("#pane-body", Static)
         body.update(Group(*(renderable for _, renderable in items)))
@@ -183,6 +226,10 @@ def _heading(left: str, right: str = "") -> Text:
     return line
 
 
+#: Shown on your own Todos when the rooms' read failed: your own items are still drawn.
+ROOMS_FAILED = "Couldn't load your rooms' todos."
+
+
 def _status(error: str | None, *, stale: bool) -> list[Item]:
     if error is None:
         return []
@@ -206,13 +253,18 @@ def todo_items(
         if pane.error is None:
             items.append((None, Text("Loading…", style="dim")))
         return items
+    if pane.rooms_error:
+        items.append((None, Text(ROOMS_FAILED, style="yellow")))
     prow = state.pane_rows(pane)
     if not any(r.kind == "todo" and r.todo and r.todo.status == "open" for r in prow):
         items.append((None, Text("Nothing open.", style="dim")))
     for row in prow:
         selected = row.key == pane.selected
         style = rows.SELECTED if selected else ""
-        if row.kind == "fold":
+        if row.kind == "section":
+            items.append((None, Text("")))
+            items.append((None, Text(sanitize_line(row.label), style="bold", no_wrap=True)))
+        elif row.kind == "fold":
             arrow = "▾" if pane.closed_open else "▸"
             items.append((row.key, Text(f"{arrow} Closed ({row.count})", style=f"dim {style}")))
         elif row.todo is not None:
@@ -310,3 +362,28 @@ def note_items(pane: state.AppPaneState, *, now: datetime) -> list[Item]:
         *(_status(pane.note_error, stale=False) or _status(pane.error, stale=True)),
         (None, rows.note_body_renderable(detail.body or "")),
     ]
+
+
+def strip_items(turns: Sequence[state.DmTurn]) -> list[RenderableType]:
+    """The reply strip: for each turn, your line and Pepper's answer (or what it is waiting on).
+
+    Everything is sanitized into ``Text`` or a markdown body, never parsed as Rich markup."""
+    out: list[RenderableType] = []
+    for turn in turns:
+        grid = Table.grid(padding=(0, 1))
+        grid.add_column(no_wrap=True, width=6)
+        grid.add_column(ratio=1)
+        grid.add_row(Text("you", style="bold"), Text(sanitize_text(turn.text)))
+        answer: RenderableType
+        if turn.reply is not None:
+            answer = rows.reply_renderable(turn.reply)
+        else:
+            wait = {
+                "queued": "waiting to send…",
+                "streaming": "…",
+                "checking": "checking for the answer…",
+            }.get(turn.phase, "(no answer)")
+            answer = Text(wait, style="dim italic")
+        grid.add_row(Text("Pepper", style="bold"), answer)
+        out.append(grid)
+    return out

@@ -136,8 +136,9 @@ class PromptScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
-class JumpScreen(ModalScreen[state.Conversation | None]):
-    """``Ctrl+K``: type to filter every room and topic, Enter opens the highlighted one."""
+class JumpScreen(ModalScreen[state.Conversation | state.OwnApp | None]):
+    """``Ctrl+K``: type to filter your own Todos and Notes, Pepper and every room and topic;
+    Enter opens the highlighted one."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel"),

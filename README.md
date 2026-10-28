@@ -441,10 +441,10 @@ you get from `pepper chat`, from bare `pepper` when either end is piped or redir
 or `no`). `pepper <message>` and every other command are unchanged: exit codes and stdout of a
 non-interactive run do not depend on any of this.
 
-A full-screen view of your messages: Pepper first, then your rooms by recency with their topics
-nested under the open room. Unread dots come from the server's own `unread` answer (the same one
-the web shows, with your own messages and anything from before you joined already left out), so
-a fresh install matches the web. A topic you open is marked read once its newest message has
+A full-screen view of your messages: your own Todos and Notes, then Pepper, then your rooms by
+recency with their topics nested under the open room. Unread dots come from the server's own
+`unread` answer (the same one the web shows, with your own messages and anything from before you
+joined already left out), so a fresh install matches the web. A topic you open is marked read once its newest message has
 been on screen: with the thread scrolled up nothing is marked, and a topic you read on another
 device clears here at once.
 
@@ -504,7 +504,9 @@ machine, and only for this session. A path that is not a directory exits 2.
 | `a`, or `/todo` / `/notes` in a room's composer | The room's installed apps. Todos and Notes open in place of the thread (read-only, re-read every 30 seconds); any other app opens in the browser. A room that lacks the app says so. |
 | Up / Down, Enter, Esc | In a Todos or Notes pane: move; open a todo's details, fold Closed, or open a note; back from a note to the list, then out of the pane. |
 | `m`, `r`, `o` | In a pane: only the todos asked of you (Todos); read again; open a todo's source link or a note's first link. |
-| Ctrl+K | Fuzzy jump to any room or topic. |
+| Enter on **Todos** or **Notes**, or `/todo` / `/notes` in the Pepper chat's composer | Your own Todos or Notes in place of the Pepper chat's thread (read-only, re-read every 30 seconds). Your Todos list each of your rooms' open items under your own, in a section per room, and fold every closed item into one Closed list. |
+| Composer under your own pane | The Pepper chat's composer stays. A message is an ordinary turn in your Pepper thread that tells Pepper which app (and, over an open note, which note) is on screen; the exchange shows in a strip at the foot of the pane (this one and the one before it), and the list is read again when the turn ends. Tab moves sidebar, pane, composer; Esc in the composer moves to the pane, and Esc on the list returns to the Pepper chat. |
+| Ctrl+K | Fuzzy jump to your own Todos or Notes, Pepper, or any room or topic. |
 | F10 | When an update is available: confirm to exit and upgrade. |
 | Esc | Cancel the quote or edit, then leave the composer. |
 | Ctrl+N / Ctrl+P | Jump to the next / previous unread conversation. |

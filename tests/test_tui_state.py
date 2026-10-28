@@ -140,8 +140,9 @@ def test_sidebar_orders_pepper_first_and_caps_topics_at_five_with_show_more() ->
     rows = state.build_sidebar(
         rooms, marks, current=current, manual={}, show_all=set(), pepper_dot=True
     )
-    assert [r.kind for r in rows][:2] == ["pepper", "room"]
-    assert rows[0].unread is True
+    assert [r.kind for r in rows][:5] == ["own_app", "own_app", "rule", "pepper", "room"]
+    assert next(r for r in rows if r.kind == "pepper").unread is True
+    assert not any(r.unread for r in rows if r.kind in ("own_app", "rule"))
     topics = [r.label for r in rows if r.kind == "topic"]
     assert topics == ["Topic 7", "Topic 6", "Topic 5", "Topic 4", "Topic 3"]
     more = next(r for r in rows if r.kind == "more")
@@ -166,7 +167,8 @@ def test_the_open_topic_stays_visible_past_the_fifth_and_manual_state_wins() -> 
         rooms, marks, current=current, manual={ts.ROOM_A: False}, show_all=set(), pepper_dot=False
     )
     assert not any(r.kind in {"topic", "more"} for r in collapsed)
-    assert collapsed[1].expandable and not collapsed[1].expanded
+    room_row = next(r for r in collapsed if r.kind == "room")
+    assert room_row.expandable and not room_row.expanded
 
 
 def test_row_conversation_and_header_text() -> None:
@@ -179,7 +181,8 @@ def test_row_conversation_and_header_text() -> None:
         show_all=set(),
         pepper_dot=False,
     )
-    assert rows[0].conversation == state.PEPPER
+    assert next(r for r in rows if r.kind == "pepper").conversation == state.PEPPER
+    assert all(r.conversation is None for r in rows if r.kind in ("own_app", "rule"))
     assert next(r for r in rows if r.kind == "room").conversation is None
     topic_row = next(r for r in rows if r.kind == "topic")
     assert topic_row.conversation == state.Conversation(ts.ROOM_A, "t7")

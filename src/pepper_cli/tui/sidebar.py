@@ -27,9 +27,11 @@ def row_label(row: SidebarRow, *, current: bool) -> Text:
     if row.kind == "room":
         label.append("■ ", style=safe_color(row.color) or "")
     name = sanitize_line(row.label)
-    if row.kind == "app":
-        label.append("▌ ", style="bold")  # the open room app: its row exists only while open
-    if row.kind in ("more", "archived", "newtopic", "inactive"):
+    if row.kind == "app" or (row.kind == "own_app" and current):
+        label.append("▌ ", style="bold")  # an open app: a room's row exists only while open
+    if row.kind == "rule":
+        label.append(name, style="dim")
+    elif row.kind in ("more", "archived", "newtopic", "inactive"):
         label.append(name, style="dim italic")
     else:
         label.append(name, style="bold reverse" if current else "bold" if row.unread else "")
@@ -88,7 +90,7 @@ class Sidebar(Tree[SidebarRow]):
             if row.kind == "room":
                 node = self.root.add(label, data=row, expand=row.expanded)
                 parent = node
-            elif row.kind in ("pepper", "inactive"):
+            elif row.kind in ("pepper", "inactive", "own_app", "rule"):
                 node = self.root.add_leaf(label, data=row)
             else:
                 node = parent.add_leaf(label, data=row)

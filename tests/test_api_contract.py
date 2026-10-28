@@ -141,6 +141,12 @@ NOT_CHECKABLE: dict[tuple[str, str], NotCheckable] = {
         route=("POST", "/api/v1/chat/send"),
         media=_SSE,
     ),
+    ("api_client.py", "src/pepper/api/router.py::list_room_todos"): NotCheckable(
+        "Route handler behind RoomTodos and RoomTodosList (``{rooms: [{group_id, name, items, "
+        "notes}], degraded}``, built by ``room_todos_response``). The snapshot declares the "
+        "answer only as an open object (``additionalProperties: true``, no properties to "
+        "check against), and its items are stored documents, not TodoEntry rows.",
+    ),
     ("api_client.py", "src/pepper/agent/artifacts/applet.py::read_detail"): NotCheckable(
         "Names the function behind the artifact detail route (ArtifactDetail), which answers "
         f"a bare JSONResponse. {_UNTYPED}",

@@ -131,15 +131,26 @@ def run_turn(
     *,
     provider: FilesystemProvider | None = None,
     should_stop: Callable[[], bool] | None = None,
+    subject: str | None = None,
+    client_context: dict[str, Any] | None = None,
 ) -> TurnOutcome:
     """Send ``message`` as one streamed turn and dispatch its frames to ``sink``.
+
+    ``subject`` and ``client_context`` name the app on screen (the TUI's own Todos or Notes
+    pane); see :meth:`ApiClient.chat_send_stream`.
 
     ``provider`` is the ``--root`` filesystem toolset, if any: its manifest rides on the
     request. ``None`` sends no manifest, so the request body is what it was before client
     tools existed. Transport and HTTP errors propagate; nothing here ever resends the turn.
     """
     manifest = provider.manifest() if provider is not None else None
-    stream = api.chat_send_stream(message, client_tools=manifest)
+    # Only the TUI's own panes name an app; every other caller sends what it always did.
+    on_screen: dict[str, Any] = {}
+    if subject is not None:
+        on_screen["subject"] = subject
+    if client_context:
+        on_screen["client_context"] = client_context
+    stream = api.chat_send_stream(message, client_tools=manifest, **on_screen)
     try:
         return dispatch(stream, sink, should_stop=should_stop)
     finally:

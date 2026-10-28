@@ -243,3 +243,145 @@ def test_first_text_url_skips_unsafe_links() -> None:
     text = "see javascript:x and (https://example.com/a), then https://other.example/b."
     assert state.first_text_url(text, base="http://s") == "https://example.com/a"
     assert state.first_text_url("nothing here", base="http://s") is None
+
+
+# --- P1b: your own panes -------------------------------------------------------------------
+
+
+def _room(gid: str, name: str, *items: api_client.TodoEntry) -> api_client.RoomTodos:
+    return api_client.RoomTodos(group_id=gid, name=name, items=list(items))
+
+
+def test_own_todo_sections_put_your_open_items_first_then_a_section_per_room_in_route_order() -> (
+    None
+):
+    mine = [_todo("own-late"), _todo("own-soon", due_date="2026-10-30T00:00:00Z")]
+    rooms = [
+        _room("g2", "Work", _todo("w1"), _todo("w-closed", status="done", done_at="2026-10-03Z")),
+        _room("g-empty", "Quiet", _todo("q-done", status="done", done_at="2026-10-02T00:00:00Z")),
+        _room("g1", "Family", _todo("f-late"), _todo("f-soon", due_date="2026-10-29T00:00:00Z")),
+    ]
+    opened, sections, closed = state.own_todo_sections(mine, rooms)
+    assert _ids(opened) == ["own-soon", "own-late"]
+    # Route order, not alphabetical; a room with nothing open has no section.
+    assert [(r.name, _ids(items)) for r, items in sections] == [
+        ("Work", ["w1"]),
+        ("Family", ["f-soon", "f-late"]),
+    ]
+    # Every room's closed items join the one fold; the empty room's closed item is in it too.
+    assert set(_ids(closed)) == {"w-closed", "q-done"}
+
+
+def test_the_closed_fold_merges_your_closed_items_with_your_rooms_newest_first() -> None:
+    mine = [_todo("mine-done", status="done", done_at="2026-10-05T00:00:00Z")]
+    rooms = [
+        _room("g", "Family", _todo("room-done", status="done", done_at="2026-10-09T00:00:00Z"))
+    ]
+    assert _ids(state.own_todo_sections(mine, rooms)[2]) == ["room-done", "mine-done"]
+
+
+def test_your_own_todos_rows_carry_room_headings_that_cannot_be_selected_and_count_all_open() -> (
+    None
+):
+    pane = state.AppPaneState(owner=None, slug="todo")
+    pane.todos = [_todo("a")]
+    pane.rooms = [
+        _room(
+            "g", "Family", _todo("f1"), _todo("f2", status="done", done_at="2026-10-01T00:00:00Z")
+        )
+    ]
+    rws = state.pane_rows(pane)
+    assert [(r.kind, r.key) for r in rws] == [
+        ("todo", "todo:a"),
+        ("section", "section:g"),
+        ("todo", "todo:f1"),
+        ("fold", "fold"),
+    ]
+    assert rws[1].label == "Family"
+    assert state.move_selection(rws, "todo:a", 1) == "todo:f1"  # steps over the heading
+    assert state.open_todo_count(pane) == 2
+    # A room's pane never shows other rooms' sections, even if some were somehow held.
+    pane.owner = "g"
+    assert [r.kind for r in state.pane_rows(pane)] == ["todo"]
+
+
+def test_the_top_level_rows_come_first_carry_no_dot_and_key_like_their_pane() -> None:
+    rows_ = state.build_sidebar(
+        [], state.ReadMarks(), current=state.PEPPER, manual={}, show_all=set(), pepper_dot=True
+    )
+    assert [(r.kind, r.label, r.slug) for r in rows_[:3]] == [
+        ("own_app", "Todos", "todo"),
+        ("own_app", "Notes", "notes"),
+        ("rule", state.RULE, None),
+    ]
+    assert rows_[3].kind == "pepper"
+    assert not any(r.unread or r.mention or r.expandable for r in rows_[:3])
+    for slug, row in zip(("todo", "notes"), rows_[:2], strict=True):
+        assert row.key == state.AppPaneState(owner=None, slug=slug).key
+
+
+def test_jump_targets_start_with_your_todos_and_notes() -> None:
+    first = state.jump_targets([])
+    assert [(t.label, t.conversation) for t in first] == [
+        ("Todos", state.OwnApp("todo")),
+        ("Notes", state.OwnApp("notes")),
+        ("Pepper", state.PEPPER),
+    ]
+
+
+def test_a_turn_under_your_pane_names_the_app_and_over_a_note_the_note() -> None:
+    todos = state.AppPaneState(owner=None, slug="todo")
+    assert state.pane_subject(todos) == ("app:todo", None)
+    notes = state.AppPaneState(owner=None, slug="notes")
+    assert state.pane_subject(notes) == ("app:notes", None)
+    notes.note_id = "n-1"
+    assert state.pane_subject(notes) == ("app:notes", {"note_id": "n-1"})
+    assert state.pane_subject(state.AppPaneState(owner="r", slug="notes", note_id="n")) == (
+        None,
+        None,
+    )
+    assert state.pane_subject(None) == (None, None)
+
+
+def test_the_composer_placeholder_asks_about_your_list_only_under_your_pane() -> None:
+    assert state.pane_placeholder(state.AppPaneState(owner=None, slug="todo"), "d") == (
+        "Ask Pepper about your todos…"
+    )
+    assert state.pane_placeholder(state.AppPaneState(owner=None, slug="notes"), "d") == (
+        "Ask Pepper about your notes…"
+    )
+    assert state.pane_placeholder(state.AppPaneState(owner="r", slug="todo"), "d") == "d"
+    assert state.pane_placeholder(None, "d") == "d"
+
+
+def test_the_reply_strip_keeps_the_exchange_in_flight_and_the_one_before() -> None:
+    pane = state.AppPaneState(owner=None, slug="todo")
+    turns = [state.DmTurn(text=t) for t in ("one", "two", "three")]
+    for turn in turns:
+        state.remember_exchange(pane, turn)
+    assert pane.exchanges == turns[1:]
+
+
+def test_a_turn_finds_its_reply_in_history_by_id_or_as_the_new_assistant_row() -> None:
+    entries = {
+        "old": api_client.ChatHistoryEntry(
+            id="old", role="assistant", text="earlier", channel="terminal", created_at="2026-10-01Z"
+        ),
+        "new": api_client.ChatHistoryEntry(
+            id="new",
+            role="assistant",
+            text="the answer",
+            channel="terminal",
+            created_at="2026-10-02Z",
+        ),
+    }
+    by_id = state.DmTurn(text="q", assistant_id="new")
+    assert by_id.found_reply(entries) == "the answer"
+    assert state.DmTurn(text="q", assistant_id="gone").found_reply(entries) is None
+    dropped = state.DmTurn(text="q", phase="checking", snapshot=frozenset({"old"}))
+    assert dropped.found_reply(entries) == "the answer"
+    assert state.DmTurn(text="q", snapshot=frozenset(entries)).found_reply(entries) is None
+
+
+def test_an_ask_is_not_also_labelled_from_request() -> None:
+    assert state.todo_source_label(_todo("1", source="request")) == ""

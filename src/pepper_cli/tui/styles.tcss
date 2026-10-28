@@ -144,3 +144,14 @@ ModalScreen {
     margin-left: 2;
     min-width: 12;
 }
+
+#reply-strip {
+    height: auto;
+    max-height: 8;
+    padding: 0 1;
+    border-top: tall $primary-darken-2;
+}
+
+#reply-body {
+    height: auto;
+}

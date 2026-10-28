@@ -39,7 +39,8 @@ async def test_opens_on_the_pepper_dm_and_lists_rooms() -> None:
         assert "Pepper" in plain(app, "#header")
         assert "hello there" in body_text(app)
         keys = list(app.sidebar._by_key)
-        assert keys[0] == "pepper"
+        # Your own Todos and Notes, a rule, then Pepper, then the rooms.
+        assert keys[:4] == ["app:me:todo", "app:me:notes", "rule", "pepper"]
         assert f"room:{ts.ROOM_A}" in keys
         # The server's list ETag came back: later polls send If-None-Match.
         await until(pilot, lambda: any(r[1] == "/api/v1/groups" for r in server.requests[3:]))
@@ -114,7 +115,8 @@ async def test_rooms_disabled_shows_only_pepper() -> None:
     app = tui_app.PepperApp(server.client())
     async with app.run_test(size=(120, 40)) as pilot:
         await until(pilot, lambda: "aren't enabled" in plain(app, "#notice"))
-        assert list(app.sidebar._by_key) == ["pepper"]
+        # Your own rows need no rooms: they stay when rooms are off.
+        assert list(app.sidebar._by_key) == ["app:me:todo", "app:me:notes", "rule", "pepper"]
 
 
 async def test_degraded_keeps_the_last_list_and_says_so() -> None:

@@ -81,3 +81,42 @@ def test_room_info_card(snap_compare) -> None:
         await pilot.pause()
 
     assert snap_compare(app, terminal_size=SIZE, run_before=run_before)
+
+
+def test_your_own_todos_with_a_room_section_and_the_reply_strip(snap_compare) -> None:
+    from tests.test_tui_own_apps import own_server, reply_turn
+
+    server = own_server()
+    server.turns = [reply_turn('Added "Buy stamps" to your todos.')]
+    app = tui_app.PepperApp(server.client())
+
+    async def run_before(pilot: Pilot) -> None:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        app.sidebar.select_key("app:me:todo")
+        await pilot.press("enter")
+        await until(pilot, lambda: app.pane is not None and app.pane.loaded)
+        app.composer.focus()
+        app.composer.insert("add buy stamps")
+        await pilot.press("enter")
+        await until(pilot, lambda: "Added" in ts.plain(app, "#reply-body") and not app.turns)
+        await pilot.press("escape")
+        await pilot.pause()
+
+    assert snap_compare(app, terminal_size=SIZE, run_before=run_before)
+
+
+def test_your_own_notes_with_one_note_open(snap_compare) -> None:
+    from tests.test_tui_own_apps import own_server
+
+    app = tui_app.PepperApp(own_server().client())
+
+    async def run_before(pilot: Pilot) -> None:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        app.sidebar.select_key("app:me:notes")
+        await pilot.press("enter")
+        await until(pilot, lambda: app.pane is not None and app.pane.loaded)
+        await pilot.press("enter")
+        await until(pilot, lambda: "Take two photos" in ts.plain(app, "#pane-body"))
+        await pilot.pause()
+
+    assert snap_compare(app, terminal_size=SIZE, run_before=run_before)

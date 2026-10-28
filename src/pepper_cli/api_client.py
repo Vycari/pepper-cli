@@ -613,6 +613,30 @@ class TodoEntry:
     next_action_suggestion: TodoNextActionSuggestion | None = None
 
 
+# Follows ``GET /api/v1/todos/rooms`` (the server model is named in ``ApiClient.list_room_todos``).
+@dataclass(frozen=True)
+class RoomTodos:
+    """One room's section of ``GET /api/v1/todos/rooms``: its id, name and every item.
+
+    The route's items are the stored to-do documents (``item_to_json``), not ``TodoEntry``
+    rows: they carry no ``assignee``/``requested_by``. :func:`_room_todo_from_dict` reads an
+    ask's two parties from ``source_ref`` the way the server's ``asks`` helpers do.
+    """
+
+    group_id: str
+    name: str
+    items: list[TodoEntry]
+
+
+@dataclass(frozen=True)
+class RoomTodosList:
+    """``GET /api/v1/todos/rooms``: the rooms with todos, and whether the list is partial."""
+
+    rooms: list[RoomTodos]
+    #: The server could not read the caller's rooms: ``rooms`` is empty, not "no todos".
+    degraded: bool = False
+
+
 # MIRROR: src/pepper/api/scheduled_tasks.py::TaskSummary
 # Same dual-definition rule as the other ``/api/v1`` payload shapes.
 @dataclass(frozen=True)
@@ -1925,6 +1949,30 @@ class ApiClient:
             raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
         return [_todo_from_dict(row) for row in body]
 
+    def list_room_todos(self, *, mine: bool = False) -> RoomTodosList:
+        """``GET /api/v1/todos/rooms``: the todos on each of the caller's rooms.
+
+        Most recently active room first; a room with no todos is left out. Items are open
+        and closed together. ``mine`` sends ``assignee=me`` (only the asks made of the
+        caller). ``degraded`` is true when the server could not list the caller's rooms.
+        """
+        path = "/api/v1/todos/rooms" + ("?assignee=me" if mine else "")
+        # MIRROR: src/pepper/api/router.py::list_room_todos
+        body = self._request("GET", path).json()
+        raw_rooms = body.get("rooms") if isinstance(body, dict) else None
+        if not isinstance(raw_rooms, list):
+            raise ApiError(status=200, body="", detail="malformed response")
+        rooms = [
+            RoomTodos(
+                group_id=str(raw["group_id"]),
+                name=str(raw.get("name") or ""),
+                items=[_room_todo_from_dict(item) for item in raw.get("items") or []],
+            )
+            for raw in raw_rooms
+            if isinstance(raw, dict) and "group_id" in raw
+        ]
+        return RoomTodosList(rooms=rooms, degraded=bool(body.get("degraded")))
+
     def calendar_range(
         self, *, start: str, days: int, principal: str | None = None
     ) -> dict[str, Any]:
@@ -2543,6 +2591,8 @@ class ApiClient:
         *,
         attachment_ids: list[str] | None = None,
         client_tools: list[dict[str, Any]] | None = None,
+        subject: str | None = None,
+        client_context: dict[str, Any] | None = None,
     ) -> Iterator[StreamEvent]:
         """``POST /api/v1/chat/send`` (SSE path).
 
@@ -2552,6 +2602,12 @@ class ApiClient:
         "done, ready for next line" signal.
 
         ``attachment_ids`` — same contract as :meth:`chat_send`.
+
+        ``subject`` (``"app:todo"``, ``"app:notes"``) and ``client_context``
+        (``{"note_id": ...}`` over an open note) tell Pepper which of the
+        caller's own apps is on screen, as the web's ``/chat`` sends them
+        (``ChatSendRequest``). The server resolves both as keys and reads the
+        data itself; both are omitted from the body when ``None``.
 
         Implementation detail: the SSE wire format is line-based, but
         a single logical event spans multiple lines (``event:`` line,
@@ -2592,6 +2648,10 @@ class ApiClient:
             # safe against a server that predates the feature, which is what
             # lets the CLI ship ahead of a deploy.
             payload["client_tools"] = client_tools
+        if subject is not None:
+            payload["subject"] = subject
+        if client_context:
+            payload["client_context"] = client_context
         base_timeout = self._client.timeout
         with self._client.stream(
             "POST",
@@ -3891,6 +3951,32 @@ def _todo_next_action_suggestion(raw: object) -> TodoNextActionSuggestion | None
     if not isinstance(raw, dict) or not isinstance(raw.get("text"), str) or not raw["text"]:
         return None
     return TodoNextActionSuggestion(text=raw["text"], updated_at=str(raw.get("updated_at") or ""))
+
+
+def _room_todo_from_dict(row: dict[str, Any]) -> TodoEntry:
+    """A ``/todos/rooms`` item as a ``TodoEntry``.
+
+    The stored document has no ``assignee``/``requested_by``; an ask's copy names them in
+    ``source_ref`` (``assignee_user_id``/``assignee_label``, ``requester_id``/
+    ``requester_label``), and only when ``source`` is ``"request"`` (``asks._party``).
+    """
+    entry = _todo_from_dict(row)
+    ref = row.get("source_ref")
+    if row.get("source") != "request" or not isinstance(ref, dict):
+        return entry
+    assignee = _ref_person(ref, "assignee_user_id", "assignee_label")
+    requester = _ref_person(ref, "requester_id", "requester_label")
+    return dataclasses.replace(entry, assignee=assignee, requested_by=requester)
+
+
+def _ref_person(ref: dict[str, Any], id_key: str, label_key: str) -> TodoPerson | None:
+    user_id, label = ref.get(id_key), ref.get(label_key)
+    if user_id is None and not label:
+        return None
+    return TodoPerson(
+        user_id=None if user_id is None else str(user_id),
+        label=label if isinstance(label, str) else None,
+    )
 
 
 def _todo_person(raw: object) -> TodoPerson | None:

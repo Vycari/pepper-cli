@@ -176,6 +176,13 @@ def note_item(nid: str, name: str, at: str, **over: Any) -> dict[str, Any]:
     }
 
 
+def stored_todo(tid: str, title: str, **over: Any) -> dict[str, Any]:
+    """A to-do as ``/api/v1/todos/rooms`` carries it: the stored document, so no ``assignee``."""
+    row = todo(tid, title, **over)
+    del row["assignee"], row["requested_by"]
+    return {**row, "dedup_key": None, "trajectory_id": None}
+
+
 def tile(slug: str, title: str, group_id: str) -> dict[str, Any]:
     return {"app_key": slug, "slug": slug, "title": title, "principal": group_id, "icon": None}
 
@@ -307,6 +314,14 @@ class FakeServer:
     apps_unavailable: set[str] = field(default_factory=set)
     #: ``group_id -> todos`` (dicts), filtered by ``status`` and ``assignee=me`` on read.
     todos: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    #: Your own todos (dicts as ``GET /api/v1/todos`` answers them), filtered by ``status`` and
+    #: ``asked_of_me=true`` on read.
+    own_todos: list[dict[str, Any]] = field(default_factory=list)
+    #: Rooms with todos in ``GET /api/v1/todos/rooms`` order: ``group_id -> (name, stored items)``.
+    #: An item here has no ``assignee``/``requested_by``: an ask names them in ``source_ref``.
+    room_todos: dict[str, tuple[str, list[dict[str, Any]]]] = field(default_factory=dict)
+    #: ``GET /api/v1/todos/rooms`` answers ``degraded: true`` with no rooms.
+    rooms_degraded: bool = False
     #: ``group_id -> notes list rows``, and whether the list says it was cut.
     notes: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     notes_truncated: bool = False
@@ -373,6 +388,20 @@ class FakeServer:
         if query.get("assignee") == "me":
             rows = [t for t in rows if (t["assignee"] or {}).get("user_id") == ME]
         return httpx.Response(200, json=rows)
+
+    def _room_todos(self, query: dict[str, str]) -> httpx.Response:
+        """``GET /api/v1/todos/rooms``: ``{"rooms": [...], "degraded": bool}``."""
+        if self.rooms_degraded:
+            return httpx.Response(200, json={"rooms": [], "degraded": True})
+        rooms = []
+        for group_id, (name, items) in self.room_todos.items():
+            if query.get("assignee") == "me":
+                items = [
+                    i for i in items if (i.get("source_ref") or {}).get("assignee_user_id") == ME
+                ]
+            if items:
+                rooms.append({"group_id": group_id, "name": name, "items": items})
+        return httpx.Response(200, json={"rooms": rooms, "degraded": False})
 
     def _unread_rows(self, group_id: str) -> list[dict[str, Any]]:
         """The room's ``unread`` rows as the server computes them (read-state-sync §6): messages
@@ -633,6 +662,14 @@ class FakeServer:
         parts = path.strip("/").split("/")
         if parts[:3] == ["api", "v1", "groups"] and len(parts) >= 5 and parts[4] in APP_ROUTES:
             return self._app_route(parts, query)
+        if path == "/api/v1/todos":
+            status = query.get("status", "open")
+            rows = [t for t in self.own_todos if status in ("all", t["status"])]
+            if query.get("asked_of_me") == "true":
+                rows = [t for t in rows if t["source"] == "request"]
+            return httpx.Response(200, json=rows)
+        if path == "/api/v1/todos/rooms":
+            return self._room_todos(query)
         if path == "/api/v1/artifacts":
             rows = self.notes.get(query.get("principal", ""), [])
             return httpx.Response(200, json={"truncated": self.notes_truncated, "items": rows})

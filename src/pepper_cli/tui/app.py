@@ -56,7 +56,7 @@ from pepper_cli.api_client import ApiError, UpgradeRequiredError
 from pepper_cli.terminal_text import sanitize_line
 from pepper_cli.tui import apps_pane, poller, rows, state, stream
 from pepper_cli.tui.apps_pane import AppPane, PaneScroll
-from pepper_cli.tui.composer import Composer, MentionMenu
+from pepper_cli.tui.composer import PLACEHOLDER, Composer, MentionMenu
 from pepper_cli.tui.screens import (
     ConfirmScreen,
     InfoScreen,
@@ -963,6 +963,8 @@ class PepperApp(App[None]):
             self._prompt_topic(row.room_id)
         elif row.kind == "app":
             self._pane_home()
+        elif row.kind == "own_app" and row.slug:
+            self._open_own_pane(row.slug)
         elif (conv := row.conversation) is not None:
             self.open_conversation(conv)
 
@@ -982,8 +984,11 @@ class PepperApp(App[None]):
         if had_pane:
             self._hide_pane()
             if conv == self.current:
-                self._render_topic(new_rows=0, reset=True)
-                self._note_viewed(landed_at_end=True)
+                if conv.is_pepper:  # your own pane sat over the DM
+                    self._render_dm(new_rows=0, reset=True)
+                else:
+                    self._render_topic(new_rows=0, reset=True)
+                    self._note_viewed(landed_at_end=True)
                 self.refresh_chrome()
                 return
         if conv == self.current:
@@ -1132,8 +1137,11 @@ class PepperApp(App[None]):
         shown = self.rooms if self.groups_enabled else []
         self.push_screen(JumpScreen(state.jump_targets(shown)), self._jumped)
 
-    def _jumped(self, conv: state.Conversation | None) -> None:
+    def _jumped(self, conv: state.Conversation | state.OwnApp | None) -> None:
         if conv is None:
+            return
+        if isinstance(conv, state.OwnApp):
+            self._open_own_pane(conv.slug)
             return
         self.open_conversation(conv)
         self.sidebar.select_key("pepper" if conv.is_pepper else f"topic:{conv.topic_id}")
@@ -1314,6 +1322,11 @@ class PepperApp(App[None]):
         if draft.quote_id is not None:
             draft.quote_id, draft.quote_name, draft.quote_text = None, "", ""
             self._paint_quote()
+            return
+        if self.pane is not None:
+            # Your own pane stands in for the thread: Esc moves to it and never closes it, so
+            # a draft can't strand you in the DM.
+            self.query_one(AppPane).focus_scroller()
             return
         self.thread.focus_scroller()
 
@@ -1816,11 +1829,19 @@ class PepperApp(App[None]):
         self._browse(url)
 
     def _slash_app(self, text: str) -> bool:
-        """``/todo`` or ``/notes`` typed alone in a room's composer: open that room's pane (when
-        the room has the app). True when the text was one of them."""
+        """``/todo`` or ``/notes`` typed alone in a composer: in a room, open that room's pane
+        (when the room has the app); in the Pepper DM, open your own. True when the text was one
+        of them."""
         slug = {"/todo": "todo", "/notes": "notes"}.get(text)
+        if slug is None:
+            return False
+        if self.current.is_pepper:
+            self._draft().text = ""
+            self.composer.load_text("")
+            self._open_own_pane(slug)
+            return True
         room_id = self.current.room_id
-        if slug is None or room_id is None:
+        if room_id is None:
             return False
         title = state.APP_TITLES[slug]
 
@@ -1857,9 +1878,23 @@ class PepperApp(App[None]):
             topics = state.topics_by_recency(room)
             if topics:
                 self.open_conversation(state.Conversation(room_id, topics[0].topic_id))
+        self._show_pane(state.AppPaneState(owner=room_id, slug=slug))
+
+    def _open_own_pane(self, slug: str) -> None:
+        """Your own Todos or Notes in place of the Pepper DM's thread. The Pepper composer stays
+        under it (design decision 10), so the DM is the open conversation while it is up."""
+        if self.pane is not None and self.pane.owner is None and self.pane.slug == slug:
+            self._pane_home()  # re-entered from its row: back to the list, read again
+            return
+        if not self.current.is_pepper:
+            self.open_conversation(state.PEPPER)  # drops a room's pane on the way
+        self._show_pane(state.AppPaneState(owner=None, slug=slug))
+
+    def _show_pane(self, pane: state.AppPaneState) -> None:
+        """Put ``pane`` on screen, focus it and read its list."""
         if self.pane is not None:
             self._hide_pane()
-        self.pane = state.AppPaneState(owner=room_id, slug=slug)
+        self.pane = pane
         self._pane_layout()
         for kind in ("apps", "note"):
             loop = self._loops[kind]
@@ -1878,6 +1913,7 @@ class PepperApp(App[None]):
         self.query_one(AppPane).display = pane is not None
         self.thread.display = pane is None
         self.query_one("#compose-box").display = pane is None or pane.owner is None
+        self.composer.placeholder = state.pane_placeholder(pane, PLACEHOLDER)
 
     def _hide_pane(self) -> None:
         """Drop the pane and put the thread back. Its reads are dropped as stale."""
@@ -1889,14 +1925,21 @@ class PepperApp(App[None]):
         self._pane_layout()
 
     def _close_pane(self, *, notice: str = "") -> None:
-        """Back to the room's current topic (the one under the pane), at its newest rows.
+        """Back to the room's current topic (the one under the pane), at its newest rows; for
+        your own pane, back to the Pepper DM.
 
         A pane belongs to one room (design §10): moving to another room's app lands on that
         room's newest topic when it has one, so closing returns there, not to the room the user
         came from."""
+        own = self.pane is not None and self.pane.owner is None
         self._hide_pane()
-        self._render_topic(new_rows=0, reset=True)
-        self._note_viewed(landed_at_end=True)
+        if own:
+            # Your own pane sat over the Pepper DM: back to it, with the cursor on its row.
+            self._render_dm(new_rows=0, reset=True)
+            self.sidebar.select_key("pepper")
+        else:
+            self._render_topic(new_rows=0, reset=True)
+            self._note_viewed(landed_at_end=True)
         self.refresh_chrome()
         self.thread.focus_scroller()
         if notice:
@@ -1924,14 +1967,25 @@ class PepperApp(App[None]):
             items = apps_pane.note_items(pane, now=now)
         else:
             items = apps_pane.notes_items(pane, now=now)
-        self.query_one(AppPane).show(items, pane.selected, slug=pane.slug, reset=reset)
+        host = self.query_one(AppPane)
+        host.show(
+            items, pane.selected, slug=pane.slug, reset=reset, composer_below=pane.owner is None
+        )
+        host.show_strip(apps_pane.strip_items(pane.exchanges))
 
     def _read_pane(self) -> None:
         """Read the open pane's list (the Notes list also when a note is open: it is behind it)."""
         pane = self.pane
         if pane is None:
             return
-        if pane.slug == "todo":
+        if pane.slug == "todo" and pane.owner is None:
+            self._start(
+                "apps",
+                lambda: poller.fetch_own_todos(self._api, mine=pane.mine),
+                lambda found: self._got_own_todos(pane, found),
+                on_error=lambda exc: self._pane_failed(pane, exc),
+            )
+        elif pane.slug == "todo":
             self._start(
                 "apps",
                 lambda: poller.fetch_todos(self._api, pane.owner, mine=pane.mine),
@@ -1945,6 +1999,13 @@ class PepperApp(App[None]):
                 lambda found: self._got_notes(pane, found),
                 on_error=lambda exc: self._pane_failed(pane, exc),
             )
+
+    def _got_own_todos(self, pane: state.AppPaneState, found: poller.OwnTodos) -> None:
+        if pane is not self.pane:
+            return
+        # A failed rooms read leaves your own items on screen under one line saying so.
+        pane.rooms, pane.rooms_error = found.rooms, found.rooms is None
+        self._got_todos(pane, found.todos)
 
     def _got_todos(self, pane: state.AppPaneState, todos: list[TodoEntry]) -> None:
         if pane is not self.pane:
@@ -2066,7 +2127,7 @@ class PepperApp(App[None]):
         if pane is None or pane.slug != "todo":
             return
         pane.mine = not pane.mine
-        pane.todos, pane.error = None, None
+        pane.todos, pane.rooms, pane.rooms_error, pane.error = None, None, False, None
         self._loops["apps"].generation += 1
         self._render_pane(reset=True)
         self._run("apps")
@@ -2097,7 +2158,14 @@ class PepperApp(App[None]):
 
     def _send_turn(self, text: str) -> None:
         self.dm_note = ""
-        self.turns.append(state.DmTurn(text=text))
+        # Under your own Todos or Notes the turn says which app is on screen, and the reply
+        # strip at the pane's foot shows the exchange (design §6.9).
+        subject, context = state.pane_subject(self.pane)
+        turn = state.DmTurn(text=text, subject=subject, context=context)
+        self.turns.append(turn)
+        if self.pane is not None and subject is not None:
+            state.remember_exchange(self.pane, turn)
+            self._render_pane()
         if len(self.turns) > 1:
             self.notify("Sends when Pepper finishes this answer.", timeout=3)
         self._render_dm(new_rows=0, reset=True)
@@ -2143,6 +2211,8 @@ class PepperApp(App[None]):
                 sink,
                 provider=self._provider,
                 should_stop=lambda: self._quitting,
+                subject=turn.subject,
+                client_context=turn.context,
             )
         except (*_EXPECTED, OSError) as exc:
             error = exc
@@ -2182,12 +2252,15 @@ class PepperApp(App[None]):
             self._answered_ids |= turn.known_ids()
         elif outcome == "error" and error is None:
             self.turns.remove(turn)
+            turn.phase = "done"  # (the reply strip reads "no answer")
             message = sanitize_line(str(payload.get("message") or "model service unavailable"))
             self.dm_note = f"Pepper couldn't answer: {message}"
         elif error is not None and isinstance(error, (ApiError, *_NOT_SENT)):
             # Refused before any frame, or never connected: the turn did not run, so the
             # text goes back to the composer to send again by hand.
             self.turns.remove(turn)
+            turn.phase = "done"
+            self._drop_exchange(turn)  # its text is back in the composer
             self._give_back(turn.text)
             reason = _short_error(error)
             self.dm_note = f"Couldn't send ({reason}). Your message is back in the composer."
@@ -2200,6 +2273,21 @@ class PepperApp(App[None]):
         if self.current.is_pepper:
             self._render_dm(new_rows=0, reset=False)
         self._run("dm")
+        self._turn_finished(turn)
+
+    def _turn_finished(self, turn: state.DmTurn) -> None:
+        """A turn sent from one of your own panes has ended (or its answer was found): the strip
+        shows how it went, and the pane reads its list again, because Pepper may have just
+        added or ticked something (design §6.9)."""
+        if turn.subject is None or self.pane is None or turn.phase == "checking":
+            return
+        self._render_pane()
+        self._want("apps")
+
+    def _drop_exchange(self, turn: state.DmTurn) -> None:
+        pane = self.pane
+        if pane is not None and turn in pane.exchanges:
+            pane.exchanges.remove(turn)
 
     def _give_back(self, text: str) -> None:
         """Put a refused turn's text back in the Pepper draft. A draft typed since is kept:
@@ -2228,9 +2316,12 @@ class PepperApp(App[None]):
                 self.turns.remove(turn)
             elif turn.phase == "checking" and turn.reply_landed(entries):
                 self.turns.remove(turn)
+                turn.reply, turn.phase = turn.found_reply(entries), "done"
                 self.dm_note = ""
+                self._turn_finished(turn)
             elif turn.phase == "checking" and turn.gave_up(now):
                 self.turns.remove(turn)
+                turn.phase = "done"
                 self.dm_note = "No reply yet. It may still arrive; check back in a moment."
         if any(turn.phase == "queued" for turn in self.turns):
             self._run("turn")

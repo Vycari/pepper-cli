@@ -105,9 +105,9 @@ def test_archived_fold_and_new_topic_row_close_an_expanded_room() -> None:
     )
     current = state.Conversation(ts.ROOM_A, "a1")
     folded = _sidebar(rooms, current=current)
-    assert [r.kind for r in folded] == ["pepper", "room", "topic", "archived", "newtopic"]
-    assert folded[3].label == "Show archived (1)"
-    assert folded[4].room_id == ts.ROOM_A
+    assert [r.kind for r in folded][3:] == ["pepper", "room", "topic", "archived", "newtopic"]
+    assert folded[6].label == "Show archived (1)"
+    assert folded[7].room_id == ts.ROOM_A
     unfolded = _sidebar(rooms, current=current, folds=state.SidebarFolds(archived={ts.ROOM_A}))
     assert _labels(unfolded, "topic") == ["Live", "Old"]
     assert _labels(unfolded, "archived") == ["Hide archived (1)"]
@@ -280,13 +280,17 @@ def test_jump_targets_list_live_topics_and_filter_ranks_best_first() -> None:
     )
     targets = state.jump_targets(rooms)
     assert [t.label for t in targets] == [
+        "Todos",
+        "Notes",
         "Pepper",
         "Trip planning",
         "Trip planning › Flights",
         "Trip planning › Hotels",
     ]
-    assert targets[0].conversation == state.PEPPER
-    assert targets[1].conversation == state.Conversation(ts.ROOM_A, "a1")
+    assert targets[0].conversation == state.OwnApp("todo")
+    assert targets[1].conversation == state.OwnApp("notes")
+    assert targets[2].conversation == state.PEPPER
+    assert targets[3].conversation == state.Conversation(ts.ROOM_A, "a1")
     assert [t.label for t in state.fuzzy_filter("hot", targets)] == ["Trip planning › Hotels"]
     assert state.fuzzy_filter("", targets) == targets
     assert state.fuzzy_filter("qqq", targets) == []
