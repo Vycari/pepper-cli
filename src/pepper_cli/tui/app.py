@@ -1951,6 +1951,15 @@ class PepperApp(App[None]):
         pane.notes, pane.truncated, pane.error = found.items, found.truncated, None
         pane.selected = state.settle_selection(state.pane_rows(pane), pane.selected)
         self._render_pane()
+        # An open note is re-read when the list says it changed since it was read (§6.6): the
+        # list is the poll, so an unchanged note costs no extra call.
+        listed = next((n for n in found.items if n.id == pane.note_id), None)
+        if (
+            pane.note is not None
+            and listed is not None
+            and listed.updated_at != pane.note.updated_at
+        ):
+            self._read_note()
 
     def _pane_failed(self, pane: state.AppPaneState, exc: Exception) -> bool:
         """A pane read failed. The last good list stays up with the error over it; ``r`` (or the

@@ -653,6 +653,28 @@ async def test_a_notes_list_reread_does_not_clear_the_open_notes_error(
         assert "Loading" not in pane_text(app)
 
 
+async def test_an_open_note_is_read_again_when_the_polled_list_says_it_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(state, "PANE_INTERVAL", 0.05)
+    server = server_with_apps()
+    app = tui_app.PepperApp(server.client())
+
+    def detail_reads() -> int:
+        return len([1 for _m, p, _q in server.requests if p.endswith("/n-pack/detail")])
+
+    async with app.run_test(size=SIZE) as pilot:
+        await open_notes(app, pilot)
+        await pilot.press("enter")
+        await until(pilot, lambda: "Sleeping bags" in pane_text(app))
+        await pilot.pause(0.3)
+        assert detail_reads() == 1  # an unchanged note is not read again on the poll
+        edited = "2026-10-27T12:00:00+00:00"
+        server.note_details["n-pack"].update(body="- [ ] Camp stove\n", updated_at=edited)
+        server.notes[ts.ROOM_A][1]["updated_at"] = edited
+        await until(pilot, lambda: "Camp stove" in pane_text(app))
+
+
 async def test_a_detail_that_is_not_a_note_is_refused() -> None:
     server = server_with_apps()
     server.note_details["n-pack"]["kind"] = "file"
