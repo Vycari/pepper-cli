@@ -206,7 +206,7 @@ the person's cursor and their floor, not their own, not tombstones, through the 
 - The one local derivation can only clear: a cursor (our own mark, or `read_state.advanced`) at or
   after a topic's newest activity leaves nothing unread under any rule, so the cached row is
   dropped until the server's next answer. A cursor short of it clears nothing. Only a cursor that
-  moved after the server counted the row can clear it: the rail reads `/groups` before `/read`,
+  moved after the server counted the row can clear it: the rail reads `/groups` before `/groups/unread`,
   so the activity it compares against can be older than the answer. For the same reason every
   row is kept, including one counted from a cursor older than ours; the newer cursor settles it.
 - **Read = the newest row has been on screen** (read-state-sync §5.2): with the terminal focused

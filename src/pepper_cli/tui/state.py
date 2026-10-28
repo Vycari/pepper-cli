@@ -193,7 +193,7 @@ class ReadMarks:
         """Clear the cached row of every topic whose mark has passed its newest activity.
 
         Only a mark newer than the cursor the row was counted from can clear it: ``rooms`` is
-        read before the rows (the rail asks ``/groups``, then ``/read``), so its activity can
+        read before the rows (the rail asks ``/groups``, then the unread route), so its activity can
         be older than the answer, and a cursor the server already counted from says nothing
         the row does not. True when a row was cleared. A mark short of the activity (a partial
         read) clears nothing: the count is the server's, and the caller asks it again.
