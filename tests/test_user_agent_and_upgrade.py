@@ -546,3 +546,28 @@ def test_update_check_stops_before_starting_another_request(monkeypatch, httpx_m
     assert _version.check_latest_version(should_stop=lambda: len(calls) >= stop_after) is None
     assert len(calls) == stop_after
     assert not _version._cache_path().exists()
+
+
+@pytest.mark.parametrize("git_install", [False, True], ids=["pypi", "github"])
+def test_update_check_discards_a_success_arriving_after_quit(monkeypatch, httpx_mock, git_install):
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "")
+    monkeypatch.setattr(_version, "get_version", lambda: "0.3.0")
+    monkeypatch.setattr(_version, "is_git_install", lambda: git_install)
+    stopped = False
+
+    def late_success(_request):
+        nonlocal stopped
+        stopped = True
+        body = {"tag_name": "v0.4.0"} if git_install else {"info": {"version": "0.4.0"}}
+        return httpx.Response(200, json=body)
+
+    url = (
+        "https://api.github.com/repos/Vycari/pepper-cli/releases/latest"
+        if git_install
+        else "https://pypi.org/pypi/vycari-pepper/json"
+    )
+    httpx_mock.add_callback(late_success, url=url)
+
+    assert _version.check_latest_version(should_stop=lambda: stopped) is None
+    assert stopped
+    assert not _version._cache_path().exists()
