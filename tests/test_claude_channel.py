@@ -1603,14 +1603,25 @@ def test_a_rate_limited_body_fetch_keeps_retrying_on_retry_after_and_is_never_un
     monkeypatch, tmp_path
 ):
     waits: list[float] = []
+    fetching: set[int] = set()
+
+    class Recording(_Fake):
+        def __call__(self, request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/messages"):
+                fetching.add(threading.get_ident())
+            return super().__call__(request)
 
     def wait(self, seconds: float) -> None:
-        waits.append(seconds)
+        # ``_wait`` is patched on the class, so a worker left over from an earlier test (they are
+        # daemon threads and nothing joins them) can call this one in the next test's window.
+        # Keep only the waits of the worker that read this test's messages.
+        if threading.get_ident() in fetching:
+            waits.append(seconds)
         if self.stop.wait(0.001):
             raise claude_channel._Ended(0)
 
     monkeypatch.setattr(claude_channel.ChannelWorker, "_wait", wait)
-    fake = _Fake(_CONNECTED + _scope() + _event(7))
+    fake = Recording(_CONNECTED + _scope() + _event(7))
     fake.fail_messages = claude_channel._FETCH_SERVER_ERROR_ATTEMPTS * 2
     fake.fail_status = 429
     fake.fail_headers = {"Retry-After": "7"}
@@ -1623,7 +1634,9 @@ def test_a_rate_limited_body_fetch_keeps_retrying_on_retry_after_and_is_never_un
     assert "body" not in pushed["meta"], "a throttled read is retried, not given up on"
     assert json.loads(cursor_file.read_text())["cursor"] == 7
     fetch_waits = waits[: claude_channel._FETCH_SERVER_ERROR_ATTEMPTS * 2]
-    assert fetch_waits == [7.0] * len(fetch_waits), "Retry-After replaces the backoff gap"
+    assert fetch_waits == [7.0] * (claude_channel._FETCH_SERVER_ERROR_ATTEMPTS * 2), (
+        "Retry-After replaces the backoff gap"
+    )
     assert len([r for r in fake.requests if r.url.path.endswith("/messages")]) == 11
 
 
