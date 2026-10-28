@@ -237,7 +237,9 @@ own.
 
 `a` and a room's `/todo` and `/notes` need to know whether the room has the app.
 `group_app_launcher(gid)` returns `(tiles, installed_unavailable)`. It's read when first needed
-and cached per room for the session, and the cache is dropped when room info (`i`) is re-read. If
+and cached per room for the session. The cache is dropped when room info (`i`) is re-read and
+when an `app.installed` or `app.uninstalled` frame names the room; a shelf read still in flight
+when that frame arrives is discarded, as is one that answers after the person has left the room. If
 the read is `installed_unavailable`, the TUI says "Apps unavailable right now" and doesn't treat
 the room as having no apps. This mirrors the reason the server sends the flag
 (`features/groups/contract.py`, #3147). Your own panes need no shelf: the top-level rows are always
@@ -276,7 +278,9 @@ is refused, as `pepper notes` does.
 
 `TodoEntry.assignee` and `requested_by` are `TodoPerson`s. Under any todo that has either, a dim
 line reads "asked of Sam by you", "asked of you by Sam", and so on. "You" is decided by comparing
-person ids against `App.you_person_id`, which the TUI already reads for mentions. `m` re-reads the
+`TodoPerson.user_id` against the core user id from `whoami` (`user_id`), not the groups
+`you_person_id` used for mentions: pepper builds `TodoPerson.user_id` from the todo's
+`source_ref` assignee and requester, which hold core user ids. `m` re-reads the
 pane with `mine=True`, which `list_todos` already sends as `assignee=me` on a room and
 `asked_of_me=true` on your own, and as `assignee=me` on `/todos/rooms`. The footer shows `m asks
 of me` while it's on. In P2, `n` in a room's Todos has a third, optional step: a member picker
@@ -292,6 +296,7 @@ With no event frames (§3, surprise 2), the pane re-reads:
 - on `r`, and when `m` toggles;
 - on a 30s poll while it's open and the terminal is focused, paused while blurred or suspended,
   using the same `_blurred` signal as the topic poll. Nothing is polled while no pane is open.
+- for an open note: when the polled list shows a different etag for it, the note is read again.
 
 While a pane is open, the topic polls and the person stream keep running, so unread dots still
 move. An optional server addition for push is §11, item 3.
