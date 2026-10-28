@@ -200,15 +200,17 @@ def info(message: str | Text, *, soft_wrap: bool = False) -> None:
         _stderr.print(sanitize_text(message), markup=False, soft_wrap=soft_wrap)
 
 
-def error(message: str, *, soft_wrap: bool = False) -> None:
+def error(message: str, *, soft_wrap: bool = True) -> None:
     """Print an error line to stderr in red. The CLI returns nonzero
     *and* prints this; the two signals together let scripts both
     detect failure (exit code) and surface the cause (message).
 
-    ``soft_wrap=True`` is for a message that carries an id/uuid a person
-    would want to copy-paste (an ambiguous-name match listing, say) —
-    Rich would otherwise fold it across lines at the terminal width,
-    which breaks a paste of exactly the thing being offered.
+    Error lines are soft-wrapped by default: many carry a command, path,
+    or id a person copies back (``Run 'pepper login' first.``), and Rich
+    would otherwise fold the line across the terminal width mid-command.
+    Where it folds also depends on the length of an interpolated path, so
+    a wrapped line is not stable to assert on. Pass ``soft_wrap=False``
+    only for a line that should be folded to the terminal width.
 
     ``message`` is printed literally, never parsed as rich markup: most
     callers interpolate a server ``detail`` or name into it.
@@ -391,7 +393,7 @@ def render_trajectory_list(rows: list[TrajectoryListEntry]) -> None:
 _TODO_MARKERS = {"open": "☐", "done": "✓", "dismissed": "✗"}
 
 
-def render_todo_list(rows: list[TodoEntry]) -> None:
+def render_todo_list(rows: list[TodoEntry], *, numbered: bool = False) -> None:
     """Pretty-print a todo list to stdout.
 
     One line per todo: status glyph, title, optional localized due date
@@ -402,13 +404,21 @@ def render_todo_list(rows: list[TodoEntry]) -> None:
     Plain text — no Rich tables — so the output stays grep-able, matching
     ``render_trajectory_list``. Due dates are localized to the machine's
     zone (the CLI runs on the user's own machine).
+
+    ``numbered`` puts ``1.``, ``2.`` ... first, in the server's order: the handle for
+    ``todos done 3``. A list that was not saved (a just-created todo) stays unnumbered.
     """
     if not rows:
         _stdout.print("(no todos)")
         return
-    for row in rows:
+    # Every number takes the widest one's width, so titles and the lines under them stay
+    # in one column past row 99.
+    width = max(2, len(str(len(rows))))
+    pad = " " * width if numbered else ""
+    for n, row in enumerate(rows, 1):
         marker = _TODO_MARKERS.get(row.status, "•")
-        line = f"{marker} {_s(row.title)}"
+        line = f"{n:>{width}}. " if numbered else ""
+        line += f"{marker} {_s(row.title)}"
         if row.due_date:
             line += f"  due {_s(_format_due(row.due_date, row.due_is_date_only))}"
         if row.priority:
@@ -420,9 +430,9 @@ def render_todo_list(rows: list[TodoEntry]) -> None:
             text = f"Next: {_s(row.next_action.text)}"
             if row.next_action.by == "model":
                 text = f"[dim]{text}[/dim]"
-            _stdout.print(f"    {text}")
+            _stdout.print(f"{pad}    {text}")
         if row.next_action_suggestion:
-            _stdout.print(f"    [dim]  Or: {_s(row.next_action_suggestion.text)}[/dim]")
+            _stdout.print(f"{pad}    [dim]  Or: {_s(row.next_action_suggestion.text)}[/dim]")
 
 
 #: What a person with no display name on the wire is shown as.

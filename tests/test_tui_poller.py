@@ -206,3 +206,14 @@ def test_fetch_dm_and_publish() -> None:
         )
         assert poller.publish_read_mark(api, state.PEPPER, "x") == "x"
     assert server.puts == [(ts.TOPIC_A1, "2026-09-16T18:00:00+00:00")]
+
+
+def test_rail_step_carries_the_servers_unread_rows_for_the_rooms_it_read() -> None:
+    server = ts.standard_server()
+    server.marks = {}
+    server.floor = "2026-09-16T17:00:00+00:00"
+    server.messages[ts.TOPIC_B1] = [ts.message("b1", "2026-09-16T17:30:00+00:00", "hi")]
+    with server.client() as api:
+        update = poller.RailPoller(api).step()
+    by_topic = {row.topic_id: row.unread_count for row in update.unread}
+    assert by_topic == {ts.TOPIC_A1: 1, ts.TOPIC_A2: 0, ts.TOPIC_B1: 1}

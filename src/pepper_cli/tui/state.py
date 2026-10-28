@@ -1,8 +1,8 @@
-"""Pure logic of the terminal UI: ordering, the unread rule, cursors, cadence, backoff.
+"""Pure logic of the terminal UI: ordering, the unread cache, cursors, cadence, backoff.
 
 Nothing here imports Textual or touches the network, so it is unit-testable on its own and
 carries most of the package's coverage (``planning/terminal-ui.md`` §11). The rules are ported
-from the web client: ``groups_unread.js`` / ``groups_read_marks.js`` (unread, read marks),
+from the web client: ``groups_read_marks.js`` (read marks; unread itself is the server's),
 ``group_room.js`` (the poll cursor, pepper#4829) and ``group_poll_cadence.js`` (cadence).
 
 Every timestamp comparison goes through :func:`parse_ts`. The server spells the same instant
@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         GroupRosterMember,
         GroupSummary,
         GroupTopicSummary,
+        GroupUnreadRow,
     )
 
 #: How far behind the newest ``created_at`` a topic poll asks (§6.2, pepper#4829). A row that
@@ -115,16 +116,23 @@ PEPPER = Conversation()
 
 @dataclass
 class ReadMarks:
-    """Per-topic read marks held in memory for the session (§6.3).
+    """The session's cache of the server's read state (§6.3, read-state-sync §6).
 
-    The server is the store of record; this is its mirror plus the first-sight seed. Merges
-    are always "take the max", so a late answer can never walk a mark backwards.
+    The server decides what is unread (its floor, your own messages, tombstones, a carried
+    topic's reach) and answers it as ``unread`` rows; this holds the latest answer per topic
+    and the read cursors that came with it. The one thing the client adds is that a cursor can
+    only ever clear: a mark that moved after the server counted, and is at or after the topic's
+    newest activity, leaves nothing in it unread under any rule, so :meth:`settle` drops the
+    cached row until the server's next answer.
+    Nothing here ever *raises* a count, and a topic the server has no row for is not unread.
+    Mark merges are "take the max", so a late answer cannot walk a mark backwards.
     """
 
     marks: dict[str, datetime] = field(default_factory=dict)
-    #: The open topic while its thread is scrolled up (§5.2): rows below the screen have not been
-    #: seen, so it stays subject to the unread rule instead of counting as read for being open.
-    scrolled_up: str | None = None
+    #: ``topic_id -> the server's unread row`` (zero-count rows are kept: they say "read").
+    unread: dict[str, GroupUnreadRow] = field(default_factory=dict)
+    #: ``topic_id -> the cursor the server counted that row from`` (``None``: it had none).
+    counted_from: dict[str, datetime | None] = field(default_factory=dict)
 
     def merge(self, topic_id: str, at: datetime | None) -> bool:
         """Raise the mark for ``topic_id`` to ``at`` if that is newer. True when it moved."""
@@ -136,9 +144,23 @@ class ReadMarks:
         self.marks[topic_id] = at
         return True
 
-    def merge_server(self, server_marks: dict[str, str]) -> None:
+    def merge_server(self, server_marks: Mapping[str, str]) -> None:
         for topic_id, raw in server_marks.items():
             self.merge(topic_id, parse_ts(raw))
+
+    def merge_unread(self, rows: Iterable[GroupUnreadRow], marks: Mapping[str, str]) -> None:
+        """Take the server's unread rows (and the cursors answered with them).
+
+        Every row is kept, even one counted from a cursor older than one held here (an answer
+        that crossed a read on this device or another): it may count a message newer than that
+        read, and dropping it would hide the message until the room moved again. Each row
+        remembers the cursor it was counted from, and :meth:`settle` applies only a cursor that
+        moved after it.
+        """
+        self.merge_server(marks)
+        for row in rows:
+            self.unread[row.topic_id] = row
+            self.counted_from[row.topic_id] = parse_ts(marks.get(row.topic_id))
 
     def merge_advanced(self, payload: object) -> str | None:
         """Fold a ``read_state.advanced`` event payload (``{topic_id, group_id, last_read_at}``)
@@ -156,127 +178,52 @@ class ReadMarks:
             return None
         return topic_id if self.merge(topic_id, parse_ts(raw)) else None
 
-    def seed_first_sight(self, rooms: Iterable[GroupSummary]) -> None:
-        """A topic with no mark is read as of its current activity, so a fresh install does
-        not light up every room (the web does the same)."""
+    def settle(self, rooms: Iterable[GroupSummary]) -> bool:
+        """Clear the cached row of every topic whose mark has passed its newest activity.
+
+        Only a mark newer than the cursor the row was counted from can clear it: ``rooms`` is
+        read before the rows (the rail asks ``/groups``, then ``/read``), so its activity can
+        be older than the answer, and a cursor the server already counted from says nothing
+        the row does not. True when a row was cleared. A mark short of the activity (a partial
+        read) clears nothing: the count is the server's, and the caller asks it again.
+        """
+        cleared = False
         for room in rooms:
             for topic in room.topics:
-                if topic.topic_id not in self.marks:
-                    self.merge(topic.topic_id, parse_ts(topic.last_activity_at))
-
-    def is_unread(self, topic: GroupTopicSummary, *, open_topic_id: str | None) -> bool:
-        """The unread rule: activity later than the mark, and not the topic on screen (unless
-        its thread is scrolled up, ``scrolled_up``).
-
-        An own send does not light a topic it was sent from at the thread's end: a pending row is
-        not in the rail at all, and once the server stores it the app raises the mark to that
-        row's ``created_at`` (:meth:`PepperApp._sent`), so the activity it causes is already
-        read. A send that lands after the person scrolled up, looked away or left the topic marks
-        nothing, since rows stored before it have not been on screen.
-        """
-        if topic.archived_at:
-            return False
-        if topic.topic_id == open_topic_id and topic.topic_id != self.scrolled_up:
-            return False
-        activity = parse_ts(topic.last_activity_at)
-        if activity is None:
-            return False
-        mark = self.marks.get(topic.topic_id)
-        return mark is None or activity > mark
-
-    def room_unread(self, room: GroupSummary, *, open_topic_id: str | None) -> bool:
-        return any(self.is_unread(t, open_topic_id=open_topic_id) for t in room.topics)
-
-
-@dataclass
-class Mentions:
-    """Which unread topics hold a message that mentions you (§6.3, §15 C).
-
-    The rooms list gives only ``last_activity_at``, so a topic is asked about once per new
-    activity: when it is unread and its activity is later than the activity last asked about.
-    The answer is the newest page of its messages, read for rows after the read mark that
-    carry your person id in ``mentions``. A topic with more unread rows than one page holds
-    can miss an older mention; the open topic needs none of this (its rows show the accent).
-    """
-
-    #: ``topic_id -> last_activity_at`` the topic was last asked about.
-    checked: dict[str, datetime] = field(default_factory=dict)
-    #: ``topic_id -> created_at`` of the newest unread message found that mentions you. A hit
-    #: shows only while the read mark is before it, so reading the topic retires it.
-    hits: dict[str, datetime] = field(default_factory=dict)
-    #: ``topic_id -> order`` of topics whose last ask failed and will be retried; they go
-    #: behind every other due topic so one failing topic cannot hold the rest up.
-    deferred: dict[str, int] = field(default_factory=dict)
-    _deferrals: int = 0
-
-    def due(
-        self, rooms: Iterable[GroupSummary], marks: ReadMarks, *, open_topic_id: str | None
-    ) -> list[tuple[str, GroupTopicSummary]]:
-        """``(room_id, topic)`` pairs to ask about: sidebar order, retried topics last."""
-        found: list[tuple[str, GroupTopicSummary]] = []
-        for room in rooms:
-            for topic in topics_by_recency(room):
-                activity = parse_ts(topic.last_activity_at)
-                if activity is None or not marks.is_unread(topic, open_topic_id=open_topic_id):
+                row = self.unread.get(topic.topic_id)
+                if row is None or (row.unread_count == 0 and not row.has_unread_mention):
                     continue
-                if activity > self.checked.get(topic.topic_id, _EPOCH):
-                    found.append((room.group_id, topic))
-        return sorted(found, key=lambda pair: self.deferred.get(pair[1].topic_id, 0))
-
-    def record(
-        self,
-        topic: GroupTopicSummary,
-        messages: Iterable[GroupMessage],
-        *,
-        you_id: str | None,
-        mark: datetime | None,
-    ) -> bool:
-        """Take the answer for ``topic``; True when it holds a mention newer than any known."""
-        self._answered(topic)
-        newest: datetime | None = None
-        if you_id:
-            for m in messages:
-                if you_id not in m.mentions or m.is_you or m.is_deleted:
+                mark, activity = self.marks.get(topic.topic_id), parse_ts(topic.last_activity_at)
+                if mark is None or activity is None or mark < activity:
                     continue
-                at = parse_ts(m.created_at) or _EPOCH
-                if (mark is None or at > mark) and (newest is None or at > newest):
-                    newest = at
-        if newest is None:
-            self.hits.pop(topic.topic_id, None)
-            return False
-        was = self.hits.get(topic.topic_id)
-        self.hits[topic.topic_id] = newest
-        return was is None or newest > was
+                since = self.counted_from.get(topic.topic_id)
+                if since is None or mark > since:
+                    self.unread[topic.topic_id] = replace(
+                        row, unread_count=0, has_unread_mention=False
+                    )
+                    cleared = True
+        return cleared
 
-    def skip(self, topic: GroupTopicSummary) -> None:
-        """The topic cannot be read (no access, gone): stop asking about this activity."""
-        self._answered(topic)
-        self.hits.pop(topic.topic_id, None)
+    def is_unread(self, topic: GroupTopicSummary) -> bool:
+        """The server says this topic has unread messages. Archived topics are not shown as
+        unread (the server counts them; the rail hides them)."""
+        row = self.unread.get(topic.topic_id)
+        return bool(row and row.unread_count > 0 and not topic.archived_at)
 
-    def defer(self, topic: GroupTopicSummary) -> None:
-        """Asking about ``topic`` failed and will be retried: put it behind the others."""
-        self._deferrals += 1
-        self.deferred[topic.topic_id] = self._deferrals
+    def is_mentioned(self, topic: GroupTopicSummary) -> bool:
+        """The server says an unread message in this topic mentions you."""
+        row = self.unread.get(topic.topic_id)
+        return bool(row and row.has_unread_mention and self.is_unread(topic))
 
-    def _answered(self, topic: GroupTopicSummary) -> None:
-        activity = parse_ts(topic.last_activity_at)
-        if activity is not None:
-            self.checked[topic.topic_id] = activity
-        self.deferred.pop(topic.topic_id, None)
+    def room_unread(self, room: GroupSummary) -> bool:
+        return any(self.is_unread(t) for t in room.topics)
 
-    def topic_mentioned(
-        self, topic: GroupTopicSummary, marks: ReadMarks, *, open_topic_id: str | None
-    ) -> bool:
-        at = self.hits.get(topic.topic_id)
-        if at is None or not marks.is_unread(topic, open_topic_id=open_topic_id):
-            return False
-        mark = marks.marks.get(topic.topic_id)
-        return mark is None or at > mark
+    def room_mentioned(self, room: GroupSummary) -> bool:
+        return any(self.is_mentioned(t) for t in room.topics)
 
-    def room_mentioned(
-        self, room: GroupSummary, marks: ReadMarks, *, open_topic_id: str | None
-    ) -> bool:
-        return any(self.topic_mentioned(t, marks, open_topic_id=open_topic_id) for t in room.topics)
+    def mentioned_topics(self, rooms: Iterable[GroupSummary]) -> set[str]:
+        """Ids of the topics shown as mentioned (for spotting a new one; archived ones are not)."""
+        return {t.topic_id for room in rooms for t in room.topics if self.is_mentioned(t)}
 
 
 def topics_by_recency(room: GroupSummary) -> list[GroupTopicSummary]:
@@ -362,7 +309,6 @@ def build_sidebar(
     pepper_dot: bool,
     folds: SidebarFolds | None = None,
     now: datetime | None = None,
-    mentions: Mentions | None = None,
 ) -> list[SidebarRow]:
     """The Messages tree as flat rows: Pepper first, then rooms in server (recency) order.
 
@@ -373,8 +319,6 @@ def build_sidebar(
     (never the open room, nor one with something unread); without it nothing folds.
     """
     folds = folds or SidebarFolds()
-    mentions = mentions or Mentions()
-    open_topic_id = current.topic_id
     rows = [SidebarRow(key="pepper", kind="pepper", label="Pepper", depth=0, unread=pepper_dot)]
     folded: set[str] = set()
     if now is not None:
@@ -383,7 +327,7 @@ def build_sidebar(
             for r in rooms
             if room_inactive(r, now=now)
             and r.group_id != current.room_id
-            and not marks.room_unread(r, open_topic_id=open_topic_id)
+            and not marks.room_unread(r)
         }
     for room in rooms:
         if room.group_id in folded and not folds.inactive:
@@ -397,8 +341,8 @@ def build_sidebar(
                 depth=0,
                 room_id=room.group_id,
                 color=room.color,
-                unread=marks.room_unread(room, open_topic_id=open_topic_id),
-                mention=mentions.room_mentioned(room, marks, open_topic_id=open_topic_id),
+                unread=marks.room_unread(room),
+                mention=marks.room_mentioned(room),
                 expandable=True,
                 expanded=expanded,
             )
@@ -408,7 +352,6 @@ def build_sidebar(
                 _room_children(
                     room,
                     marks,
-                    mentions,
                     current=current,
                     folds=folds,
                     show_all=room.group_id in show_all,
@@ -432,7 +375,6 @@ def build_sidebar(
 def _room_children(
     room: GroupSummary,
     marks: ReadMarks,
-    mentions: Mentions,
     *,
     current: Conversation,
     folds: SidebarFolds,
@@ -453,8 +395,8 @@ def _room_children(
             depth=1,
             room_id=room.group_id,
             topic_id=t.topic_id,
-            unread=marks.is_unread(t, open_topic_id=open_topic_id),
-            mention=mentions.topic_mentioned(t, marks, open_topic_id=open_topic_id),
+            unread=marks.is_unread(t),
+            mention=marks.is_mentioned(t),
         )
         for t in shown
     ]
@@ -517,7 +459,7 @@ def unread_conversations(
         found.extend(
             Conversation(room.group_id, t.topic_id)
             for t in topics_by_recency(room)
-            if marks.is_unread(t, open_topic_id=current.topic_id)
+            if marks.is_unread(t)
         )
     return found
 
@@ -561,22 +503,14 @@ def header_text(current: Conversation, rooms: list[GroupSummary]) -> str:
     return ""
 
 
-def any_mention(
-    rooms: list[GroupSummary], marks: ReadMarks, mentions: Mentions, *, current: Conversation
-) -> bool:
+def any_mention(rooms: list[GroupSummary], marks: ReadMarks) -> bool:
     """Whether any unread topic holds a mention of you (the terminal title shows ``@``)."""
-    return any(
-        mentions.room_mentioned(room, marks, open_topic_id=current.topic_id) for room in rooms
-    )
+    return any(marks.room_mentioned(room) for room in rooms)
 
 
-def any_unread(
-    rooms: list[GroupSummary], marks: ReadMarks, *, current: Conversation, pepper_dot: bool
-) -> bool:
+def any_unread(rooms: list[GroupSummary], marks: ReadMarks, *, pepper_dot: bool) -> bool:
     """Whether the terminal title should carry the ``●`` prefix."""
-    return pepper_dot or any(
-        marks.room_unread(room, open_topic_id=current.topic_id) for room in rooms
-    )
+    return pepper_dot or any(marks.room_unread(room) for room in rooms)
 
 
 # ---------------------------------------------------------------------------

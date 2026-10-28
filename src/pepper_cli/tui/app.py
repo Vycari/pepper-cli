@@ -81,6 +81,7 @@ if TYPE_CHECKING:
         GroupRosterMember,
         GroupSummary,
         GroupTopicSummary,
+        GroupUnreadRow,
     )
     from pepper_cli.provider.fs import FilesystemProvider
 
@@ -127,7 +128,6 @@ _ON_DEMAND = (
     "newtopic",
     "info",
     "topics",
-    "mentions",
     "refresh",
 )
 #: Transport failures that mean a turn's request never reached the server, so it is safe to
@@ -218,8 +218,8 @@ class PepperApp(App[None]):
     ) -> None:
         super().__init__()
         self._api = api
-        #: Ring the terminal bell when a mention is first found in another topic (§15 C,
-        #: opt-in only).
+        #: Ring the terminal bell when the server first reports an unread mention in another
+        #: topic (§15 C, opt-in only).
         self._bell = bell
         #: Hands a link to the system browser (``o``); a test passes a recorder.
         self._open_url = open_url
@@ -239,9 +239,8 @@ class PepperApp(App[None]):
         self.rooms: list[GroupSummary] = []
         self.groups_enabled = True
         self.groups_degraded = False
+        #: The cache of the server's read state: its unread rows and read cursors.
         self.marks = state.ReadMarks()
-        #: Unread topics that mention you, found one fetch at a time (§15 C).
-        self.mentions = state.Mentions()
         self.current = state.PEPPER
         self.store = state.MessageStore()
         self.dm = state.DmTracker()
@@ -388,6 +387,10 @@ class PepperApp(App[None]):
         return not self.fatal and generation == loop.generation
 
     def _mounted(self) -> bool:
+        if not self.is_running:
+            # Textual's shutdown clears this first, then closes the widgets one by one: a
+            # callback queued behind it can find the sidebar still there and the header gone.
+            return False
         try:
             return bool(self.query(Sidebar))
         except ScreenStackError:
@@ -548,8 +551,6 @@ class PepperApp(App[None]):
             self._send_next()
         elif kind == "roster":
             self._fetch_roster()
-        elif kind == "mentions":
-            self._check_mentions()
         elif kind == "refresh":
             self._refresh_next()
         elif kind == "turn":
@@ -658,6 +659,12 @@ class PepperApp(App[None]):
                 stamp, done = state.parse_ts(raw), state.parse_ts(self._published.get(topic_id))
                 if isinstance(raw, str) and stamp is not None and (done is None or stamp > done):
                     self._published[topic_id] = raw
+                self.marks.settle(self.rooms)
+                row = self.marks.unread.get(topic_id)
+                if row is not None and row.unread_count > 0:
+                    # A partial read: how much is left is the server's to say.
+                    self._rail.refetch_all()
+                    self._want("rail")
                 self.refresh_chrome()
             return
         if kind not in _ROOM_EVENT_KINDS:
@@ -683,14 +690,10 @@ class PepperApp(App[None]):
     # ------------------------------------------------------------------ results
 
     def _learn_person_id(self, person_id: str) -> None:
-        """Keep your person id for the session; topics asked about before it was known are
-        asked again."""
+        """Keep your person id for the session."""
         if self.you_person_id is not None:
             return
         self.you_person_id = person_id
-        self.mentions.checked.clear()
-        if self._started:
-            self._run("mentions")
 
     def _learn_from_messages(self, messages: list[GroupMessage]) -> None:
         """Until whoami carries ``person_id``: your own message names you."""
@@ -709,38 +712,17 @@ class PepperApp(App[None]):
         self.groups_enabled = groups.enabled
         self.groups_degraded = groups.degraded
         if groups.enabled and not groups.degraded:
-            self._apply_groups(groups, update.server_marks)
+            self._apply_groups(groups, update.server_marks, update.unread)
 
-    def _apply_groups(self, groups: GroupList, server_marks: dict[str, str]) -> None:
+    def _apply_groups(
+        self, groups: GroupList, server_marks: dict[str, str], unread: list[GroupUnreadRow]
+    ) -> None:
+        had = self.marks.mentioned_topics(self.rooms) if self._bell else set()
         self.rooms = groups.groups
-        self.marks.merge_server(server_marks)
-        self.marks.seed_first_sight(self.rooms)
-        # A failing mention loop keeps its backoff: new room activity waits for the retry.
-        mentions = self._loops["mentions"]
-        if mentions.failures == 0:
-            self._run("mentions")
-        elif mentions.timer is None and not mentions.busy:
-            self._schedule("mentions")
-
-    def _check_mentions(self) -> None:
-        """Read the newest page of the next unread topic not yet asked about (one in flight).
-
-        Each delivery asks again, so a burst of unread topics is worked off one request at a
-        time; a topic is asked about once per new activity (``Mentions.due``).
-        """
-        if self.you_person_id is None:
-            return
-        due = self.mentions.due(self.rooms, self.marks, open_topic_id=self.current.topic_id)
-        if not due:
-            return
-        room_id, topic = due[0]
-        conv = state.Conversation(room_id, topic.topic_id)
-        self._start(
-            "mentions",
-            lambda: poller.fetch_topic(self._api, conv, since=None),
-            lambda page: self._mentions_checked(topic, page),
-            on_error=lambda exc: self._mentions_failed(topic, exc),
-        )
+        self.marks.merge_unread(unread, server_marks)
+        self.marks.settle(self.rooms)
+        if self._bell and (self.marks.mentioned_topics(self.rooms) - had - {self.current.topic_id}):
+            self.bell()
 
     def _refresh_next(self) -> None:
         """Read the next changed row again: the window around it (``at``), from which only
@@ -780,28 +762,6 @@ class PepperApp(App[None]):
             self.store.expect_reconcile()
             return True
         self._stale_rows.insert(0, message_id)
-        return False
-
-    def _mentions_checked(self, topic: GroupTopicSummary, page: GroupMessagePage) -> None:
-        found = self.mentions.record(
-            topic,
-            page.messages,
-            you_id=self.you_person_id,
-            mark=self.marks.marks.get(topic.topic_id),
-        )
-        # A topic opened while this check was in flight has not raised its read mark yet
-        # (its page is still loading), so ``record`` can call it new: no bell for it.
-        if found and self._bell and topic.topic_id != self.current.topic_id:
-            self.bell()
-        self._run("mentions")
-
-    def _mentions_failed(self, topic: GroupTopicSummary, exc: Exception) -> bool:
-        """A topic this token cannot read is dropped; anything else retries with backoff,
-        behind the other due topics so one failing topic does not hold them up."""
-        if isinstance(exc, ApiError) and exc.status in _PUBLISH_PERMANENT:
-            self.mentions.skip(topic)
-            return True
-        self.mentions.defer(topic)
         return False
 
     def _on_dm(self, history: list[ChatHistoryEntry]) -> None:
@@ -875,7 +835,7 @@ class PepperApp(App[None]):
     def refresh_chrome(self) -> None:
         """Sidebar, header, notice, subline and terminal title from the current state."""
         shown = self.rooms if self.groups_enabled else []
-        self.marks.scrolled_up = self.current.topic_id if self._scrolled_up() else None
+        self.marks.settle(shown)
         current_key = "pepper" if self.current.is_pepper else f"topic:{self.current.topic_id}"
         self.sidebar.set_rows(
             state.build_sidebar(
@@ -887,7 +847,6 @@ class PepperApp(App[None]):
                 pepper_dot=self.dm.dot,
                 folds=self.folds,
                 now=self._now(),
-                mentions=self.mentions,
             ),
             current_key=current_key,
         )
@@ -904,8 +863,8 @@ class PepperApp(App[None]):
                 notice_box.update(Text(notice))
                 notice_box.set_class(not notice, "empty")
         self._update_subline()
-        unread = state.any_unread(shown, self.marks, current=self.current, pepper_dot=self.dm.dot)
-        mention = state.any_mention(shown, self.marks, self.mentions, current=self.current)
+        unread = state.any_unread(shown, self.marks, pepper_dot=self.dm.dot)
+        mention = state.any_mention(shown, self.marks)
         self.title = ("@ " if mention else "● " if unread else "") + "Pepper"
 
     def _notice(self) -> str:
@@ -1630,6 +1589,10 @@ class PepperApp(App[None]):
     def on_thread_view_pin_changed(self, _event: ThreadView.PinChanged) -> None:
         """Reached the end (the newest row is on screen, so it is read) or scrolled away from
         it (rows below are unseen: the open topic shows as unread)."""
+        if not self.query(ThreadView):
+            # A message queued as the app tears down is dispatched after the screen's widgets
+            # are gone; there is no thread left to read or mark (#139).
+            return
         self._note_viewed()
         self._run("publish")
         self.refresh_chrome()

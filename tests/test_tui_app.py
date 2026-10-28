@@ -221,6 +221,7 @@ async def test_a_rail_poll_in_flight_when_focus_returns_is_not_duplicated_or_los
         await until(pilot, lambda: len(app.rooms) == 2)
         gate = threading.Event()
         server.gates["/api/v1/groups"] = gate
+        server.messages[ts.TOPIC_B1].append(ts.message("m-new", "2026-09-16T18:00:00+00:00", "hi"))
         server.rooms[1]["topics"][0]["last_activity_at"] = "2026-09-16T18:00:00+00:00"
         server.bump()
         before = _count(server, "/api/v1/groups")
@@ -234,7 +235,7 @@ async def test_a_rail_poll_in_flight_when_focus_returns_is_not_duplicated_or_los
         # Its result is applied (not dropped as stale behind a saved ETag): room B lights.
         await until(
             pilot,
-            lambda: state.any_unread(app.rooms, app.marks, current=app.current, pepper_dot=False),
+            lambda: state.any_unread(app.rooms, app.marks, pepper_dot=False),
         )
 
 
@@ -442,6 +443,25 @@ async def test_a_result_that_lands_after_quit_is_ignored() -> None:
     app._failed("dm", ValueError("late"), generation, None)
     app._update_subline()
     assert app.return_code == 0
+
+
+async def test_a_result_that_lands_while_the_screen_is_torn_down_is_ignored() -> None:
+    """#76: a result queued behind Textual's shutdown runs with some widgets gone.
+
+    ``App._shutdown`` clears ``is_running`` first and then closes the screen's widgets one
+    by one, so a callback can find the sidebar still mounted and the header already gone.
+    """
+    server = ts.standard_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        # The state _shutdown leaves for the callbacks behind it. Left in place: restoring
+        # is_running with the header gone would let a late poll result hit the same query.
+        app._running = False
+        app.query_one("#header").remove()
+        await pilot.pause()
+        generation = app._loops["dm"].generation
+        app._delivered("dm", app._on_dm, [], generation)  # would query the missing header
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="LinuxDriver imports termios")

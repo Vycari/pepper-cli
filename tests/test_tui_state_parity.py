@@ -37,8 +37,7 @@ def _sidebar(
     now: datetime | None = None,
 ) -> list[state.SidebarRow]:
     if marks is None:
-        marks = state.ReadMarks()
-        marks.seed_first_sight(rooms)  # a fresh install reads everything as read
+        marks = state.ReadMarks()  # the server has said nothing is unread
     return state.build_sidebar(
         rooms,
         marks,
@@ -73,7 +72,7 @@ def test_stale_rooms_fold_unless_open_or_unread_and_no_clock_means_no_fold() -> 
     assert not any(r.kind == "inactive" for r in opened)
     assert not any(r.kind == "inactive" for r in _sidebar(rooms))
     marks = state.ReadMarks()
-    marks.merge_server({"a1": "2026-09-30T00:00:00Z", "b1": "2026-08-01T00:00:00Z"})
+    marks.merge_unread([api_client.GroupUnreadRow("b1", 2)], {})
     unread = _sidebar(rooms, now=NOW, marks=marks)
     assert "Stale" in _labels(unread, "room")
 

@@ -551,3 +551,71 @@ def test_room_lookup_when_the_rooms_list_is_unavailable_is_not_a_miss(
     assert err["code"] == code and said in err["message"]
     assert cli.main(["next", "--room", "trip"]) == 1
     assert said in capsys.readouterr().err
+
+
+def test_next_numbers_what_it_shows_and_todos_done_follows_it(server, capsys) -> None:
+    from pepper_cli import todos_view
+
+    todos = [_todo(f"Todo {i}") for i in range(12)]
+    _mock(server, todos)
+    out = _run(capsys)
+    assert " 1. Todo 0" in out and "10. Todo 9" in out and "Todo 10" not in out
+    rows, meta = todos_view.VIEW.load() or ([], {})
+    assert [r["id"] for r in rows] == [f"Todo {i}" for i in range(10)]
+    assert meta == {"room_id": None}
+
+    posts: list[str] = []
+    done = httpx.Response(200, json={**_todo("Todo 1"), "status": "done"})
+    real_handle = server.handle
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            posts.append(request.url.path)
+            return done
+        return real_handle(request)
+
+    server.handle = handle  # ty: ignore[invalid-assignment]
+    assert cli.main(["todos", "done", "2"]) == 0
+    assert posts == ["/api/v1/todos/Todo 1/done"]
+
+
+def test_next_all_numbers_every_todo_and_json_is_unchanged(server, capsys) -> None:
+    from pepper_cli import todos_view
+
+    todos = [_todo(f"Todo {i}") for i in range(12)]
+    data = _json(server, capsys, "--all", todos=todos)
+    assert len(data["todos"]["items"]) == 12
+    assert all("n" not in t for t in data["todos"]["items"])
+    rows, _ = todos_view.VIEW.load() or ([], {})
+    assert len(rows) == 12
+
+
+def test_next_with_a_room_records_the_room_for_the_numbers(server, capsys) -> None:
+    from pepper_cli import todos_view
+
+    gid = _rooms(server, "Trip")["Trip"]
+    server.add("/api/v1/calendars/schedule-plan", _plan())
+    server.add(f"/api/v1/groups/{gid}/todos", [_todo("One")])
+    assert cli.main(["next", "--room", "Trip", "--json"]) == 0
+    assert (todos_view.VIEW.load() or ([], {}))[1] == {"room_id": gid}
+
+
+def test_next_json_says_under_todos_when_its_numbers_could_not_be_saved(
+    server, capsys, monkeypatch
+) -> None:
+    from pepper_cli import numbered_view
+
+    def refuse(*_a, **_k):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(numbered_view.tempfile, "mkstemp", refuse)
+    server.add("/api/v1/whoami", {"user_id": "u", "display_name": "U", "timezone": "UTC"})
+    server.add("/api/v1/calendars/range", {"detail": "boom"}, 500)
+    data = _json(server, capsys, todos=[_todo("A")], plan=False)
+    assert "numbers were not saved" in data["todos"]["note"]
+    assert data["note"] == next_view.NO_CALENDAR_NOTE  # the calendar's note is kept
+
+
+def test_next_json_has_no_todos_note_when_the_numbers_were_saved(server, capsys) -> None:
+    data = _json(server, capsys, todos=[_todo("A")])
+    assert "note" not in data["todos"]

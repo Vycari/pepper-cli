@@ -4,6 +4,75 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (while 0.x, a minor bump may change flags or output).
 
+## Unreleased
+
+The terminal UI no longer decides what is unread: it shows the server's `unread` rows
+(read-state-sync phase 5c, tracked by Vycari/groups#274).
+
+Upgrade notes:
+
+- A fresh profile now matches the web: unread markers are what the server counts, with your own
+  messages and anything from before you joined left out. Before, the first poll marked every topic
+  read as of its last activity.
+- A server without `unread` rows on `GET /api/v1/groups/{gid}/read` (older than phase 5b) shows no
+  unread markers at all, where the local rule used to light them.
+
+### Changed
+
+- Unread dots and `@` mention markers come from the server's `unread` rows (`unread_count`,
+  `has_unread_mention`). The mention marker no longer reads a topic's newest page of messages to look
+  for you. The local read marks are a cache of the server's answer: `read_state.advanced` and the
+  poll fallback still update them, and a mark that passes a topic's newest activity clears its row
+  until the server's next answer (#145).
+
+### Removed
+
+- `ReadMarks.seed_first_sight`, the local "activity later than the mark" unread rule, the
+  open-topic exception that went with it, and the per-topic mention fetch (`Mentions`) (#145).
+
+## 0.6.0 — 2026-10-26
+
+The CLI now declares how it renders replies, and the terminal UI follows the person event stream so
+read state and new messages arrive without waiting for a poll. Every PR merged since 0.5.0 is listed
+below.
+
+Upgrade notes:
+
+- Piped or redirected `pepper chat` turns now send a `capabilities` object asking for plain text.
+  Once the server's `client_capabilities_enabled` flag is on, piped output is converted to plain text
+  by the server; before that, nothing changes. Old servers ignore the field.
+- Existing logins have no stored declaration until the next `pepper login`; piped turns still
+  declare per turn, and a terminal gets Markdown, the server default.
+- The TUI marks a topic read only once its newest row has been on screen, and never while the thread
+  is scrolled up or the terminal is blurred.
+
+### Added
+
+- Client capabilities (client-capabilities phase 4): sign-in stores `md:pepper/1` with
+  `PUT /api/v1/client/capabilities`, and a piped `chat_send` or `chat_send_stream` declares
+  `text:plain/1` for that turn. A 404 or 403 from the PUT is silent and never fails a login (#129,
+  fixes #128).
+- The terminal UI follows `GET /api/v1/groups/events/stream`: a read on another device clears its
+  marker at once, and a new message fetches the rail and open topic immediately. Polling stays as the
+  fallback and runs at its normal rate whenever the stream is down (#133, fixes #131; read-state sync
+  phase 4, Vycari/groups#274).
+
+### Changed
+
+- The TUI marks a topic read only once its newest row has been on screen, and nothing is marked while
+  the thread is scrolled up (#133). Opening at the read cursor and progressive marking are tracked in
+  #132.
+
+### Fixed
+
+- The TUI ignores background results once shutdown has begun, which fixes the Windows CI flake where
+  teardown failed with `NoMatches('#header')` (#136, fixes #76).
+
+### Internal
+
+- A TUI test waits on a recorded notice instead of a toast that expires after 2 seconds (#125, fixes
+  #124).
+
 ## 0.5.0 — 2026-10-24
 
 `pepper agents claude-channel`: a room agent can now run inside a Claude Code session and have the

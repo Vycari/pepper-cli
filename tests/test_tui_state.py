@@ -25,19 +25,20 @@ def test_parse_ts_reads_both_spellings_as_the_same_instant() -> None:
     assert state.parse_ts(None) is None
 
 
-def test_marks_only_move_forward_and_first_sight_seeds_read() -> None:
+def _row(topic_id: str, count: int, *, mention: bool = False) -> api_client.GroupUnreadRow:
+    return api_client.GroupUnreadRow(topic_id, count, has_unread_mention=mention)
+
+
+def test_marks_only_move_forward() -> None:
     marks = state.ReadMarks()
     later, earlier = datetime(2026, 1, 2, tzinfo=UTC), datetime(2026, 1, 1, tzinfo=UTC)
     assert marks.merge("t", later) is True
     assert marks.merge("t", earlier) is False
     assert marks.merge("t", None) is False
     assert marks.marks["t"] == later
-    rooms = _rooms(ts.room(ts.ROOM_A, "A", [ts.topic("t2", "New", "2026-02-01T00:00:00+00:00")]))
-    marks.seed_first_sight(rooms)
-    assert not marks.is_unread(rooms[0].topics[0], open_topic_id=None)
 
 
-def test_unread_rule_activity_after_mark_and_not_open_or_archived() -> None:
+def test_unread_is_the_servers_row_and_a_topic_it_has_no_row_for_is_read() -> None:
     (room,) = _rooms(
         ts.room(
             ts.ROOM_A,
@@ -45,19 +46,74 @@ def test_unread_rule_activity_after_mark_and_not_open_or_archived() -> None:
             [
                 ts.topic("t1", "One", "2026-02-01T00:00:00Z"),
                 ts.topic("t2", "Two", "2026-02-01T00:00:00Z", archived_at="2026-02-02T00:00:00Z"),
-                ts.topic("t3", "Three", ""),
+                ts.topic("t3", "Three", "2026-02-01T00:00:00Z"),
+                ts.topic("t4", "Four", "2026-02-01T00:00:00Z"),
             ],
         )
     )
     marks = state.ReadMarks()
-    marks.merge_server({"t1": "2026-01-31T00:00:00+00:00"})
-    t1, t2, t3 = room.topics
-    assert marks.is_unread(t1, open_topic_id=None)
-    assert not marks.is_unread(t1, open_topic_id="t1")  # on screen
-    assert not marks.is_unread(t2, open_topic_id=None)  # archived
-    assert not marks.is_unread(t3, open_topic_id=None)  # no activity stamp
-    marks.merge_server({"t1": "2026-02-01T00:00:00+00:00"})  # same instant, other spelling
-    assert not marks.is_unread(t1, open_topic_id=None)
+    marks.merge_unread([_row("t1", 2), _row("t2", 1), _row("t4", 0)], {})
+    t1, t2, t3, t4 = room.topics
+    assert marks.is_unread(t1)
+    assert not marks.is_unread(t2)  # archived: counted by the server, hidden by the rail
+    assert not marks.is_unread(t3)  # no row: unknown is not unread
+    assert not marks.is_unread(t4)  # the server says zero
+    # Activity later than the cursor is not the rule any more: only the server's count is.
+    marks.merge_server({"t3": "2026-01-01T00:00:00Z"})
+    assert not marks.is_unread(t3)
+
+
+def test_a_cursor_past_the_activity_clears_a_row_and_a_partial_one_does_not() -> None:
+    (room,) = _rooms(ts.room(ts.ROOM_A, "A", [ts.topic("t1", "One", "2026-02-01T00:00:00Z")]))
+    (topic,) = room.topics
+    marks = state.ReadMarks()
+    marks.merge_unread([_row("t1", 3, mention=True)], {"t1": "2026-01-01T00:00:00Z"})
+    assert marks.is_mentioned(topic)
+    marks.merge_advanced({"topic_id": "t1", "last_read_at": "2026-01-31T00:00:00Z"})
+    assert marks.settle([room]) is False  # a partial read: the count is the server's
+    assert marks.is_unread(topic)
+    marks.merge_advanced({"topic_id": "t1", "last_read_at": "2026-02-01T00:00:00+00:00"})
+    assert marks.settle([room]) is True
+    assert not marks.is_unread(topic) and not marks.is_mentioned(topic)
+    assert marks.settle([room]) is False  # nothing left to clear
+
+
+def test_an_answer_that_crossed_a_read_is_kept_and_settled_by_that_read() -> None:
+    (room,) = _rooms(ts.room(ts.ROOM_A, "A", [ts.topic("t1", "One", "2026-02-01T00:00:00Z")]))
+    (topic,) = room.topics
+    marks = state.ReadMarks()
+    marks.merge("t1", state.parse_ts("2026-02-01T00:00:00Z"))  # read here, PUT not landed yet
+    marks.merge_unread([_row("t1", 2)], {"t1": "2026-01-01T00:00:00Z"})  # counted from before it
+    assert marks.unread["t1"].unread_count == 2  # kept: it may count a message newer than the read
+    assert marks.settle([room]) is True  # the read covers the activity, so it clears
+    assert not marks.is_unread(topic)
+
+
+def test_an_answer_that_crossed_a_read_still_shows_a_message_past_it() -> None:
+    (room,) = _rooms(ts.room(ts.ROOM_A, "A", [ts.topic("t1", "One", "2026-02-02T00:00:00Z")]))
+    (topic,) = room.topics
+    marks = state.ReadMarks()
+    marks.merge("t1", state.parse_ts("2026-02-01T00:00:00Z"))
+    marks.merge_unread([_row("t1", 2, mention=True)], {"t1": "2026-01-01T00:00:00Z"})
+    assert marks.settle([room]) is False
+    assert marks.is_unread(topic) and marks.is_mentioned(topic)
+
+
+def test_a_cursor_the_server_counted_from_does_not_settle_its_answer() -> None:
+    # /groups is read before /read: a message landing between the two leaves the room's
+    # activity at the cursor while the answer counts the new message.
+    (room,) = _rooms(ts.room(ts.ROOM_A, "A", [ts.topic("t1", "One", "2026-02-01T00:00:00Z")]))
+    (topic,) = room.topics
+    marks = state.ReadMarks()
+    marks.merge("t1", state.parse_ts("2026-02-01T00:00:00Z"))
+    marks.merge_unread([_row("t1", 1, mention=True)], {"t1": "2026-02-01T00:00:00Z"})
+    assert marks.settle([room]) is False
+    assert marks.settle([room]) is False  # nor does a later repaint against the same rooms
+    assert marks.is_unread(topic) and marks.is_mentioned(topic)
+    marks.merge_advanced({"topic_id": "t1", "last_read_at": "2026-02-01T00:00:01Z"})
+    later = _rooms(ts.room(ts.ROOM_A, "A", [ts.topic("t1", "One", "2026-02-01T00:00:01Z")]))
+    assert marks.settle(later) is True  # a cursor that moved after the answer does clear it
+    assert not marks.is_unread(topic)
 
 
 def _big_room() -> list[api_client.GroupSummary]:
@@ -138,18 +194,18 @@ def test_next_unread_wraps_both_ways_and_reports_none() -> None:
         ts.room(ts.ROOM_B, "B", [ts.topic("b1", "B1", "2026-02-02T00:00:00Z")]),
     )
     marks = state.ReadMarks()
-    marks.merge_server({"a1": "2026-01-01T00:00:00Z", "b1": "2026-01-01T00:00:00Z"})
+    marks.merge_unread([_row("a1", 1), _row("b1", 1)], {})
     a1, b1 = state.Conversation(ts.ROOM_A, "a1"), state.Conversation(ts.ROOM_B, "b1")
     kwargs = {"pepper_dot": False}
     assert state.next_unread(rooms, marks, current=state.PEPPER, **kwargs) == a1
     assert state.next_unread(rooms, marks, current=a1, **kwargs) == b1
     assert state.next_unread(rooms, marks, current=b1, **kwargs) == a1  # wraps
     assert state.next_unread(rooms, marks, current=a1, step=-1, **kwargs) == b1  # wraps back
-    assert state.any_unread(rooms, marks, current=state.PEPPER, pepper_dot=False)
-    marks.merge_server({"a1": "2026-02-01T00:00:00Z", "b1": "2026-02-02T00:00:00Z"})
+    assert state.any_unread(rooms, marks, pepper_dot=False)
+    marks.merge_unread([_row("a1", 0), _row("b1", 0)], {})
     assert state.next_unread(rooms, marks, current=a1, pepper_dot=True) == state.PEPPER
     assert state.next_unread(rooms, marks, current=a1, **kwargs) is None
-    assert not state.any_unread(rooms, marks, current=a1, pepper_dot=False)
+    assert not state.any_unread(rooms, marks, pepper_dot=False)
 
 
 def test_message_store_orders_by_time_then_id_and_dedupes() -> None:
@@ -353,11 +409,7 @@ def test_an_answered_turn_gives_up_on_its_rows_after_the_window_and_is_not_activ
 
 
 # ---------------------------------------------------------------------------
-# Mentions (P4, §15 C)
-
-
-def _mention_msg(mid: str, at: str, **over) -> api_client.GroupMessage:
-    return api_client.group_message_from_dict(ts.message(mid, at, mentions=[ts.ME_PERSON], **over))
+# Mentions: the server's ``has_unread_mention`` flag
 
 
 def _unread_room():
@@ -372,151 +424,45 @@ def _unread_room():
         )
     )
     marks = state.ReadMarks()
-    marks.merge_server({"t1": "2026-01-31T00:00:00+00:00", "t2": "2026-02-01T00:00:00+00:00"})
+    marks.merge_unread([_row("t1", 2, mention=True), _row("t2", 1)], {})
     return room, marks
 
 
-def test_mentions_asks_only_about_unread_topics_and_once_per_activity() -> None:
+def test_a_mention_shows_only_while_the_topic_is_unread() -> None:
     room, marks = _unread_room()
-    mentions = state.Mentions()
-    due = mentions.due([room], marks, open_topic_id=None)
-    assert [(r, t.topic_id) for r, t in due] == [(ts.ROOM_A, "t1")]  # t2 is read
-    assert mentions.due([room], marks, open_topic_id="t1") == []  # on screen, so no fetch
-    mentions.record(room.topics[0], [], you_id=ts.ME_PERSON, mark=marks.marks["t1"])
-    assert mentions.due([room], marks, open_topic_id=None) == []
-    # New activity on the same topic is asked about again.
-    (newer,) = _rooms(ts.room(ts.ROOM_A, "A", [ts.topic("t1", "One", "2026-02-02T00:00:00Z")]))
-    assert len(mentions.due([newer], marks, open_topic_id=None)) == 1
-
-
-def test_mentions_counts_only_unread_rows_from_others_that_name_you() -> None:
-    room, marks = _unread_room()
-    topic = room.topics[0]
-    mark = marks.marks["t1"]
-    mentions = state.Mentions()
-    after, before = "2026-02-01T00:00:00+00:00", "2026-01-30T00:00:00+00:00"
-    ignored = [
-        _mention_msg("old", before),  # already read
-        _mention_msg("mine", after, is_you=True),  # your own message
-        _mention_msg("gone", after, is_deleted=True),
-        _msg("plain", after),  # no mentions
-        api_client.group_message_from_dict(ts.message("other", after, mentions=["someone-else"])),
-    ]
-    assert mentions.record(topic, ignored, you_id=ts.ME_PERSON, mark=mark) is False
-    assert not mentions.topic_mentioned(topic, marks, open_topic_id=None)
-    assert mentions.record(
-        topic, [*ignored, _mention_msg("hit", after)], you_id=ts.ME_PERSON, mark=mark
+    t1, t2 = room.topics
+    assert marks.is_mentioned(t1) and not marks.is_mentioned(t2)
+    assert marks.room_mentioned(room)
+    assert state.any_mention([room], marks)
+    assert marks.mentioned_topics([room]) == {"t1"}
+    (archived,) = _rooms(
+        ts.room(ts.ROOM_A, "A", [ts.topic("t1", "One", "2026-02-01T00:00:00Z", archived_at="x")])
     )
-    assert mentions.topic_mentioned(topic, marks, open_topic_id=None)
-    assert mentions.room_mentioned(room, marks, open_topic_id=None)
-    # Already known: not "newly" mentioned again (the bell rings once).
-    assert (
-        mentions.record(topic, [_mention_msg("hit", after)], you_id=ts.ME_PERSON, mark=mark)
-        is False
-    )
-    assert mentions.topic_mentioned(topic, marks, open_topic_id=None)
-
-
-def test_a_mention_stops_showing_once_the_topic_is_read_or_open() -> None:
-    room, marks = _unread_room()
-    topic = room.topics[0]
-    mentions = state.Mentions()
-    mentions.record(
-        topic, [_mention_msg("hit", "2026-02-01T00:00:00+00:00")], you_id=ts.ME_PERSON, mark=None
-    )
-    assert mentions.topic_mentioned(topic, marks, open_topic_id=None)
-    assert not mentions.topic_mentioned(topic, marks, open_topic_id="t1")
-    marks.merge("t1", state.parse_ts("2026-02-01T00:00:00+00:00"))
-    assert not mentions.topic_mentioned(topic, marks, open_topic_id=None)
-    assert not state.any_mention([room], marks, mentions, current=state.PEPPER)
-
-
-def test_mentions_without_an_identity_never_match_and_skip_stops_asking() -> None:
-    room, marks = _unread_room()
-    topic = room.topics[0]
-    mentions = state.Mentions()
-    assert (
-        mentions.record(
-            topic, [_mention_msg("hit", "2026-02-01T00:00:00Z")], you_id=None, mark=None
-        )
-        is False
-    )
-    mentions.hits["t1"] = state.parse_ts("2026-02-01T00:00:00Z")
-    mentions.skip(topic)
-    assert "t1" not in mentions.hits
-    assert mentions.due([room], marks, open_topic_id=None) == []
-
-
-def test_a_mention_after_the_topic_was_read_is_new_again_and_an_old_hit_retires() -> None:
-    room, marks = _unread_room()
-    topic = room.topics[0]
-    mentions = state.Mentions()
-    first = "2026-02-01T00:00:00+00:00"
-    assert mentions.record(topic, [_mention_msg("hit", first)], you_id=ts.ME_PERSON, mark=None)
-    # The topic is read past the mention; the cached hit no longer shows.
-    marks.merge("t1", state.parse_ts(first))
-    (later,) = _rooms(ts.room(ts.ROOM_A, "A", [ts.topic("t1", "One", "2026-02-03T00:00:00Z")]))
-    assert not mentions.topic_mentioned(later.topics[0], marks, open_topic_id=None)
-    # A second mention after that read is new (the bell rings again).
-    second = _mention_msg("hit2", "2026-02-03T00:00:00+00:00")
-    mark = marks.marks["t1"]
-    assert mentions.record(later.topics[0], [second], you_id=ts.ME_PERSON, mark=mark) is True
-    assert mentions.topic_mentioned(later.topics[0], marks, open_topic_id=None)
-
-
-def test_a_topic_whose_ask_failed_goes_behind_the_other_due_topics() -> None:
-    (room,) = _rooms(
-        ts.room(
-            ts.ROOM_A,
-            "A",
-            [
-                ts.topic("t1", "One", "2026-02-02T00:00:00Z"),
-                ts.topic("t2", "Two", "2026-02-01T00:00:00Z"),
-            ],
-        )
-    )
-    marks = state.ReadMarks()
-    marks.merge_server({"t1": "2026-01-01T00:00:00Z", "t2": "2026-01-01T00:00:00Z"})
-    mentions = state.Mentions()
-
-    def order() -> list[str]:
-        return [t.topic_id for _, t in mentions.due([room], marks, open_topic_id=None)]
-
-    assert order() == ["t1", "t2"]
-    mentions.defer(room.topics[0])
-    assert order() == ["t2", "t1"]
-    mentions.defer(room.topics[1])
-    assert order() == ["t1", "t2"]  # the most recently failed goes last
-    mentions.record(room.topics[0], [], you_id=ts.ME_PERSON, mark=None)
-    assert "t1" not in mentions.deferred
-    assert order() == ["t2"]
+    assert marks.mentioned_topics([archived]) == set()  # an archived topic shows no mention
+    marks.merge_unread([_row("t1", 0, mention=True)], {})  # a flag on a read topic is not shown
+    assert not marks.is_mentioned(t1)
+    assert not state.any_mention([room], marks)
 
 
 def test_sidebar_rows_carry_the_mention_on_topic_and_collapsed_room() -> None:
     room, marks = _unread_room()
-    mentions = state.Mentions()
-    mentions.record(
-        room.topics[0],
-        [_mention_msg("hit", "2026-02-01T00:00:00+00:00")],
-        you_id=ts.ME_PERSON,
-        mark=None,
-    )
     for manual, keys in (
         ({}, {"room:" + ts.ROOM_A}),
         ({ts.ROOM_A: True}, {"room:" + ts.ROOM_A, "topic:t1"}),
     ):
         rows = state.build_sidebar(
+            [room], marks, current=state.PEPPER, manual=manual, show_all=set(), pepper_dot=False
+        )
+        assert {r.key for r in rows if r.mention} == keys
+    assert {
+        r.key
+        for r in state.build_sidebar(
             [room],
             marks,
             current=state.PEPPER,
-            manual=manual,
+            manual={ts.ROOM_A: True},
             show_all=set(),
             pepper_dot=False,
-            mentions=mentions,
         )
-        assert {r.key for r in rows if r.mention} == keys
-    plain_rows = state.build_sidebar(
-        [room], marks, current=state.PEPPER, manual={}, show_all=set(), pepper_dot=False
-    )
-    assert not any(r.mention for r in plain_rows)
-    assert any(r.unread for r in plain_rows)
+        if r.unread and r.kind == "topic"
+    } == {"topic:t1", "topic:t2"}

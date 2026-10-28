@@ -57,7 +57,7 @@ scope, so the Messages section described here is stable.
 | Exactly one Messages row has the accent bar | `_sidebar.html` | Tree cursor highlight. The open conversation also gets a `▌` marker |
 | Header shows the room name and topic name, with an "archived" pill and "Room info" | `web/templates/_group_header.html` | Header line `Room › Topic`, with `[archived]` where it applies. Room info is P3 |
 | Unread is a **dot, not a count** ("a number would claim a precision…") | `web/static/unread_badge.js`, `web/static/groups_unread.js` | `●`. Never a number. The terminal title gets a `●` prefix while anything is unread |
-| Read marks: the server is the store of record. `GET /groups/{gid}/read` seeds them and `PUT …/topics/{tid}/read` publishes. An open topic is always read. Your own sends never badge | `web/static/groups_read_marks.js` | Same rules, same endpoints (§6.3) |
+| Read marks: the server is the store of record. `GET /groups/{gid}/read` seeds them and `PUT …/topics/{tid}/read` publishes. An open topic is always read. Your own sends never badge | `web/static/groups_read_marks.js` | Same endpoints (§6.3). Unread itself is the server's `unread` rows (read-state-sync phase 5c) |
 | Room poll is adaptive: 3s while active (interaction within 60s), 10s cooling (to 120s), 15s idle, paused while hidden. The rail polls every 15s with an ETag | `web/static/group_poll_cadence.js` (mirrors iOS `GroupLogic.roomPollInterval`) | Same cadence. "Hidden" maps to the terminal losing focus, where Textual reports it, and to the screen being suspended |
 | Poll cursor = newest `created_at` the server returned, minus a 10s lookback. Rows are deduped by id and placed in `(created_at, id)` order | `web/static/group_room.js` (pepper#4829) | Same rule, in `poller.py` (§6.2) |
 | One composer. Enter sends; Shift+Enter or Alt+Enter adds a newline. An `@` menu comes from the roster (none in chat). Quote-reply works in rooms only, and Esc cancels it. A slash menu (apps, commands, skills, topics). Drafts are kept per destination. The placeholder names the room | `web/static/composer.js` | Enter sends. **Alt+Enter or Ctrl+J** adds a newline, because most terminals can't tell Shift+Enter from Enter. Mentions, quote-reply, drafts per destination and the slash menu are covered in §5 and §13 |
@@ -140,8 +140,9 @@ needed. The spike in §8 checked this pattern.
 2. `GET /api/v1/groups` (`list_groups`). If `enabled=false`, the sidebar is **Pepper only**, with no
    rooms section and no error. If `degraded=true`, a one-line notice says rooms may be stale. Keep
    the ETag.
-3. For each room, `GET /groups/{gid}/read` → read marks. This is one call per room, the same as the
-   web on first sight. It runs in parallel in a small pool and is cached for the session.
+3. For each room, `GET /groups/{gid}/read` → read marks and the room's `unread` rows
+   (`{topic_id, unread_count, has_unread_mention, floor}`). This is one call per room, in parallel
+   in a small pool, cached for the session and refetched only for rooms whose topics moved.
 4. `GET /groups/{gid}` for the **open** room only, to get `members[]`: `is_you` (the viewer's
    `person_id`, used for mentions) and the roster for `@`.
 5. Open the Pepper DM by default. Optionally, reopen the last conversation (its id is the only
@@ -156,7 +157,9 @@ them:
 
 - `read_state.advanced` (`{topic_id, group_id, last_read_at}`) is merged into the read marks
   directly, forward only, comparing at the server's full (microsecond) precision
-  (`ReadMarks.merge_advanced`). The sidebar repaints from the marks; no rail request is made.
+  (`ReadMarks.merge_advanced`). A mark that has passed the topic's newest activity clears its
+  cached unread row (`ReadMarks.settle`) and the sidebar repaints; no rail request is made. A
+  mark short of it (a partial read) leaves the server's count in place and asks the rail again.
 - A message, mention, member, room or app event fetches the rail now (a 304 when nothing changed),
   and the open topic too when the event names it. `chat.message` fetches the Pepper DM.
 - An edit, delete or preview event for a row of the open topic that is already on screen reads
@@ -188,17 +191,26 @@ The cadence below is what runs with no stream.
 
 ### 6.3 Unread and read marks
 
-There is one pure function in `tui/state.py`, ported from `groups_unread.js`/`groups_read_marks.js`:
+The server decides what is unread (read-state-sync §6, phase 5): messages newer than the later of
+the person's cursor and their floor, not their own, not tombstones, through the context rule.
+`ReadMarks` in `tui/state.py` is the cache of that answer:
 
-- A topic is unread when its `last_activity_at` is later than `read_through`, it is not the open
-  topic, and the latest activity is not the viewer's own pending send.
+- A topic is unread when the server's `unread` row for it has `unread_count > 0`. A topic with no
+  row (an older server, a room whose read failed) is not unread: unknown is not unread. The
+  client never raises a count.
 - A room is unread when any of its non-archived topics is.
-- **First sight**: a topic with no server mark is seeded as read at its current `last_activity_at`,
-  so a new install does not light up every room. The web does the same.
+- **No first-sight seed.** A fresh profile shows exactly what the server says; nothing is written
+  back (first sight never PUTs).
+- The one local derivation can only clear: a cursor (our own mark, or `read_state.advanced`) at or
+  after a topic's newest activity leaves nothing unread under any rule, so the cached row is
+  dropped until the server's next answer. A cursor short of it clears nothing. Only a cursor that
+  moved after the server counted the row can clear it: the rail reads `/groups` before `/read`,
+  so the activity it compares against can be older than the answer. For the same reason every
+  row is kept, including one counted from a cursor older than ours; the newer cursor settles it.
 - **Read = the newest row has been on screen** (read-state-sync §5.2): with the terminal focused
   and the thread at its end, the newest row's `created_at` is published as `PUT …/topics/{tid}/read`
   (the server's own string, never a device clock). **Scrolled up, nothing is marked**, and the open
-  topic shows as unread while rows sit below the screen; reaching the end marks the newest row. Your
+  topic stays unread (the server's count) while rows sit below the screen; reaching the end marks the newest row. Your
   own send puts the thread back at the end and counts as read once the server stores it, if the
   thread is still there: a send that lands after you scrolled up, blurred the terminal or left
   the topic marks nothing (rows stored before it have not been on screen; groups does not advance
@@ -211,9 +223,8 @@ There is one pure function in `tui/state.py`, ported from `groups_unread.js`/`gr
 
 **Mentions.** A message mentions you when `message.mentions` contains your `person_id`. In the
 **open** topic this is free, and the row shows in the accent colour with an `@` marker. For other
-topics, `/api/v1/groups` gives only `last_activity_at`, and `/groups/activity` gives an excerpt but
-no mention flag. So a mention dot elsewhere would cost one message fetch per newly-unread topic. The
-web has no mention badge at all. §15 C.
+topics the server's unread row carries `has_unread_mention`, so a mention marker costs no message
+fetch (the per-topic fetch of P4 retired with read-state-sync phase 5c). §15 C.
 
 ### 6.4 Posting to a room (P2)
 
@@ -313,7 +324,7 @@ src/pepper_cli/tui/
   thread.py        message list widget, pinning, selection, "N new" marker
   composer.py      TextArea subclass: Enter/Alt+Enter, @ and / menus, quote, per-destination drafts
   poller.py        workers: rail poll, topic poll (cursor + lookback + reconcile), DM history poll, backoff
-  state.py         pure: ordering, unread rule, first-sight seed, cadence, cursor merge, draft keys
+  state.py         pure: ordering, the server-unread cache, cadence, cursor merge, draft keys
   rows.py          GroupMessage / ChatHistoryEntry -> Rich renderables (shares helpers with render.py)
   styles.tcss
 ```
@@ -347,8 +358,8 @@ the terminal and printing the traceback hint to stderr.
 
 ## 11. Testing
 
-- **`state.py`**: plain unit tests covering ordering, the unread rule (first sight, open = read, own
-  pending), cursor and lookback merging, cadence transitions, and draft keys. These carry most of
+- **`state.py`**: plain unit tests covering ordering, the server-unread cache (the server's rows, a
+  cursor clearing a row, a stale answer), cursor and lookback merging, cadence transitions, and draft keys. These carry most of
   the coverage.
 - **Pollers**: pytest-httpx, as the rest of the suite does. Cover the ETag 304 path, the 403
   `enabled=false` path, backoff, a 401 stop, and the pepper#4829 race (an own echo, then an
@@ -431,7 +442,8 @@ CLI release, released users see the TUI default arrive with the TUI itself. `PEP
 
 - (a) Web parity: a highlighted row in the open topic, and nothing extra elsewhere.
 - (b) As in (a), plus `@` in place of `●` on a sidebar row whose unread activity mentions you. This
-  costs one message fetch per newly-unread topic.
+  costs one message fetch per newly-unread topic (P4; since read-state-sync phase 5c the
+  server's `has_unread_mention` flag makes it free).
 - (c) As in (b), plus the terminal bell when a mention arrives.
 
 **Decided (a) for P1–P3, and (b) in P4, 2026-10-16.** A terminal user can't see a phone

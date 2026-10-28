@@ -211,6 +211,12 @@ class FakeServer:
     rooms: list[dict[str, Any]] = field(default_factory=list)
     messages: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     marks: dict[str, str] = field(default_factory=dict)
+    #: The server's floor: a topic with no mark counts only messages newer than this.
+    floor: str = "2026-01-01T00:00:00+00:00"
+    #: ``topic_id -> unread row`` the server answers instead of computing one (a scripted rule).
+    unread_override: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Leave the ``unread`` key out of ``GET .../read`` (a server that predates phase 5b).
+    omit_unread: bool = False
     history: list[dict[str, Any]] = field(default_factory=list)
     enabled: bool = True
     degraded: bool = False
@@ -284,6 +290,37 @@ class FakeServer:
             if path.startswith(prefix) or keyed.startswith(prefix):
                 raise exc
         return response
+
+    def _unread_rows(self, group_id: str) -> list[dict[str, Any]]:
+        """The room's ``unread`` rows as the server computes them (read-state-sync §6): messages
+        after the later of the mark and the floor, not your own, not tombstones."""
+        room_row = next(r for r in self.rooms if r["group_id"] == group_id)
+        rows: list[dict[str, Any]] = []
+        for t in room_row["topics"]:
+            tid = t["topic_id"]
+            if tid in self.unread_override:
+                rows.append({"topic_id": tid, "floor": self.floor, **self.unread_override[tid]})
+                continue
+            from pepper_cli.tui.state import parse_ts
+
+            bounds = [parse_ts(self.marks.get(tid)), parse_ts(self.floor)]
+            cutoff = max((b for b in bounds if b is not None), default=None)
+            counted = [
+                m
+                for m in self.messages.get(tid, [])
+                if not m["is_you"]
+                and not m["is_deleted"]
+                and (cutoff is None or (parse_ts(m["created_at"]) or cutoff) > cutoff)
+            ]
+            rows.append(
+                {
+                    "topic_id": tid,
+                    "floor": self.floor,
+                    "unread_count": len(counted),
+                    "has_unread_mention": any(ME_PERSON in m.get("mentions", []) for m in counted),
+                }
+            )
+        return rows
 
     def _next_at(self) -> str:
         """A created_at later than every fixture row (the server's clock moves on)."""
@@ -502,7 +539,10 @@ class FakeServer:
         if parts[:3] == ["api", "v1", "groups"] and len(parts) >= 5:
             if parts[4] == "read" and request.method == "GET":
                 marks = [{"topic_id": t, "read_through": v} for t, v in self.marks.items()]
-                return httpx.Response(200, json={"marks": marks})
+                body: dict[str, Any] = {"marks": marks}
+                if not self.omit_unread:
+                    body["unread"] = self._unread_rows(parts[3])
+                return httpx.Response(200, json=body)
             if len(parts) == 7 and parts[4] == "topics" and parts[6] == "read":
                 through = json.loads(request.content)["read_through"]
                 self.puts.append((parts[5], through))

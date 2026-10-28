@@ -815,3 +815,43 @@ def test_room_mute_read_mark_and_sharing_wire_shapes() -> None:
         ("GET", f"{base}/sharing", ""),
         ("POST", f"{base}/sharing", '{"calendars":{"c1":"busy"}}'),
     ]
+
+
+def test_get_group_read_state_parses_marks_and_the_servers_unread_rows() -> None:
+    seen: list[httpx.Request] = []
+    body = {
+        "marks": [{"topic_id": _TID, "read_through": "2026-09-16T10:05:00+00:00"}],
+        "sync_dismissal": True,
+        "unread": [
+            {
+                "topic_id": _TID,
+                "unread_count": 2,
+                "has_unread_mention": True,
+                "floor": "2026-01-01T00:00:00+00:00",
+                "read_through": None,
+                "a_future_field": 1,
+            },
+            {"topic_id": "t2", "unread_count": 0},  # optional fields default
+            {"topic_id": "t3", "unread_count": "many"},  # malformed rows are dropped
+            {"unread_count": 1},
+            "nonsense",
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=body)
+
+    state = _client(handler).get_group_read_state(_GID)
+    assert (seen[0].method, seen[0].url.path) == ("GET", f"/api/v1/groups/{_GID}/read")
+    assert state.marks == {_TID: "2026-09-16T10:05:00+00:00"}
+    assert state.unread == [
+        api_client.GroupUnreadRow(_TID, 2, True, "2026-01-01T00:00:00+00:00"),
+        api_client.GroupUnreadRow("t2", 0, False, None),
+    ]
+
+
+def test_get_group_read_state_from_a_server_without_unread_rows_has_none() -> None:
+    client = _client(lambda request: httpx.Response(200, json={"marks": []}))
+    state = client.get_group_read_state(_GID)
+    assert state.marks == {} and state.unread == []

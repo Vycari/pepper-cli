@@ -1236,6 +1236,45 @@ class GroupSummary:
     topics: list[GroupTopicSummary] = field(default_factory=list)
 
 
+# MIRROR: src/pepper/api/groups.py::read_marks
+# (route handler; untyped dict response, no snapshot schema)
+@dataclass(frozen=True)
+class GroupUnreadRow:
+    """One topic's unread answer, as the server computed it (read-state-sync §6).
+
+    The server owns the rule: the floor, the person's own messages, tombstones and a carried
+    topic's reach are already applied. ``floor`` is informational.
+    """
+
+    topic_id: str
+    unread_count: int
+    has_unread_mention: bool = False
+    floor: str | None = None
+
+
+# MIRROR: src/pepper/api/groups.py::read_marks
+# (route handler; untyped dict response, no snapshot schema)
+@dataclass(frozen=True)
+class GroupReadState:
+    """``GET /api/v1/groups/{gid}/read``: read marks plus the room's unread rows."""
+
+    marks: dict[str, str] = field(default_factory=dict)
+    unread: list[GroupUnreadRow] = field(default_factory=list)
+
+
+def _unread_row_from_dict(raw: dict[str, Any]) -> GroupUnreadRow | None:
+    topic_id, count = raw.get("topic_id"), raw.get("unread_count")
+    if not isinstance(topic_id, str) or isinstance(count, bool) or not isinstance(count, int):
+        return None
+    floor = raw.get("floor")
+    return GroupUnreadRow(
+        topic_id=topic_id,
+        unread_count=max(count, 0),
+        has_unread_mention=raw.get("has_unread_mention") is True,
+        floor=floor if isinstance(floor, str) else None,
+    )
+
+
 # MIRROR: src/pepper/api/groups.py::list_groups
 # (route handler; untyped dict response, no snapshot schema)
 @dataclass(frozen=True)
@@ -3213,17 +3252,26 @@ class ApiClient:
             json={"read_through": read_through},
         ).json()
 
-    def get_group_read_marks(self, group_id: str) -> dict[str, str]:
-        """``GET /api/v1/groups/{gid}/read`` — ``{topic_id: read_through}`` for every
-        topic the caller has a mark on. A topic with no mark is absent, not null."""
+    def get_group_read_state(self, group_id: str) -> GroupReadState:
+        """``GET /api/v1/groups/{gid}/read`` — the caller's read marks and, from a server that
+        has server-side unread (read-state-sync phase 5b), the unread rows for the room.
+
+        A topic with no mark is absent from ``marks``, not null. A server without the
+        ``unread`` key yields no rows, which reads as "nothing known to be unread"."""
         # MIRROR: src/pepper/api/groups.py::read_marks
         # (route handler; the response is an untyped dict, so no snapshot schema)
         body = self._request("GET", f"/api/v1/groups/{group_id}/read").json()
-        return {
+        marks = {
             m["topic_id"]: m["read_through"]
             for m in body.get("marks") or []
             if isinstance(m.get("topic_id"), str) and isinstance(m.get("read_through"), str)
         }
+        rows = [
+            row
+            for raw in body.get("unread") or []
+            if isinstance(raw, dict) and (row := _unread_row_from_dict(raw)) is not None
+        ]
+        return GroupReadState(marks=marks, unread=rows)
 
     def list_groups_conditional(
         self, *, if_none_match: str | None = None
