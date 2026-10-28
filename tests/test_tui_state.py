@@ -116,6 +116,18 @@ def test_a_cursor_the_server_counted_from_does_not_settle_its_answer() -> None:
     assert not marks.is_unread(topic)
 
 
+def test_the_unread_total_is_the_servers_and_a_settled_row_does_not_change_it() -> None:
+    (room,) = _rooms(ts.room(ts.ROOM_A, "A", [ts.topic("t1", "One", "2026-02-01T00:00:00Z")]))
+    marks = state.ReadMarks()
+    # Two rows listing one message in common: the rows add up to 5, the server says 4.
+    marks.merge_unread([_row("t1", 2), _row("t2", 3)], {}, total=4)
+    assert marks.unread_total == 4
+    marks.merge_unread([_row("t1", 2)], {})  # an answer without a total keeps the last one
+    assert marks.unread_total == 4
+    assert marks.settle([room]) is False
+    assert marks.unread_total == 4
+
+
 def _big_room() -> list[api_client.GroupSummary]:
     topics = [ts.topic(f"t{i}", f"Topic {i}", f"2026-03-0{i}T00:00:00Z") for i in range(1, 8)]
     return _rooms(ts.room(ts.ROOM_A, "Big", topics), ts.room(ts.ROOM_B, "Other", []))

@@ -46,7 +46,9 @@ def _rail_polls(server: ts.FakeServer) -> int:
 
 
 def _mark_fetches(server: ts.FakeServer) -> int:
-    return sum(1 for m, path, _q in server.requests if m == "GET" and path.endswith("/read"))
+    return sum(
+        1 for m, path, _q in server.requests if m == "GET" and path == "/api/v1/groups/unread"
+    )
 
 
 def _room_unread(app: tui_app.PepperApp, room_id: str) -> bool:

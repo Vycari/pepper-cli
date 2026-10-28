@@ -133,6 +133,9 @@ class ReadMarks:
     unread: dict[str, GroupUnreadRow] = field(default_factory=dict)
     #: ``topic_id -> the cursor the server counted that row from`` (``None``: it had none).
     counted_from: dict[str, datetime | None] = field(default_factory=dict)
+    #: The server's deduped total from the last unread answer. Any count shown is this, never a
+    #: sum of ``unread``: a message listed under a superseded room and its successor is one.
+    unread_total: int | None = None
 
     def merge(self, topic_id: str, at: datetime | None) -> bool:
         """Raise the mark for ``topic_id`` to ``at`` if that is newer. True when it moved."""
@@ -148,7 +151,13 @@ class ReadMarks:
         for topic_id, raw in server_marks.items():
             self.merge(topic_id, parse_ts(raw))
 
-    def merge_unread(self, rows: Iterable[GroupUnreadRow], marks: Mapping[str, str]) -> None:
+    def merge_unread(
+        self,
+        rows: Iterable[GroupUnreadRow],
+        marks: Mapping[str, str],
+        *,
+        total: int | None = None,
+    ) -> None:
         """Take the server's unread rows (and the cursors answered with them).
 
         Every row is kept, even one counted from a cursor older than one held here (an answer
@@ -161,6 +170,8 @@ class ReadMarks:
         for row in rows:
             self.unread[row.topic_id] = row
             self.counted_from[row.topic_id] = parse_ts(marks.get(row.topic_id))
+        if total is not None:
+            self.unread_total = total
 
     def merge_advanced(self, payload: object) -> str | None:
         """Fold a ``read_state.advanced`` event payload (``{topic_id, group_id, last_read_at}``)

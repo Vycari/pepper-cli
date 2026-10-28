@@ -8,7 +8,6 @@ transport instead of a running app.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -20,17 +19,13 @@ if TYPE_CHECKING:
         ChatHistoryEntry,
         GroupList,
         GroupMessage,
-        GroupReadState,
         GroupRosterMember,
         GroupSummary,
+        GroupsUnread,
         GroupTopicSummary,
         GroupUnreadRow,
     )
     from pepper_cli.tui.state import Conversation, PendingSend
-
-#: Concurrent read-mark fetches on the first load (one request per room).
-MARK_FETCH_WORKERS = 4
-
 
 type _Signature = tuple[tuple[str, str, str | None], ...]
 
@@ -46,10 +41,12 @@ class RailUpdate:
     """
 
     groups: GroupList | None
-    #: ``topic_id -> read_through`` for the rooms whose topics moved since the last 200.
+    #: ``topic_id -> read_through`` from the unread request (empty when none was made).
     server_marks: dict[str, str] = field(default_factory=dict)
-    #: The server's unread rows for those rooms (read-state-sync §6).
+    #: The server's unread rows for every room (read-state-sync §6).
     unread: list[GroupUnreadRow] = field(default_factory=list)
+    #: The server's deduped total, to show as it is; never a sum of ``unread``.
+    unread_total: int | None = None
     etag: str | None = None
     seen: dict[str, _Signature] | None = None
     #: The newest :meth:`RailPoller.refetch_all` request this step answered by reading every
@@ -62,7 +59,7 @@ def _signature(room: GroupSummary) -> _Signature:
 
 
 class RailPoller:
-    """Polls the room list with ``If-None-Match`` and refetches marks for rooms that moved.
+    """Polls the room list with ``If-None-Match`` and rereads the unread state when a room moved.
 
     :meth:`step` runs on a worker thread and only reads the saved state; :meth:`commit` runs
     on the UI thread once the result has been applied. The app keeps one rail request in
@@ -100,26 +97,24 @@ class RailPoller:
             # "Could not ask" is not "all caught up": the app holds what it has.
             return RailUpdate(groups=groups, etag=etag)
         moved = [r for r in groups.groups if full or self._seen.get(r.group_id) != _signature(r)]
-        moved_ids = {r.group_id for r in moved}
-        fetched = self._fetch_marks(moved)  # a transport error raises here, before any commit
+        # One request answers every room, so it is made only when a room moved (or on a full
+        # step). A transport error raises here, before any commit.
+        fetched = self._fetch_unread() if moved else None
         seen: dict[str, _Signature] = {}
+        moved_ids = {r.group_id for r in moved}
         for room in groups.groups:
-            if room.group_id in fetched or room.group_id not in moved_ids:
+            if fetched is not None or room.group_id not in moved_ids:
                 seen[room.group_id] = _signature(room)
             elif (old := self._seen.get(room.group_id)) is not None:
-                seen[room.group_id] = old  # its marks failed: it still counts as moved
-        merged: dict[str, str] = {}
-        rows: list[GroupUnreadRow] = []
-        for answer in fetched.values():
-            merged.update(answer.marks)
-            rows.extend(answer.unread)
-        complete = len(fetched) == len(moved)
-        # A room whose marks could not be read is asked again on the next poll. That needs a
-        # 200, so the ETag is only kept when every room's marks came back.
+                seen[room.group_id] = old  # its unread state failed: it still counts as moved
+        # A failed unread request is asked again on the next poll. That needs a 200, so the
+        # ETag is only kept when the request came back (or none was needed).
+        complete = fetched is not None or not moved
         return RailUpdate(
             groups=groups,
-            server_marks=merged,
-            unread=rows,
+            server_marks=fetched.marks if fetched else {},
+            unread=fetched.unread if fetched else [],
+            unread_total=fetched.unread_total if fetched else None,
             etag=etag if complete else None,
             seen=seen,
             full=asked if full and complete else 0,
@@ -136,25 +131,12 @@ class RailPoller:
         """Ask for the full list next time (after a failed poll, §6.6)."""
         self._etag = None
 
-    def _fetch_marks(self, rooms: list[GroupSummary]) -> dict[str, GroupReadState]:
-        """``group_id -> read state`` (marks and unread rows) for each room that answered."""
-        if not rooms:
-            return {}
-        with ThreadPoolExecutor(max_workers=MARK_FETCH_WORKERS) as pool:
-            answers = list(pool.map(lambda r: self._marks_or_none(r.group_id), rooms))
-        return {
-            room.group_id: marks
-            for room, marks in zip(rooms, answers, strict=True)
-            if marks is not None
-        }
-
-    def _marks_or_none(self, group_id: str) -> GroupReadState | None:
-        # One room's read state failing must not hide the rest of the rail. A room that cannot
-        # be read keeps whatever the cache held (nothing, on first sight: not unread) and is
-        # asked again on the next poll. A transport error is not caught: the whole step fails
-        # and nothing is committed.
+    def _fetch_unread(self) -> GroupsUnread | None:
+        # The unread state failing must not hide the rail. The cache keeps whatever it held
+        # (nothing, on first sight: not unread) and the next poll asks again. A transport error
+        # is not caught: the whole step fails and nothing is committed.
         try:
-            return self._api.get_group_read_state(group_id)
+            return self._api.get_groups_unread()
         except ApiError as exc:
             if exc.status == 401:
                 raise

@@ -14,7 +14,7 @@ Upgrade notes:
 - A fresh profile now matches the web: unread markers are what the server counts, with your own
   messages and anything from before you joined left out. Before, the first poll marked every topic
   read as of its last activity.
-- A server without `unread` rows on `GET /api/v1/groups/{gid}/read` (older than phase 5b) shows no
+- A server without `GET /api/v1/groups/unread` (older than read-state-sync phase 5b) shows no
   unread markers at all, where the local rule used to light them.
 
 ### Changed
@@ -25,8 +25,15 @@ Upgrade notes:
   poll fallback still update them, and a mark that passes a topic's newest activity clears its row
   until the server's next answer (#145).
 
+- The rail reads every room's unread state with one `GET /api/v1/groups/unread` instead of one
+  `GET /api/v1/groups/{gid}/read` per room, and keeps the server's deduped `unread_total` (a
+  message listed under a superseded room and its successor counts once). The request is made only
+  when a room moved. The vendored API snapshot is refreshed with it (#147).
+
 ### Removed
 
+- `ApiClient.get_group_read_state`, `GroupReadState` and the read-mark fetch pool; the poller no
+  longer calls `GET /api/v1/groups/{gid}/read` (#147).
 - `ReadMarks.seed_first_sight`, the local "activity later than the mark" unread rule, the
   open-topic exception that went with it, and the per-topic mention fetch (`Mentions`) (#145).
 

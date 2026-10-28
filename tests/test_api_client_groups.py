@@ -817,41 +817,42 @@ def test_room_mute_read_mark_and_sharing_wire_shapes() -> None:
     ]
 
 
-def test_get_group_read_state_parses_marks_and_the_servers_unread_rows() -> None:
+def test_get_groups_unread_parses_rows_marks_and_the_deduped_total() -> None:
     seen: list[httpx.Request] = []
     body = {
-        "marks": [{"topic_id": _TID, "read_through": "2026-09-16T10:05:00+00:00"}],
-        "sync_dismissal": True,
-        "unread": [
+        "topics": [
             {
+                "group_id": _GID,
                 "topic_id": _TID,
                 "unread_count": 2,
                 "has_unread_mention": True,
                 "floor": "2026-01-01T00:00:00+00:00",
-                "read_through": None,
+                "read_through": "2026-09-16T10:05:00+00:00",
                 "a_future_field": 1,
             },
-            {"topic_id": "t2", "unread_count": 0},  # optional fields default
+            {"topic_id": "t2", "unread_count": 0, "read_through": None},  # no mark: no cursor
             {"topic_id": "t3", "unread_count": "many"},  # malformed rows are dropped
             {"unread_count": 1},
             "nonsense",
         ],
+        "unread_total": 1,  # not the 2 the rows add up to
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
         return httpx.Response(200, json=body)
 
-    state = _client(handler).get_group_read_state(_GID)
-    assert (seen[0].method, seen[0].url.path) == ("GET", f"/api/v1/groups/{_GID}/read")
+    state = _client(handler).get_groups_unread()
+    assert (seen[0].method, seen[0].url.path) == ("GET", "/api/v1/groups/unread")
     assert state.marks == {_TID: "2026-09-16T10:05:00+00:00"}
     assert state.unread == [
         api_client.GroupUnreadRow(_TID, 2, True, "2026-01-01T00:00:00+00:00"),
         api_client.GroupUnreadRow("t2", 0, False, None),
     ]
+    assert state.unread_total == 1
 
 
-def test_get_group_read_state_from_a_server_without_unread_rows_has_none() -> None:
-    client = _client(lambda request: httpx.Response(200, json={"marks": []}))
-    state = client.get_group_read_state(_GID)
-    assert state.marks == {} and state.unread == []
+def test_get_groups_unread_tolerates_a_missing_or_malformed_total() -> None:
+    for body in ({"topics": []}, {"topics": [], "unread_total": True}):
+        state = _client(lambda request, b=body: httpx.Response(200, json=b)).get_groups_unread()
+        assert state.unread == [] and state.unread_total is None

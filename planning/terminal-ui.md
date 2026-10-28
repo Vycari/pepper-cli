@@ -57,7 +57,7 @@ scope, so the Messages section described here is stable.
 | Exactly one Messages row has the accent bar | `_sidebar.html` | Tree cursor highlight. The open conversation also gets a `▌` marker |
 | Header shows the room name and topic name, with an "archived" pill and "Room info" | `web/templates/_group_header.html` | Header line `Room › Topic`, with `[archived]` where it applies. Room info is P3 |
 | Unread is a **dot, not a count** ("a number would claim a precision…") | `web/static/unread_badge.js`, `web/static/groups_unread.js` | `●`. Never a number. The terminal title gets a `●` prefix while anything is unread |
-| Read marks: the server is the store of record. `GET /groups/{gid}/read` seeds them and `PUT …/topics/{tid}/read` publishes. An open topic is always read. Your own sends never badge | `web/static/groups_read_marks.js` | Same endpoints (§6.3). Unread itself is the server's `unread` rows (read-state-sync phase 5c) |
+| Read marks: the server is the store of record. `GET /groups/unread` seeds them and `PUT …/topics/{tid}/read` publishes. An open topic is always read. Your own sends never badge | `web/static/groups_read_marks.js` | Same endpoints (§6.3). Unread itself is the server's `unread` rows (read-state-sync phase 5c) |
 | Room poll is adaptive: 3s while active (interaction within 60s), 10s cooling (to 120s), 15s idle, paused while hidden. The rail polls every 15s with an ETag | `web/static/group_poll_cadence.js` (mirrors iOS `GroupLogic.roomPollInterval`) | Same cadence. "Hidden" maps to the terminal losing focus, where Textual reports it, and to the screen being suspended |
 | Poll cursor = newest `created_at` the server returned, minus a 10s lookback. Rows are deduped by id and placed in `(created_at, id)` order | `web/static/group_room.js` (pepper#4829) | Same rule, in `poller.py` (§6.2) |
 | One composer. Enter sends; Shift+Enter or Alt+Enter adds a newline. An `@` menu comes from the roster (none in chat). Quote-reply works in rooms only, and Esc cancels it. A slash menu (apps, commands, skills, topics). Drafts are kept per destination. The placeholder names the room | `web/static/composer.js` | Enter sends. **Alt+Enter or Ctrl+J** adds a newline, because most terminals can't tell Shift+Enter from Enter. Mentions, quote-reply, drafts per destination and the slash menu are covered in §5 and §13 |
@@ -140,9 +140,11 @@ needed. The spike in §8 checked this pattern.
 2. `GET /api/v1/groups` (`list_groups`). If `enabled=false`, the sidebar is **Pepper only**, with no
    rooms section and no error. If `degraded=true`, a one-line notice says rooms may be stale. Keep
    the ETag.
-3. For each room, `GET /groups/{gid}/read` → read marks and the room's `unread` rows
-   (`{topic_id, unread_count, has_unread_mention, floor}`). This is one call per room, in parallel
-   in a small pool, cached for the session and refetched only for rooms whose topics moved.
+3. `GET /groups/unread` → every room's `unread` rows (`{group_id, topic_id, read_through, floor,
+   unread_count, has_unread_mention}`; `read_through` is the read mark the count was made from) and
+   `unread_total`, the server's deduped count. One call for all rooms, cached for the session and
+   asked again only when a room's topics moved. A total shown anywhere is `unread_total`, never a
+   sum of the rows.
 4. `GET /groups/{gid}` for the **open** room only, to get `members[]`: `is_you` (the viewer's
    `person_id`, used for mentions) and the roster for `@`.
 5. Open the Pepper DM by default. Optionally, reopen the last conversation (its id is the only

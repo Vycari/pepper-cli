@@ -215,8 +215,10 @@ class FakeServer:
     floor: str = "2026-01-01T00:00:00+00:00"
     #: ``topic_id -> unread row`` the server answers instead of computing one (a scripted rule).
     unread_override: dict[str, dict[str, Any]] = field(default_factory=dict)
-    #: Leave the ``unread`` key out of ``GET .../read`` (a server that predates phase 5b).
+    #: Answer 404 to ``GET /groups/unread`` (a server that predates phase 5b).
     omit_unread: bool = False
+    #: The ``unread_total`` the server answers instead of the deduped sum of its rows.
+    unread_total: int | None = None
     history: list[dict[str, Any]] = field(default_factory=list)
     enabled: bool = True
     degraded: bool = False
@@ -291,6 +293,17 @@ class FakeServer:
                 raise exc
         return response
 
+    def _all_unread(self) -> dict[str, Any]:
+        """``GET /groups/unread``: every room's rows and the deduped total."""
+        topics = [
+            {"group_id": room["group_id"], **row}
+            for room in self.rooms
+            for row in self._unread_rows(room["group_id"])
+        ]
+        distinct = {r["topic_id"]: r["unread_count"] for r in topics}
+        total = self.unread_total if self.unread_total is not None else sum(distinct.values())
+        return {"topics": topics, "unread_total": total}
+
     def _unread_rows(self, group_id: str) -> list[dict[str, Any]]:
         """The room's ``unread`` rows as the server computes them (read-state-sync §6): messages
         after the later of the mark and the floor, not your own, not tombstones."""
@@ -299,7 +312,14 @@ class FakeServer:
         for t in room_row["topics"]:
             tid = t["topic_id"]
             if tid in self.unread_override:
-                rows.append({"topic_id": tid, "floor": self.floor, **self.unread_override[tid]})
+                rows.append(
+                    {
+                        "topic_id": tid,
+                        "read_through": self.marks.get(tid),
+                        "floor": self.floor,
+                        **self.unread_override[tid],
+                    }
+                )
                 continue
             from pepper_cli.tui.state import parse_ts
 
@@ -315,6 +335,7 @@ class FakeServer:
             rows.append(
                 {
                     "topic_id": tid,
+                    "read_through": self.marks.get(tid),
                     "floor": self.floor,
                     "unread_count": len(counted),
                     "has_unread_mention": any(ME_PERSON in m.get("mentions", []) for m in counted),
@@ -535,14 +556,12 @@ class FakeServer:
         if path == "/api/v1/chat/tool-result":
             self.tool_results.append(json.loads(request.content))
             return httpx.Response(200, json={"ok": True})
+        if path == "/api/v1/groups/unread":
+            if self.omit_unread:
+                return httpx.Response(404, json={"detail": "not found"})
+            return httpx.Response(200, json=self._all_unread())
         parts = path.strip("/").split("/")
         if parts[:3] == ["api", "v1", "groups"] and len(parts) >= 5:
-            if parts[4] == "read" and request.method == "GET":
-                marks = [{"topic_id": t, "read_through": v} for t, v in self.marks.items()]
-                body: dict[str, Any] = {"marks": marks}
-                if not self.omit_unread:
-                    body["unread"] = self._unread_rows(parts[3])
-                return httpx.Response(200, json=body)
             if len(parts) == 7 and parts[4] == "topics" and parts[6] == "read":
                 through = json.loads(request.content)["read_through"]
                 self.puts.append((parts[5], through))

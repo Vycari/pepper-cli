@@ -25,29 +25,42 @@ def test_rail_sends_if_none_match_and_a_304_changes_nothing() -> None:
     assert len(gets) == 2
 
 
-def test_rail_refetches_marks_only_for_rooms_whose_topics_moved() -> None:
+def test_rail_reads_every_rooms_unread_in_one_request_and_only_when_a_room_moved() -> None:
     server = ts.standard_server()
     with server.client() as api:
         rail = poller.RailPoller(api)
-        rail.commit(rail.step())
-        before = len([r for r in server.requests if r[1].endswith("/read")])
-        assert before == 2  # one per room on the first load
+        first = rail.step()
+        rail.commit(first)
+        assert _unread_reads(server) == 1  # one request for both rooms on the first load
+        assert {r.topic_id for r in first.unread} >= {ts.TOPIC_A1, ts.TOPIC_B1}
         server.rooms[1]["topics"][0]["last_activity_at"] = "2026-09-17T00:00:00+00:00"
         server.bump()
         update = rail.step()
         assert update.groups is not None
         rail.commit(update)
-        after = [r for r in server.requests if r[1].endswith("/read")]
-        assert len(after) == 3
-        assert after[-1][1] == f"/api/v1/groups/{ts.ROOM_B}/read"
-        # Same list again with a new ETag (e.g. only a member count changed): no mark fetches.
+        assert _unread_reads(server) == 2
+        # Same list again with a new ETag (e.g. only a member count changed): no unread request.
         server.bump()
         rail.commit(rail.step())
-        assert len([r for r in server.requests if r[1].endswith("/read")]) == 3
+        assert _unread_reads(server) == 2
+        assert not [r for r in server.requests if r[1].endswith("/read")]  # no per-room reads
 
 
-def _mark_reads(server: ts.FakeServer) -> int:
-    return len([r for r in server.requests if r[1].endswith("/read")])
+def test_the_unread_total_is_the_servers_not_a_sum_of_rows() -> None:
+    server = ts.standard_server()
+    server.unread_override = {
+        ts.TOPIC_A1: {"unread_count": 2},
+        ts.TOPIC_B1: {"unread_count": 3},
+    }
+    server.unread_total = 3  # the two rows list one message in common
+    with server.client() as api:
+        update = poller.RailPoller(api).step()
+    assert sum(r.unread_count for r in update.unread) > 3
+    assert update.unread_total == 3
+
+
+def _unread_reads(server: ts.FakeServer) -> int:
+    return len([r for r in server.requests if r[1] == "/api/v1/groups/unread"])
 
 
 def test_refetch_all_reads_every_rooms_marks_once_with_nothing_moved() -> None:
@@ -61,9 +74,9 @@ def test_refetch_all_reads_every_rooms_marks_once_with_nothing_moved() -> None:
         assert update.groups is not None  # a 200 despite the saved ETag
         assert update.server_marks[ts.TOPIC_B1] == "2026-09-17T00:00:00+00:00"
         rail.commit(update)
-        assert _mark_reads(server) == 4
+        assert _unread_reads(server) == 2
         assert rail.step().groups is None  # once: back to a 304
-        assert _mark_reads(server) == 4
+        assert _unread_reads(server) == 2
 
 
 def test_refetch_all_survives_the_commit_of_a_step_already_in_flight() -> None:
@@ -77,7 +90,7 @@ def test_refetch_all_survives_the_commit_of_a_step_already_in_flight() -> None:
         update = rail.step()
         assert update.groups is not None and update.full
         rail.commit(update)
-        assert _mark_reads(server) == 4
+        assert _unread_reads(server) == 2
 
 
 def test_a_catch_up_asked_for_during_a_full_step_gets_its_own() -> None:
@@ -116,7 +129,7 @@ def test_nothing_is_committed_until_the_app_commits() -> None:
 
 def test_a_transport_error_fetching_marks_commits_nothing() -> None:
     server = ts.standard_server()
-    server.raise_on[f"/api/v1/groups/{ts.ROOM_B}/read"] = httpx.ConnectError("down")
+    server.raise_on["/api/v1/groups/unread"] = httpx.ConnectError("down")
     with server.client() as api:
         rail = poller.RailPoller(api)
         with pytest.raises(httpx.ConnectError):
@@ -129,25 +142,24 @@ def test_a_transport_error_fetching_marks_commits_nothing() -> None:
     assert len(_list_gets(server)) == 2
 
 
-def test_a_room_whose_marks_fail_is_asked_again_on_the_next_poll() -> None:
+def test_a_failed_unread_request_is_asked_again_on_the_next_poll() -> None:
     server = ts.standard_server()
-    server.fail[f"/api/v1/groups/{ts.ROOM_A}/read"] = 500
+    server.fail["/api/v1/groups/unread"] = 502
     with server.client() as api:
         rail = poller.RailPoller(api)
         first = rail.step()
+        assert first.groups is not None  # the rail still shows
         assert first.etag is None  # incomplete: the next poll must get a 200
-        assert ts.TOPIC_B1 in first.server_marks
+        assert first.unread == [] and first.server_marks == {}
         rail.commit(first)
         server.fail.clear()
         second = rail.step()
         assert second.groups is not None
-        assert ts.TOPIC_A1 in second.server_marks
+        assert ts.TOPIC_A1 in second.server_marks and ts.TOPIC_B1 in second.server_marks
         assert second.etag is not None
         rail.commit(second)
         assert rail.step().groups is None
-    reads = [p for _, p, _ in server.requests if p.endswith("/read")]
-    assert reads.count(f"/api/v1/groups/{ts.ROOM_A}/read") == 2
-    assert reads.count(f"/api/v1/groups/{ts.ROOM_B}/read") == 1
+    assert _unread_reads(server) == 2
 
 
 def test_forget_etag_asks_for_the_full_list() -> None:
@@ -158,7 +170,7 @@ def test_forget_etag_asks_for_the_full_list() -> None:
         rail.forget_etag()
         update = rail.step()
     assert update.groups is not None
-    assert update.server_marks == {}  # nothing moved, so no mark refetch
+    assert update.server_marks == {}  # nothing moved, so no unread request
 
 
 def test_rail_disabled_and_degraded_skip_marks() -> None:
@@ -169,17 +181,17 @@ def test_rail_disabled_and_degraded_skip_marks() -> None:
     assert update.groups is not None
     assert update.groups.degraded is True
     assert update.server_marks == {}
-    assert not [r for r in server.requests if r[1].endswith("/read")]
+    assert not _unread_reads(server)
 
 
-def test_a_room_whose_marks_fail_is_skipped_but_a_401_is_not() -> None:
+def test_a_failed_unread_request_is_skipped_but_a_401_is_not() -> None:
     server = ts.standard_server()
-    server.fail[f"/api/v1/groups/{ts.ROOM_A}/read"] = 500
+    server.fail["/api/v1/groups/unread"] = 500
     with server.client() as api:
         update = poller.RailPoller(api).step()
-    assert update.groups is not None  # one room's failure never hides the rail
-    assert ts.TOPIC_B1 in update.server_marks
-    server.fail = {f"/api/v1/groups/{ts.ROOM_A}/read": 401}
+    assert update.groups is not None  # a failed unread read never hides the rail
+    assert update.unread == []
+    server.fail = {"/api/v1/groups/unread": 401}
     with server.client() as api, pytest.raises(api_client.ApiError) as caught:
         poller.RailPoller(api).step()
     assert caught.value.status == 401
