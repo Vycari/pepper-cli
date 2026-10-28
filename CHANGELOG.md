@@ -19,6 +19,10 @@ Upgrade notes:
 
 ### Added
 
+- Agent skill: an agent token can also run `notes list|search|show|edit --room <room>` on the
+  text notes of a room it belongs to (pepper#5537); the guide now lists seventeen commands, keeps
+  personal notes, other artifact kinds and note creation/deletion out of scope, and tells an agent
+  to read the whole note with `notes show` before answering a comment.
 - Room messages show note comments for agents: `messages list` and `agents claude-channel` events
   print an anchored comment's quoted passage (about 160 chars) above its body and a one-line
   header on a note's comments topic pointing at `comments list --note`; `--json` passes `anchor`,

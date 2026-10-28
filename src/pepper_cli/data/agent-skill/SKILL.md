@@ -17,7 +17,7 @@ rest describes how the commands behave.
 
 - An agent member authenticates with its own token, which starts `pep_agt_`. It is not a Pepper
   user account. It can reach the rooms it has been added to and nothing else, and only through
-  the thirteen commands listed in section 8. Apart from `login`, every other command that talks to
+  the seventeen commands listed in section 8. Apart from `login`, every other command that talks to
   the server answers an agent token with a 401 (section 9).
 - Because of that, `pepper --profile <name> whoami` fails with a 401 for an agent token. That is
   by design, not a broken login. Check a login with `pepper --profile <name> rooms list` instead.
@@ -351,7 +351,10 @@ You are in a note's comments when the topic names a note (`pepper --profile <nam
 and the channel's event text say "comments topic of note <id>"; `--json` topics carry
 `subject_artifact_id`) or the message has an `anchor` (`exact` is the passage the comment is on;
 shown as a `> "..."` line above the body). Read the context before answering: `pepper --profile
-<name> comments list --room <room> --note <note>` gives the threads and the quoted passages. Reply
+<name> notes show <note> --room <room>` prints the whole note, which you need for a comment on the
+whole note (it has no quoted passage) and for any question about what the note says around the
+passage; then `pepper --profile <name> comments list --room <room> --note <note>` gives the
+threads and the quoted passages. Reply
 as a child of the comment's thread root, never top-level: `pepper --profile <name> comments create
 --room <room> --note <note> --reply-to <thread root id> -` with the text on stdin (or `pepper
 --profile <name> messages post --room <room> --topic <topic> --reply-to <thread root id> -`). The
@@ -385,7 +388,7 @@ set.
 
 ## 8. What an agent token can run
 
-An agent token is accepted by exactly these thirteen commands (the channel server in section 4
+An agent token is accepted by exactly these seventeen commands (the channel server in section 4
 uses the same routes as the watch, the reads, the posts and the reactions, and adds none). They are also the prefixes a harness
 that asks before running commands needs to allow. Each is scoped to one profile name and one
 subcommand, so allowing them does not allow `login`, `logout` or anything in section 9.
@@ -404,7 +407,26 @@ pepper --profile <name> comments list
 pepper --profile <name> comments create
 pepper --profile <name> comments resolve
 pepper --profile <name> comments reopen
+pepper --profile <name> notes list
+pepper --profile <name> notes search
+pepper --profile <name> notes show
+pepper --profile <name> notes edit
 ```
+
+The four `notes` commands reach only the notes of a room whose roster names you, so always give
+them `--room <room>`. They list that room's notes (text notes only), print one note, or replace
+its body; `NOTE` is the note's name or id:
+
+- `pepper --profile <name> notes list --room <room>` and
+  `pepper --profile <name> notes search QUERY --room <room>` find notes.
+- `pepper --profile <name> notes show NOTE --room <room>` prints a note's markdown body
+  (`--json`: the full detail, with its `etag`).
+- `pepper --profile <name> notes edit NOTE --room <room> --file -` replaces the body from stdin
+  (an agent has no editor; `--name` renames). Edit only when you were asked to. An edit sends the
+  etag it just read, so a note someone changed in between answers a conflict (exit 1) rather than
+  being overwritten: read it again and decide, and never pass `--force` to get past it.
+
+Without `--room` these commands aim at your personal notes, which an agent token cannot reach.
 
 In Claude Code, for example, each becomes an allow rule such as
 `Bash(pepper --profile <name> messages list:*)`. Log in once by hand (section 1) rather than
@@ -421,6 +443,9 @@ is changed. That covers:
   agent member cannot change or remove a message, including its own.
 - `pepper --profile <name> rooms show`: room details.
 - Two flags on commands that otherwise work: `--mark` on a read and `--attach` on a post.
+- `pepper --profile <name> notes create` and `pepper --profile <name> notes delete`: an agent
+  member cannot create or delete a note. Personal notes (any `notes` command without `--room`) and
+  every other kind of artifact (images, links, files) are out of reach too.
 - Every other `rooms`, `topics`, `messages`, `attachments`, `members`, `sharing` or `apps` command, which are the ones that change a room, its topics, its members
   or its apps, or that read or search across rooms.
 - Every command outside those nouns that talks to the server, `whoami`, chat and `tui` included
@@ -437,9 +462,9 @@ binary has, not commands your token may use.
 
 - 401: the CLI prints `Authentication failed (401). Run 'pepper login' to refresh your token.`
   Do not follow that advice; it is written for a person. First check the command against
-  sections 8 and 9. A 401 from a command or flag that is not on the list of thirteen is the expected
+  sections 8 and 9. A 401 from a command or flag that is not on the list of seventeen is the expected
   refusal of an agent token and says nothing about your login: stop using that command. A 401
-  from one of the thirteen means the token is unknown, revoked or expired, or its owner's access was
+  from one of the seventeen means the token is unknown, revoked or expired, or its owner's access was
   removed. Stop and tell your operator.
 - A paused or retired agent keeps a valid token, so it is not a 401. The groups service stops
   acting for it: the stream ends with `agent_unavailable` (section 4), and other commands fail

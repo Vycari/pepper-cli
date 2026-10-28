@@ -297,7 +297,7 @@ layer on top. Note this is unrelated to `pepper skills`, which manages your
 account's own skills. A test holds the document to the real parser: every command in it
 must be a full `pepper …` invocation whose subcommand and flags exist, every
 `--flag` it mentions anywhere must exist, and outside its "cannot run" section
-it may only show the `rooms`, `topics`, `messages`, `attachments` and `members list` commands the server accepts an agent token for.
+it may only show the `rooms`, `topics`, `messages`, `attachments`, `members list`, `comments` and room-scoped `notes list|search|show|edit` commands the server accepts an agent token for.
 A renamed flag, a shortened example or a personal-token-only command fails CI
 until the document is updated.
 
