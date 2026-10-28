@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 SIZE = (120, 40)
 SAM = {"user_id": "sam-person", "label": "Sam"}
-ME_ASKEE = {"user_id": ts.ME_PERSON, "label": "Me"}
+ME_ASKEE = {"user_id": ts.ME, "label": "Me"}  # TodoPerson.user_id is the core user id
 
 
 @pytest.fixture(autouse=True)
@@ -516,3 +516,19 @@ async def test_a_transport_failure_on_the_shelf_is_reported() -> None:
         await open_a1(app, pilot)
         await pilot.press("a")
         await until(pilot, lambda: any("Couldn't load the room's apps" in n for n in seen))
+
+
+async def test_an_ask_means_you_by_your_core_user_id_never_your_person_id() -> None:
+    # The server's TodoPerson.user_id is users.id (features/todos/asks.py Party), so a todo asked
+    # of an id equal to your groups person id is someone else's, not yours.
+    server = server_with_apps()
+    server.todos[ts.ROOM_A].append(
+        ts.todo("t-alex", "Water the plants", assignee={"user_id": ts.ME_PERSON, "label": "Alex"})
+    )
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_todos(app, pilot)
+        assert app.you_ids == {ts.ME}
+        text = pane_text(app)
+        assert "asked of you by Sam" in text
+        assert "asked of Alex" in text

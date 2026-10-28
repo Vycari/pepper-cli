@@ -1159,8 +1159,8 @@ def _person_name(person: Any, you_ids: AbstractSet[str]) -> str:
 def ask_line(entry: TodoEntry, you_ids: AbstractSet[str]) -> str | None:
     """``asked of Sam by you`` under a todo that is an ask, or ``None`` for a plain one.
 
-    ``you_ids`` holds the ids that mean you (your groups person id, and your user id, since
-    the server's ``TodoPerson.user_id`` is not documented as either).
+    ``you_ids`` holds the ids that mean you: your core user id (``whoami().user_id``), which is
+    what the server's ``TodoPerson.user_id`` carries.
     """
     parts = []
     if entry.assignee is not None:

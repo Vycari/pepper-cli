@@ -9,7 +9,7 @@ from pepper_cli.tui import rows, state
 from tests import tui_support as ts
 
 NOW = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
-YOU = {ts.ME_PERSON}
+YOU = {ts.ME}
 
 
 def _todo(tid: str, title: str = "t", **over: object) -> api_client.TodoEntry:
@@ -52,7 +52,7 @@ def test_closed_todos_fold_newest_first_by_done_time_with_dismissed_beside_done(
 
 def test_ask_line_names_you_and_them_for_each_combination() -> None:
     sam = {"user_id": "sam-id", "label": "Sam"}
-    me = {"user_id": ts.ME_PERSON, "label": "Me"}
+    me = {"user_id": ts.ME, "label": "Me"}
     assert state.ask_line(_todo("1"), YOU) is None
     assert state.ask_line(_todo("1", assignee=sam, requested_by=me), YOU) == "asked of Sam by you"
     assert state.ask_line(_todo("1", assignee=me, requested_by=sam), YOU) == "asked of you by Sam"

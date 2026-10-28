@@ -267,8 +267,8 @@ class PepperApp(App[None]):
         #: Your groups person id: what ``mentions`` and ``author_person_id`` carry. Not the
         #: core user id (``whoami().user_id``), which never appears in a group payload.
         self.you_person_id: str | None = None
-        #: Your core user id (``whoami``): a todo's ask names people by an id that is not
-        #: documented as either, so both mean "you".
+        #: Your core user id (``whoami``): what a todo's ask names people by. The server's
+        #: ``TodoPerson.user_id`` is ``users.id``, never a groups person id.
         self.you_user_id: str | None = None
         #: The open Todos/Notes pane, or ``None``. While one is open the thread and the
         #: composer box are hidden (a room's composer would not say where a post lands).
@@ -1739,7 +1739,8 @@ class PepperApp(App[None]):
 
     @property
     def you_ids(self) -> set[str]:
-        return {i for i in (self.you_person_id, self.you_user_id) if i}
+        """The ids a todo's ask means you by: your core user id only (not ``you_person_id``)."""
+        return {self.you_user_id} if self.you_user_id else set()
 
     def action_room_apps(self) -> None:
         """``a``: a picker of the installed apps of the room under the cursor (or the open one)."""

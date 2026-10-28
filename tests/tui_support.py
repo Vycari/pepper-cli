@@ -371,7 +371,7 @@ class FakeServer:
         status = query.get("status", "open")
         rows = [t for t in self.todos.get(group_id, []) if status in ("all", t["status"])]
         if query.get("assignee") == "me":
-            rows = [t for t in rows if (t["assignee"] or {}).get("user_id") == ME_PERSON]
+            rows = [t for t in rows if (t["assignee"] or {}).get("user_id") == ME]
         return httpx.Response(200, json=rows)
 
     def _unread_rows(self, group_id: str) -> list[dict[str, Any]]:
