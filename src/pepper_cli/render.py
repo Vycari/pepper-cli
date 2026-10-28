@@ -200,15 +200,17 @@ def info(message: str | Text, *, soft_wrap: bool = False) -> None:
         _stderr.print(sanitize_text(message), markup=False, soft_wrap=soft_wrap)
 
 
-def error(message: str, *, soft_wrap: bool = False) -> None:
+def error(message: str, *, soft_wrap: bool = True) -> None:
     """Print an error line to stderr in red. The CLI returns nonzero
     *and* prints this; the two signals together let scripts both
     detect failure (exit code) and surface the cause (message).
 
-    ``soft_wrap=True`` is for a message that carries an id/uuid a person
-    would want to copy-paste (an ambiguous-name match listing, say) —
-    Rich would otherwise fold it across lines at the terminal width,
-    which breaks a paste of exactly the thing being offered.
+    Error lines are soft-wrapped by default: many carry a command, path,
+    or id a person copies back (``Run 'pepper login' first.``), and Rich
+    would otherwise fold the line across the terminal width mid-command.
+    Where it folds also depends on the length of an interpolated path, so
+    a wrapped line is not stable to assert on. Pass ``soft_wrap=False``
+    only for a line that should be folded to the terminal width.
 
     ``message`` is printed literally, never parsed as rich markup: most
     callers interpolate a server ``detail`` or name into it.

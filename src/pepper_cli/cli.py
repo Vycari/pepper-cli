@@ -4756,13 +4756,15 @@ def _emit_error(
     message: str,
     *,
     status: int | None = None,
-    soft_wrap: bool = False,
+    soft_wrap: bool = True,
 ) -> None:
     """Report an error: one J8 JSON line on stderr in JSON mode, else the usual text line.
 
     stdout is left empty either way. The caller still returns the exit code (J9).
     ``message`` must never carry a token. ``args=None`` is a caller that has no
     ``--json`` (another command family sharing a helper): always the text line.
+    Text errors soft-wrap by default so a command or path in the message stays
+    on one line; see :func:`render.error`.
     """
     if code not in _ERROR_CODES:
         raise ValueError(f"unknown error code {code!r}")

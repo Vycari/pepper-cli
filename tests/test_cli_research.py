@@ -840,10 +840,20 @@ def test_a_bad_cursor_is_the_servers_422(server, capsys) -> None:
     assert _error(err)["code"] == "validation"
 
 
-def test_not_logged_in(tmp_home, capsys) -> None:
+def test_not_logged_in(tmp_home, capsys, monkeypatch) -> None:
+    # A long credentials path would make Rich fold the error line, and where
+    # it folds depends on the path length. Pin both the width and the path so
+    # the test does not depend on the ambient temp path, then require the
+    # command to stay on one line.
+    long_home = tmp_home / ("h" * 120)
+    long_home.mkdir()
+    monkeypatch.setenv("HOME", str(long_home))
+    monkeypatch.setenv("USERPROFILE", str(long_home))
+    monkeypatch.setenv("COLUMNS", "80")
     rc, _, err = _run(["research-projects", "list"], capsys)
     assert rc == 1
     assert "pepper login" in err
+    assert err.rstrip("\n").count("\n") == 0
 
 
 def _without(row: dict, key: str) -> dict:
