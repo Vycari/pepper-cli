@@ -102,6 +102,18 @@ def server_with_apps() -> ts.FakeServer:
     return server
 
 
+async def settled_scroll(pilot: Pilot, scroller: PaneScroll, *, past: float) -> float:
+    """Wait for a page scroll past ``past`` to come to rest (it may animate on some terminals)."""
+    seen: list[float] = []
+
+    def still() -> bool:
+        seen.append(scroller.scroll_y)
+        return len(seen) > 2 and seen[-1] == seen[-2] == seen[-3] and seen[-1] > past
+
+    await until(pilot, still)
+    return scroller.scroll_y
+
+
 async def open_a1(app: tui_app.PepperApp, pilot: Pilot) -> None:
     await until(pilot, lambda: len(app.rooms) == 2)
     app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
@@ -558,8 +570,7 @@ async def test_a_reread_keeps_the_users_scroll_position_past_the_selection() -> 
         scroller = app.query_one(PaneScroll)
         scroller.focus()
         await pilot.press("pagedown")
-        await until(pilot, lambda: scroller.scroll_y > 10)
-        paged = scroller.scroll_y  # the selected row is now above the view
+        paged = await settled_scroll(pilot, scroller, past=10)  # the selection is above the view
         count = reads()
         await pilot.press("r")  # the same re-read the 30s poll makes
         await until(pilot, lambda: reads() > count)
@@ -733,7 +744,7 @@ async def test_leaving_a_scrolled_note_shows_the_list_at_its_selection() -> None
         await pilot.press("enter")
         await until(pilot, lambda: "line 0" in pane_text(app))
         await pilot.press("pagedown", "pagedown")
-        await until(pilot, lambda: scroller.scroll_y > 20)
+        await settled_scroll(pilot, scroller, past=20)
         await pilot.press("escape")
         await until(pilot, lambda: "Cabin wifi" in pane_text(app))
         await pilot.pause()
