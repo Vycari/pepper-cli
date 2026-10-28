@@ -2083,6 +2083,13 @@
               }
             ]
           },
+          "html_cards": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
           "id": {
             "format": "uuid",
             "type": "string"
@@ -2106,6 +2113,16 @@
           },
           "text": {
             "type": "string"
+          },
+          "text_profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "trajectory_id": {
             "anyOf": [
@@ -2272,6 +2289,13 @@
           "drafts": {
             "items": {
               "$ref": "#/components/schemas/EmailDraftCardEntry"
+            },
+            "type": "array"
+          },
+          "html_cards": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
             },
             "type": "array"
           },
@@ -6888,6 +6912,14 @@
           "created_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "html_cards": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
           },
           "id": {
             "format": "uuid",
@@ -14068,6 +14100,64 @@
         },
         "tags": [
           "latency"
+        ]
+      }
+    },
+    "/api/v1/client/capabilities": {
+      "put": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api"
         ]
       }
     },

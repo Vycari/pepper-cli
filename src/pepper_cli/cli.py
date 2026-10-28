@@ -107,7 +107,7 @@ import uuid
 import webbrowser
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any, NoReturn
+from typing import Any, NamedTuple, NoReturn
 from urllib.parse import urlparse
 
 import httpx
@@ -133,6 +133,7 @@ from pepper_cli import (
     render,
     research_view,
     skill_doc,
+    todos_view,
     turn,
     window_title,
 )
@@ -257,6 +258,10 @@ _TASK_ARG_HELP = "Task name (from ``scheduled-tasks list``) or its UUID."
 #: (case-insensitive, unique prefix OK — resolved client-side over
 #: ``list_groups``/``list_group_topics``, same idiom as ``_resolve_task_id``)
 #: or the group's/topic's own UUID.
+_TODO_REF_HELP = (
+    "A number from the last 'todos list' or 'next', a unique prefix of an id it showed, "
+    "or a full todo UUID."
+)
 _GROUP_ARG_HELP = "Room/channel name (case-insensitive, unique prefix OK) or its UUID."
 _TOPIC_ARG_HELP = "Topic name (case-insensitive, unique prefix OK) or its UUID."
 _NOTE_ARG_HELP = "Note name (case-insensitive, unique prefix OK) or its UUID."
@@ -996,7 +1001,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         help="Change a todo's title, details, due date, priority, next action or assignee.",
         parents=[_json_parent],
     )
-    p_todos_edit.add_argument("todo_id", help="Todo UUID (from ``todos list``).")
+    p_todos_edit.add_argument("todo_id", help=_TODO_REF_HELP)
     p_todos_edit.add_argument("--title", help="New title.")
     p_todos_edit.add_argument("--details", help="New details.")
     p_todos_edit.add_argument(
@@ -1045,7 +1050,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         ("reopen", cmd_todo_reopen, "Put a done or dismissed todo back on the list."),
     ):
         p_todo = sub_todos.add_parser(name, help=text, parents=[_json_parent])
-        p_todo.add_argument("todo_id", help="Todo UUID (from ``todos list`` or ``next --json``).")
+        p_todo.add_argument("todo_id", help=_TODO_REF_HELP)
         p_todo.set_defaults(handler=handler)
     sub_todos.choices["dismiss"].add_argument(
         "--reason",
@@ -3066,10 +3071,19 @@ def cmd_next(args: argparse.Namespace) -> int:
             room_id = room
         scope = next_view.Scope(room_id=room_id, source=args.source)
         result = next_view.assemble(api, scope=scope, show_all=args.all)
+        # What is shown is what gets numbered, in the listing ``todos done N`` reads.
+        problem = todos_view.VIEW.save(
+            todos_view.listing_rows(result["todos"]["items"]), todos_view.meta(room_id)
+        )
+        if _listing_unusable(args, problem):
+            return 1
         if args.json:
+            # Under ``todos``: the top-level ``note`` is the calendar's.
+            result["todos"].update(_unsaved_meta(problem))
             _print_json(result)
         else:
             render.render_next(result)
+        _warn_unsaved(args, problem)
         return 0
 
     return _run_personal(args, run)
@@ -3077,6 +3091,10 @@ def cmd_next(args: argparse.Namespace) -> int:
 
 def cmd_todo_list(args: argparse.Namespace) -> int:
     """``pepper todos list [--status S] [--room ROOM] [--mine | --asked] [--json]``.
+
+    Numbers what it prints and remembers them (``todos-view.json`` next to the credentials, with
+    the room it came from) for ``done``/``reopen``/``dismiss``/``edit N``; ``--json`` saves the
+    same list but stays the raw rows, with no numbers.
 
     ``--mine`` is what was asked of you (every room, or with ``--room`` that room's);
     ``--asked`` is what you asked of others, so it needs a room. The server filters."""
@@ -3090,10 +3108,19 @@ def cmd_todo_list(args: argparse.Namespace) -> int:
             extra["mine"] = True
         if args.asked:
             extra["asked"] = True
-        rows = api.list_todos(
-            status=args.status, group_id=_opt_group(api, args.room, args=args), **extra
+        group_id = _opt_group(api, args.room, args=args)
+        rows = api.list_todos(status=args.status, group_id=group_id, **extra)
+        problem = todos_view.VIEW.save(todos_view.listing_rows(rows), todos_view.meta(group_id))
+        if _listing_unusable(args, problem):
+            return 1
+        # The server's order, numbered in the text view; --json stays the raw rows.
+        _emit_list(
+            rows,
+            args,
+            lambda: render.render_todo_list(rows, numbered=True),
+            **_unsaved_meta(problem),
         )
-        _emit_list(rows, args, lambda: render.render_todo_list(rows))
+        _warn_unsaved(args, problem)
         return 0
 
     return _with_api(run, _report_api_error, args)
@@ -3167,21 +3194,81 @@ def cmd_todo_reopen(args: argparse.Namespace) -> int:
     return _tick_todo(args, reopen=True)
 
 
+class _TodoRef(NamedTuple):
+    """A todo ref resolved: the id to send, and how the last listing scoped it (``held`` is
+    False for an id that listing never held, which is passed on as given)."""
+
+    id: str
+    held: bool
+    meta: dict[str, Any]
+
+
+def _todo_ref(args: argparse.Namespace) -> _TodoRef | None:
+    """The todo ``args.todo_id`` names: a number from the last ``todos list`` / ``next``, a
+    unique prefix of an id it held, or a full UUID (passed on as given). ``None`` after the
+    error is reported (exit 2); nothing here touches the network."""
+    try:
+        todo_id, row, meta = todos_view.VIEW.resolve(args.todo_id)
+    except numbered_view.RefError as exc:
+        _emit_error(args, exc.code, str(exc), soft_wrap=True)
+        return None
+    if row is None and not _valid_uuid(todo_id):
+        _emit_error(
+            args,
+            "usage",
+            f"todo id must be a UUID, a number from 'pepper todos list', or a prefix of an id "
+            f"it showed (got: {args.todo_id})",
+            soft_wrap=True,
+        )
+        return None
+    return _TodoRef(todo_id, row is not None, meta)
+
+
+def _todo_room_matches(args: argparse.Namespace, found: _TodoRef, group_id: str | None) -> bool:
+    """False, after the error is reported, when the listing a number or prefix came from was
+    another room's (or yours, against ``--room``): the number would name a different todo
+    than the one shown. A full UUID names its todo outright and is never checked."""
+    if not found.held or _valid_uuid(args.todo_id.strip()):
+        return True
+    saved = found.meta.get("room_id")
+    if todos_view.same_room(saved, group_id):
+        return True
+    if saved is None:
+        why = "the last 'pepper todos list' (or 'pepper next') was your own todos, not a room's"
+        fix = "drop --room, or list that room's todos first"
+    elif group_id is None:
+        why = "the last 'pepper todos list' (or 'pepper next') was a room's todos, not yours"
+        fix = "pass --room, or list your own todos first"
+    else:
+        why = "the last 'pepper todos list' (or 'pepper next') was another room's todos"
+        fix = "list this room's todos first"
+    _emit_error(
+        args,
+        "usage",
+        f"{why}, so {args.todo_id} would name a different todo: {fix}",
+        soft_wrap=True,
+    )
+    return False
+
+
 def _tick_todo(args: argparse.Namespace, *, reopen: bool) -> int:
     """``done`` / ``reopen``. A tick also releases the rest of the todo's held time, as
     ticking it on Schedule does. A wrong id or room is the server's one uniform answer;
     there is no fall-through to other rooms."""
-    if not _valid_uuid(args.todo_id):
-        _emit_error(args, "usage", f"todo id must be a UUID (got: {args.todo_id})")
+    found = _todo_ref(args)
+    if found is None:
         return 2
 
     def run(api: api_client.ApiClient) -> int:
+        group_id = _opt_group(api, args.room, args=args)
+        if not _todo_room_matches(args, found, group_id):
+            return 2
         change = api.reopen_todo if reopen else api.complete_todo
-        todo = change(args.todo_id, group_id=_opt_group(api, args.room, args=args))
+        todo = change(found.id, group_id=group_id)
         _emit(
             todo,
             args,
-            lambda: render.info(f"{'Reopened' if reopen else 'Marked done'}: {args.todo_id}"),
+            lambda: render.info(f"{'Reopened' if reopen else 'Marked done'}: {found.id}"),
         )
         return 0
 
@@ -3194,15 +3281,16 @@ def cmd_todo_dismiss(args: argparse.Namespace) -> int:
     On an ask, the person asked dismissing it is declining and the person who asked is
     withdrawing. ``--reason`` is optional and sent when given; any refusal from the
     server is shown as it came."""
-    if not _valid_uuid(args.todo_id):
-        _emit_error(args, "usage", f"todo id must be a UUID (got: {args.todo_id})")
+    found = _todo_ref(args)
+    if found is None:
         return 2
 
     def run(api: api_client.ApiClient) -> int:
         extra = {"reason": args.reason} if args.reason is not None else {}
-        todo = api.dismiss_todo(
-            args.todo_id, group_id=_opt_group(api, args.room, args=args), **extra
-        )
+        group_id = _opt_group(api, args.room, args=args)
+        if not _todo_room_matches(args, found, group_id):
+            return 2
+        todo = api.dismiss_todo(found.id, group_id=group_id, **extra)
         _emit(todo, args, lambda: render.info(f"Dismissed: {todo.title}"))
         return 0
 
@@ -3238,8 +3326,8 @@ def cmd_todo_edit(args: argparse.Namespace) -> int:
     (409), which this prints with the server's own words. Exit codes: 0 ok · 1 refused
     or transport · 2 bad input (nothing to change / a clash / an unknown person).
     """
-    if not _valid_uuid(args.todo_id):
-        _emit_error(args, "usage", f"todo id must be a UUID (got: {args.todo_id})")
+    found = _todo_ref(args)
+    if found is None:
         return 2
     if args.assignee and not args.room:
         _emit_error(args, "usage", "--assignee needs --room: asks are made in a room")
@@ -3307,10 +3395,12 @@ def cmd_todo_edit(args: argparse.Namespace) -> int:
 
     def run(api: api_client.ApiClient) -> int:
         group_id = _opt_group(api, args.room, args=args)
+        if not _todo_room_matches(args, found, group_id):
+            return 2
         body = dict(fields)
         if args.assignee and group_id:
             body["assignee_person_id"] = _need_person(api, group_id, args.assignee, args=args)
-        todo = api.edit_todo(args.todo_id, body, group_id=group_id)
+        todo = api.edit_todo(found.id, body, group_id=group_id)
 
         def human() -> None:
             render.info(f"Updated todo {todo.id}")
@@ -7657,6 +7747,7 @@ def _forget_listings() -> None:
         feed.VIEW.state_path(),
         artifacts_view.VIEW.state_path(),
         research_view.VIEW.state_path(),
+        todos_view.VIEW.state_path(),
         following_search.state_path(),
     ):
         numbered_view.forget(path)

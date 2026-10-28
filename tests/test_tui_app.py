@@ -444,6 +444,25 @@ async def test_a_result_that_lands_after_quit_is_ignored() -> None:
     assert app.return_code == 0
 
 
+async def test_a_result_that_lands_while_the_screen_is_torn_down_is_ignored() -> None:
+    """#76: a result queued behind Textual's shutdown runs with some widgets gone.
+
+    ``App._shutdown`` clears ``is_running`` first and then closes the screen's widgets one
+    by one, so a callback can find the sidebar still mounted and the header already gone.
+    """
+    server = ts.standard_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        # The state _shutdown leaves for the callbacks behind it. Left in place: restoring
+        # is_running with the header gone would let a late poll result hit the same query.
+        app._running = False
+        app.query_one("#header").remove()
+        await pilot.pause()
+        generation = app._loops["dm"].generation
+        app._delivered("dm", app._on_dm, [], generation)  # would query the missing header
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="LinuxDriver imports termios")
 async def test_terminal_app_keeps_the_mouse_in_cells(monkeypatch: pytest.MonkeyPatch) -> None:
     """Terminal.app gets no in-band resize query, so Textual never turns on pixel mice."""

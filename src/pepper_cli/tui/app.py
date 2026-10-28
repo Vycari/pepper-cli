@@ -382,6 +382,10 @@ class PepperApp(App[None]):
         return not self.fatal and generation == loop.generation
 
     def _mounted(self) -> bool:
+        if not self.is_running:
+            # Textual's shutdown clears this first, then closes the widgets one by one: a
+            # callback queued behind it can find the sidebar still there and the header gone.
+            return False
         try:
             return bool(self.query(Sidebar))
         except ScreenStackError:
@@ -1552,6 +1556,10 @@ class PepperApp(App[None]):
     def on_thread_view_pin_changed(self, _event: ThreadView.PinChanged) -> None:
         """Reached the end (the newest row is on screen, so it is read) or scrolled away from
         it (rows below are unseen: the open topic shows as unread)."""
+        if not self.query(ThreadView):
+            # A message queued as the app tears down is dispatched after the screen's widgets
+            # are gone; there is no thread left to read or mark (#139).
+            return
         self._note_viewed()
         self._run("publish")
         self.refresh_chrome()

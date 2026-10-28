@@ -105,7 +105,8 @@ class NumberedView:
     @staticmethod
     def is_number(ref: str) -> bool:
         ref = ref.strip()
-        return ref.isdigit() and len(ref) <= _MAX_N_DIGITS
+        # ASCII only: ``isdigit`` also accepts "²", which ``int`` then refuses.
+        return ref.isascii() and ref.isdigit() and len(ref) <= _MAX_N_DIGITS
 
     def resolve(
         self,

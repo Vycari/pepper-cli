@@ -427,10 +427,25 @@ def test_list_shows_the_next_action_and_pepper_suggestion(tmp_home, patch_api, c
     )
     assert cli.main(["todos", "list"]) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert lines[1] == "    Next: Email the vet"
-    assert lines[3] == "    Next: Call Bob"
-    assert lines[4] == "      Or: Book a slot"
+    assert lines[1] == "      Next: Email the vet"
+    assert lines[3] == "      Next: Call Bob"
+    assert lines[4] == "        Or: Book a slot"
     assert len(lines) == 6  # "Plain" has no extra lines
+
+
+def test_list_keeps_titles_and_next_actions_in_one_column_past_row_99(
+    tmp_home, patch_api, capsys
+) -> None:
+    _login(tmp_home)
+    action = api_client.TodoNextAction(text="Go", by="user", updated_at="2026-10-20T00:00Z")
+    patch_api(todo_list=[_todo(title=f"T{i}", next_action=action) for i in range(1, 101)])
+    assert cli.main(["todos", "list"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("  1. ") and lines[198].startswith("100. ")
+    title_col = lines[198].index("T100")
+    assert lines[0].index("T1") == title_col
+    assert lines[199] == " " * title_col + "Next: Go"
+    assert lines[1] == lines[199]
 
 
 def test_list_json_passes_the_next_action_fields_through(tmp_home, patch_api, capsys) -> None:
@@ -587,3 +602,233 @@ def test_conflict_in_json_mode_is_one_error_document(tmp_home, patch_api, capsys
     doc = json.loads(captured.err)
     assert doc["error"]["status"] == 409
     assert doc["error"]["message"] == "Server returned 409: the ask has changed"
+
+
+# ---------------------------------------------------------------------------
+# numbered refs
+
+_T1 = "11111111-aaaa-0000-0000-000000000001"
+_T2 = "22222222-bbbb-0000-0000-000000000002"
+_T3 = "33333333-cccc-0000-0000-000000000003"
+
+
+def _listed(patch_api, *, room: str | None = None, **canned) -> None:
+    """Sign in, install the fake, and list three todos (yours, or ``room``'s)."""
+    patch_api(
+        todo_list=[
+            _todo(id=_T1, title="First"),
+            _todo(id=_T2, title="Second", next_action=None),
+            _todo(id=_T3, title="Third"),
+        ],
+        todo_done=_todo(id=_T2, title="Second", status="done"),
+        todo_dismissed=_todo(id=_T2, title="Second", status="dismissed"),
+        todo_edited=_todo(id=_T2, title="Renamed"),
+        **canned,
+    )
+    argv = ["todos", "list", *(["--room", room] if room else [])]
+    assert cli.main(argv) == 0
+
+
+def _calls() -> list[tuple]:
+    return [c for i in _FakeTodoApi.instances for c in i.calls if c[0] != "list"]
+
+
+def test_list_numbers_rows_in_server_order_and_continuation_lines_align(
+    tmp_home, patch_api, capsys
+) -> None:
+    _login(tmp_home)
+    patch_api(
+        todo_list=[
+            _todo(id=_T1, title="First"),
+            _todo(
+                id=_T2,
+                title="Second",
+                next_action=api_client.TodoNextAction(
+                    text="Call them", by="user", updated_at="2026-10-20T00:00Z"
+                ),
+            ),
+        ]
+    )
+    assert cli.main(["todos", "list"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith(" 1. ") and "First" in lines[0] and _T1 in lines[0]
+    assert lines[1].startswith(" 2. ") and "Second" in lines[1]
+    assert lines[2] == "      Next: Call them"
+
+
+def test_list_json_is_not_numbered_but_still_saves_the_listing(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(todo_list=[_todo(id=_T1, title="First")], todo_done=_todo(id=_T1))
+    assert cli.main(["todos", "list", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert "n" not in out["items"][0] and "note" not in out
+    assert cli.main(["todos", "done", "1"]) == 0
+    assert _calls() == [("done", _T1, None)]
+
+
+@pytest.mark.parametrize(
+    ("verb", "expect"),
+    [("done", "done"), ("reopen", "reopen"), ("dismiss", "dismiss")],
+)
+def test_verbs_take_a_number_from_the_last_listing(tmp_home, patch_api, verb, expect) -> None:
+    _login(tmp_home)
+    _listed(patch_api)
+    assert cli.main(["todos", verb, "2"]) == 0
+    assert _calls() == [(expect, _T2, None)]
+
+
+def test_edit_takes_a_number(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    _listed(patch_api)
+    assert cli.main(["todos", "edit", "3", "--title", "Renamed"]) == 0
+    assert _FakeTodoApi.instances[-1].edits == [(_T3, {"title": "Renamed"}, None)]
+
+
+def test_a_full_uuid_still_works_with_no_listing_and_with_one(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(todo_done=_todo(id=_T1))
+    assert cli.main(["todos", "done", _T1]) == 0
+    _listed(patch_api)
+    assert cli.main(["todos", "done", "00000000-0000-0000-0000-000000000099"]) == 0
+    assert _calls() == [
+        ("done", _T1, None),
+        ("done", "00000000-0000-0000-0000-000000000099", None),
+    ]
+
+
+def test_a_unique_prefix_of_a_listed_id_resolves_and_an_ambiguous_one_does_not(
+    tmp_home, patch_api, capsys
+) -> None:
+    _login(tmp_home)
+    _listed(patch_api)
+    assert cli.main(["todos", "done", "22222222-b"]) == 0
+    assert _calls() == [("done", _T2, None)]
+    capsys.readouterr()
+    assert cli.main(["todos", "done", "9999999", "--json"]) == 2  # held by no id: not a ref
+    assert json.loads(capsys.readouterr().err)["error"]["code"] == "usage"
+
+
+def test_a_prefix_two_listed_ids_share_is_ambiguous(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(
+        todo_list=[
+            _todo(id="abcdef01-0000-0000-0000-000000000001"),
+            _todo(id="abcdef02-0000-0000-0000-000000000002"),
+        ]
+    )
+    assert cli.main(["todos", "list"]) == 0
+    capsys.readouterr()
+    assert cli.main(["todos", "done", "abcdef", "--json"]) == 2
+    assert json.loads(capsys.readouterr().err)["error"]["code"] == "ambiguous"
+
+
+def test_a_number_with_no_saved_listing_names_todos_list(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(todo_done=_todo())
+    assert cli.main(["todos", "done", "3"]) == 2
+    assert "pepper todos list" in capsys.readouterr().err
+    assert _FakeTodoApi.instances == []
+
+
+def test_a_number_out_of_range_names_todos_list(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    _listed(patch_api)
+    capsys.readouterr()
+    for ref in ("0", "4"):
+        assert cli.main(["todos", "done", ref]) == 2
+    err = capsys.readouterr().err
+    assert "pepper todos list" in err and "listed 3" in err
+    assert _calls() == []
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["done"], ["reopen"], ["dismiss"], ["edit", "--title", "X"]],
+)
+def test_a_non_ascii_digit_is_a_usage_error_not_a_crash(tmp_home, patch_api, capsys, argv) -> None:
+    _login(tmp_home)
+    _listed(patch_api)
+    capsys.readouterr()
+    cmd, *rest = argv
+    assert cli.main(["todos", cmd, "\u00b2", *rest, "--json"]) == 2
+    assert json.loads(capsys.readouterr().err)["error"]["code"] == "usage"
+    assert _calls() == []
+
+
+def test_a_number_from_your_list_refuses_with_room(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    _listed(patch_api)
+    capsys.readouterr()
+    assert cli.main(["todos", "done", "1", "--room", _ROOM]) == 2
+    err = capsys.readouterr().err
+    assert "your own todos" in err and "drop --room" in err
+    assert _calls() == []
+
+
+def test_a_number_from_a_rooms_list_refuses_without_room(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    _listed(patch_api, room="trip")
+    capsys.readouterr()
+    for verb in ("done", "dismiss", "edit"):
+        extra = ["--title", "x"] if verb == "edit" else []
+        assert cli.main(["todos", verb, "1", *extra]) == 2
+    err = capsys.readouterr().err
+    assert err.count("a room's todos, not yours") == 3
+    assert _calls() == []
+    assert _FakeTodoApi.instances[-1].edits == []
+
+
+def test_a_number_from_a_rooms_list_works_with_that_room(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    _listed(patch_api, room="trip")
+    assert cli.main(["todos", "done", "1", "--room", "trip"]) == 0
+    assert cli.main(["todos", "done", "3", "--room", _ROOM.upper()]) == 0
+    assert _calls() == [("done", _T1, _ROOM), ("done", _T3, _ROOM.upper())]
+
+
+def test_a_uuid_is_never_room_checked(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    _listed(patch_api)
+    assert cli.main(["todos", "done", _T1, "--room", _ROOM]) == 0
+    assert _calls() == [("done", _T1, _ROOM)]
+
+
+def test_mine_filtered_list_numbers_resolve_in_the_same_room(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(todo_list=[_todo(id=_T1)], todo_done=_todo(id=_T1))
+    assert cli.main(["todos", "list", "--room", "trip", "--mine"]) == 0
+    assert cli.main(["todos", "done", "1", "--room", "trip"]) == 0
+    assert _calls() == [("done", _T1, _ROOM)]
+
+
+def test_an_unsaved_listing_is_reported_and_a_stale_one_is_not_shown(
+    tmp_home, patch_api, monkeypatch, capsys
+) -> None:
+    from pepper_cli import numbered_view, todos_view
+
+    _login(tmp_home)
+    patch_api(todo_list=[_todo(id=_T1)])
+
+    def refuse(*_a, **_k):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(numbered_view.tempfile, "mkstemp", refuse)
+    assert cli.main(["todos", "list"]) == 0
+    assert "numbers from this list won't work" in capsys.readouterr().err
+    todos_view.VIEW.state_path().write_text("{}")
+    monkeypatch.setattr(
+        numbered_view.Path, "unlink", lambda *_a, **_k: (_ for _ in ()).throw(OSError(1, "nope"))
+    )
+    assert cli.main(["todos", "list"]) == 1
+    out = capsys.readouterr()
+    assert "not shown" in out.err and "First" not in out.out
+
+
+def test_logout_forgets_the_todos_listing(tmp_home, patch_api) -> None:
+    from pepper_cli import todos_view
+
+    _login(tmp_home)
+    _listed(patch_api)
+    assert todos_view.VIEW.state_path().exists()
+    assert cli.main(["logout"]) == 0
+    assert not todos_view.VIEW.state_path().exists()
