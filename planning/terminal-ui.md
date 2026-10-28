@@ -33,7 +33,8 @@ nav. The terminal should have the same.
 **Non-goals**
 
 - Inbox, Calendar, To-dos, Notes, Apps. These stay as one-shot commands. A TUI tab for them can be a
-  later doc.
+  later doc. Todos and Notes (a room's, through the room, and your own) are
+  `planning/tui-room-todos-notes.md`.
 - Room admin: members, sharing, room settings, installing apps. These stay as commands.
 - Images inline. Pictures and attachments show as a name plus a URL.
 - Push notifications outside the terminal. The most a phase may add is the terminal bell or a title

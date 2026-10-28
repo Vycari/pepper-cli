@@ -95,6 +95,25 @@ This builds from the working tree every time and shares the same credentials
 file as the installed copy, so it's the right choice when developing the CLI
 or when you need a subcommand that hasn't been published yet.
 
+### Alternative installation: `pipx` or `pip`
+
+If you prefer using standard Python packaging tools:
+
+```bash
+# via pipx (recommended for isolated CLI tools)
+pipx install vycari-pepper
+
+# via pip
+pip install vycari-pepper
+```
+
+To upgrade:
+```bash
+pipx upgrade vycari-pepper
+# or
+pip install --upgrade vycari-pepper
+```
+
 ## 3. Log in
 
 ```bash
@@ -464,6 +483,7 @@ The composer at the bottom posts to whatever is open:
   terminal bell when the server first reports an unread mention in another topic; it is off by
   default. A server that does not send unread rows (older than read-state-sync phase 5b) shows
   no unread markers.
+  Set `PEPPER_NO_UPDATE_CHECK=1` to disable the background release check on startup.
 
 `pepper tui --root PATH` (repeatable; `--tools-root` is an alias) lets Pepper read files under
 `PATH` during chat turns, exactly as `pepper chat --root` does: read-only, enforced on this
@@ -484,6 +504,7 @@ machine, and only for this session. A path that is not a directory exits 2.
 | Up / Down, Enter, Esc | In a Todos or Notes pane: move; open a todo's details, fold Closed, or open a note; back from a note to the list, then out of the pane. |
 | `m`, `r`, `o` | In a pane: only the todos asked of you (Todos); read again; open a todo's source link or a note's first link. |
 | Ctrl+K | Fuzzy jump to any room or topic. |
+| F10 | When an update is available: confirm to exit and upgrade. |
 | Esc | Cancel the quote or edit, then leave the composer. |
 | Ctrl+N / Ctrl+P | Jump to the next / previous unread conversation. |
 | PgUp / PgDn | Scroll the thread. |

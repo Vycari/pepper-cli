@@ -26,6 +26,7 @@ def _no_pepper_json(monkeypatch: pytest.MonkeyPatch):
     command to JSON; tests that want it set it themselves."""
     monkeypatch.delenv("PEPPER_JSON", raising=False)
     monkeypatch.delenv("PEPPER_CONFLICT_DIR", raising=False)
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "1")
 
 
 @pytest.fixture(autouse=True)
@@ -39,6 +40,7 @@ def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / ".cache"))
     return tmp_path
 
 

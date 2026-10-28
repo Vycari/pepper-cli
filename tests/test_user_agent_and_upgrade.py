@@ -288,3 +288,239 @@ def test_cli_prints_upgrade_message_to_stderr_and_exits_nonzero_without_retry(
     assert "Traceback" not in captured.err
     assert "pep_pat_abc" not in captured.out + captured.err
     assert len(seen) == 1
+
+
+# ---------------------------------------------------------------------------
+# check_latest_version / parse_version
+
+
+def test_parse_version() -> None:
+    assert _version.parse_version("0.4.0") > _version.parse_version("0.3.0")
+    assert _version.parse_version("0.3.1") > _version.parse_version("0.3.0")
+    assert _version.parse_version("0.3.0") == _version.parse_version("0.3.0")
+    assert _version.parse_version("0.2.0") < _version.parse_version("0.3.0")
+    # PEP 440 pre-releases, dev releases, and equivalent versions
+    assert _version.parse_version("0.4.0") > _version.parse_version("0.4.0rc1")
+    assert _version.parse_version("0.3.1") > _version.parse_version("0.3.1.dev3+g12ab")
+    assert _version.parse_version("0.4") == _version.parse_version("0.4.0")
+
+
+def test_check_latest_version_pypi_newer(monkeypatch, httpx_mock) -> None:
+    monkeypatch.setattr(_version, "get_version", lambda: "0.3.0")
+    monkeypatch.setattr(_version, "is_git_install", lambda: False)
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "")
+    httpx_mock.add_response(
+        url="https://pypi.org/pypi/vycari-pepper/json",
+        json={"info": {"version": "0.4.0"}},
+    )
+    assert _version.check_latest_version() == "0.4.0"
+
+
+def test_check_latest_version_git_newer(monkeypatch, httpx_mock) -> None:
+    monkeypatch.setattr(_version, "get_version", lambda: "0.3.0")
+    monkeypatch.setattr(_version, "is_git_install", lambda: True)
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "")
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/Vycari/pepper-cli/releases/latest",
+        json={"tag_name": "v0.4.0"},
+    )
+    assert _version.check_latest_version() == "0.4.0"
+
+
+def test_check_latest_version_git_fallback_to_tags(monkeypatch, httpx_mock) -> None:
+    monkeypatch.setattr(_version, "get_version", lambda: "0.3.0")
+    monkeypatch.setattr(_version, "is_git_install", lambda: True)
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "")
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/Vycari/pepper-cli/releases/latest",
+        status_code=404,
+    )
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/Vycari/pepper-cli/tags",
+        json=[{"name": "v0.4.0"}, {"name": "v0.3.0"}],
+    )
+    assert _version.check_latest_version() == "0.4.0"
+
+
+def test_check_latest_version_git_fallback_to_pypi(monkeypatch, httpx_mock) -> None:
+    monkeypatch.setattr(_version, "get_version", lambda: "0.3.0")
+    monkeypatch.setattr(_version, "is_git_install", lambda: True)
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "")
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/Vycari/pepper-cli/releases/latest",
+        status_code=404,
+    )
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/Vycari/pepper-cli/tags",
+        status_code=404,
+    )
+    httpx_mock.add_response(
+        url="https://pypi.org/pypi/vycari-pepper/json",
+        json={"info": {"version": "0.4.0"}},
+    )
+    assert _version.check_latest_version() == "0.4.0"
+
+
+def test_check_latest_version_uses_cache(monkeypatch, httpx_mock) -> None:
+    monkeypatch.setattr(_version, "get_version", lambda: "0.3.0")
+    monkeypatch.setattr(_version, "is_git_install", lambda: False)
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "")
+    # Only one response registered; if cache isn't used, second call would fail httpx_mock
+    httpx_mock.add_response(
+        url="https://pypi.org/pypi/vycari-pepper/json",
+        json={"info": {"version": "0.4.0"}},
+    )
+    assert _version.check_latest_version() == "0.4.0"
+    assert _version.check_latest_version() == "0.4.0"
+
+
+def test_check_latest_version_cache_expired(monkeypatch, httpx_mock) -> None:
+    monkeypatch.setattr(_version, "get_version", lambda: "0.3.0")
+    monkeypatch.setattr(_version, "is_git_install", lambda: False)
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "")
+    httpx_mock.add_response(
+        url="https://pypi.org/pypi/vycari-pepper/json",
+        json={"info": {"version": "0.4.0"}},
+    )
+    # Check with cache_ttl=0 forces a refresh
+    assert _version.check_latest_version(cache_ttl=0) == "0.4.0"
+
+
+def test_check_latest_version_pypi_same_or_older(monkeypatch, httpx_mock) -> None:
+    monkeypatch.setattr(_version, "get_version", lambda: "0.3.0")
+    monkeypatch.setattr(_version, "is_git_install", lambda: False)
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "")
+    httpx_mock.add_response(
+        url="https://pypi.org/pypi/vycari-pepper/json",
+        json={"info": {"version": "0.3.0"}},
+    )
+    assert _version.check_latest_version() is None
+
+
+def test_check_latest_version_invalid_string_rejected(monkeypatch, httpx_mock) -> None:
+    monkeypatch.setattr(_version, "get_version", lambda: "0.3.0")
+    monkeypatch.setattr(_version, "is_git_install", lambda: False)
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "")
+    httpx_mock.add_response(
+        url="https://pypi.org/pypi/vycari-pepper/json",
+        json={"info": {"version": "0.4.0\x1b[2J"}},
+    )
+    assert _version.check_latest_version() is None
+
+
+def test_check_latest_version_pypi_error(monkeypatch, httpx_mock) -> None:
+    monkeypatch.setattr(_version, "get_version", lambda: "0.3.0")
+    monkeypatch.setattr(_version, "is_git_install", lambda: False)
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "")
+    httpx_mock.add_response(
+        url="https://pypi.org/pypi/vycari-pepper/json",
+        status_code=500,
+    )
+    assert _version.check_latest_version() is None
+
+
+def test_check_latest_version_pypi_error_not_cached(monkeypatch, httpx_mock) -> None:
+    monkeypatch.setattr(_version, "get_version", lambda: "0.3.0")
+    monkeypatch.setattr(_version, "is_git_install", lambda: False)
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "")
+    httpx_mock.add_response(
+        url="https://pypi.org/pypi/vycari-pepper/json",
+        status_code=500,
+    )
+    httpx_mock.add_response(
+        url="https://pypi.org/pypi/vycari-pepper/json",
+        json={"info": {"version": "0.4.0"}},
+    )
+    # First call fails, but does not write to cache, so second call succeeds
+    assert _version.check_latest_version() is None
+    assert _version.check_latest_version() == "0.4.0"
+
+
+def test_check_latest_version_future_cache_timestamp_ignored(monkeypatch, httpx_mock) -> None:
+    import json
+    import time
+
+    monkeypatch.setattr(_version, "get_version", lambda: "0.3.0")
+    monkeypatch.setattr(_version, "is_git_install", lambda: False)
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "")
+    cache_file = _version._cache_path()
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    cache_file.write_text(
+        json.dumps({"last_checked": time.time() + 10000, "latest_version": "0.4.0"}),
+        encoding="utf-8",
+    )
+    httpx_mock.add_response(
+        url="https://pypi.org/pypi/vycari-pepper/json",
+        json={"info": {"version": "0.5.0"}},
+    )
+    # Future timestamp is ignored as stale/invalid, so fresh response is returned
+    assert _version.check_latest_version() == "0.5.0"
+
+
+def test_check_latest_version_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "1")
+    assert _version.check_latest_version() is None
+
+
+def test_check_latest_version_unknown_version(monkeypatch) -> None:
+    monkeypatch.setattr(_version, "get_version", lambda: _version.UNKNOWN_VERSION)
+    monkeypatch.setenv("PEPPER_NO_UPDATE_CHECK", "")
+    assert _version.check_latest_version() is None
+
+
+# ---------------------------------------------------------------------------
+# is_git_install
+
+
+def test_is_git_install_clean_vcs(monkeypatch) -> None:
+    class FakeDist:
+        def read_text(self, _name: str) -> str:
+            return (
+                '{"url": "https://github.com/Vycari/pepper-cli.git", '
+                '"vcs_info": {"vcs": "git", "commit_id": "abc1234"}}'
+            )
+
+    monkeypatch.setattr("importlib.metadata.distribution", lambda _name: FakeDist())
+    assert _version.is_git_install() is True
+
+
+def test_is_git_install_local_path_with_git_substring_ignored(monkeypatch) -> None:
+    class FakeDist:
+        def read_text(self, _name: str) -> str:
+            return '{"url": "file:///home/user/git/pepper-cli", "dir_info": {"editable": true}}'
+
+    monkeypatch.setattr("importlib.metadata.distribution", lambda _name: FakeDist())
+    assert _version.is_git_install() is False
+
+
+def test_is_git_install_pinned_tag_ignored(monkeypatch) -> None:
+    class FakeDist:
+        def read_text(self, _name: str) -> str:
+            return (
+                '{"url": "https://github.com/Vycari/pepper-cli.git", '
+                '"vcs_info": {"vcs": "git", "requested_revision": "v0.3.0"}}'
+            )
+
+    monkeypatch.setattr("importlib.metadata.distribution", lambda _name: FakeDist())
+    assert _version.is_git_install() is False
+
+
+def test_is_git_install_missing_metadata(monkeypatch) -> None:
+    class FakeDist:
+        def read_text(self, _name: str) -> str | None:
+            return None
+
+    monkeypatch.setattr("importlib.metadata.distribution", lambda _name: FakeDist())
+    assert _version.is_git_install() is False
+
+
+def test_is_git_install_other_vcs_ignored(monkeypatch) -> None:
+    class FakeDist:
+        def read_text(self, _name: str) -> str:
+            return (
+                '{"url": "https://example.com/repo", '
+                '"vcs_info": {"vcs": "hg", "commit_id": "abc1234"}}'
+            )
+
+    monkeypatch.setattr("importlib.metadata.distribution", lambda _name: FakeDist())
+    assert _version.is_git_install() is False

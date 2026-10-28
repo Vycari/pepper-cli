@@ -17,6 +17,8 @@ dependencies = [
     "textual>=8.2",
     "prompt_toolkit>=3.0.53",
     "pyyaml>=6.0",
+    # PEP 440 ordering for the update check (pre-releases, dev and local versions).
+    "packaging>=24.0",
     # IANA zone data for ``zoneinfo`` on Windows, which ships none: "today" is
     # the account's date (``next_view.user_now``), and without it every
     # non-UTC account silently falls back to UTC. Pure data, no build step.
