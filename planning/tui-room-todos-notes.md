@@ -28,7 +28,8 @@ offers both from its navigation and from inside each room. The terminal should t
 - Open **your own** Todos and Notes from two top-level sidebar rows above Pepper, in the place the
   web's Primary nav sits above Messages. The web has a Notes row but no To-dos row, so the Todos
   row is a departure (§12, decision 2). Your Todos also lists your rooms' open items, a section
-  per room, as the web's does.
+  per room, as the web's does. The Pepper composer stays under your own panes, so you can ask
+  Pepper about the list without leaving it (§12 decision 10).
 - Show what the web shows, in the web's order. For Todos: open items due-first, with closed ones
   folded under "Closed (N)", and asks shown on the row (a departure, §12 decision 5). For Notes:
   the notes, most recently edited first, each one opening to its full text.
@@ -62,7 +63,8 @@ offers both from its navigation and from inside each room. The terminal should t
 | While the room's app is open, a highlighted row naming it is nested **first** inside the room's expanded rail entry, before the topics. It disappears when the app closes. Clicking it returns to the app's front door | `static/shell.js` `paintRoomAppRow`, `roomAppState` | A `kind="app"` sidebar row, first among the open room's children, carrying the `▌` current marker. It's only present while the pane is open. `Enter` on it goes back to the list (from an open note, or after scrolling) |
 | **Primary nav sits above Messages**: Dash, Calendar, **Notes** (opens your Notes inside `/chat`), Apps. Then the "Messages" section: Pepper, then rooms. There's no To-dos row; your Todos opens from `/chat`'s launcher or `/todo` | `templates/_sidebar.html` (`nav aria-label="Primary"`, then `"Messages"`) | Two top-level rows, **Todos** then **Notes**, above Pepper. Notes is parity. Todos is a departure (§12 decision 2). It goes first because the web has no slot for it, and none of Dash, Calendar or Apps is in the TUI to set an order between them |
 | A room's app never lights the viewer's own Notes nav row or its sub-items | `_sidebar.html` (Notes block), `shell.js` `roomNotesOpen` | Same. A room's pane marks only its nested row. Your own pane marks the top-level row |
-| While a room's app is open, **the groups composer bar is hidden**: the topic isn't visible, so it would be unclear where a post would land | pepper `planning/apps-in-groups-web.md` decision log 2026-09-15, phase 7 | The composer box is hidden while any pane is open, a room's or your own, and the draft it held is kept. Closing the pane brings it back. Hiding it under your own pane is a departure; the web keeps the Pepper composer over `/chat`'s apps. With no conversation on screen, the same "where would it land" reasoning applies |
+| While a room's app is open, **the groups composer bar is hidden**: the topic isn't visible, so it would be unclear where a post would land | pepper `planning/apps-in-groups-web.md` decision log 2026-09-15, phase 7 | The composer box is hidden while a room's pane is open, and the room's draft is kept. Closing the pane brings it back. Your own panes are different (next row) |
+| Over **your own** app in `/chat`, the Pepper composer stays. A message is an ordinary turn in your Pepper thread, sent with the open app as `subject: app:{slug}` (and, over Notes, the open note as `client_context.note_id`). The reply shows in the composer's pane over the app, and the app stays on screen | pepper `planning/pepper-over-apps.md` §2–§3.1; `api/router.py` `ChatSendRequest.subject`, `client_context` | Parity (§12 decision 10). The Pepper DM composer stays under your own pane and sends to the Pepper DM with the same `subject` and `client_context`. The exchange shows in a reply strip at the foot of the pane, and the pane stays (§6.9) |
 | **Todos page**: a title and an "N open" count, an add row, the open list sorted by due date (undated last), then created; closed items (done and dismissed) folded under "Closed (N)", newest first | `web/apps/defaults/todo.html` `sortItems`, `render` | Same sections, order and fold. The sort and fold are pure functions in `state.py`. The web's `config.sort = "created"` alternative isn't on `/api/v1`, so the TUI always sorts due-first |
 | **Your** Todos page also lists each of your rooms' open items, a section per room, and merges the rooms' closed items into its Closed fold | `todo.html` (`GET /apps/todo/rooms`); `api/router.py` `list_room_todos` (`GET /api/v1/todos/rooms`, the PAT twin, rooms by recency, empty rooms left out) | Same. A section per room under your own open items, headed by the room's name, in the route's order. Needs a new `PepperClient.list_room_todos` (P1) |
 | A todo row: tick (done), title, due chip, source link ("from <note>", an email, …), × (dismiss). Undo reopens | `todo.html` `row`, `sourceFor`; `static/notes_todos.js` | `space`/`x` done, `d` dismiss, `u` reopen (on a closed row). The due date and the source label are shown as dim text; `o` opens a source URL |
@@ -114,24 +116,28 @@ The open room is Family. Its Todos app is open:
  space done  d dismiss  n add  m asks of me  a apps  Esc back to topic  ^Q quit
 ```
 
-Your own Todos, with your rooms' open items below your own:
+Your own Todos, with your rooms' open items below your own. The Pepper composer stays, and the
+last exchange with Pepper shows in a strip at the foot of the pane:
 
 ```
 ┌ Messages ──────────────────┐┌ Todos ────────────────────────────────────────────────────┐
-│ ▌ Todos                    ││ Todos  2 open                                             │
+│ ▌ Todos                    ││ Todos  3 open                                             │
 │ Notes                      ││                                                           │
 │ ────────────────────────── ││ ○ Renew passport                               due Nov 3  │
 │ Pepper                     ││ ○ Call the dentist                                        │
-│ Family                   ● ││                                                           │
-│ Book club                  ││ Family                                                    │
-│ Work                       ││ ○ Book the dog sitter                          due Oct 30 │
+│ Family                   ● ││ ○ Buy stamps                                              │
+│ Book club                  ││                                                           │
+│ Work                       ││ Family                                                    │
+│                            ││ ○ Book the dog sitter                          due Oct 30 │
 │                            ││   asked of you by Sam                                     │
-│                            ││ Book club                                                 │
-│                            ││ ○ Pick November's book                                    │
-│                            ││                                                           │
 │                            ││ ▸ Closed (5)                                              │
+│                            ││ ───────────────────────────────────────────────────────── │
+│                            ││ you    add buy stamps                                     │
+│                            ││ Pepper Added "Buy stamps" to your todos.                  │
+│                            │├───────────────────────────────────────────────────────────┤
+│                            ││ Ask Pepper about your todos…                              │
 └────────────────────────────┘└───────────────────────────────────────────────────────────┘
- space done  d dismiss  n add  m asks of me  Esc back  ^Q quit
+ space done  d dismiss  n add  m asks of me  Tab composer  Esc back  ^Q quit
 ```
 
 Notes (a room's or your own looks the same, apart from the header), then one note open:
@@ -150,8 +156,10 @@ Notes (a room's or your own looks the same, apart from the header), then one not
  Enter open  c new  e edit  D delete               Esc list  e edit  space tick (P3)  o link
 ```
 
-- The pane takes the thread pane's place (`#right`'s `ThreadView`). The composer box is hidden
-  while any pane is open.
+- The pane takes the thread pane's place (`#right`'s `ThreadView`). Under a room's pane the
+  composer box is hidden. Under your own pane it stays, as the Pepper DM's composer, with the
+  placeholder "Ask Pepper about your todos…" or "…your notes…". The reply strip appears only once
+  you've sent something (§6.9).
 - The top-level **Todos** and **Notes** rows are always present, even on a server with rooms
   turned off, because they don't depend on rooms. A thin rule separates them
   from Pepper, standing in for the web's "Messages" section label. They carry no unread dot and no
@@ -176,6 +184,9 @@ don't collide.
 | `/todo`, `/notes` + `Enter` | Pepper DM composer | Open your own pane, the same as the top-level row | `/{slug}` in `/chat` |
 | `Ctrl+K` | anywhere | The jump list gains "Todos" and "Notes" (your own), first, before Pepper | — |
 | `Esc` | pane | From an open note: back to the list. From a list: close the pane and go back to where you came from (the room's topic, or the Pepper DM for your own) | The stage's ✕ |
+| `Esc` | composer under your own pane | `terminal-ui.md` §5's rule, with the pane standing in for the thread: the first press cancels a pending quote or `/` menu, and the next moves focus to the pane. It never closes the pane, so a draft can't strand you in the DM | — |
+| `Tab` / `Shift+Tab` | room pane open | Cycle focus: sidebar → pane (no composer to reach) | — |
+| `Tab` / `Shift+Tab` | your own pane open | Cycle focus: sidebar → pane → composer, the same three stops as a conversation, with the pane in the thread's place | — |
 | `Enter` | nested room app row | Back to the room pane's list | Click the rail row |
 | `↑`/`↓`, `PgUp`/`PgDn` | pane | Move the selection | — |
 | `Enter` | todo row | Show its details (title, details, due date, source, asks) in an `InfoScreen` | — |
@@ -192,6 +203,9 @@ don't collide.
 | `space` | checklist line in an open note | Tick or untick (P3) | Checkbox |
 | `o` | todo or open note | Open the todo's source link, or the first link in the note | Click |
 | `r` | pane | Refresh now | — |
+
+Opening a pane puts focus on the pane, never on the composer, so the single-letter keys above act
+at once. With focus in the composer under your own pane, letters type into the draft as usual.
 
 `D` is uppercase so that `d` on a todo (dismiss, which `u` undoes) can't be misread as deleting a
 note, which can't be undone from the TUI.
@@ -318,6 +332,34 @@ of printing (the TUI shows it as a notice), and takes a temp-file prefix. The CL
 behaviour. Suspending needs a real terminal: under Pilot, or when `App.suspend` raises
 `SuspendNotSupported`, the action shows a notice pointing at `pepper notes edit` instead.
 
+### 6.9 Talking to Pepper over your own pane (P1)
+
+Under your own Todos or Notes, the composer sends to **the Pepper DM**, through the TUI's existing
+turn path (`chat_send_stream`, the same `_turns` queue and one-at-a-time rule as the DM). Two
+fields go with it, as the web's `/chat` sends them: `subject="app:todo"` or `"app:notes"`, and over
+an open note `client_context={"note_id": …}`. The server resolves both as keys and reads the data
+itself (`api/router.py` `ChatSendRequest`), so Pepper answers about the list you're looking at.
+`chat_send_stream` gains the two optional parameters. Both fields are already in the vendored
+snapshot, so this is a client change only.
+
+Pepper's reply shows **in the pane**, not by switching to the DM. That's the web's behaviour,
+where the reply shows in the composer's pane over the app and the app stays put, and it's the
+least surprising choice: you asked about the list, so the list stays on screen. A **reply strip**
+docks at the foot of the pane, above the composer. It holds the exchange in flight and the one
+before it (your line, then Pepper's streamed answer, markdown-rendered and sanitized as DM rows
+are), scrolls if longer than about eight lines, and shows the DM's existing turn status line while
+streaming. It's cleared when the pane closes. Nothing is lost: every exchange is an ordinary turn in
+your Pepper thread, so opening the Pepper row shows it in full history, and the Pepper row's unread
+dot behaves as it does for any turn you started.
+
+When the turn finishes, the pane re-reads its list (§6.6), because Pepper may have just added or
+ticked something. A turn already running when the pane opens keeps streaming into the DM as usual
+and doesn't appear in the strip. The DM draft is shared: what you type under your own pane is the
+Pepper DM's draft, the same one the DM shows.
+
+Room panes don't get this. Asking Pepper over a room's app (pepper `pepper-over-apps.md` 3b) stays
+a non-goal (§2).
+
 ## 7. Rendering
 
 - All server text goes through `sanitize_line` (titles, names, room names, ask names, due labels,
@@ -344,8 +386,11 @@ behaviour. Suspending needs a real terminal: under Pilot, or when `App.suspend` 
 - `tui/poller.py`: `fetch_room_shelf`, `fetch_todos(owner, mine)`, `fetch_own_room_todos(mine)`,
   `fetch_notes(owner)`, `fetch_note`.
 - `tui/app.py`: the `a` binding, `/todo` and `/notes` in `_composer_key`/send (room and Pepper DM),
-  pane open and close, composer hide, the jump target type, and the 30s loop in `_LOOPS`.
-- `api_client.py`: `list_todos` accepts `"all"` (P1); `list_room_todos` (P1, `# MIRROR:
+  pane open and close, composer hide for a room's pane, the composer's `subject`/`client_context`
+  and the reply strip under your own pane, focus cycle per pane, the jump target type, and the 30s
+  loop in `_LOOPS`.
+- `api_client.py`: `list_todos` accepts `"all"` (P1); `chat_send_stream(subject=…,
+  client_context=…)` (P1); `list_room_todos` (P1, `# MIRROR:
   src/pepper/api/router.py::list_room_todos`); `toggle_checklist` (P3, `# MIRROR:
   src/pepper/api/artifacts.py::ArtifactToggleResponse`). Both routes are already in the vendored
   OpenAPI snapshot.
@@ -367,7 +412,10 @@ behaviour. Suspending needs a real terminal: under Pilot, or when `App.suspend` 
 - **Pilot** (`App.run_test`, fake server, as in `tests/test_tui_parity.py`): `Enter` on the
   top-level Todos row opens your own pane with the header `Todos`; `a` → picker → Todos opens a
   room's with the header `Room › Todos`; `/notes` in a room composer and in the Pepper composer open
-  the right copy; the composer is hidden while a pane is open and the draft survives; `Esc` walks
+  the right copy; the composer is hidden under a room's pane and the draft survives; under your own
+  pane it stays, a send carries `subject` (and `note_id` over an open note), the reply streams into
+  the strip, the list re-reads when the turn ends, and the DM's history holds the exchange; `Tab`
+  cycles the right stops for each pane; `Esc` in that composer moves focus to the pane; `Esc` walks
   note → list → where you came from; `m` re-reads with the filter; an uninstalled room shows a
   notice; `Ctrl+K` "Notes" opens your own. P2: done, dismiss, reopen and add round-trip (including
   a room-section row writing to its room, and asking a member); a failed write rolls back. P3: edit
@@ -411,7 +459,7 @@ Optional, all additive under `/api/v1`. None is filed now (§12 decisions 6 and 
 | | Decision |
 |---|---|
 | 1 | **2026-10-28, Allen.** Model it as the web does. A room's notes and todos are reached **through the room** (its launcher, its `/` commands, its nested rail row), not as top-level tabs. Mirror the web's entry points, ordering and what it shows. Departures are listed in §3, each with its reason. |
-| 2 | **2026-10-28, Allen (was question A).** Your own items get **two top-level rows, Todos and Notes**, above Pepper, where the web's Primary nav sits above Messages. Notes matches the web's Notes row. Todos is a stated departure, since the web has no To-dos row. Your Todos also lists your rooms' open items, a section per room, as the web's does. They open the same pane as a room's app, with the header `Todos`/`Notes` and the composer hidden. The Pepper DM row gets no `a` launcher, but `/todo` and `/notes` in its composer open the same panes (§5). `Ctrl+K` lists both. Both are in P1, read-only, alongside the room panes. |
+| 2 | **2026-10-28, Allen (was question A).** Your own items get **two top-level rows, Todos and Notes**, above Pepper, where the web's Primary nav sits above Messages. Notes matches the web's Notes row. Todos is a stated departure, since the web has no To-dos row. Your Todos also lists your rooms' open items, a section per room, as the web's does. They open the same pane as a room's app, with the header `Todos`/`Notes` (the composer rule is decision 10). The Pepper DM row gets no `a` launcher, but `/todo` and `/notes` in its composer open the same panes (§5). `Ctrl+K` lists both. Both are in P1, read-only, alongside the room panes. |
 | 3 | **2026-10-28, Allen (was B).** A room's entry points stay at parity: `a`, `/todo` and `/notes`, with the room's app row shown only while it's open. The footer shows `a apps` whenever a room is open. |
 | 4 | **2026-10-28, Allen (was C).** Rooms without Todos or Notes installed aren't offered them. `a` lists only what's installed, and `/todo` in such a room says "Todos isn't installed in this room. Install it from Room info on the web." |
 | 5 | **2026-10-28, Allen (was D).** Show asks: a dim "asked of X by Y" line and the `m` filter in P1; asking a member in P2 (§6.5). A departure from the web todo page, which draws neither. |
@@ -419,6 +467,7 @@ Optional, all additive under `/api/v1`. None is filed now (§12 decisions 6 and 
 | 7 | **2026-10-28, Allen (was G).** P2's add takes an explicit due date, `YYYY-MM-DD` or `YYYY-MM-DD HH:MM` (the `todos create --due` rule), blank for none. No phrase parsing; no set-due or reminder on existing rows for now. |
 | 8 | **2026-10-28, Allen (was H).** Checklist ticking in the note viewer is in P3, with `toggle_checklist` added to `PepperClient`. |
 | 9 | **2026-10-28, Allen (was F).** Notes re-sort by `updated_at` on the client, with a "Showing 200" row when `truncated`. `order_by` (§11 item 1) is filed only if a real list passes 200. |
+| 10 | **2026-10-28, Allen.** Under **your own** Todos and Notes panes, the **Pepper DM composer stays visible**, matching the web's `/chat`. It sends to the Pepper DM with `subject: app:{slug}` (and the open note), and Pepper's reply shows in a strip at the foot of the pane while the pane stays (§6.9). Under a **room's** app pane the composer stays hidden, as the web hides the groups bar. |
 
 ## 13. Questions
 
@@ -430,6 +479,6 @@ One PR each. Each phase gets an issue when it's picked up.
 
 | Phase | Contents | Depends on |
 |---|---|---|
-| P1 | **Read-only, your own and rooms'.** Top-level Todos and Notes rows and `Ctrl+K` targets; your own Todos with room sections (`list_room_todos`); room shelf; `a` launcher picker (non-native apps open in the browser); `/todo` and `/notes` in room and Pepper composers; the app pane with Todos (sections, fold, details, ask line, `m`) and Notes (list, viewer, checklist render, `o`); the nested room app row; composer hide/restore; 30s poll while open; `list_todos("all")`; tests from §9; README/SKILL.md lines | `terminal-ui.md` P3 (merged) |
+| P1 | **Read-only, your own and rooms'.** Top-level Todos and Notes rows and `Ctrl+K` targets; your own Todos with room sections (`list_room_todos`); room shelf; `a` launcher picker (non-native apps open in the browser); `/todo` and `/notes` in room and Pepper composers; the app pane with Todos (sections, fold, details, ask line, `m`) and Notes (list, viewer, checklist render, `o`); the nested room app row; composer hide/restore under a room's pane; the Pepper composer, `subject`/`client_context` and reply strip under your own; 30s poll while open; `list_todos("all")`; tests from §9; README/SKILL.md lines | `terminal-ui.md` P3 (merged) |
 | P2 | **Todo actions.** Done, dismiss, reopen, add with an optional due date, on your own list, your room sections and a room's list; asking a member in a room's add; `_parse_due` moved to a shared module | P1 |
 | P3 | **Note writes.** New, edit through suspended `$EDITOR` with If-Match and the three-way 412 resolution, delete with confirm, checklist toggle, for both copies; editor and conflict helpers moved out of `cli.py`; a manual Windows Terminal check | P1 (P2 not required) |
