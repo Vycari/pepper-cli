@@ -235,7 +235,7 @@ def _apps_server() -> ts.FakeServer:
     server = ts.standard_server()
     server.launchers[ts.ROOM_A] = [ts.tile("todo", "Todos", ts.ROOM_A)]
     server.todos[ts.ROOM_A] = [
-        ts.todo("a", "asked", assignee={"user_id": ts.ME_PERSON, "label": "Me"}),
+        ts.todo("a", "asked", assignee={"user_id": ts.ME, "label": "Me"}),
         ts.todo("b", "plain"),
         ts.todo("c", "closed", status="done", done_at="2026-10-01T00:00:00Z"),
     ]
