@@ -136,7 +136,7 @@ don't collide.
 
 | Key | Where | Action | Web analogue |
 |---|---|---|---|
-| `a` | anywhere, a room open or highlighted | Open the room's launcher: a picker of its installed apps. Todos and Notes open the pane, and anything else opens `/groups/{gid}?open=<slug>` in the browser | The waffle |
+| `a` | outside the composer, scoped as `i` is, with a room open or highlighted | Open the room's launcher: a picker of its installed apps. Todos and Notes open the pane, and anything else opens `/groups/{gid}?open=<slug>` in the browser | The waffle |
 | `/todo`, `/notes` + `Enter` | room composer | Open that pane (only when installed; otherwise a notice) | `/{slug}` |
 | `Esc` | pane | From an open note: back to the list. From a list: close the pane and go back to the topic | The stage's ✕ |
 | `Enter` | sidebar app row | Back to the pane's list | Click the rail row |
