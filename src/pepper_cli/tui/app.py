@@ -1003,6 +1003,9 @@ class PepperApp(App[None]):
         topic.generation += 1
         self._loops["older"].generation += 1
         self._loops["refresh"].generation += 1
+        # A launcher still being read was asked for where the user was: its answer would
+        # open a picker or a pane for a place they have left.
+        self._loops["shelf"].generation += 1
         self._stale_rows.clear()
         if conv.room_id is not None:
             self.manual.setdefault(conv.room_id, True)

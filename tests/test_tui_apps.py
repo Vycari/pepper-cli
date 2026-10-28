@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING
 
 import httpx
@@ -280,6 +281,22 @@ async def test_slash_todo_and_slash_notes_open_the_rooms_panes_and_keep_the_draf
         await pilot.press("enter")
         await until(pilot, lambda: app.pane is not None)
         assert header(app) == "Trip planning › Todos"
+
+
+async def test_a_launcher_read_that_lands_after_the_user_moved_on_is_dropped() -> None:
+    server = server_with_apps()
+    path = f"/api/v1/groups/{ts.ROOM_A}/apps/launcher"
+    server.gates[path] = gate = threading.Event()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_a1(app, pilot)
+        await type_command(app, pilot, "/todo")
+        await until(pilot, lambda: any(p == path for _m, p, _q in server.requests))
+        app.open_conversation(state.Conversation(ts.ROOM_B, ts.TOPIC_B1))
+        gate.set()
+        await pilot.pause(0.3)
+        assert app.pane is None
+        assert app.current == state.Conversation(ts.ROOM_B, ts.TOPIC_B1)
 
 
 async def test_closed_fold_details_and_the_source_link() -> None:
