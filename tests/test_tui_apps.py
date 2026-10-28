@@ -484,6 +484,26 @@ async def test_rows_that_arrive_behind_an_open_pane_are_not_marked_read_until_it
         assert server.puts[-1] == (ts.TOPIC_A1, "2026-09-16T18:30:00+00:00")
 
 
+async def test_moving_from_one_rooms_pane_to_anothers_does_not_mark_the_hidden_thread_read() -> None:
+    server = server_with_apps()
+    server.launchers[ts.ROOM_B] = [ts.tile("notes", "Notes", ts.ROOM_B)]
+    server.notes[ts.ROOM_B] = [ts.note_item("b1", "Reading list", "2026-10-20T10:00:00+00:00")]
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_todos(app, pilot)
+        server.messages[ts.TOPIC_A1].append(
+            ts.message("m-new", "2026-09-16T18:30:00+00:00", "arrived while hidden")
+        )
+        await until(pilot, lambda: "m-new" in app.store.rows)
+        app.sidebar.focus()
+        app.sidebar.select_key(f"room:{ts.ROOM_B}")
+        await pilot.pause()
+        await pick(pilot, app, "1")
+        await until(pilot, lambda: "Reading list" in pane_text(app))
+        await pilot.pause(0.3)
+        assert (ts.TOPIC_A1, "2026-09-16T18:30:00+00:00") not in server.puts
+
+
 async def test_an_error_opening_a_note_shows_in_the_viewer() -> None:
     server = server_with_apps()
     del server.note_details["n-pack"]

@@ -1826,14 +1826,16 @@ class PepperApp(App[None]):
 
     def _open_pane(self, room_id: str, slug: str) -> None:
         """Show a room's Todos or Notes in place of its thread."""
-        if self.pane is not None:
-            self._hide_pane()
+        # Another room's app: move to that room first, with any open pane still up, so
+        # ``open_conversation`` sees it and does not mark the hidden thread read.
         if self.current.room_id != room_id and (
             room := next((r for r in self.rooms if r.group_id == room_id), None)
         ):
             topics = state.topics_by_recency(room)
             if topics:
                 self.open_conversation(state.Conversation(room_id, topics[0].topic_id))
+        if self.pane is not None:
+            self._hide_pane()
         self.pane = state.AppPaneState(owner=room_id, slug=slug)
         self._pane_layout()
         for kind in ("apps", "note"):
