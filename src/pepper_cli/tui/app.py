@@ -1966,14 +1966,14 @@ class PepperApp(App[None]):
         pane = self.pane
         if pane is None or pane.note_id is None:
             return
-        pane.note_id, pane.note_name, pane.note, pane.error = None, "", None, None
+        pane.note_id, pane.note_name, pane.note, pane.note_error = None, "", None, None
         self._loops["note"].generation += 1
 
     def _open_note(self, note_id: str, name: str) -> None:
         pane = self.pane
         if pane is None:
             return
-        pane.note_id, pane.note_name, pane.note, pane.error = note_id, name, None, None
+        pane.note_id, pane.note_name, pane.note, pane.note_error = note_id, name, None, None
         self._loops["note"].generation += 1
         self._render_pane(reset=True)
         self.refresh_chrome()
@@ -1994,14 +1994,14 @@ class PepperApp(App[None]):
     def _got_note(self, pane: state.AppPaneState, note_id: str, detail: ArtifactDetail) -> None:
         if pane is not self.pane or pane.note_id != note_id:
             return
-        pane.note, pane.note_name, pane.error = detail, detail.name, None
+        pane.note, pane.note_name, pane.note_error = detail, detail.name, None
         self._render_pane()
         self.refresh_chrome()
 
     def _note_failed(self, pane: state.AppPaneState, note_id: str, exc: Exception) -> bool:
         if pane is not self.pane or pane.note_id != note_id:
             return False
-        pane.error = f"Couldn't open the note ({_short_error(exc)}). r tries again."
+        pane.note_error = f"Couldn't open the note ({_short_error(exc)}). r tries again."
         self._render_pane()
         return False
 

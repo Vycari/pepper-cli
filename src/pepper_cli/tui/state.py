@@ -1098,7 +1098,11 @@ class AppPaneState:
     #: The selected row's key (see :func:`pane_rows`).
     selected: str | None = None
     closed_open: bool = False
+    #: The list's last read failed (the last good list stays up under it).
     error: str | None = None
+    #: The open note's last read failed. Kept apart from ``error``: the list is re-read behind
+    #: an open note, and its success must not clear the note's failure.
+    note_error: str | None = None
 
     @property
     def title(self) -> str:

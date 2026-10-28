@@ -182,11 +182,11 @@ def _heading(left: str, right: str = "") -> Text:
     return line
 
 
-def _status(pane: state.AppPaneState, *, stale: bool = True) -> list[Item]:
-    if pane.error is None:
+def _status(error: str | None, *, stale: bool) -> list[Item]:
+    if error is None:
         return []
-    note = "  (showing the last read)" if stale and pane.loaded else ""
-    return [(None, Text(sanitize_line(pane.error) + note, style="yellow"))]
+    note = "  (showing the last read)" if stale else ""
+    return [(None, Text(sanitize_line(error) + note, style="yellow"))]
 
 
 def todo_items(
@@ -200,7 +200,7 @@ def todo_items(
     count = state.open_todo_count(pane)
     tail = f"{count} open" + ("  ·  only asks of you" if pane.mine else "")
     items: list[Item] = [(None, _heading("Todos", tail)), (None, Text(""))]
-    items.extend(_status(pane))
+    items.extend(_status(pane.error, stale=pane.loaded))
     if not pane.loaded:
         if pane.error is None:
             items.append((None, Text("Loading…", style="dim")))
@@ -267,7 +267,7 @@ def notes_items(pane: state.AppPaneState, *, now: datetime) -> list[Item]:
         (None, _heading("Notes", str(len(notes)) if pane.loaded else "")),
         (None, Text("")),
     ]
-    items.extend(_status(pane))
+    items.extend(_status(pane.error, stale=pane.loaded))
     if not pane.loaded:
         if pane.error is None:
             items.append((None, Text("Loading…", style="dim")))
@@ -297,14 +297,14 @@ def note_items(pane: state.AppPaneState, *, now: datetime) -> list[Item]:
     name = sanitize_line(pane.note_name) or "Note"
     if detail is None:
         items: list[Item] = [(None, _heading(name)), (None, Text(""))]
-        items.extend(_status(pane, stale=False))
-        if pane.error is None:
+        items.extend(_status(pane.note_error, stale=False))
+        if pane.note_error is None:
             items.append((None, Text("Loading…", style="dim")))
         return items
     edited = state.edited_label(detail.updated_at, now=now)
     return [
         (None, _line(name, f"edited {sanitize_line(edited)}" if edited else "", style="bold")),
         (None, Text("")),
-        *_status(pane, stale=False),
+        *_status(pane.note_error, stale=False),
         (None, rows.note_body_renderable(detail.body or "")),
     ]

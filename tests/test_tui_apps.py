@@ -601,6 +601,28 @@ async def test_an_error_opening_a_note_shows_in_the_viewer() -> None:
         assert app.pane is not None
 
 
+async def test_a_notes_list_reread_does_not_clear_the_open_notes_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(state, "PANE_INTERVAL", 0.05)
+    server = server_with_apps()
+    del server.note_details["n-pack"]
+    app = tui_app.PepperApp(server.client())
+
+    def list_reads() -> int:
+        return len([1 for _m, p, _q in server.requests if p == "/api/v1/artifacts"])
+
+    async with app.run_test(size=SIZE) as pilot:
+        await open_notes(app, pilot)
+        await pilot.press("enter")
+        await until(pilot, lambda: "Couldn't open the note" in pane_text(app))
+        count = list_reads()
+        await until(pilot, lambda: list_reads() >= count + 2)  # the list behind it, polled
+        await pilot.pause()
+        assert "Couldn't open the note" in pane_text(app)
+        assert "Loading" not in pane_text(app)
+
+
 async def test_a_detail_that_is_not_a_note_is_refused() -> None:
     server = server_with_apps()
     server.note_details["n-pack"]["kind"] = "file"
