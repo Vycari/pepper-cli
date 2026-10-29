@@ -339,6 +339,35 @@ async def test_the_strip_holds_the_exchange_in_flight_and_the_one_before() -> No
         assert "third answer" in text
 
 
+async def test_the_strip_stops_waiting_to_send_once_the_turn_is_running() -> None:
+    server = own_server()
+    gate = threading.Event()
+    server.turns = [reply_turn("an answer", gates={1: gate})]
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_own(app, pilot)
+        await say(pilot, app, "slow one")
+        await until(pilot, lambda: "Looking into it" in plain(app, "#dm-status"))
+        # Nothing but the turn's own start redraws the strip here (the pane polls every 30s).
+        assert "waiting to send" not in strip(app)
+        assert "slow one" in strip(app)
+        gate.set()
+        await until(pilot, lambda: "an answer" in strip(app))
+
+
+async def test_a_dropped_stream_says_checking_in_the_strip_while_history_is_read() -> None:
+    server = own_server()
+    server.turns = [ts.ScriptedTurn(frames=[("model_thought", {"text": "Hmm"})], drop=True)]
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_own(app, pilot)
+        await say(pilot, app, "still there?")
+        await until(pilot, lambda: bool(app.turns) and app.turns[0].phase == "checking")
+        await pilot.pause()
+        assert "checking for the answer" in strip(app)
+        assert "waiting to send" not in strip(app)
+
+
 async def test_closing_the_pane_clears_the_strip() -> None:
     server = own_server()
     server.turns = [reply_turn("an answer")]

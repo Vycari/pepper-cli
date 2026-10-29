@@ -2194,6 +2194,8 @@ class PepperApp(App[None]):
         turn.phase, turn.status = "streaming", "Sending…"
         self._loops["dm"].stop_timer()
         self._paint_dm_status()
+        if turn.subject is not None:
+            self._render_strip()  # no longer "waiting to send"
         worker = threading.Thread(
             target=self._turn_worker, args=(turn, generation), name="pepper-turn", daemon=True
         )
@@ -2280,13 +2282,22 @@ class PepperApp(App[None]):
         self._turn_finished(turn)
 
     def _turn_finished(self, turn: state.DmTurn) -> None:
-        """A turn sent from one of your own panes has ended (or its answer was found): the strip
-        shows how it went, and the pane reads its list again, because Pepper may have just
-        added or ticked something (design §6.9)."""
-        if turn.subject is None or self.pane is None or turn.phase == "checking":
+        """A turn sent from one of your own panes has ended, lost its stream, or had its answer
+        found: the strip shows how it stands. Once it is over the pane reads its list again,
+        because Pepper may have just added or ticked something (design §6.9)."""
+        if turn.subject is None or self.pane is None:
             return
-        self._render_pane()
-        self._want("apps")
+        self._render_strip()
+        if turn.phase != "checking":
+            self._want("apps")
+
+    def _render_strip(self) -> None:
+        """Redraw only the reply strip under your own pane, on a turn's phase change (the
+        list is drawn by :meth:`_render_pane`)."""
+        pane = self.pane
+        if pane is None or pane.owner is not None:
+            return
+        self.query_one(AppPane).show_strip(apps_pane.strip_items(pane.exchanges))
 
     def _drop_exchange(self, turn: state.DmTurn) -> None:
         pane = self.pane
