@@ -5,6 +5,7 @@ server; ``suspend`` and the editor are patched, since a headless run has no term
 
 from __future__ import annotations
 
+import threading
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
@@ -384,6 +385,31 @@ async def test_space_ticks_the_line_picked_and_redraws_from_the_response() -> No
         await pilot.press("2")
         await until(pilot, lambda: "☐ Headlamps" in pane_text(app))
         assert writes(server, "toggle")[1][1]["checked"] is False
+
+
+async def test_a_read_begun_before_a_tick_cannot_redraw_the_text_from_before() -> None:
+    server = server_with_apps()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_notes(app, pilot)
+        await pilot.press("enter")
+        await until(pilot, lambda: "☐ Sleeping bags" in pane_text(app))
+        before = dict(server.note_details["n-pack"])
+        gate = threading.Event()
+        server.gates["GET /api/v1/artifacts/n-pack/detail"] = gate
+        app._reread_note()  # a re-read (the poll saw a new etag) that stalls on the way back
+        await until(pilot, lambda: note_reads(server) >= 2)
+        await pilot.press("space")
+        await screen_is(pilot, app, PickerScreen)
+        await pilot.press("1")
+        await until(pilot, lambda: "☑ Sleeping bags" in pane_text(app))
+        # The stalled read now answers with the note as it was before the tick.
+        server.note_details["n-pack"] = before
+        del server.gates["GET /api/v1/artifacts/n-pack/detail"]
+        gate.set()
+        await until(pilot, lambda: app._loops["note"].in_flight is None)
+        await pilot.pause()
+        assert "☑ Sleeping bags" in pane_text(app)
 
 
 async def test_a_409_shows_the_servers_sentence_and_reads_the_note_again() -> None:

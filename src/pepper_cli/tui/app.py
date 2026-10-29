@@ -2506,7 +2506,7 @@ class PepperApp(App[None]):
         self.notify(f"Saved {sanitize_line(saved.name)}.", markup=False, timeout=3)
         if pane is self.pane:
             if pane.note_id == saved.id:
-                self._got_note(pane, saved.id, saved)
+                self._apply_written_note(pane, saved.id, saved)
             self._want("apps")
 
     def _edit_rejected(
@@ -2639,7 +2639,7 @@ class PepperApp(App[None]):
         if pane is not self.pane:
             return
         if detail is not None:
-            self._got_note(pane, note_id, detail)
+            self._apply_written_note(pane, note_id, detail)
         else:
             self._reread_note()
         self._want("apps")
@@ -2650,6 +2650,14 @@ class PepperApp(App[None]):
         if pane is self.pane and pane.note_id == note_id:
             self._reread_note()
         return False
+
+    def _apply_written_note(
+        self, pane: state.AppPaneState, note_id: str, detail: ArtifactDetail
+    ) -> None:
+        """Show the note as a write left it. A read of it that began before the write is
+        dropped, so it can't land afterwards and draw the text from before (§6.6)."""
+        self._loops["note"].generation += 1
+        self._got_note(pane, note_id, detail)
 
     def _reread_note(self) -> None:
         """Read the open note again now, dropping a read that began before the write."""
