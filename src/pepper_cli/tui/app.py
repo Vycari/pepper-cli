@@ -2261,6 +2261,11 @@ class PepperApp(App[None]):
         if not pane.loaded:
             self.notify("Todos are still loading.", timeout=2)
             return
+        if self._loops["todo"].busy:
+            # One todo request at a time, the roster read an add may need included: a second
+            # add started while the first one's roster is still loading would race it.
+            self.notify("Still saving the last change.", timeout=2)
+            return
         self.push_screen(
             PromptScreen("New todo", placeholder="Title", max_length=state.TITLE_MAX),
             lambda title: self._add_due(pane, title),

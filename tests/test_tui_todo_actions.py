@@ -335,6 +335,30 @@ async def test_the_roster_is_read_when_the_add_needs_it_and_a_failure_stops_the_
         assert ts.ROOM_A in app.rosters
 
 
+async def test_a_second_add_waits_for_the_first_ones_roster_read() -> None:
+    server = room_server()
+    roster = f"GET /api/v1/groups/{ts.ROOM_A}/roster"
+    gate = threading.Event()
+    server.gates[roster] = gate
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        seen = notices(app)
+        await open_todos(app, pilot)
+        app.rosters.pop(ts.ROOM_A, None)
+        await pilot.press("n")
+        await fill(pilot, app, "Buy ice")
+        await fill(pilot, app, "")
+        await until(pilot, lambda: app._loops["todo"].busy)
+        await pilot.press("n")
+        await until(pilot, lambda: any("Still saving the last change" in n for n in seen))
+        assert not isinstance(app.screen, PromptScreen)
+        gate.set()
+        await until(pilot, lambda: isinstance(app.screen, PickerScreen))
+        await pilot.press("1")
+        await until(pilot, lambda: "○ Buy ice" in pane_text(app))
+        assert server.todo_writes == [(ROOM_TODOS, {"title": "Buy ice"})]
+
+
 async def test_notes_has_none_of_the_todo_keys() -> None:
     server = room_server()
     app = tui_app.PepperApp(server.client())
