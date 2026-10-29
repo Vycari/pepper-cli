@@ -1966,7 +1966,11 @@ class ApiClient:
             RoomTodos(
                 group_id=str(raw["group_id"]),
                 name=str(raw.get("name") or ""),
-                items=[_room_todo_from_dict(item) for item in raw.get("items") or []],
+                items=[
+                    _room_todo_from_dict(item)
+                    for item in raw.get("items") or []
+                    if isinstance(item, dict)
+                ],
             )
             for raw in raw_rooms
             if isinstance(raw, dict) and "group_id" in raw

@@ -643,3 +643,15 @@ async def test_the_cursor_starts_on_pepper_not_on_the_first_row() -> None:
         await pilot.pause()
         assert app.sidebar.highlighted_row is not None
         assert app.sidebar.highlighted_row.kind == "pepper"
+
+
+async def test_a_failed_reread_keeps_the_room_sections_already_on_screen() -> None:
+    server = own_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_own(app, pilot)
+        assert "Book the dog sitter" in pane_text(app)
+        server.fail["/api/v1/todos/rooms"] = 500
+        await pilot.press("r")
+        await until(pilot, lambda: "Couldn't load your rooms' todos." in pane_text(app))
+        assert "Book the dog sitter" in pane_text(app)

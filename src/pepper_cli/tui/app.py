@@ -1142,6 +1142,7 @@ class PepperApp(App[None]):
             return
         if isinstance(conv, state.OwnApp):
             self._open_own_pane(conv.slug)
+            self.sidebar.select_key(f"app:me:{conv.slug}")
             return
         self.open_conversation(conv)
         self.sidebar.select_key("pepper" if conv.is_pepper else f"topic:{conv.topic_id}")
@@ -2004,7 +2005,10 @@ class PepperApp(App[None]):
         if pane is not self.pane:
             return
         # A failed rooms read leaves your own items on screen under one line saying so.
-        pane.rooms, pane.rooms_error = found.rooms, found.rooms is None
+        # (a failed re-read keeps the sections already on screen, like any other re-read)
+        if found.rooms is not None:
+            pane.rooms = found.rooms
+        pane.rooms_error = found.rooms is None
         self._got_todos(pane, found.todos)
 
     def _got_todos(self, pane: state.AppPaneState, todos: list[TodoEntry]) -> None:
@@ -2316,7 +2320,8 @@ class PepperApp(App[None]):
                 self.turns.remove(turn)
             elif turn.phase == "checking" and turn.reply_landed(entries):
                 self.turns.remove(turn)
-                turn.reply, turn.phase = turn.found_reply(entries), "done"
+                turn.reply = turn.found_reply(entries) or turn.reply
+                turn.phase = "done"
                 self.dm_note = ""
                 self._turn_finished(turn)
             elif turn.phase == "checking" and turn.gave_up(now):

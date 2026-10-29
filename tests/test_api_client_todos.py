@@ -386,3 +386,12 @@ def test_a_room_items_ask_is_read_from_source_ref_as_the_server_does() -> None:
     assert got[1].requested_by == api_client.TodoPerson(user_id=None, label="Pat")
     assert got[2].assignee is None
     assert got[3].assignee is None
+
+
+def test_list_room_todos_skips_an_item_that_is_not_an_object() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        body = {"rooms": [{"group_id": "g", "name": "R", "items": ["junk", _stored()]}]}
+        return httpx.Response(200, json=body)
+
+    with _client(handler) as api:
+        assert len(api.list_room_todos().rooms[0].items) == 1
