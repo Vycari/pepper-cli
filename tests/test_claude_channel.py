@@ -1301,6 +1301,17 @@ def test_serve_returns_the_verdict_of_a_worker_that_pushed_ended_before_stdin_cl
     assert code == 2
 
 
+def test_an_ended_push_marks_the_pusher_ending_even_when_the_channel_has_closed():
+    """``ending`` goes up before the ``closed`` check, so ``serve`` cannot slip between them."""
+    pusher = claude_channel._Pusher(None, None)  # ty: ignore[invalid-argument-type]
+    pusher.closed = True
+
+    with pytest.raises(claude_channel.ChannelClosedError):
+        pusher.push(*claude_channel.control_event("ended", "stopped"))
+
+    assert pusher.ending.is_set()
+
+
 # --- the tools (design §9.1, §9.2) -------------------------------------------
 
 

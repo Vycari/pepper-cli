@@ -1107,10 +1107,13 @@ class _Pusher:
         await self._write_stream.send(SessionMessage(notification))
 
     def push(self, content: str, meta: dict[str, str]) -> None:
-        if self.closed:
-            raise ChannelClosedError
+        # ``ending`` goes up before the ``closed`` check, mirroring ``serve``, which sets ``closed``
+        # before it reads ``ending``: whichever side moves second sees the other, so an ``ended``
+        # that passes the check is always waited for. A set after ``serve`` has looked is harmless.
         if meta.get("kind") == "ended":
             self.ending.set()
+        if self.closed:
+            raise ChannelClosedError
         try:
             self._portal.call(self._send, content, meta)
         except (
