@@ -380,7 +380,10 @@ def test_a_turn_finds_its_reply_in_history_by_id_or_as_the_new_assistant_row() -
     assert state.DmTurn(text="q", assistant_id="gone").found_reply(entries) is None
     dropped = state.DmTurn(text="q", phase="checking", snapshot=frozenset({"old"}))
     assert dropped.found_reply(entries) == "the answer"
+    assert dropped.reply_id(entries) == "new"
     assert state.DmTurn(text="q", snapshot=frozenset(entries)).found_reply(entries) is None
+    # Before a drop there is nothing to guess from: only a named row is this turn's.
+    assert state.DmTurn(text="q", phase="streaming").reply_id(entries) is None
 
 
 def test_an_ask_is_not_also_labelled_from_request() -> None:

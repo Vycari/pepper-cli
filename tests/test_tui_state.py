@@ -284,7 +284,18 @@ def test_dm_tracker_baselines_then_lights_on_a_new_reply_unless_open() -> None:
     assert [e.id for e in dm.ordered()] == ["1", "4"]
 
 
-def test_dm_tracker_drops_rows_that_leave_the_history_after_midnight() -> None:
+def test_dm_tracker_a_reply_already_seen_elsewhere_does_not_light_the_dot() -> None:
+    dm = state.DmTracker()
+    dm.update([_entry("1", "assistant")], is_open=False)
+    dm.update([_entry("1", "assistant"), _entry("2", "assistant")], is_open=False, seen={"2"})
+    assert dm.dot is False  # the reply strip showed it
+    dm.update(
+        [_entry("1", "assistant"), _entry("2", "assistant"), _entry("3", "assistant")],
+        is_open=False,
+        seen={"2"},
+    )
+    assert dm.dot is True
+
     dm = state.DmTracker()
     dm.update([_entry("y1", "user"), _entry("y2", "assistant")], is_open=False)
     # Past midnight the history is a new day's thread: yesterday's rows are gone from it.

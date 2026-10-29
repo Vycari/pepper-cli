@@ -804,7 +804,16 @@ class PepperApp(App[None]):
         return False
 
     def _on_dm(self, history: list[ChatHistoryEntry]) -> None:
-        new_ids = self.dm.update(history, is_open=self.current.is_pepper)
+        # Your own pane sits over the DM without showing it: only the replies its strip
+        # carries count as seen there; anything else still lights the dot (design §6.6).
+        pane = self.pane
+        seen: set[str] = set()
+        if pane is not None and pane.owner is None:
+            entries = {entry.id: entry for entry in history}
+            seen = {rid for turn in pane.exchanges if (rid := turn.reply_id(entries))}
+        new_ids = self.dm.update(
+            history, is_open=self.current.is_pepper and pane is None, seen=seen
+        )
         self._settle_turns()
         if self.current.is_pepper:
             self._render_dm(new_rows=len(new_ids), reset=False)
@@ -985,6 +994,7 @@ class PepperApp(App[None]):
             self._hide_pane()
             if conv == self.current:
                 if conv.is_pepper:  # your own pane sat over the DM
+                    self.dm.dot = False
                     self._render_dm(new_rows=0, reset=True)
                 else:
                     self._render_topic(new_rows=0, reset=True)
@@ -1936,6 +1946,7 @@ class PepperApp(App[None]):
         self._hide_pane()
         if own:
             # Your own pane sat over the Pepper DM: back to it, with the cursor on its row.
+            self.dm.dot = False
             self._render_dm(new_rows=0, reset=True)
             self.sidebar.select_key("pepper")
         else:

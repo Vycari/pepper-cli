@@ -13,7 +13,7 @@ from pepper_cli.tui import state
 from pepper_cli.tui.apps_pane import AppPane, PaneScroll
 from pepper_cli.tui.composer import PLACEHOLDER
 from pepper_cli.tui.screens import JumpScreen
-from pepper_cli.tui.sidebar import Sidebar
+from pepper_cli.tui.sidebar import DOT, Sidebar
 from tests import tui_support as ts
 from tests.test_tui_apps import SAM, SIZE, header, pane_text, server_with_apps
 from tests.tui_support import body_text, plain, until
@@ -396,8 +396,13 @@ async def test_a_turn_already_running_when_the_pane_opens_does_not_appear_in_the
         gate.set()
         await until(pilot, lambda: not app.turns)
         assert not app.query_one("#reply-strip").display
+        # The pane hides the DM, so the reply it did not carry lights the Pepper dot (§6.6).
+        await until(pilot, lambda: app.dm.dot)
+        await until(pilot, lambda: label(app, "pepper").endswith(DOT))
         await pilot.press("escape", "escape")
         await until(pilot, lambda: "late answer" in body_text(app))
+        assert not app.dm.dot
+        await until(pilot, lambda: label(app, "pepper") == "Pepper")
 
 
 async def test_a_refused_send_gives_the_text_back_and_leaves_no_strip_entry() -> None:

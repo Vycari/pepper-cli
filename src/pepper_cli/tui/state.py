@@ -695,17 +695,26 @@ class DmTracker:
     dot: bool = False
     _primed: bool = False
 
-    def update(self, history: Iterable[ChatHistoryEntry], *, is_open: bool) -> list[str]:
+    def update(
+        self,
+        history: Iterable[ChatHistoryEntry],
+        *,
+        is_open: bool,
+        seen: AbstractSet[str] = frozenset(),
+    ) -> list[str]:
         """Replace the rows with a history read. Returns the ids not in the previous read.
 
         The read is the whole of today's thread, so it replaces what was held rather than
         merging into it: after midnight, yesterday's rows drop out instead of staying under
-        the "Today" heading.
+        the "Today" heading. An assistant row in ``seen`` was already shown elsewhere (the
+        reply strip under your own pane) and does not light the dot.
         """
         previous = self.entries
         self.entries = {entry.id: entry for entry in history}
         new_ids = [eid for eid in self.entries if eid not in previous]
-        fresh_assistant = any(self.entries[eid].role == "assistant" for eid in new_ids)
+        fresh_assistant = any(
+            self.entries[eid].role == "assistant" and eid not in seen for eid in new_ids
+        )
         if is_open:
             self.dot = False
         elif self._primed and fresh_assistant:
@@ -933,19 +942,24 @@ class DmTurn:
             return False
         return any(e.role == "assistant" and eid not in self.snapshot for eid, e in entries.items())
 
-    def found_reply(self, entries: dict[str, ChatHistoryEntry]) -> str | None:
-        """The text of the assistant row history shows for this turn, once :meth:`reply_landed`."""
-        if self.assistant_id is not None:
-            found = entries.get(self.assistant_id)
-            return found.text if found is not None else None
+    def reply_id(self, entries: dict[str, ChatHistoryEntry]) -> str | None:
+        """The id of this turn's assistant row: the one the reply frame named, or after a
+        dropped stream the first assistant row not in the snapshot."""
+        if self.assistant_id is not None or self.phase != "checking":
+            return self.assistant_id
         return next(
             (
-                e.text
+                eid
                 for eid, e in entries.items()
                 if e.role == "assistant" and eid not in self.snapshot
             ),
             None,
         )
+
+    def found_reply(self, entries: dict[str, ChatHistoryEntry]) -> str | None:
+        """The text of the assistant row history shows for this turn, once :meth:`reply_landed`."""
+        found = entries.get(reply_id) if (reply_id := self.reply_id(entries)) else None
+        return found.text if found is not None else None
 
     def gave_up(self, now: float) -> bool:
         """A dropped turn whose reply, or an answered turn whose rows, did not show within
