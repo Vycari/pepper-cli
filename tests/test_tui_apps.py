@@ -665,6 +665,7 @@ async def test_a_room_with_only_archived_topics_opens_its_pane_in_that_room_and_
         await pilot.press("enter")
         await pilot.pause()
         assert not app.pending.in_conversation(app.current)  # nothing posted to a topic
+        assert app.composer.text == "hello"  # and the draft is kept, not dropped
 
 
 async def test_rows_that_arrive_behind_an_open_pane_are_not_marked_read_until_it_closes() -> None:
