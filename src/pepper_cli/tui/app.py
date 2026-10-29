@@ -1317,6 +1317,9 @@ class PepperApp(App[None]):
             return
         if self.current.is_pepper:
             self._send_turn(text)
+        elif self.current.topic_id is None:  # a topicless room (opened for its app pane)
+            self.notify("This room has no open topic to post in.", timeout=3)
+            return
         else:
             self._send_room(text)
         draft = self._draft()
@@ -1887,8 +1890,11 @@ class PepperApp(App[None]):
             room := next((r for r in self.rooms if r.group_id == room_id), None)
         ):
             topics = state.topics_by_recency(room)
-            if topics:
-                self.open_conversation(state.Conversation(room_id, topics[0].topic_id))
+            # A room with only archived topics has none to open: it gets a conversation with
+            # no topic, so the pane, the header and Esc all stay in this room.
+            self.open_conversation(
+                state.Conversation(room_id, topics[0].topic_id if topics else None)
+            )
         self._show_pane(state.AppPaneState(owner=room_id, slug=slug))
 
     def _open_own_pane(self, slug: str) -> None:

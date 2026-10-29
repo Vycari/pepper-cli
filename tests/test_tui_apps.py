@@ -617,6 +617,40 @@ async def test_opening_another_rooms_app_moves_to_that_room_and_the_old_pane_goe
         assert app.current.room_id == ts.ROOM_B
 
 
+async def test_a_room_with_only_archived_topics_opens_its_pane_in_that_room_and_esc_stays() -> None:
+    server = server_with_apps()
+    server.rooms[1]["topics"] = [
+        ts.topic(
+            ts.TOPIC_B1, "Old", "2026-09-15T10:00:00+00:00", archived_at="2026-10-01T00:00:00Z"
+        )
+    ]
+    server.launchers[ts.ROOM_B] = [ts.tile("notes", "Notes", ts.ROOM_B)]
+    server.notes[ts.ROOM_B] = [ts.note_item("b1", "Reading list", "2026-10-20T10:00:00+00:00")]
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_todos(app, pilot)
+        app.sidebar.focus()
+        app.sidebar.select_key(f"room:{ts.ROOM_B}")
+        await pilot.pause()
+        await pilot.press("a")
+        await until(pilot, lambda: isinstance(app.screen, PickerScreen))
+        await pilot.press("1")
+        await until(pilot, lambda: "Reading list" in pane_text(app))
+        assert header(app) == "Book club › Notes"
+        assert app.current == state.Conversation(ts.ROOM_B, None)  # not left in room A
+        app.query_one(PaneScroll).focus()
+        await pilot.press("escape")
+        await until(pilot, lambda: app.pane is None)
+        assert app.current.room_id == ts.ROOM_B
+        assert app.current.topic_id is None
+        assert header(app) == "Book club"
+        app.composer.focus()
+        app.composer.load_text("hello")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not app.pending.in_conversation(app.current)  # nothing posted to a topic
+
+
 async def test_rows_that_arrive_behind_an_open_pane_are_not_marked_read_until_it_closes() -> None:
     server = server_with_apps()
     app = tui_app.PepperApp(server.client())
