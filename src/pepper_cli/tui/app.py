@@ -141,6 +141,8 @@ _ON_DEMAND = (
     "apps",
     "note",
     "shelf",
+    # A todo write from the Todos pane (done, dismiss, reopen, add), one at a time.
+    "todo",
 )
 #: Transport failures that mean a turn's request never reached the server, so it is safe to
 #: give the text back for the user to send again.
@@ -2168,6 +2170,200 @@ class PepperApp(App[None]):
             self.notify("No link here.", timeout=2)
             return
         self._browse(url)
+
+    # ------------------------------------------------------------------ todo writes (P2, §6.7)
+
+    def _selected_todo(self) -> tuple[state.AppPaneState, TodoEntry] | None:
+        """The open Todos list and its selected todo, or ``None`` after saying why not."""
+        pane = self.pane
+        if pane is None or pane.slug != "todo":
+            return None
+        row = next((r for r in state.pane_rows(pane) if r.key == pane.selected), None)
+        if row is None or row.todo is None:
+            self.notify("Select a todo first.", timeout=2)
+            return None
+        return pane, row.todo
+
+    def on_pane_scroll_done(self, _event: PaneScroll.Done) -> None:
+        self._todo_verb("done")
+
+    def on_pane_scroll_dismiss(self, _event: PaneScroll.Dismiss) -> None:
+        self._todo_verb("dismiss")
+
+    def on_pane_scroll_reopen(self, _event: PaneScroll.Reopen) -> None:
+        self._todo_verb("reopen")
+
+    def _todo_verb(self, verb: str) -> None:
+        """Mark the selected todo done, dismiss it, or reopen it. The row shows a pending mark
+        until the answer; the returned row replaces it."""
+        found = self._selected_todo()
+        if found is None:
+            return
+        pane, todo = found
+        if todo.id in pane.pending:
+            return
+        if verb == "reopen" and todo.status == "open":
+            self.notify("That todo is already open.", timeout=2)
+            return
+        if verb != "reopen" and todo.status != "open":
+            self.notify("That todo is closed. u reopens it.", timeout=2)
+            return
+        if self._loops["todo"].busy:
+            self.notify("Still saving the last change.", timeout=2)
+            return
+        owner = state.todo_owner(pane, todo.id)
+        pane.pending.add(todo.id)
+        self._render_pane()
+        what = {"done": "mark the todo done", "dismiss": "dismiss the todo"}.get(
+            verb, "reopen the todo"
+        )
+        self._start(
+            "todo",
+            lambda: poller.todo_verb(self._api, verb, todo.id, owner),
+            lambda entry: self._todo_written(pane, entry, todo.id),
+            on_error=lambda exc: self._todo_failed(pane, todo.id, what, exc),
+        )
+
+    def _todo_written(self, pane: state.AppPaneState, entry: TodoEntry, pending_id: str) -> None:
+        """A write answered: the returned row replaces the pending one at once, then the list is
+        read again (a read already in flight is dropped, so it cannot bring the old row back)."""
+        pane.pending.discard(pending_id)
+        if pane is not self.pane:
+            return
+        before = state.pane_rows(pane)
+        placeholder = pending_id if pending_id.startswith("pending:") else None
+        state.apply_todo(pane, entry, replacing=placeholder)
+        pane.selected = state.reselect(before, pane.selected, state.pane_rows(pane))
+        self._render_pane()
+        self._loops["apps"].generation += 1
+        self._run("apps")
+
+    def _todo_failed(
+        self, pane: state.AppPaneState, pending_id: str, what: str, exc: Exception
+    ) -> bool:
+        """A write failed: the row is as it was (an add's placeholder goes), and the server's
+        message shows."""
+        pane.pending.discard(pending_id)
+        if pane is self.pane:
+            before = state.pane_rows(pane)
+            if pending_id.startswith("pending:"):
+                state.drop_todo(pane, pending_id)  # an add's placeholder; a real row stays
+            pane.selected = state.reselect(before, pane.selected, state.pane_rows(pane))
+            self._render_pane()
+        return self._action_failed(what, exc)
+
+    def on_pane_scroll_add(self, _event: PaneScroll.Add) -> None:
+        """``n``: title, then an optional due date, then (in a room) an optional member to ask.
+        On your own Todos it always adds to your own list, never to a room's section."""
+        pane = self.pane
+        if pane is None or pane.slug != "todo":
+            return
+        if not pane.loaded:
+            self.notify("Todos are still loading.", timeout=2)
+            return
+        self.push_screen(
+            PromptScreen("New todo", placeholder="Title", max_length=state.TITLE_MAX),
+            lambda title: self._add_due(pane, title),
+        )
+
+    def _add_due(self, pane: state.AppPaneState, title: str | None) -> None:
+        if not title or pane is not self.pane:
+            return
+        title = title[: state.TITLE_MAX]
+        room = pane.owner is not None
+        hint = "YYYY-MM-DD" if room else "YYYY-MM-DD or YYYY-MM-DD HH:MM"
+
+        def chosen(raw: str | None) -> None:
+            if raw is None:
+                return
+            due_date, due_day, error = state.parse_add_due(raw, room=room)
+            if error is not None:
+                self.notify(error, severity="error", timeout=4)
+                self._add_due(pane, title)
+                return
+            self._add_asked(pane, title, due_date, due_day)
+
+        self.push_screen(
+            PromptScreen("Due date", placeholder=f"{hint}, or blank for none", allow_blank=True),
+            chosen,
+        )
+
+    def _add_asked(
+        self, pane: state.AppPaneState, title: str, due_date: str | None, due_day: str | None
+    ) -> None:
+        """The optional third step, in a room only: pick a member to ask (§6.5)."""
+        room = pane.owner
+        if room is None or pane is not self.pane:
+            self._create_todo(pane, title, due_date, due_day, None)
+            return
+        roster = self.rosters.get(room)
+        if roster is None:
+
+            def got(members: list[GroupRosterMember]) -> None:
+                self._got_roster(room, members)
+                self._pick_assignee(pane, title, due_date, due_day, members)
+
+            self._start(
+                "todo",
+                lambda: poller.fetch_roster(self._api, room),
+                got,
+                on_error=lambda exc: self._action_failed("load the room's members", exc),
+            )
+            return
+        self._pick_assignee(pane, title, due_date, due_day, roster)
+
+    def _pick_assignee(
+        self,
+        pane: state.AppPaneState,
+        title: str,
+        due_date: str | None,
+        due_day: str | None,
+        roster: list[GroupRosterMember],
+    ) -> None:
+        members = state.assignable_members(roster, self.you_person_id)
+        if not members or pane is not self.pane:
+            self._create_todo(pane, title, due_date, due_day, None)
+            return
+        choices = [("", "Nobody: just add it"), *members]
+
+        def picked(person_id: str | None) -> None:
+            if person_id is not None:  # Esc cancels the whole add
+                self._create_todo(pane, title, due_date, due_day, person_id or None)
+
+        self.push_screen(PickerScreen("Ask a member?", choices), picked)
+
+    def _create_todo(
+        self,
+        pane: state.AppPaneState,
+        title: str,
+        due_date: str | None,
+        due_day: str | None,
+        assignee: str | None,
+    ) -> None:
+        if pane is not self.pane:
+            return
+        if self._loops["todo"].busy:
+            self.notify("Still saving the last change.", timeout=2)
+            return
+        owner = pane.owner
+        row = state.placeholder_todo(
+            pane, title, due_date=due_date, due_day=due_day, now=self._now()
+        )
+        pane.selected = f"todo:{row.id}"
+        self._render_pane()
+        self._start(
+            "todo",
+            lambda: poller.add_todo(
+                self._api,
+                owner,
+                title=title,
+                due_date=due_date,
+                due_day=due_day,
+                assignee_person_id=assignee,
+            ),
+            lambda entry: self._todo_written(pane, entry, row.id),
+            on_error=lambda exc: self._todo_failed(pane, row.id, "add the todo", exc),
+        )
 
     # ------------------------------------------------------------------ Pepper turns (§6.5)
 

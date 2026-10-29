@@ -40,6 +40,10 @@ if TYPE_CHECKING:
 type Item = tuple[str | None, RenderableType]
 
 
+#: The actions of the Todos list; they are hidden (and do nothing) over Notes.
+TODO_ACTIONS = frozenset({"asks", "done", "dismiss", "reopen", "add"})
+
+
 class PaneScroll(VerticalScroll):
     """The scrolling, focusable body. ↑/↓ move the selection; every key posts a message the
     app answers, as :class:`~pepper_cli.tui.thread.ThreadScroll` does."""
@@ -49,6 +53,11 @@ class PaneScroll(VerticalScroll):
         Binding("down", "move(1)", "Down", show=False),
         Binding("enter", "activate", "Open", show=False),
         Binding("escape", "back", "Back"),
+        Binding("space", "done", "Done"),
+        Binding("x", "done", "Done", show=False),
+        Binding("d", "dismiss", "Dismiss"),
+        Binding("u", "reopen", "Reopen"),
+        Binding("n", "add", "Add"),
         Binding("m", "asks", "Asks of me"),
         Binding("r", "refresh", "Refresh"),
         Binding("o", "open_link", "Open link"),
@@ -69,6 +78,18 @@ class PaneScroll(VerticalScroll):
     class Asks(Message):
         """``m``: only the todos someone asked of you."""
 
+    class Done(Message):
+        """``space`` / ``x``: mark the selected open todo done."""
+
+    class Dismiss(Message):
+        """``d``: dismiss the selected open todo."""
+
+    class Reopen(Message):
+        """``u``: put the selected closed todo back."""
+
+    class Add(Message):
+        """``n``: add a todo."""
+
     class Refresh(Message):
         """``r``: read again now."""
 
@@ -83,7 +104,7 @@ class PaneScroll(VerticalScroll):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "composer":
             return self.composer_below
-        return not (action == "asks" and self.slug != "todo")
+        return not (action in TODO_ACTIONS and self.slug != "todo")
 
     def action_composer(self) -> None:
         self.app.action_focus_next()
@@ -96,6 +117,18 @@ class PaneScroll(VerticalScroll):
 
     def action_back(self) -> None:
         self.post_message(self.Back())
+
+    def action_done(self) -> None:
+        self.post_message(self.Done())
+
+    def action_dismiss(self) -> None:
+        self.post_message(self.Dismiss())
+
+    def action_reopen(self) -> None:
+        self.post_message(self.Reopen())
+
+    def action_add(self) -> None:
+        self.post_message(self.Add())
 
     def action_asks(self) -> None:
         self.post_message(self.Asks())
@@ -226,6 +259,9 @@ def _heading(left: str, right: str = "") -> Text:
     return line
 
 
+#: Drawn in place of a todo's mark while a write to it is in flight.
+PENDING_MARK = "…"
+
 #: Shown on your own Todos when the rooms' read failed: your own items are still drawn.
 ROOMS_FAILED = "Couldn't load your rooms' todos."
 
@@ -268,7 +304,10 @@ def todo_items(
             arrow = "▾" if pane.closed_open else "▸"
             items.append((row.key, Text(f"{arrow} Closed ({row.count})", style=f"dim {style}")))
         elif row.todo is not None:
-            items.append((row.key, _todo_row(row.todo, you_ids, now, hour24, style=style)))
+            pending = row.todo.id in pane.pending
+            items.append(
+                (row.key, _todo_row(row.todo, you_ids, now, hour24, style=style, pending=pending))
+            )
     return items
 
 
@@ -279,16 +318,21 @@ def _todo_row(
     hour24: bool,
     *,
     style: str,
+    pending: bool = False,
 ) -> RenderableType:
     if entry.status == "open":
         mark, right = "○", state.due_label(entry, now=now, hour24=hour24)
     else:
         mark = "✓" if entry.status == "done" else "✗"
         right = ""
+    if pending:
+        mark = PENDING_MARK  # a write is in flight: the row is as it was until the answer
     title = sanitize_line(entry.title) or "(untitled)"
     parts: list[RenderableType] = [
         _line(
-            f"{mark} {title}", sanitize_line(right), style=style or ("dim" if mark != "○" else "")
+            f"{mark} {title}",
+            sanitize_line(right),
+            style=style or ("dim" if mark != "○" else ""),
         )
     ]
     notes = [state.ask_line(entry, you_ids), state.todo_source_label(entry)]

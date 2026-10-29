@@ -281,6 +281,35 @@ def fetch_own_todos(api: ApiClient, *, mine: bool) -> OwnTodos:
     return OwnTodos(todos, None if listed.degraded else listed.rooms)
 
 
+def todo_verb(api: ApiClient, verb: str, todo_id: str, owner: str | None) -> TodoEntry:
+    """``done`` / ``dismiss`` / ``reopen`` one todo of ``owner`` (a room's id, or ``None`` for
+    your own list); the row as the server now has it."""
+    if verb == "done":
+        return api.complete_todo(todo_id, group_id=owner)
+    if verb == "dismiss":
+        return api.dismiss_todo(todo_id, group_id=owner)
+    return api.reopen_todo(todo_id, group_id=owner)
+
+
+def add_todo(
+    api: ApiClient,
+    owner: str | None,
+    *,
+    title: str,
+    due_date: str | None,
+    due_day: str | None,
+    assignee_person_id: str | None,
+) -> TodoEntry:
+    """``POST`` one todo to ``owner``'s list (a room's, or your own); the created row."""
+    return api.create_todo(
+        title=title,
+        due_date=due_date,
+        due=due_day,
+        group_id=owner,
+        assignee_person_id=assignee_person_id,
+    )
+
+
 def fetch_notes(api: ApiClient, owner: str | None) -> ArtifactListResponse:
     """The owner's notes (``inline_text`` artifacts), up to the route's cap of 200."""
     return api.list_artifacts(kind="inline_text", limit=200, principal=owner)
