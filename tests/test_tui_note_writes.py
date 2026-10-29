@@ -166,6 +166,32 @@ async def test_an_editor_failure_is_a_notice_and_sends_nothing(monkeypatch) -> N
         assert server.note_writes == []
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [OSError(28, "No space left on device"), UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")],
+)
+async def test_an_editor_file_failure_is_a_notice_and_the_app_carries_on(
+    monkeypatch, failure
+) -> None:
+    server = server_with_apps()
+    fake_editor(monkeypatch)
+
+    def broken(_initial: str, *, prefix: str = "pepper-") -> tuple[str | None, str | None]:
+        raise failure
+
+    monkeypatch.setattr(note_edit, "open_in_editor", broken)
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_notes(app, pilot)
+        said = notices(app)
+        await pilot.press("e")
+        await until(
+            pilot, lambda: any(n.startswith("couldn't use the editor's file") for n in said)
+        )
+        assert writes(server, "edit") == []
+        assert app.is_running
+
+
 async def test_with_no_terminal_to_hand_over_the_notice_points_at_the_cli() -> None:
     """Under Pilot the driver cannot suspend, so the real ``App.suspend`` raises."""
     server = server_with_apps()

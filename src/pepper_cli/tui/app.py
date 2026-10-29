@@ -2413,7 +2413,12 @@ class PepperApp(App[None]):
         notice points at ``pepper notes <command>`` instead."""
         try:
             with self.suspend():
-                text, error = note_edit.open_in_editor(initial, prefix="pepper-note-")
+                # Caught inside the ``with``: ``suspend`` resumes the app only when its block
+                # ends normally, and the temp file can fail (a full disk, an unreadable save).
+                try:
+                    text, error = note_edit.open_in_editor(initial, prefix="pepper-note-")
+                except (OSError, UnicodeDecodeError) as exc:
+                    text, error = None, f"couldn't use the editor's file: {exc}"
         except SuspendNotSupported:
             self.notify(
                 "This terminal can't hand over to an editor. "
