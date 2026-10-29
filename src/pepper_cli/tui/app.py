@@ -2661,7 +2661,10 @@ class PepperApp(App[None]):
         self, pane: state.AppPaneState, note_id: str, detail: ArtifactDetail
     ) -> None:
         """Show the note as a write left it. A read of it that began before the write is
-        dropped, so it can't land afterwards and draw the text from before (§6.6)."""
+        dropped, so it can't land afterwards and draw the text from before (§6.6). Once the
+        note has been left, the read in flight is another note's, so it is kept."""
+        if pane is not self.pane or pane.note_id != note_id:
+            return
         self._loops["note"].generation += 1
         self._got_note(pane, note_id, detail)
 

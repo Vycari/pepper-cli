@@ -454,6 +454,45 @@ async def test_a_read_begun_before_a_tick_cannot_redraw_the_text_from_before() -
         assert "☑ Sleeping bags" in pane_text(app)
 
 
+async def test_a_tick_answering_after_you_open_another_note_leaves_its_read_alone() -> None:
+    server = server_with_apps()
+    server.note_details["n-wifi"] = {
+        **server.note_details["n-pack"],
+        "id": "n-wifi",
+        "name": "Cabin wifi",
+        "etag": "n-wifi-1",
+        "body": "Network lakeside\n",
+    }
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_notes(app, pilot)
+        await pilot.press("enter")
+        await until(pilot, lambda: "☐ Sleeping bags" in pane_text(app))
+        tick = threading.Event()
+        server.gates["POST /api/v1/artifacts/n-pack/toggle"] = tick
+        await pilot.press("space")
+        await screen_is(pilot, app, PickerScreen)
+        await pilot.press("1")
+        await until(
+            pilot, lambda: any(p.endswith("/n-pack/toggle") for _m, p, _q in server.requests)
+        )
+        # Back to the list and into the other note, whose read is held.
+        await pilot.press("escape")
+        await until(pilot, lambda: "Cabin wifi" in pane_text(app) and app.pane.note_id is None)
+        read = threading.Event()
+        server.gates["GET /api/v1/artifacts/n-wifi/detail"] = read
+        await pilot.press("down", "enter")
+        await until(pilot, lambda: app._loops["note"].in_flight is not None)
+        # The tick answers first; the wifi read must still be the one the pane takes.
+        del server.gates["POST /api/v1/artifacts/n-pack/toggle"]
+        tick.set()
+        await until(pilot, lambda: bool(writes(server, "toggle")))
+        await pilot.pause(0.2)
+        del server.gates["GET /api/v1/artifacts/n-wifi/detail"]
+        read.set()
+        await until(pilot, lambda: "Network lakeside" in pane_text(app))
+
+
 async def test_a_409_shows_the_servers_sentence_and_reads_the_note_again() -> None:
     server = server_with_apps()
     sentence = "that note has changed — reload to see it as it is now."
