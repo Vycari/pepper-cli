@@ -356,10 +356,26 @@ def test_the_composer_placeholder_asks_about_your_list_only_under_your_pane() ->
 
 def test_the_reply_strip_keeps_the_exchange_in_flight_and_the_one_before() -> None:
     pane = state.AppPaneState(owner=None, slug="todo")
-    turns = [state.DmTurn(text=t) for t in ("one", "two", "three")]
+    turns = [state.DmTurn(text=t, phase="done") for t in ("one", "two", "three")]
     for turn in turns:
         state.remember_exchange(pane, turn)
     assert pane.exchanges == turns[1:]
+
+
+def test_sends_queued_behind_a_running_turn_never_push_its_answer_out() -> None:
+    pane = state.AppPaneState(owner=None, slug="todo")
+    done = state.DmTurn(text="earlier", phase="done")
+    running = state.DmTurn(text="slow", phase="streaming")
+    queued = [state.DmTurn(text=t) for t in ("next", "after")]
+    for turn in [done, running, *queued]:
+        state.remember_exchange(pane, turn)
+    assert pane.exchanges == [done, running, *queued]
+    # The running turn answers and the next starts: the strip narrows from the one before.
+    running.phase, queued[0].phase = "done", "streaming"
+    assert state.strip_turns(pane.exchanges) == [running, *queued]
+    for turn in queued:
+        turn.phase = "done"
+    assert state.strip_turns(pane.exchanges) == queued
 
 
 def test_a_turn_finds_its_reply_in_history_by_id_or_as_the_new_assistant_row() -> None:

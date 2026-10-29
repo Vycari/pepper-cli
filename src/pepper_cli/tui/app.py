@@ -2304,10 +2304,11 @@ class PepperApp(App[None]):
 
     def _render_strip(self) -> None:
         """Redraw only the reply strip under your own pane, on a turn's phase change (the
-        list is drawn by :meth:`_render_pane`)."""
+        list is drawn by :meth:`_render_pane`). A phase change can narrow what it holds."""
         pane = self.pane
         if pane is None or pane.owner is not None:
             return
+        pane.exchanges = state.strip_turns(pane.exchanges)
         self.query_one(AppPane).show_strip(apps_pane.strip_items(pane.exchanges))
 
     def _drop_exchange(self, turn: state.DmTurn) -> None:

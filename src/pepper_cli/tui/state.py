@@ -1162,8 +1162,8 @@ class AppPaneState:
     #: The open note's last read failed. Kept apart from ``error``: the list is re-read behind
     #: an open note, and its success must not clear the note's failure.
     note_error: str | None = None
-    #: Your own panes only: the turns sent from this pane, newest last, kept to the last
-    #: :data:`STRIP_TURNS` for the reply strip. Dropped with the pane.
+    #: Your own panes only: the turns sent from this pane, newest last, kept as
+    #: :func:`strip_turns` says for the reply strip. Dropped with the pane.
     exchanges: list[DmTurn] = field(default_factory=list)
 
     @property
@@ -1197,9 +1197,22 @@ def pane_placeholder(pane: AppPaneState | None, default: str) -> str:
     return f"Ask Pepper about your {pane.title.lower()}…"
 
 
+def strip_turns(turns: Sequence[DmTurn]) -> list[DmTurn]:
+    """The turns the reply strip holds: the exchange in flight and the one before it (§6.9).
+
+    With every turn over, the last :data:`STRIP_TURNS`. Otherwise everything from the one
+    before the first unfinished turn, so sends queued behind a running turn never push its
+    answer out before it arrives; the strip narrows again as the queue drains.
+    """
+    first = next((i for i, turn in enumerate(turns) if turn.phase != "done"), None)
+    if first is None:
+        return list(turns[-STRIP_TURNS:])
+    return list(turns[max(0, first - 1) :])
+
+
 def remember_exchange(pane: AppPaneState, turn: DmTurn) -> None:
-    """Keep ``turn`` for the reply strip, with the exchange before it and no more."""
-    pane.exchanges = [*pane.exchanges, turn][-STRIP_TURNS:]
+    """Keep ``turn`` for the reply strip (see :func:`strip_turns`)."""
+    pane.exchanges = strip_turns([*pane.exchanges, turn])
 
 
 def own_app_row(slug: str) -> SidebarRow:
