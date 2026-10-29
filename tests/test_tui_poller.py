@@ -162,6 +162,21 @@ def test_a_failed_unread_request_is_asked_again_on_the_next_poll() -> None:
     assert _unread_reads(server) == 2
 
 
+def test_the_update_says_whether_the_unread_snapshot_was_answered() -> None:
+    server = ts.standard_server()
+    with server.client() as api:
+        rail = poller.RailPoller(api)
+        first = rail.step()
+        assert first.unread_answered is True
+        rail.commit(first)
+        server.bump()
+        unmoved = rail.step()  # a new ETag but no room moved: no unread request
+        assert unmoved.groups is not None and unmoved.unread_answered is False
+    server.fail["/api/v1/groups/unread"] = 502
+    with server.client() as api:
+        assert poller.RailPoller(api).step().unread_answered is False
+
+
 def test_forget_etag_asks_for_the_full_list() -> None:
     server = ts.standard_server()
     with server.client() as api:

@@ -116,6 +116,24 @@ def test_a_cursor_the_server_counted_from_does_not_settle_its_answer() -> None:
     assert not marks.is_unread(topic)
 
 
+def test_a_snapshot_drops_rows_the_server_no_longer_lists() -> None:
+    marks = state.ReadMarks()
+    marks.merge_unread([_row("t1", 2), _row("t2", 1)], {"t1": "2026-01-01T00:00:00Z"})
+    marks.merge_unread([_row("t2", 1)], {}, snapshot=True)
+    assert set(marks.unread) == {"t2"}
+    assert "t1" not in marks.counted_from
+    marks.merge_unread([_row("t2", 1)], {}, total=1, snapshot=True)
+    marks.merge_unread([_row("t2", 1)], {}, snapshot=True)
+    assert marks.unread_total is None  # the snapshot did not carry one: no stale total
+
+
+def test_a_partial_answer_keeps_rows_it_does_not_list() -> None:
+    marks = state.ReadMarks()
+    marks.merge_unread([_row("t1", 2), _row("t2", 1)], {})
+    marks.merge_unread([], {})  # nothing asked: not "nothing unread"
+    assert set(marks.unread) == {"t1", "t2"}
+
+
 def test_the_unread_total_is_the_servers_and_a_settled_row_does_not_change_it() -> None:
     (room,) = _rooms(ts.room(ts.ROOM_A, "A", [ts.topic("t1", "One", "2026-02-01T00:00:00Z")]))
     marks = state.ReadMarks()

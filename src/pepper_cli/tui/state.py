@@ -164,8 +164,13 @@ class ReadMarks:
         marks: Mapping[str, str],
         *,
         total: int | None = None,
+        snapshot: bool = False,
     ) -> None:
         """Take the server's unread rows (and the cursors answered with them).
+
+        With ``snapshot`` the rows are the server's whole answer, so a topic it no longer lists
+        loses its cached row (otherwise rows only accumulate and a topic the server dropped
+        stays as it was last counted). Leave it off for a partial or absent answer.
 
         Every row is kept, even one counted from a cursor older than one held here (an answer
         that crossed a read on this device or another): it may count a message newer than that
@@ -174,11 +179,17 @@ class ReadMarks:
         moved after it.
         """
         self.merge_server(marks)
+        rows = list(rows)
+        if snapshot:
+            listed = {row.topic_id for row in rows}
+            for topic_id in self.unread.keys() - listed:
+                del self.unread[topic_id]
+                self.counted_from.pop(topic_id, None)
         for row in rows:
             self.unread[row.topic_id] = row
             self.counted_from[row.topic_id] = parse_ts(marks.get(row.topic_id))
-        if total is not None:
-            self.unread_total = total
+        if total is not None or snapshot:
+            self.unread_total = total  # a snapshot without a total leaves none, not a stale one
 
     def merge_advanced(self, payload: object) -> str | None:
         """Fold a ``read_state.advanced`` event payload (``{topic_id, group_id, last_read_at}``)

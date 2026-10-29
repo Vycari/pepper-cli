@@ -758,7 +758,12 @@ class PepperApp(App[None]):
     def _apply_groups(self, groups: GroupList, update: poller.RailUpdate) -> None:
         had = self.marks.mentioned_topics(self.rooms) if self._bell else set()
         self.rooms = groups.groups
-        self.marks.merge_unread(update.unread, update.server_marks, total=update.unread_total)
+        self.marks.merge_unread(
+            update.unread,
+            update.server_marks,
+            total=update.unread_total,
+            snapshot=update.unread_answered,
+        )
         self.marks.settle(self.rooms)
         if self._bell and (self.marks.mentioned_topics(self.rooms) - had - {self.current.topic_id}):
             self.bell()

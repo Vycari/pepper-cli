@@ -54,6 +54,10 @@ class RailUpdate:
     unread: list[GroupUnreadRow] = field(default_factory=list)
     #: The server's deduped total, to show as it is; never a sum of ``unread``.
     unread_total: int | None = None
+    #: The server answered the unread request, so ``unread`` is its whole snapshot: a topic it
+    #: no longer lists is no longer unread. ``False`` when none was made or it failed, where an
+    #: empty ``unread`` means "not asked", not "nothing unread".
+    unread_answered: bool = False
     etag: str | None = None
     seen: dict[str, _Signature] | None = None
     #: The newest :meth:`RailPoller.refetch_all` request this step answered by reading every
@@ -122,6 +126,7 @@ class RailPoller:
             server_marks=fetched.marks if fetched else {},
             unread=fetched.unread if fetched else [],
             unread_total=fetched.unread_total if fetched else None,
+            unread_answered=fetched is not None,
             etag=etag if complete else None,
             seen=seen,
             full=asked if full and complete else 0,
