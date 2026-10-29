@@ -1448,7 +1448,11 @@ def assignable_members(
     roster: Iterable[GroupRosterMember], you_person_id: str | None
 ) -> list[tuple[str, str]]:
     """``(person_id, name)`` of the members a todo can be asked of: not Pepper, not an agent
-    (the server refuses both) and not you."""
+    (the server refuses both) and not you. None while your own person id is unknown (an older
+    server): you could not be told apart from the others, and asking yourself is refused, so
+    the add goes ahead without the picker."""
+    if you_person_id is None:
+        return []
     return [
         (m.person_id, m.display_name)
         for m in roster

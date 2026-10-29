@@ -112,6 +112,7 @@ def test_assignable_members_leave_out_pepper_agents_and_you() -> None:
         api_client.GroupRosterMember("sam", "Sam"),
     ]
     assert state.assignable_members(roster, "me") == [("sam", "Sam")]
+    assert state.assignable_members(roster, None) == []  # you are unknown: no picker
 
 
 def test_reselect_keeps_the_row_or_takes_the_one_now_at_its_place() -> None:

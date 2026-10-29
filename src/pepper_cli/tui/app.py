@@ -2296,9 +2296,10 @@ class PepperApp(App[None]):
     def _add_asked(
         self, pane: state.AppPaneState, title: str, due_date: str | None, due_day: str | None
     ) -> None:
-        """The optional third step, in a room only: pick a member to ask (§6.5)."""
+        """The optional third step, in a room only: pick a member to ask (§6.5). Skipped while
+        your own person id is unknown (an older server): the picker could not leave you out."""
         room = pane.owner
-        if room is None or pane is not self.pane:
+        if room is None or self.you_person_id is None or pane is not self.pane:
             self._create_todo(pane, title, due_date, due_day, None)
             return
         roster = self.rosters.get(room)

@@ -359,6 +359,24 @@ async def test_a_second_add_waits_for_the_first_ones_roster_read() -> None:
         assert server.todo_writes == [(ROOM_TODOS, {"title": "Buy ice"})]
 
 
+async def test_with_your_person_id_unknown_the_add_skips_the_picker_and_the_roster() -> None:
+    server = room_server()
+    roster = f"/api/v1/groups/{ts.ROOM_A}/roster"
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_todos(app, pilot)
+        app.rosters.pop(ts.ROOM_A, None)
+        app.you_person_id = None  # an older server: whoami carries no person_id
+        before = reads(server, roster)
+        await pilot.press("n")
+        await fill(pilot, app, "Buy ice")
+        await fill(pilot, app, "")
+        await until(pilot, lambda: "○ Buy ice" in pane_text(app))
+        assert not isinstance(app.screen, PickerScreen)
+        assert reads(server, roster) == before
+        assert server.todo_writes == [(ROOM_TODOS, {"title": "Buy ice"})]
+
+
 async def test_notes_has_none_of_the_todo_keys() -> None:
     server = room_server()
     app = tui_app.PepperApp(server.client())
