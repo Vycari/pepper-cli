@@ -712,6 +712,19 @@ async def test_redraws_before_the_first_restore_still_rest_on_the_open_conversat
         assert sidebar.highlighted_row.key == "app:me:todo"
 
 
+async def test_up_and_down_step_over_the_rule_under_your_own_rows() -> None:
+    app = tui_app.PepperApp(own_server().client())
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        await until(pilot, lambda: getattr(app.sidebar.highlighted_row, "kind", None) == "pepper")
+        app.sidebar.focus()
+        await pilot.press("up")
+        assert app.sidebar.highlighted_row is not None
+        assert app.sidebar.highlighted_row.key == "app:me:notes"
+        await pilot.press("down")
+        assert app.sidebar.highlighted_row.kind == "pepper"
+
+
 async def test_a_failed_reread_keeps_the_room_sections_already_on_screen() -> None:
     server = own_server()
     app = tui_app.PepperApp(server.client())

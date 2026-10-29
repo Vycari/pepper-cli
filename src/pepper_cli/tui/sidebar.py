@@ -14,6 +14,8 @@ from pepper_cli.tui.rows import safe_color
 from pepper_cli.tui.state import SidebarRow
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from textual.widgets.tree import TreeNode
 
 DOT = "●"
@@ -127,6 +129,20 @@ class Sidebar(Tree[SidebarRow]):
 
     def _forget_wanted(self) -> None:
         self._wanted = None
+
+    def action_cursor_up(self) -> None:
+        super().action_cursor_up()
+        self._step_over_rule(super().action_cursor_up)
+
+    def action_cursor_down(self) -> None:
+        super().action_cursor_down()
+        self._step_over_rule(super().action_cursor_down)
+
+    def _step_over_rule(self, step: Callable[[], None]) -> None:
+        """The line under Todos and Notes is a divider, not a place to rest the cursor."""
+        row = self.highlighted_row
+        if row is not None and row.kind == "rule":
+            step()
 
     def action_expand_room(self) -> None:
         row = self.highlighted_row
