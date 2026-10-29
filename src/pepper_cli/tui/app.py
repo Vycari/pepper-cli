@@ -994,7 +994,7 @@ class PepperApp(App[None]):
             self._hide_pane()
             if conv == self.current:
                 if conv.is_pepper:  # your own pane sat over the DM
-                    self.dm.dot = False
+                    self.dm.read()
                     self._render_dm(new_rows=0, reset=True)
                 else:
                     self._render_topic(new_rows=0, reset=True)
@@ -1030,7 +1030,7 @@ class PepperApp(App[None]):
             self.manual.setdefault(conv.room_id, True)
             self._ensure_topics(conv.room_id)
         if conv.is_pepper:
-            self.dm.dot = False
+            self.dm.read()
             self._render_dm(new_rows=0, reset=True)
         else:
             self._render_topic(new_rows=0, reset=True)
@@ -1946,7 +1946,7 @@ class PepperApp(App[None]):
         self._hide_pane()
         if own:
             # Your own pane sat over the Pepper DM: back to it, with the cursor on its row.
-            self.dm.dot = False
+            self.dm.read()
             self._render_dm(new_rows=0, reset=True)
             self.sidebar.select_key("pepper")
         else:
@@ -2298,6 +2298,11 @@ class PepperApp(App[None]):
         because Pepper may have just added or ticked something (design §6.9)."""
         if turn.subject is None or self.pane is None:
             return
+        # A DM read can return the reply before its frame does, and light the dot for it:
+        # the strip shows it now, so it is read.
+        shown = turn.reply is not None and turn in self.pane.exchanges
+        if shown and turn.assistant_id and self.dm.mark_seen(turn.assistant_id):
+            self.refresh_chrome()
         self._render_strip()
         if turn.phase != "checking":
             self._want("apps")
@@ -2344,6 +2349,7 @@ class PepperApp(App[None]):
             elif turn.phase == "checking" and turn.reply_landed(entries):
                 self.turns.remove(turn)
                 turn.reply = turn.found_reply(entries) or turn.reply
+                turn.assistant_id = turn.reply_id(entries)  # (so the strip can mark it seen)
                 turn.phase = "done"
                 self.dm_note = ""
                 self._turn_finished(turn)

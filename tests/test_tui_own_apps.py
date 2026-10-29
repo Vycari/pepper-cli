@@ -405,6 +405,43 @@ async def test_a_turn_already_running_when_the_pane_opens_does_not_appear_in_the
         await until(pilot, lambda: label(app, "pepper") == "Pepper")
 
 
+async def test_a_reply_history_shows_before_its_frame_is_read_once_the_strip_has_it() -> None:
+    # A DM read already in flight when the turn starts can come back holding the answer
+    # while the turn still streams: that lights the dot, and the reply frame that puts the
+    # answer in the strip must put it out again.
+    await _race_a_read_past_the_frame(extra=[], dot_after=False)
+
+
+async def test_an_unrelated_reply_keeps_the_dot_when_the_strip_shows_its_own() -> None:
+    other = ts.history_entry("x9", "assistant", "from elsewhere", "2026-09-16T09:00:05Z")
+    await _race_a_read_past_the_frame(extra=[other], dot_after=True)
+
+
+async def _race_a_read_past_the_frame(*, extra: list[dict], dot_after: bool) -> None:
+    server = own_server()
+    frame_gate, read_gate = threading.Event(), threading.Event()
+    turn = reply_turn("the answer", gates={1: frame_gate})
+    rows, turn.history = turn.history, []
+    server.turns = [turn]
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_own(app, pilot)
+        server.gates["/api/v1/chat/history"] = read_gate
+        app._run("dm")  # held at the server
+        await say(pilot, app, "a question")
+        await until(pilot, lambda: "Looking into it" in plain(app, "#dm-status"))
+        server.history.extend([*rows, *extra])
+        read_gate.set()
+        await until(pilot, lambda: "a1" in app.dm.entries)
+        assert app.dm.dot
+        del server.gates["/api/v1/chat/history"]
+        frame_gate.set()
+        await until(pilot, lambda: "the answer" in strip(app))
+        await until(pilot, lambda: not app.turns)
+        assert app.dm.dot is dot_after
+        assert label(app, "pepper").endswith(DOT) is dot_after
+
+
 async def test_a_refused_send_gives_the_text_back_and_leaves_no_strip_entry() -> None:
     server = own_server()
     server.fail["/api/v1/chat/send"] = 503

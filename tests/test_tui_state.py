@@ -296,6 +296,23 @@ def test_dm_tracker_a_reply_already_seen_elsewhere_does_not_light_the_dot() -> N
     )
     assert dm.dot is True
 
+
+def test_dm_tracker_marking_one_reply_seen_keeps_the_dot_for_the_others() -> None:
+    dm = state.DmTracker()
+    dm.update([_entry("1", "assistant")], is_open=False)
+    rows = [_entry("1", "assistant"), _entry("2", "assistant"), _entry("3", "assistant")]
+    dm.update(rows, is_open=False)
+    assert dm.mark_seen("2") is False
+    assert dm.dot is True  # "3" is still unread
+    assert dm.mark_seen("9") is False  # never lit it
+    assert dm.mark_seen("3") is True
+    assert dm.dot is False
+    dm.update([*rows, _entry("4", "assistant")], is_open=False)
+    dm.read()
+    assert (dm.dot, dm.unseen) == (False, set())
+
+
+def test_dm_tracker_drops_rows_that_leave_the_history_after_midnight() -> None:
     dm = state.DmTracker()
     dm.update([_entry("y1", "user"), _entry("y2", "assistant")], is_open=False)
     # Past midnight the history is a new day's thread: yesterday's rows are gone from it.

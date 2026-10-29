@@ -693,6 +693,8 @@ class DmTracker:
 
     entries: dict[str, ChatHistoryEntry] = field(default_factory=dict)
     dot: bool = False
+    #: The assistant rows behind the dot, so showing one elsewhere puts out only its share.
+    unseen: set[str] = field(default_factory=set)
     _primed: bool = False
 
     def update(
@@ -712,15 +714,31 @@ class DmTracker:
         previous = self.entries
         self.entries = {entry.id: entry for entry in history}
         new_ids = [eid for eid in self.entries if eid not in previous]
-        fresh_assistant = any(
-            self.entries[eid].role == "assistant" and eid not in seen for eid in new_ids
-        )
+        fresh = {
+            eid for eid in new_ids if self.entries[eid].role == "assistant" and eid not in seen
+        }
         if is_open:
-            self.dot = False
-        elif self._primed and fresh_assistant:
+            self.read()
+        elif self._primed and fresh:
+            self.unseen |= fresh
             self.dot = True
         self._primed = True
         return new_ids
+
+    def read(self) -> None:
+        """The DM is on screen: nothing in it is unread."""
+        self.dot = False
+        self.unseen.clear()
+
+    def mark_seen(self, eid: str) -> bool:
+        """``eid`` was shown elsewhere (the reply strip). Returns whether the dot went out."""
+        if eid not in self.unseen:
+            return False
+        self.unseen.discard(eid)
+        if self.unseen:
+            return False
+        self.dot = False
+        return True
 
     def ordered(self) -> list[ChatHistoryEntry]:
         return sorted(self.entries.values(), key=lambda e: (_ts_or_epoch(e.created_at), e.id))
