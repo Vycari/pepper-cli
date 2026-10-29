@@ -505,6 +505,10 @@ class ChatHistoryEntry:
     created_at: str
     attachments: list[dict[str, Any]] = field(default_factory=list)
     reactions: list[dict[str, Any]] = field(default_factory=list)
+    #: The turn this row belongs to. The server links a user row and writes its reply with the
+    #: same id in one transaction. A row written outside a chat turn (a reminder, a scheduled
+    #: announcement) has none or its own.
+    trajectory_id: str | None = None
 
 
 # MIRROR: src/pepper/gateway/channels/client_api/adapter.py::ChatSendResponse
@@ -2506,6 +2510,7 @@ class ApiClient:
                 created_at=r["created_at"],
                 attachments=list(r.get("attachments") or []),
                 reactions=list(r.get("reactions") or []),
+                trajectory_id=str(t) if (t := r.get("trajectory_id")) else None,
             )
             for r in rows
             if isinstance(r, dict)

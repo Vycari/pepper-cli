@@ -412,10 +412,14 @@ def test_pending_sends_retry_keeps_the_key_and_confirm_drops_stored_rows() -> No
 
 
 def _entry(
-    eid: str, role: str, text: str = "t", at: str = "2026-09-16T09:00:00Z"
+    eid: str,
+    role: str,
+    text: str = "t",
+    at: str = "2026-09-16T09:00:00Z",
+    tid: str | None = None,
 ) -> api_client.ChatHistoryEntry:
     return api_client.ChatHistoryEntry(
-        id=eid, role=role, text=text, channel="terminal", created_at=at
+        id=eid, role=role, text=text, channel="terminal", created_at=at, trajectory_id=tid
     )
 
 
@@ -544,3 +548,32 @@ def test_a_dropped_turn_with_an_unidentifiable_user_row_does_not_guess() -> None
     old = {"u0": _entry("u0", "user", "q", "2026-09-16T09:00:00Z"), **entries}
     seen = state.DmTurn(text="q", phase="checking", snapshot=frozenset({"u0"}))
     assert seen.reply_id(old) is None
+
+
+def test_a_dropped_turn_takes_only_the_reply_in_its_user_rows_trajectory() -> None:
+    before = {"h1": _entry("h1", "assistant", "old", "2026-09-16T09:00:00Z")}
+    turn = state.DmTurn(text="q", phase="checking", snapshot=frozenset(before))
+    entries = {
+        **before,
+        "u1": _entry("u1", "user", "q", "2026-09-16T10:01:00Z", tid="T1"),
+        # A reminder (no trajectory) and a reply to another device (its own) land in between.
+        "p1": _entry("p1", "assistant", "Reminder: standup", "2026-09-16T10:01:02Z"),
+        "o1": _entry("o1", "assistant", "other device", "2026-09-16T10:01:03Z", tid="T2"),
+    }
+    assert turn.reply_id(entries) is None and not turn.reply_landed(entries)
+    done = {**entries, "a1": _entry("a1", "assistant", "the answer", "2026-09-16T10:01:05Z", "T1")}
+    assert turn.reply_id(done) == "a1" and turn.found_reply(done) == "the answer"
+
+
+def test_a_dropped_turn_with_an_unlinked_user_row_skips_another_turns_reply() -> None:
+    turn = state.DmTurn(text="q", phase="checking")
+    # The user row is not linked yet; a later row carrying a trajectory belongs to another turn.
+    entries = {
+        "u1": _entry("u1", "user", "q", "2026-09-16T10:01:00Z"),
+        "o1": _entry("o1", "assistant", "other device", "2026-09-16T10:01:03Z", tid="T2"),
+    }
+    assert turn.reply_id(entries) is None
+    # The error path: neither row has a trajectory, and the reply still matches.
+    failed = {**entries, "a1": _entry("a1", "assistant", "sorry", "2026-09-16T10:01:04Z")}
+    assert turn.reply_id(failed) == "a1"
+

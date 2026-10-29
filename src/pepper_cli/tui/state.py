@@ -914,8 +914,8 @@ class DmTurn:
     ``snapshot`` holds the history ids on screen when the turn started. A reply frame names
     its rows (``user_message_id``/``assistant_message_id``); a dropped stream does not, and
     then the turn finds its own user row (the first new user row with the text it sent) and its
-    reply is the first assistant row created after that row. The turn is never
-    sent twice: a drop only ever re-reads history.
+    reply is the first assistant row created after that row in the same trajectory. The turn
+    is never sent twice: a drop only ever re-reads history.
 
     Only a ``streaming`` or ``checking`` turn holds back the next one. A ``done`` turn stays
     just to show its rows until history does, and is retired after
@@ -975,8 +975,14 @@ class DmTurn:
     def reply_id(self, entries: dict[str, ChatHistoryEntry]) -> str | None:
         """The id of this turn's assistant row: the one the reply frame named, or after a
         dropped stream the first assistant row (not in the snapshot) created after the turn's
-        own user row. An unrelated assistant row (a reply to another device, a proactive
-        message) is never taken, and with no identifiable user row there is no guess."""
+        own user row and carrying the same ``trajectory_id``.
+
+        The server writes a turn's reply and links its user row to the turn in one
+        transaction, so once the user row is linked only that turn's reply matches. Earlier
+        assistant rows are always excluded, but a row with no trajectory (a reminder, a
+        scheduled announcement) created after a user row that is not linked yet (its reply
+        not written, the error path, or a server that does not send the field) can still
+        match. With no identifiable user row there is no guess."""
         if self.assistant_id is not None or self.phase != "checking":
             return self.assistant_id
         user = self._own_user_row(entries)
@@ -988,6 +994,7 @@ class DmTurn:
             for eid, e in entries.items()
             if e.role == "assistant"
             and eid not in self.snapshot
+            and e.trajectory_id == user.trajectory_id
             and _ts_or_epoch(e.created_at) > sent_at
         ]
         return min(later)[1] if later else None

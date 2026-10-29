@@ -915,3 +915,23 @@ def test_put_client_capabilities_raises_other_errors() -> None:
     ):
         api.put_client_capabilities()
     assert info.value.status == 403
+
+
+def test_chat_history_reads_the_trajectory_id_and_tolerates_its_absence() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        row = {"role": "user", "text": "q", "channel": "client_api"}
+        return httpx.Response(
+            200,
+            json=[
+                {**row, "id": "u1", "created_at": "2026-09-16T10:00:00Z", "trajectory_id": "T1"},
+                {**row, "id": "u2", "created_at": "2026-09-16T10:01:00Z", "trajectory_id": None},
+                {**row, "id": "u3", "created_at": "2026-09-16T10:02:00Z"},
+            ],
+        )
+
+    with api_client.ApiClient(
+        server_url="http://example.com", token=SecretStr("pep_pat_abc"), client=_mock(handler)
+    ) as api:
+        rows = api.chat_history()
+
+    assert [r.trajectory_id for r in rows] == ["T1", None, None]
