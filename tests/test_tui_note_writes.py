@@ -14,9 +14,17 @@ import pytest
 from pepper_cli import note_edit
 from pepper_cli.tui import app as tui_app
 from pepper_cli.tui import state
+from pepper_cli.tui.apps_pane import PaneScroll
 from pepper_cli.tui.screens import ConfirmScreen, InfoScreen, PickerScreen
 from tests import tui_support as ts
-from tests.test_tui_apps import SIZE, header, open_notes, pane_text, server_with_apps
+from tests.test_tui_apps import (
+    SIZE,
+    header,
+    open_notes,
+    open_todos,
+    pane_text,
+    server_with_apps,
+)
 from tests.test_tui_own_apps import open_own, own_server
 from tests.tui_support import notices, until
 
@@ -392,6 +400,65 @@ async def test_D_in_an_open_note_deletes_it_and_returns_to_the_list() -> None:
         await pilot.press("y")
         await until(pilot, lambda: header(app) == "Trip planning › Notes")
         assert "Packing list" not in pane_text(app)
+
+
+# --------------------------------------------------------------------- space, by pane
+
+
+async def test_space_is_done_in_todos_and_a_tick_in_an_open_note_never_both() -> None:
+    server = server_with_apps()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_todos(app, pilot)
+        await pilot.press("space")
+        await until(pilot, lambda: len(server.todo_writes) == 1)
+        assert server.todo_writes[0][0].endswith("/done")
+        assert server.note_writes == []
+    server = server_with_apps()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        said = notices(app)
+        await open_notes(app, pilot)
+        await pilot.press("space")  # the list, no note open: neither Done nor Tick is live
+        await pilot.pause(0.2)
+        assert not isinstance(app.screen, PickerScreen)
+        assert "Select a todo first." not in said
+        await pilot.press("enter")
+        await until(pilot, lambda: "☐ Sleeping bags" in pane_text(app))
+        await pilot.press("space")
+        await screen_is(pilot, app, PickerScreen)
+        await pilot.press("1")
+        await until(pilot, lambda: "☑ Sleeping bags" in pane_text(app))
+        assert len(writes(server, "toggle")) == 1
+        assert server.todo_writes == []
+
+
+async def test_a_topicless_rooms_notes_pane_writes_to_that_room(monkeypatch) -> None:
+    server = server_with_apps()
+    server.rooms[1]["topics"] = [
+        ts.topic(
+            ts.TOPIC_B1, "Old", "2026-09-15T10:00:00+00:00", archived_at="2026-10-01T00:00:00Z"
+        )
+    ]
+    server.launchers[ts.ROOM_B] = [ts.tile("notes", "Notes", ts.ROOM_B)]
+    server.notes[ts.ROOM_B] = [ts.note_item("b1", "Reading list", "2026-10-20T10:00:00+00:00")]
+    fake_editor(monkeypatch, "Book ideas\n\nDune\n")
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_todos(app, pilot)
+        app.sidebar.focus()
+        app.sidebar.select_key(f"room:{ts.ROOM_B}")
+        await pilot.pause()
+        await pilot.press("a")
+        await screen_is(pilot, app, PickerScreen)
+        await pilot.press("1")
+        await until(pilot, lambda: "Reading list" in pane_text(app))
+        app.query_one(PaneScroll).focus()
+        await pilot.press("c")
+        await until(pilot, lambda: "Book ideas" in pane_text(app))
+        assert [w[0] for w in writes(server, "new")] == [ts.ROOM_B]
+        assert app.current == state.Conversation(ts.ROOM_B, None)
+        assert header(app) == "Book club › Notes"
 
 
 # --------------------------------------------------------------------------------- tick
