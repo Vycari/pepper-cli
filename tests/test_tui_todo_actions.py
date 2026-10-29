@@ -225,6 +225,28 @@ async def test_a_new_row_is_pending_until_the_server_answers() -> None:
         assert server.todo_writes == [(ROOM_TODOS, {"title": "Buy ice"})]
 
 
+async def test_a_reread_during_a_slow_add_keeps_the_pending_row() -> None:
+    server = room_server()
+    gate = threading.Event()
+    server.gates[f"POST {ROOM_TODOS}"] = gate
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_todos(app, pilot)
+        await pilot.press("n")
+        await fill(pilot, app, "Buy ice")
+        await fill(pilot, app, "")
+        await until(pilot, lambda: isinstance(app.screen, PickerScreen))
+        await pilot.press("1")
+        await until(pilot, lambda: "… Buy ice" in pane_text(app))
+        before = reads(server, ROOM_TODOS)
+        await pilot.press("r")
+        await until(pilot, lambda: reads(server, ROOM_TODOS) > before)
+        await until(pilot, lambda: not app._loops["apps"].busy)
+        assert "… Buy ice" in pane_text(app)
+        gate.set()
+        await until(pilot, lambda: "○ Buy ice" in pane_text(app))
+
+
 async def test_a_failed_add_removes_the_placeholder() -> None:
     server = room_server()
     server.fail[f"POST {ROOM_TODOS}"] = 500

@@ -1332,6 +1332,8 @@ def own_todo_sections(
 
 #: A todo's title is at most this long: the web's field stops there.
 TITLE_MAX = 500
+#: The id prefix of an add's placeholder row (``pending:N``), shown until the server answers.
+PLACEHOLDER_PREFIX = "pending:"
 
 
 def todo_owner(pane: AppPaneState, todo_id: str) -> str | None:
@@ -1383,6 +1385,15 @@ def apply_todo(pane: AppPaneState, entry: TodoEntry, *, replacing: str | None = 
         pane.todos = [*pane.todos, entry]
 
 
+def keep_placeholders(pane: AppPaneState, todos: list[TodoEntry]) -> list[TodoEntry]:
+    """A read's rows plus the add placeholders still waiting on the server, so a re-read during
+    a slow add does not take the new row (and its pending mark) off the screen."""
+    waiting = [
+        t for t in pane.todos or [] if t.id.startswith(PLACEHOLDER_PREFIX) and t.id in pane.pending
+    ]
+    return [*todos, *waiting]
+
+
 def drop_todo(pane: AppPaneState, todo_id: str) -> None:
     """Take a row out of the pane's own list (a failed add's placeholder)."""
     if pane.todos is not None:
@@ -1396,7 +1407,7 @@ def placeholder_todo(
     list and to :attr:`AppPaneState.pending`."""
     pane.pending_seq += 1
     entry = TodoEntry(
-        id=f"pending:{pane.pending_seq}",
+        id=f"{PLACEHOLDER_PREFIX}{pane.pending_seq}",
         title=title,
         details=None,
         status="open",

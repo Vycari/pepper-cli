@@ -2027,7 +2027,7 @@ class PepperApp(App[None]):
     def _got_todos(self, pane: state.AppPaneState, todos: list[TodoEntry]) -> None:
         if pane is not self.pane:
             return
-        pane.todos, pane.error = todos, None
+        pane.todos, pane.error = state.keep_placeholders(pane, todos), None
         pane.selected = state.settle_selection(state.pane_rows(pane), pane.selected)
         self._render_pane()
 
@@ -2231,7 +2231,7 @@ class PepperApp(App[None]):
         if pane is not self.pane:
             return
         before = state.pane_rows(pane)
-        placeholder = pending_id if pending_id.startswith("pending:") else None
+        placeholder = pending_id if pending_id.startswith(state.PLACEHOLDER_PREFIX) else None
         state.apply_todo(pane, entry, replacing=placeholder)
         pane.selected = state.reselect(before, pane.selected, state.pane_rows(pane))
         self._render_pane()
@@ -2246,7 +2246,7 @@ class PepperApp(App[None]):
         pane.pending.discard(pending_id)
         if pane is self.pane:
             before = state.pane_rows(pane)
-            if pending_id.startswith("pending:"):
+            if pending_id.startswith(state.PLACEHOLDER_PREFIX):
                 state.drop_todo(pane, pending_id)  # an add's placeholder; a real row stays
             pane.selected = state.reselect(before, pane.selected, state.pane_rows(pane))
             self._render_pane()

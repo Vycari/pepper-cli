@@ -78,6 +78,15 @@ def test_a_placeholder_is_dropped_when_a_reread_already_holds_the_created_row() 
     assert pane.todos is not None and [t.id for t in pane.todos] == ["a", "b", "new-1"]
 
 
+def test_a_reread_keeps_an_adds_placeholder_while_it_waits() -> None:
+    pane = _pane()
+    holder = state.placeholder_todo(pane, "New", due_date=None, due_day=None, now=NOW)
+    read = [_todo("a"), _todo("c")]
+    assert [t.id for t in state.keep_placeholders(pane, read)] == ["a", "c", holder.id]
+    pane.pending.discard(holder.id)  # answered: the next read is the server's list alone
+    assert [t.id for t in state.keep_placeholders(pane, read)] == ["a", "c"]
+
+
 def test_drop_todo_removes_a_row_and_is_quiet_without_a_list() -> None:
     pane = _pane()
     state.drop_todo(pane, "a")
