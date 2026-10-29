@@ -430,6 +430,10 @@ def test_checklist_items_name_each_line_by_text_occurrence_and_matches() -> None
         ("Title\n\nBody line\nmore\n", ("Title", "Body line\nmore")),
         ("\n \n  Padded title  \nbody", ("Padded title", "body")),
         ("Only a title", ("Only a title", "")),
+        # The first body line keeps its indent (a markdown code block), past the blank lines.
+        ("Snippet\n\n    print(1)\n    print(2)\n", ("Snippet", "    print(1)\n    print(2)")),
+        ("Title\n  \n\t\n  - nested\n", ("Title", "  - nested")),
+        ("Title\n \n\t", ("Title", "")),
         ("", None),
         ("  \n\t\n", None),
     ],

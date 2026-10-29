@@ -1705,11 +1705,17 @@ def checklist_items(body: str | None) -> list[ChecklistItem]:
 
 def split_new_note(text: str) -> tuple[str, str] | None:
     """What the editor returned for a new note: the first non-blank line is the title and the
-    rest is the body. ``None`` for an empty result (nothing but whitespace)."""
+    rest is the body. ``None`` for an empty result (nothing but whitespace).
+
+    The body loses only the blank lines that separate it from the title and its trailing
+    whitespace: its first line keeps its indent, which in markdown can be a code block."""
     lines = text.splitlines()
     for number, line in enumerate(lines):
         if line.strip():
-            return line.strip(), "\n".join(lines[number + 1 :]).strip()
+            rest = lines[number + 1 :]
+            while rest and not rest[0].strip():
+                rest.pop(0)
+            return line.strip(), "\n".join(rest).rstrip()
     return None
 
 
