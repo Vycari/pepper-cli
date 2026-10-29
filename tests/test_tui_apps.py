@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 import pytest
+from rich.text import Text
 
 from pepper_cli import api_client
 from pepper_cli.tui import app as tui_app
@@ -148,6 +149,20 @@ async def type_command(app: tui_app.PepperApp, pilot: Pilot, text: str) -> None:
     app.composer.load_text(text)
     app.composer.focus()
     await pilot.press("enter")
+
+
+def marked_open(app: tui_app.PepperApp) -> list[str]:
+    """The keys of the sidebar rows drawn as the open one (reverse video)."""
+    marked: list[str] = []
+    stack = list(app.sidebar.root.children)
+    while stack:
+        node = stack.pop(0)
+        stack[:0] = node.children
+        label = node.label
+        drawn = isinstance(label, Text) and any("reverse" in str(s.style) for s in label.spans)
+        if node.data is not None and drawn:
+            marked.append(node.data.key)
+    return marked
 
 
 def header(app: tui_app.PepperApp) -> str:
@@ -615,6 +630,42 @@ async def test_opening_another_rooms_app_moves_to_that_room_and_the_old_pane_goe
         await until(pilot, lambda: "Reading list" in pane_text(app))
         assert header(app) == "Book club › Notes"
         assert app.current.room_id == ts.ROOM_B
+
+
+async def test_a_room_with_only_archived_topics_opens_its_pane_in_that_room_and_esc_stays() -> None:
+    server = server_with_apps()
+    server.rooms[1]["topics"] = [
+        ts.topic(
+            ts.TOPIC_B1, "Old", "2026-09-15T10:00:00+00:00", archived_at="2026-10-01T00:00:00Z"
+        )
+    ]
+    server.launchers[ts.ROOM_B] = [ts.tile("notes", "Notes", ts.ROOM_B)]
+    server.notes[ts.ROOM_B] = [ts.note_item("b1", "Reading list", "2026-10-20T10:00:00+00:00")]
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_todos(app, pilot)
+        app.sidebar.focus()
+        app.sidebar.select_key(f"room:{ts.ROOM_B}")
+        await pilot.pause()
+        await pilot.press("a")
+        await until(pilot, lambda: isinstance(app.screen, PickerScreen))
+        await pilot.press("1")
+        await until(pilot, lambda: "Reading list" in pane_text(app))
+        assert header(app) == "Book club › Notes"
+        assert app.current == state.Conversation(ts.ROOM_B, None)  # not left in room A
+        app.query_one(PaneScroll).focus()
+        await pilot.press("escape")
+        await until(pilot, lambda: app.pane is None)
+        assert app.current.room_id == ts.ROOM_B
+        assert app.current.topic_id is None
+        assert header(app) == "Book club"
+        assert marked_open(app) == [f"room:{ts.ROOM_B}"]  # the room's own row says it is open
+        app.composer.focus()
+        app.composer.load_text("hello")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not app.pending.in_conversation(app.current)  # nothing posted to a topic
+        assert app.composer.text == "hello"  # and the draft is kept, not dropped
 
 
 async def test_rows_that_arrive_behind_an_open_pane_are_not_marked_read_until_it_closes() -> None:

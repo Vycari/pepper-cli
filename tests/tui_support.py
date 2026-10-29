@@ -327,6 +327,8 @@ class FakeServer:
     notes_truncated: bool = False
     #: ``artifact id -> detail JSON``.
     note_details: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Each todo write received (``POST`` create / done / dismiss / reopen): path and JSON body.
+    todo_writes: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     clock: int = 0
     rev: int = 1
     requests: list[tuple[str, str, dict[str, str]]] = field(default_factory=list)
@@ -372,9 +374,13 @@ class FakeServer:
         total = self.unread_total if self.unread_total is not None else sum(distinct.values())
         return {"topics": topics, "unread_total": total}
 
-    def _app_route(self, parts: list[str], query: dict[str, str]) -> httpx.Response:
+    def _app_route(
+        self, request: httpx.Request, parts: list[str], query: dict[str, str]
+    ) -> httpx.Response:
         """``/groups/{gid}/apps/launcher`` and ``/groups/{gid}/todos``."""
         group_id = parts[3]
+        if request.method == "POST" and parts[4] == "todos":
+            return self._write_todo(request, group_id, parts[5:])
         if parts[4] == "apps" and parts[5:] == ["launcher"]:
             return httpx.Response(
                 200,
@@ -388,6 +394,41 @@ class FakeServer:
         if query.get("assignee") == "me":
             rows = [t for t in rows if (t["assignee"] or {}).get("user_id") == ME]
         return httpx.Response(200, json=rows)
+
+    def _write_todo(
+        self, request: httpx.Request, group_id: str | None, rest: list[str]
+    ) -> httpx.Response:
+        """``POST`` a todo (``rest`` empty) or one of its verbs (``[id, verb]``), changing the
+        fake's lists the way the server would, so a re-read shows it."""
+        body = json.loads(request.content) if request.content else {}
+        self.todo_writes.append((request.url.path, body))
+        lists = [self.todos.setdefault(group_id, [])] if group_id else [self.own_todos]
+        if not rest:
+            row = todo(
+                f"new-{len(self.todo_writes)}",
+                body["title"],
+                due_date=body.get("due_date")
+                or (f"{body['due']}T00:00:00+00:00" if body.get("due") else None),
+                due_is_date_only=True if body.get("due") else None,
+            )
+            if body.get("assignee_person_id"):
+                row["assignee"] = {"user_id": "asked-" + body["assignee_person_id"], "label": "Sam"}
+                row["requested_by"] = {"user_id": ME, "label": "Me"}
+            lists[0].append(row)
+            return httpx.Response(200, json=row)
+        tid, verb = rest
+        status = {"done": "done", "dismiss": "dismissed", "reopen": "open"}[verb]
+        if group_id:
+            lists.append(self.room_todos.get(group_id, ("", []))[1])
+        found = next((r for rows in lists for r in rows if r["id"] == tid), None)
+        if found is None:
+            return httpx.Response(404, json={"detail": "no such todo"})
+        for rows in lists:
+            for row in rows:
+                if row["id"] == tid:
+                    row["status"] = status
+                    row["done_at"] = None if status == "open" else "2026-10-29T08:00:00+00:00"
+        return httpx.Response(200, json={**todo(tid, found["title"]), **found})
 
     def _room_todos(self, query: dict[str, str]) -> httpx.Response:
         """``GET /api/v1/todos/rooms``: ``{"rooms": [...], "degraded": bool}``."""
@@ -661,7 +702,9 @@ class FakeServer:
             return httpx.Response(200, json=self._all_unread())
         parts = path.strip("/").split("/")
         if parts[:3] == ["api", "v1", "groups"] and len(parts) >= 5 and parts[4] in APP_ROUTES:
-            return self._app_route(parts, query)
+            return self._app_route(request, parts, query)
+        if request.method == "POST" and parts[:3] == ["api", "v1", "todos"]:
+            return self._write_todo(request, None, parts[3:])
         if path == "/api/v1/todos":
             status = query.get("status", "open")
             rows = [t for t in self.own_todos if status in ("all", t["status"])]

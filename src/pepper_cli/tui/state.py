@@ -14,9 +14,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urljoin, urlsplit
+
+from pepper_cli.api_client import TodoEntry
+from pepper_cli.due import parse_due
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -32,7 +35,6 @@ if TYPE_CHECKING:
         GroupTopicSummary,
         GroupUnreadRow,
         RoomTodos,
-        TodoEntry,
     )
 
 #: How far behind the newest ``created_at`` a topic poll asks (§6.2, pepper#4829). A row that
@@ -115,6 +117,16 @@ class Conversation:
 
 
 PEPPER = Conversation()
+
+
+def sidebar_key(conv: Conversation) -> str:
+    """The sidebar row that marks ``conv`` as open: the DM, its topic, or (a room opened with
+    no topic, for its app pane) the room's own row."""
+    if conv.is_pepper:
+        return "pepper"
+    if conv.topic_id is None:
+        return f"room:{conv.room_id}"
+    return f"topic:{conv.topic_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -1221,6 +1233,11 @@ class AppPaneState:
     #: Your own panes only: the turns sent from this pane, newest last, kept as
     #: :func:`strip_turns` says for the reply strip. Dropped with the pane.
     exchanges: list[DmTurn] = field(default_factory=list)
+    #: Todos with a write in flight (P2): their row shows a pending mark until the response
+    #: lands. An add's placeholder row (``pending:N``) is in here too.
+    pending: set[str] = field(default_factory=set)
+    #: Counts the add placeholders handed out, so each has its own id.
+    pending_seq: int = 0
 
     @property
     def title(self) -> str:
@@ -1332,6 +1349,152 @@ def own_todo_sections(
         [(room, items) for room, items in sections if items],
         (todo_sections(everything)[1]),
     )
+
+
+#: A todo's title is at most this long: the web's field stops there.
+TITLE_MAX = 500
+#: The id prefix of an add's placeholder row (``pending:N``), shown until the server answers.
+PLACEHOLDER_PREFIX = "pending:"
+
+
+def todo_owner(pane: AppPaneState, todo_id: str) -> str | None:
+    """The ``group_id`` a write to ``todo_id`` goes to: the pane's owner, except that a row in
+    one of the room sections on your own Todos belongs to that room (``None``: your own list)."""
+    if pane.owner is None and not any(t.id == todo_id for t in pane.todos or []):
+        for room in pane.rooms or []:
+            if any(t.id == todo_id for t in room.items):
+                return room.group_id
+    return pane.owner
+
+
+def _swap(
+    items: Sequence[TodoEntry], entry: TodoEntry, target: str
+) -> tuple[list[TodoEntry], bool]:
+    out: list[TodoEntry] = []
+    hit = False
+    for item in items:
+        if item.id != target:
+            out.append(item)
+            continue
+        hit = True
+        # A re-read may already hold the created row: then the placeholder just goes.
+        if target == entry.id or all(other.id != entry.id for other in items):
+            out.append(entry)
+    return out, hit
+
+
+def apply_todo(pane: AppPaneState, entry: TodoEntry, *, replacing: str | None = None) -> None:
+    """Put a write's returned row in place of the one it answers (``replacing`` names an add's
+    placeholder row). An add whose placeholder a re-read already dropped is appended."""
+    target = replacing or entry.id
+    hit = False
+    if pane.todos is not None:
+        pane.todos, hit = _swap(pane.todos, entry, target)
+    if pane.rooms is not None and not hit:
+        rooms = []
+        for room in pane.rooms:
+            items, found = _swap(room.items, entry, target)
+            hit = hit or found
+            rooms.append(replace(room, items=items) if found else room)
+        pane.rooms = rooms
+    if (
+        not hit
+        and replacing is not None
+        and pane.todos is not None
+        and all(t.id != entry.id for t in pane.todos)
+    ):
+        pane.todos = [*pane.todos, entry]
+
+
+def keep_placeholders(pane: AppPaneState, todos: list[TodoEntry]) -> list[TodoEntry]:
+    """A read's rows plus the add placeholders still waiting on the server, so a re-read during
+    a slow add does not take the new row (and its pending mark) off the screen."""
+    waiting = [
+        t for t in pane.todos or [] if t.id.startswith(PLACEHOLDER_PREFIX) and t.id in pane.pending
+    ]
+    return [*todos, *waiting]
+
+
+def drop_todo(pane: AppPaneState, todo_id: str) -> None:
+    """Take a row out of the pane's own list (a failed add's placeholder)."""
+    if pane.todos is not None:
+        pane.todos = [t for t in pane.todos if t.id != todo_id]
+
+
+def placeholder_todo(
+    pane: AppPaneState, title: str, *, due_date: str | None, due_day: str | None, now: datetime
+) -> TodoEntry:
+    """The row an add shows (pending) until the server answers. It is added to the pane's own
+    list and to :attr:`AppPaneState.pending`."""
+    pane.pending_seq += 1
+    entry = TodoEntry(
+        id=f"{PLACEHOLDER_PREFIX}{pane.pending_seq}",
+        title=title,
+        details=None,
+        status="open",
+        source="user",
+        priority=None,
+        due_date=due_date or (f"{due_day}T00:00:00+00:00" if due_day else None),
+        due_is_date_only=True if due_day else None,
+        created_at=now.isoformat(),
+        done_at=None,
+        source_ref=None,
+    )
+    pane.todos = [*(pane.todos or []), entry]
+    pane.pending.add(entry.id)
+    return entry
+
+
+def parse_add_due(raw: str, *, room: bool) -> tuple[str | None, str | None, str | None]:
+    """``(due_date, due_day, error)`` for an add's due-date step, by ``todos create --due``'s rule.
+
+    Blank: no due date. Your own list takes ``YYYY-MM-DD`` or ``YYYY-MM-DD HH:MM`` in the local
+    zone (:func:`parse_due`); a room's takes a bare ``YYYY-MM-DD`` day, as the CLI's does."""
+    raw = raw.strip()
+    if not raw:
+        return None, None, None
+    if room:
+        try:
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+                raise ValueError(raw)
+            date.fromisoformat(raw)
+        except ValueError:
+            return None, None, f"In a room, a due date is a day: YYYY-MM-DD (not {raw!r})."
+        return None, raw, None
+    iso, error = parse_due(raw, flag="due date")
+    return iso, None, error
+
+
+def assignable_members(
+    roster: Iterable[GroupRosterMember], you_person_id: str | None
+) -> list[tuple[str, str]]:
+    """``(person_id, name)`` of the members a todo can be asked of: not Pepper, not an agent
+    (the server refuses both) and not you. None while your own person id is unknown (an older
+    server): you could not be told apart from the others, and asking yourself is refused, so
+    the add goes ahead without the picker."""
+    if you_person_id is None:
+        return []
+    return [
+        (m.person_id, m.display_name)
+        for m in roster
+        if not m.is_pepper and not m.is_agent and m.person_id != you_person_id
+    ]
+
+
+def reselect(
+    before: Sequence[PaneRow], selected: str | None, after: Sequence[PaneRow]
+) -> str | None:
+    """The selection once a write changed the list: the same row if it is still there, else
+    the row now at its place (so marking a run of todos done walks down the list)."""
+    old = [r.key for r in before if r.selectable]
+    new = [r.key for r in after if r.selectable]
+    if not new:
+        return None
+    if selected in new:
+        return selected
+    if selected in old:
+        return new[min(old.index(selected), len(new) - 1)]
+    return new[0]
 
 
 def _person_name(person: Any, you_ids: AbstractSet[str]) -> str:

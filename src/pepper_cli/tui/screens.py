@@ -108,19 +108,32 @@ class ConfirmScreen(ModalScreen[bool]):
 
 
 class PromptScreen(ModalScreen[str | None]):
-    """A one-line text prompt. Enter answers the (stripped, non-empty) text; Esc cancels."""
+    """A one-line text prompt. Enter answers the stripped text; Esc cancels (``None``)."""
 
     BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel")]
 
-    def __init__(self, title: str, *, placeholder: str = "") -> None:
+    def __init__(
+        self,
+        title: str,
+        *,
+        placeholder: str = "",
+        max_length: int = 0,
+        allow_blank: bool = False,
+    ) -> None:
+        """``max_length`` stops typing there (0: no cap). ``allow_blank`` lets Enter answer an
+        empty line (``""``), for a step that may be skipped; Esc still cancels (``None``)."""
         super().__init__()
         self._title = title
         self._placeholder = placeholder
+        self._max_length = max_length
+        self._allow_blank = allow_blank
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog"):
             yield Static(Text(self._title, style="bold"))
-            yield Input(placeholder=self._placeholder, id="prompt-input")
+            yield Input(
+                placeholder=self._placeholder, max_length=self._max_length, id="prompt-input"
+            )
             yield Static(Text("Enter confirms · Esc cancels", style="dim"))
 
     def on_mount(self) -> None:
@@ -129,7 +142,7 @@ class PromptScreen(ModalScreen[str | None]):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
         value = event.value.strip()
-        if value:
+        if value or self._allow_blank:
             self.dismiss(value)
 
     def action_cancel(self) -> None:

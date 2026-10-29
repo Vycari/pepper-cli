@@ -33,6 +33,9 @@ Upgrade notes:
 - The rail drops cached unread rows for topics the server's latest `GET /api/v1/groups/unread`
   answer no longer lists, instead of keeping them until a local read passes them. The rail shows
   dots only; `unread_total` is not displayed (#155).
+- A server that answers 404 to `GET /api/v1/groups/unread` is left alone for ten minutes instead of
+  being asked on every poll, and the room list's ETag is kept so unchanged polls are 304 again
+  (#154).
 
 ### Removed
 

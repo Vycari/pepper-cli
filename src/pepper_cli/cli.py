@@ -137,6 +137,7 @@ from pepper_cli import (
     turn,
     window_title,
 )
+from pepper_cli.due import parse_due
 from pepper_cli.provider import fs as provider_fs
 from pepper_cli.secret import SecretStr
 from pepper_cli.terminal_text import make_visible, sanitize_line
@@ -3308,7 +3309,7 @@ def _todo_due_args(args: argparse.Namespace) -> tuple[str | None, str | None, bo
             _emit_error(args, "usage", "with --room, --due must be 'YYYY-MM-DD'")
             return None, None, True
         return None, args.due, False
-    due_iso, err = _parse_due(args.due)
+    due_iso, err = parse_due(args.due)
     if err is not None:
         _emit_error(args, "usage", err)
         return None, None, True
@@ -3666,7 +3667,7 @@ def cmd_scheduled_task_create(args: argparse.Namespace) -> int:
         return 2
     run_at: str | None = None
     if args.at:
-        run_at, err = _parse_due(args.at, flag="--at")
+        run_at, err = parse_due(args.at, flag="--at")
         if err is not None:
             _emit_error(args, "usage", err)
             return 2
@@ -3713,7 +3714,7 @@ def _create_room_scheduled_task(args: argparse.Namespace) -> int:
         return 2
     run_at: str | None = None
     if args.at:
-        run_at, err = _parse_due(args.at, flag="--at")
+        run_at, err = parse_due(args.at, flag="--at")
         if err is not None:
             _emit_error(args, "usage", err)
             return 2
@@ -3801,7 +3802,7 @@ def cmd_scheduled_task_edit(args: argparse.Namespace) -> int:
     if args.cron is not None:
         edits["cron"] = args.cron
     if args.at is not None:
-        run_at, err = _parse_due(args.at, flag="--at")
+        run_at, err = parse_due(args.at, flag="--at")
         if err is not None:
             _emit_error(args, "usage", err)
             return 2
@@ -7529,36 +7530,6 @@ def _valid_uuid(value: str) -> bool:
             value,
         )
     )
-
-
-def _parse_due(raw: str, *, flag: str = "--due") -> tuple[str | None, str | None]:
-    """Parse a wall-clock flag value into a timezone-aware ISO-8601 string.
-
-    Accepts ``YYYY-MM-DD`` or ``YYYY-MM-DD HH:MM`` (and anything else
-    :func:`datetime.fromisoformat` understands), interpreted in the
-    machine's **local** timezone — the right zone for a CLI on the
-    user's own machine, and what they mean when they type a time. The
-    server stores it as UTC.
-
-    ``flag`` only names the option in the error message. Shared by
-    ``todos create --due`` and ``scheduled-tasks create/edit --at``: both take a
-    local wall-clock time and both must send an *aware* value, since the
-    server has no way to guess the client's zone.
-
-    Returns ``(iso, None)`` on success or ``(None, error_message)`` so
-    the caller can print + exit 2 without raising.
-    """
-    import datetime as dt
-
-    try:
-        parsed = dt.datetime.fromisoformat(raw)
-    except ValueError:
-        return None, f"couldn't parse {flag} {raw!r} (try 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM')"
-    # Naive input → interpret in local zone (astimezone on a naive dt
-    # assumes local), giving an aware datetime the server can store.
-    if parsed.tzinfo is None:
-        parsed = parsed.astimezone()
-    return parsed.isoformat(), None
 
 
 def _load_or_error(args: argparse.Namespace | None = None) -> credentials.Credentials | None:
