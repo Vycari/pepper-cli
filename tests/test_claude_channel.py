@@ -1259,6 +1259,33 @@ def test_a_scoped_cursor_file_for_another_room_ends_the_channel(monkeypatch, tmp
     assert result.code == 2
 
 
+def test_serve_returns_the_verdict_of_a_worker_that_pushed_ended_before_stdin_closed():
+    """The session may hang up the moment it reads ``ended``; the exit code still counts."""
+    stdin, stdout = _Stdin(), _Stdout()
+    hung_up = threading.Event()
+
+    def work(sink) -> int:
+        sink.push(*claude_channel.control_event("ended", "stopped"))
+        hung_up.wait(10)  # the session hangs up before this returns
+        time.sleep(0.1)
+        return 2
+
+    def drive() -> None:
+        session = _Session(stdin, stdout, _Fake(_CONNECTED))
+        session.handshake()
+        session.wait_notifications(1)
+        stdin.close()
+        hung_up.set()
+
+    threading.Thread(target=drive, daemon=True).start()
+    server = claude_channel.build_server(claude_channel.ChannelTools(None, None))  # ty: ignore[invalid-argument-type]
+    code = anyio.run(
+        functools.partial(claude_channel.serve, server, work, stdin=stdin, stdout=stdout)
+    )
+
+    assert code == 2
+
+
 # --- the tools (design §9.1, §9.2) -------------------------------------------
 
 

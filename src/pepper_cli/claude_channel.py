@@ -111,6 +111,8 @@ CONTENT_CAP = 16_000
 #: An event older than the process start minus this is a pre-session backlog (design §7.4).
 BACKLOG_SLACK = timedelta(seconds=60)
 
+#: How long ``serve`` waits for the worker's exit code once ``ended`` is out and stdin has closed.
+VERDICT_WAIT_SECONDS = 5.0
 #: How long the process stays up after pushing ``ended``, so the event is read before the tools go.
 ENDED_GRACE_SECONDS = 2.0
 
@@ -1093,6 +1095,8 @@ class _Pusher:
         self._portal = portal
         self._write_stream = write_stream
         self.closed = False
+        #: Set when ``ended`` is about to go out: the worker has its verdict and is returning it.
+        self.ending = threading.Event()
 
     async def _send(self, content: str, meta: dict[str, str]) -> None:
         notification = types.JSONRPCNotification(
@@ -1105,6 +1109,8 @@ class _Pusher:
     def push(self, content: str, meta: dict[str, str]) -> None:
         if self.closed:
             raise ChannelClosedError
+        if meta.get("kind") == "ended":
+            self.ending.set()
         try:
             self._portal.call(self._send, content, meta)
         except (
@@ -1151,7 +1157,11 @@ async def serve(
 ) -> int:
     """Serve ``server`` over stdio and run ``work`` once the session says it is initialized.
 
-    Returns ``work``'s exit code, or 0 when the session closes stdin first. The handshake runs on
+    Returns ``work``'s exit code, or 0 when the session closes stdin first. If ``work`` has already
+    pushed ``ended`` when stdin closes, the session may have read it and hung up before ``work``
+    returned, so ``serve`` waits up to ``VERDICT_WAIT_SECONDS`` for that code rather than losing it.
+
+    The handshake runs on
     ``serve_loop``, not ``Server.run``, so the connection stays in the handshake era and Claude
     Code registers it as a channel (design §6, mechanism 3). ``stdin`` and ``stdout`` are for
     tests; ``None`` is the process's own, which ``stdio_server`` then claims.
@@ -1162,6 +1172,7 @@ async def serve(
     stop = stop if stop is not None else threading.Event()
     initialized = anyio.Event()
     outcome = {"code": 0}
+    worker_done = threading.Event()
 
     async def on_initialized(ctx: Any, params: Any) -> None:
         initialized.set()
@@ -1199,6 +1210,7 @@ async def serve(
                 _emit_error(None, "server", f"The channel stopped on an internal error: {exc}")
                 code = 1
             outcome["code"] = code
+            worker_done.set()
             with contextlib.suppress(RuntimeError):
                 portal.start_task_soon(linger, code)
 
@@ -1213,6 +1225,9 @@ async def serve(
         finally:
             pusher.closed = True
             stop.set()
+            if pusher.ending.is_set():
+                with anyio.CancelScope(shield=True):
+                    await anyio.to_thread.run_sync(worker_done.wait, VERDICT_WAIT_SECONDS)
             tg.cancel_scope.cancel()
     return outcome["code"]
 
