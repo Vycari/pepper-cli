@@ -117,6 +117,16 @@ class Conversation:
 PEPPER = Conversation()
 
 
+def sidebar_key(conv: Conversation) -> str:
+    """The sidebar row that marks ``conv`` as open: the DM, its topic, or (a room opened with
+    no topic, for its app pane) the room's own row."""
+    if conv.is_pepper:
+        return "pepper"
+    if conv.topic_id is None:
+        return f"room:{conv.room_id}"
+    return f"topic:{conv.topic_id}"
+
+
 # ---------------------------------------------------------------------------
 # Read marks and unread
 

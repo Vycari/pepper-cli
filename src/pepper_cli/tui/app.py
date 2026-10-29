@@ -884,7 +884,7 @@ class PepperApp(App[None]):
         """Sidebar, header, notice, subline and terminal title from the current state."""
         shown = self.rooms if self.groups_enabled else []
         self.marks.settle(shown)
-        current_key = "pepper" if self.current.is_pepper else f"topic:{self.current.topic_id}"
+        current_key = state.sidebar_key(self.current)
         if self.pane is not None:
             current_key = self.pane.key
         self.sidebar.set_rows(
@@ -1047,8 +1047,7 @@ class PepperApp(App[None]):
             self.notify("Nothing unread.", timeout=2)
             return
         self.open_conversation(target)
-        key = "pepper" if target.is_pepper else f"topic:{target.topic_id}"
-        self.sidebar.select_key(key)
+        self.sidebar.select_key(state.sidebar_key(target))
 
     def action_next_unread(self) -> None:
         self._jump_unread(1)
@@ -1155,7 +1154,7 @@ class PepperApp(App[None]):
             self.sidebar.select_key(f"app:me:{conv.slug}")
             return
         self.open_conversation(conv)
-        self.sidebar.select_key("pepper" if conv.is_pepper else f"topic:{conv.topic_id}")
+        self.sidebar.select_key(state.sidebar_key(conv))
 
     def action_room_info(self) -> None:
         """``i``: members, topics and apps of the room under the cursor (or the open one)."""

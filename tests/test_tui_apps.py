@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 import pytest
+from rich.text import Text
 
 from pepper_cli import api_client
 from pepper_cli.tui import app as tui_app
@@ -148,6 +149,20 @@ async def type_command(app: tui_app.PepperApp, pilot: Pilot, text: str) -> None:
     app.composer.load_text(text)
     app.composer.focus()
     await pilot.press("enter")
+
+
+def marked_open(app: tui_app.PepperApp) -> list[str]:
+    """The keys of the sidebar rows drawn as the open one (reverse video)."""
+    marked: list[str] = []
+    stack = list(app.sidebar.root.children)
+    while stack:
+        node = stack.pop(0)
+        stack[:0] = node.children
+        label = node.label
+        drawn = isinstance(label, Text) and any("reverse" in str(s.style) for s in label.spans)
+        if node.data is not None and drawn:
+            marked.append(node.data.key)
+    return marked
 
 
 def header(app: tui_app.PepperApp) -> str:
@@ -644,6 +659,7 @@ async def test_a_room_with_only_archived_topics_opens_its_pane_in_that_room_and_
         assert app.current.room_id == ts.ROOM_B
         assert app.current.topic_id is None
         assert header(app) == "Book club"
+        assert marked_open(app) == [f"room:{ts.ROOM_B}"]  # the room's own row says it is open
         app.composer.focus()
         app.composer.load_text("hello")
         await pilot.press("enter")
