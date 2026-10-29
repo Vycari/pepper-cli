@@ -482,7 +482,8 @@ The composer at the bottom posts to whatever is open:
   that mentions you shows in the accent colour. Set `PEPPER_TUI_BELL=1` to also ring the
   terminal bell when the server first reports an unread mention in another topic; it is off by
   default. A server that does not send unread rows (older than read-state-sync phase 5b) shows
-  no unread markers.
+  no unread markers. When the server answers 404 to `GET /api/v1/groups/unread`, the TUI stops asking
+  for ten minutes and then tries once more; the room list keeps polling as usual.
   Set `PEPPER_NO_UPDATE_CHECK=1` to disable the background release check on startup.
   Quitting does not wait for an in-flight release check; any remaining fallback lookups are skipped.
 

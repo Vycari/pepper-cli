@@ -30,6 +30,10 @@ Upgrade notes:
   message listed under a superseded room and its successor counts once). The request is made only
   when a room moved. The vendored API snapshot is refreshed with it (#147).
 
+- A server that answers 404 to `GET /api/v1/groups/unread` is left alone for ten minutes instead of
+  being asked on every poll, and the room list's ETag is kept so unchanged polls are 304 again
+  (#154).
+
 ### Removed
 
 - `ApiClient.get_group_read_state`, `GroupReadState` and the read-mark fetch pool; the poller no

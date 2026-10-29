@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import httpx
 import pytest
 
@@ -160,6 +162,87 @@ def test_a_failed_unread_request_is_asked_again_on_the_next_poll() -> None:
         rail.commit(second)
         assert rail.step().groups is None
     assert _unread_reads(server) == 2
+
+
+def test_a_404_on_the_unread_route_backs_off_and_keeps_the_etag(monkeypatch) -> None:
+    server = ts.standard_server()
+    server.fail["/api/v1/groups/unread"] = 404
+    now = [1000.0]
+    monkeypatch.setattr(poller, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    with server.client() as api:
+        rail = poller.RailPoller(api)
+        rail.refetch_all()
+        first = rail.step()
+        assert first.groups is not None and first.unread == []
+        assert first.etag is not None  # answered: the next poll can be a 304
+        assert first.full == 1  # and the pending full read is not left asking
+        rail.commit(first)
+        assert rail.step().groups is None
+        assert _unread_reads(server) == 1
+        # A room moving inside the window does not ask a server without the route again.
+        rail.refetch_all()
+        again = rail.step()
+        assert again.groups is not None and again.etag is not None
+        assert _unread_reads(server) == 1
+        rail.commit(again)
+        # After the interval one full poll asks once more; it succeeds and the route is back.
+        now[0] += poller.UNREAD_MISSING_RETRY_SECONDS + 1
+        server.fail.clear()
+        retry = rail.step()
+        assert _unread_reads(server) == 2
+        assert ts.TOPIC_A1 in retry.server_marks
+        rail.commit(retry)
+        assert rail.step().groups is None
+
+
+def test_a_404_on_the_unread_route_is_asked_again_after_the_interval(monkeypatch) -> None:
+    server = ts.standard_server()
+    server.fail["/api/v1/groups/unread"] = 404
+    now = [0.0]
+    monkeypatch.setattr(poller, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    with server.client() as api:
+        rail = poller.RailPoller(api)
+        rail.commit(rail.step())
+        now[0] += poller.UNREAD_MISSING_RETRY_SECONDS + 1
+        update = rail.step()
+        assert update.groups is not None  # a 200 even though no room moved
+        assert update.etag is not None
+        assert _unread_reads(server) == 2
+        rail.commit(update)
+        now[0] += 1
+        assert rail.step().groups is None
+        assert _unread_reads(server) == 2
+
+
+def test_an_expired_404_back_off_with_no_rooms_ends_instead_of_forcing_200s(monkeypatch) -> None:
+    server = ts.standard_server()
+    server.omit_unread = True
+    now = [0.0]
+    monkeypatch.setattr(poller, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    with server.client() as api:
+        rail = poller.RailPoller(api)
+        rail.commit(rail.step())  # the 404 starts the back-off
+        now[0] += poller.UNREAD_MISSING_RETRY_SECONDS + 1
+        server.rooms = []
+        ended = rail.step()
+        rail.commit(ended)
+        assert ended.etag is not None
+        assert rail.step().groups is None  # a 304 again, not a 200 on every poll
+
+
+def test_a_500_after_a_404_back_off_is_not_taken_for_an_answer(monkeypatch) -> None:
+    server = ts.standard_server()
+    server.omit_unread = True
+    now = [0.0]
+    monkeypatch.setattr(poller, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    with server.client() as api:
+        rail = poller.RailPoller(api)
+        rail.commit(rail.step())
+        now[0] += poller.UNREAD_MISSING_RETRY_SECONDS + 1
+        server.omit_unread = False
+        server.fail["/api/v1/groups/unread"] = 500
+        failed = rail.step()
+    assert failed.etag is None  # incomplete: the next poll is a 200 that asks again
 
 
 def test_forget_etag_asks_for_the_full_list() -> None:

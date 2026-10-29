@@ -8,6 +8,7 @@ transport instead of a running app.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -33,6 +34,10 @@ if TYPE_CHECKING:
         TodoEntry,
     )
     from pepper_cli.tui.state import Conversation, PendingSend
+
+#: How long the rail leaves ``GET /api/v1/groups/unread`` alone after the server answered 404
+#: (a server without the route), before one poll asks again.
+UNREAD_MISSING_RETRY_SECONDS = 600.0
 
 type _Signature = tuple[tuple[str, str, str | None], ...]
 
@@ -81,6 +86,8 @@ class RailPoller:
         #: :meth:`refetch_all`), and the newest one a committed step has answered.
         self._full_asked = 0
         self._full_done = 0
+        #: Monotonic time to ask for unread rows again after a 404 (``None``: the route exists).
+        self._unread_retry_at: float | None = None
 
     def refetch_all(self) -> None:
         """Make the next step a 200 that reads every room's marks (UI thread).
@@ -96,7 +103,11 @@ class RailPoller:
 
     def step(self) -> RailUpdate:
         asked = self._full_asked
-        full = asked > self._full_done
+        # A 404 on the unread route holds for UNREAD_MISSING_RETRY_SECONDS; the poll that ends
+        # it is a full one, so the room list is not what decides whether the route is asked.
+        retry_at = self._unread_retry_at
+        missing = retry_at is not None and time.monotonic() < retry_at
+        full = asked > self._full_done or (retry_at is not None and not missing)
         groups, etag = self._api.list_groups_conditional(if_none_match=None if full else self._etag)
         if groups is None:
             return RailUpdate(groups=None, etag=self._etag)
@@ -106,17 +117,26 @@ class RailPoller:
         moved = [r for r in groups.groups if full or self._seen.get(r.group_id) != _signature(r)]
         # One request answers every room, so it is made only when a room moved (or on a full
         # step). A transport error raises here, before any commit.
-        fetched = self._fetch_unread() if moved else None
+        asking = bool(moved) and not missing
+        if retry_at is not None and not missing and not moved:
+            # An expired back-off with no room to ask about (an empty list): the route was not
+            # tried, so end the back-off rather than force a 200 on every poll.
+            self._unread_retry_at = None
+        fetched = self._fetch_unread() if asking else None
+        # A server without the route (404) is answered: asking again would only fail again.
+        # Only a 404 from this very request counts: a stale deadline must not excuse a 500.
+        answered_404 = self._unread_retry_at is not None and self._unread_retry_at != retry_at
+        complete = fetched is not None or not asking or answered_404
         seen: dict[str, _Signature] = {}
         moved_ids = {r.group_id for r in moved}
         for room in groups.groups:
-            if fetched is not None or room.group_id not in moved_ids:
+            if complete or room.group_id not in moved_ids:
                 seen[room.group_id] = _signature(room)
             elif (old := self._seen.get(room.group_id)) is not None:
                 seen[room.group_id] = old  # its unread state failed: it still counts as moved
         # A failed unread request is asked again on the next poll. That needs a 200, so the
-        # ETag is only kept when the request came back (or none was needed).
-        complete = fetched is not None or not moved
+        # ETag is only kept when the request came back (or none was needed, or the server has
+        # no such route).
         return RailUpdate(
             groups=groups,
             server_marks=fetched.marks if fetched else {},
@@ -143,11 +163,17 @@ class RailPoller:
         # (nothing, on first sight: not unread) and the next poll asks again. A transport error
         # is not caught: the whole step fails and nothing is committed.
         try:
-            return self._api.get_groups_unread()
+            fetched = self._api.get_groups_unread()
         except ApiError as exc:
             if exc.status == 401:
                 raise
+            if exc.status == 404:
+                # No such route: stop asking for a while, and let the ETag and a pending
+                # ``refetch_all`` settle as they would for an answer.
+                self._unread_retry_at = time.monotonic() + UNREAD_MISSING_RETRY_SECONDS
             return None
+        self._unread_retry_at = None
+        return fetched
 
 
 def fetch_topic(api: ApiClient, conv: Conversation, *, since: str | None) -> GroupMessagePage:
