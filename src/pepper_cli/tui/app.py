@@ -2559,7 +2559,8 @@ class PepperApp(App[None]):
             [
                 ("reopen", "Re-open the editor on your text, against the new version"),
                 ("overwrite", "Overwrite the new version with your text"),
-                ("quit", "Quit (your text stays saved)"),
+                # Only a copy that was written is "kept": with none, quitting drops the text.
+                ("quit", "Quit (your text stays saved)" if saved else "Quit (your text is lost)"),
             ],
         )
         self.push_screen(InfoScreen(report), lambda _: self.push_screen(picker, chosen))

@@ -261,6 +261,22 @@ async def test_412_quit_keeps_the_saved_copy_and_sends_nothing_more(monkeypatch,
     assert server.note_details["n-pack"]["body"] == "Someone else was here\n"
 
 
+async def test_412_with_no_copy_saved_quit_does_not_claim_one(monkeypatch, tmp_path) -> None:
+    server = server_with_apps()
+    fake_editor(monkeypatch, "My edit\n", during=another_writer(server))
+    monkeypatch.setattr(note_edit, "save_conflict_copy", lambda *_a: (None, "disk full"))
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=SIZE) as pilot:
+        await open_notes(app, pilot)
+        await pilot.press("e")
+        await screen_is(pilot, app, InfoScreen)
+        await pilot.press("escape")
+        await screen_is(pilot, app, PickerScreen)
+        labels = [label for _value, label in app.screen._choices]
+        assert "Quit (your text is lost)" in labels
+        assert not any("stays saved" in label for label in labels)
+
+
 async def test_412_closing_the_picker_with_esc_is_quit(monkeypatch, tmp_path) -> None:
     server = server_with_apps()
     fake_editor(monkeypatch, "My edit\n", during=another_writer(server))
