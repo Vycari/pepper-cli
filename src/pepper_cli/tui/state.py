@@ -952,6 +952,8 @@ class DmTurn:
             return self.user_id in entries
         if self.phase == "queued":
             return False
+        if self.phase == "checking":
+            return self._own_user_row(entries) is not None
         return any(e.role == "user" and eid not in self.snapshot for eid, e in entries.items())
 
     def _own_user_row(self, entries: dict[str, ChatHistoryEntry]) -> ChatHistoryEntry | None:

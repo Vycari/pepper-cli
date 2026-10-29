@@ -577,3 +577,11 @@ def test_a_dropped_turn_with_an_unlinked_user_row_skips_another_turns_reply() ->
     failed = {**entries, "a1": _entry("a1", "assistant", "sorry", "2026-09-16T10:01:04Z")}
     assert turn.reply_id(failed) == "a1"
 
+
+def test_a_dropped_turn_shows_its_bubble_until_its_own_user_row_lands() -> None:
+    before = {"h1": _entry("h1", "assistant", "old", "2026-09-16T09:00:00Z")}
+    turn = state.DmTurn(text="q", phase="checking", snapshot=frozenset(before))
+    other = {**before, "u9": _entry("u9", "user", "lunch?", "2026-09-16T10:01:00Z")}
+    assert not turn.user_landed(other)  # another device's row is not this turn's
+    mine = {**other, "u1": _entry("u1", "user", "q", "2026-09-16T10:01:01Z")}
+    assert turn.user_landed(mine)
