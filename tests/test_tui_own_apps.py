@@ -667,7 +667,9 @@ async def test_a_dropped_stream_that_never_answers_ends_the_strips_waiting(monke
         await say(pilot, app, "anyone?")
         await until(pilot, lambda: "No reply yet" in plain(app, "#dm-status"))
         assert "checking for the answer" not in strip(app)
-        assert "(no answer)" in strip(app)
+        # It may have run, so the strip doesn't say it went unanswered.
+        assert "(no reply yet; it may still show in the DM)" in strip(app)
+        assert "(no answer)" not in strip(app)
 
 
 async def test_the_cursor_starts_on_pepper_not_on_the_first_row() -> None:

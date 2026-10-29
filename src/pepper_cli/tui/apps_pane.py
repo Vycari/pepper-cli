@@ -382,7 +382,7 @@ def strip_items(turns: Sequence[state.DmTurn]) -> list[RenderableType]:
                 "queued": "waiting to send…",
                 "streaming": "…",
                 "checking": "checking for the answer…",
-            }.get(turn.phase, "(no answer)")
+            }.get(turn.phase, f"({turn.status})" if turn.status else "(no answer)")
             answer = Text(wait, style="dim italic")
         grid.add_row(Text("Pepper", style="bold"), answer)
         out.append(grid)

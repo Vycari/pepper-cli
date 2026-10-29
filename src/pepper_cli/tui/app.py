@@ -2269,7 +2269,7 @@ class PepperApp(App[None]):
             self._answered_ids |= turn.known_ids()
         elif outcome == "error" and error is None:
             self.turns.remove(turn)
-            turn.phase = "done"  # (the reply strip reads "no answer")
+            turn.phase, turn.status = "done", ""  # (the reply strip reads "no answer")
             message = sanitize_line(str(payload.get("message") or "model service unavailable"))
             self.dm_note = f"Pepper couldn't answer: {message}"
         elif error is not None and isinstance(error, (ApiError, *_NOT_SENT)):
@@ -2349,7 +2349,8 @@ class PepperApp(App[None]):
                 self._turn_finished(turn)
             elif turn.phase == "checking" and turn.gave_up(now):
                 self.turns.remove(turn)
-                turn.phase = "done"
+                # Not "no answer": the turn may well have run, and its reply can still land.
+                turn.phase, turn.status = "done", "no reply yet; it may still show in the DM"
                 self.dm_note = "No reply yet. It may still arrive; check back in a moment."
                 self._turn_finished(turn)
         if any(turn.phase == "queued" for turn in self.turns):
