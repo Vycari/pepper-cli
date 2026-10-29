@@ -383,12 +383,15 @@ def test_a_turn_finds_its_reply_in_history_by_id_or_as_the_new_assistant_row() -
         "old": api_client.ChatHistoryEntry(
             id="old", role="assistant", text="earlier", channel="terminal", created_at="2026-10-01Z"
         ),
+        "mine": api_client.ChatHistoryEntry(
+            id="mine", role="user", text="q", channel="terminal", created_at="2026-10-02T00:00:00Z"
+        ),
         "new": api_client.ChatHistoryEntry(
             id="new",
             role="assistant",
             text="the answer",
             channel="terminal",
-            created_at="2026-10-02Z",
+            created_at="2026-10-02T00:00:05Z",
         ),
     }
     by_id = state.DmTurn(text="q", assistant_id="new")
