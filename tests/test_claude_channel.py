@@ -1259,30 +1259,45 @@ def test_a_scoped_cursor_file_for_another_room_ends_the_channel(monkeypatch, tmp
     assert result.code == 2
 
 
-def test_serve_returns_the_verdict_of_a_worker_that_pushed_ended_before_stdin_closed():
+def test_serve_returns_the_verdict_of_a_worker_that_pushed_ended_before_stdin_closed(monkeypatch):
     """The session may hang up the moment it reads ``ended``; the exit code still counts."""
+    monkeypatch.setattr(claude_channel, "VERDICT_WAIT_SECONDS", 30.0)
     stdin, stdout = _Stdin(), _Stdout()
-    hung_up = threading.Event()
+    stop = threading.Event()  # set by ``serve`` once it is shutting down
+    served = threading.Event()  # set by this test once ``serve`` has returned
+    errors: list[BaseException] = []
 
     def work(sink) -> int:
         sink.push(*claude_channel.control_event("ended", "stopped"))
-        hung_up.wait(10)  # the session hangs up before this returns
-        time.sleep(0.1)
+        # Return only after ``serve`` has seen EOF and, unless it waits for this verdict, after it
+        # has returned too: without the wait ``serve`` returns first, sets nothing here, and the
+        # test sees 0. The timeout bounds only the passing path, where ``serve`` is blocked on us.
+        stop.wait(10)
+        served.wait(1.0)
         return 2
 
     def drive() -> None:
-        session = _Session(stdin, stdout, _Fake(_CONNECTED))
-        session.handshake()
-        session.wait_notifications(1)
-        stdin.close()
-        hung_up.set()
+        try:
+            session = _Session(stdin, stdout, _Fake(_CONNECTED))
+            session.handshake()
+            session.wait_notifications(1)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            stdin.close()
 
     threading.Thread(target=drive, daemon=True).start()
     server = claude_channel.build_server(claude_channel.ChannelTools(None, None))  # ty: ignore[invalid-argument-type]
-    code = anyio.run(
-        functools.partial(claude_channel.serve, server, work, stdin=stdin, stdout=stdout)
-    )
+    try:
+        code = anyio.run(
+            functools.partial(
+                claude_channel.serve, server, work, stdin=stdin, stdout=stdout, stop=stop
+            )
+        )
+    finally:
+        served.set()
 
+    assert not errors, errors
     assert code == 2
 
 
