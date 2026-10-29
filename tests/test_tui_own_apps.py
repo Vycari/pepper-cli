@@ -674,6 +674,37 @@ async def test_the_cursor_starts_on_pepper_not_on_the_first_row() -> None:
         assert app.sidebar.highlighted_row.kind == "pepper"
 
 
+async def test_redraws_before_the_first_restore_still_rest_on_the_open_conversation() -> None:
+    # Two redraws inside one refresh: the second must not keep the tree's default cursor
+    # (the first row), and the first's queued restore must not act on replaced nodes.
+    from textual.app import App, ComposeResult
+
+    rows = [
+        state.SidebarRow("app:me:todo", "own_app", "Todos", 0, slug="todo"),
+        state.SidebarRow("rule", "rule", "────", 0),
+        state.SidebarRow("pepper", "pepper", "Pepper", 0),
+    ]
+
+    class Host(App[None]):
+        def compose(self) -> ComposeResult:
+            yield Sidebar()
+
+    host = Host()
+    async with host.run_test(size=SIZE) as pilot:
+        sidebar = host.query_one(Sidebar)
+        sidebar.set_rows(rows, current_key="pepper")
+        sidebar.set_rows(
+            [*rows, state.SidebarRow("x", "inactive", "Older", 0)], current_key="pepper"
+        )
+        await pilot.pause()
+        assert sidebar.highlighted_row is not None
+        assert sidebar.highlighted_row.key == "pepper"
+        sidebar.select_key("app:me:todo")
+        sidebar.set_rows(rows, current_key="pepper")  # once placed, a redraw keeps the cursor
+        await pilot.pause()
+        assert sidebar.highlighted_row.key == "app:me:todo"
+
+
 async def test_a_failed_reread_keeps_the_room_sections_already_on_screen() -> None:
     server = own_server()
     app = tui_app.PepperApp(server.client())

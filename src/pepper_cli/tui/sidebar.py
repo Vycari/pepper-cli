@@ -68,6 +68,11 @@ class Sidebar(Tree[SidebarRow]):
         #: A row the app asked for by key; a redraw still waiting to restore the old cursor
         #: yields to it.
         self._wanted: str | None = None
+        #: False until a redraw has placed the cursor: before that the tree's default cursor
+        #: (the first row) is not a choice worth keeping across a second early redraw.
+        self._placed = False
+        #: Bumped by every redraw, so a restore queued for a redraw since replaced does nothing.
+        self._generation = 0
 
     @property
     def highlighted_row(self) -> SidebarRow | None:
@@ -80,7 +85,8 @@ class Sidebar(Tree[SidebarRow]):
         if signature == self._signature:
             return
         self._signature = signature
-        keep = self.highlighted_row.key if self.highlighted_row else None
+        row = self.highlighted_row if self._placed else None
+        keep = row.key if row is not None else None
         self.clear()
         self.root.expand()
         self._by_key = {}
@@ -95,9 +101,12 @@ class Sidebar(Tree[SidebarRow]):
             else:
                 node = parent.add_leaf(label, data=row)
             self._by_key[row.key] = node
-        self.call_after_refresh(self._restore_cursor, keep, current_key)
+        self._generation += 1
+        self.call_after_refresh(self._restore_cursor, self._generation, keep, current_key)
 
-    def _restore_cursor(self, key: str | None, current_key: str | None = None) -> None:
+    def _restore_cursor(self, generation: int, key: str | None, current_key: str | None) -> None:
+        if generation != self._generation:
+            return  # (a later redraw replaced these nodes; its own restore places the cursor)
         key = self._wanted or key
         node = self._by_key.get(key) if key else None
         if node is None and current_key is not None:
@@ -105,7 +114,9 @@ class Sidebar(Tree[SidebarRow]):
         if node is None:
             node = next(iter(self._by_key.values()), None)
         if node is not None:
+            _ = self.last_line  # (builds the tree's lines, so the node's line is this tree's)
             self.move_cursor(node)
+            self._placed = True
 
     def select_key(self, key: str) -> None:
         """Move the cursor to a row by key (used by next-unread)."""

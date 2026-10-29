@@ -57,13 +57,25 @@ def _server() -> ts.FakeServer:
     return server
 
 
+async def _cursor_settled(pilot: Pilot, app: tui_app.PepperApp, key: str) -> None:
+    # The sidebar restores its cursor after a refresh; wait for it so the capture never
+    # races the restore (the cursor row is part of the rendered screen).
+    def settled() -> bool:
+        row = app.sidebar.highlighted_row
+        return row is not None and row.key == key
+
+    await until(pilot, settled)
+
+
 def test_thread_with_markdown_reactions_preview_and_card(snap_compare) -> None:
     app = tui_app.PepperApp(_server().client())
 
     async def run_before(pilot: Pilot) -> None:
         await until(pilot, lambda: len(app.rooms) == 2)
+        await _cursor_settled(pilot, app, "pepper")
         app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
         await until(pilot, lambda: "notes are here" in body_text(app))
+        await _cursor_settled(pilot, app, "pepper")
         await pilot.pause()
 
     assert snap_compare(app, terminal_size=SIZE, run_before=run_before)
@@ -74,8 +86,10 @@ def test_room_info_card(snap_compare) -> None:
 
     async def run_before(pilot: Pilot) -> None:
         await until(pilot, lambda: len(app.rooms) == 2)
+        await _cursor_settled(pilot, app, "pepper")
         app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
         await until(pilot, lambda: "notes are here" in body_text(app))
+        await _cursor_settled(pilot, app, "pepper")
         await pilot.press("i")
         await until(pilot, lambda: isinstance(app.screen, InfoScreen))
         await pilot.pause()
