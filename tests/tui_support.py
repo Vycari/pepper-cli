@@ -815,10 +815,13 @@ class FakeServer:
 
     @staticmethod
     def _store_body(detail: dict[str, Any], text: str, rows: list[dict[str, Any]]) -> None:
-        """A write landed: a new body, a new etag (``…-1`` becomes ``…-2``), on detail and row."""
+        """A write landed: a new body, a new etag (``…-1`` becomes ``…-2``), on detail and row.
+        Bare, as the server's JSON carries it (only the ``ETag`` header is quoted): a conflict
+        copy's filename is built from it, and a quote is not a legal filename character on
+        Windows."""
         stem, _, version = detail["etag"].strip('"').rpartition("-")
         detail["body"] = text
-        detail["etag"] = f'"{stem}-{int(version) + 1}"'
+        detail["etag"] = f"{stem}-{int(version) + 1}"
         for row in rows:
             if row["id"] == detail["id"]:
                 row["etag"] = detail["etag"]

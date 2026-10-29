@@ -80,8 +80,8 @@ def another_writer(server: ts.FakeServer) -> Callable[[], None]:
     """A save by someone else that lands while the editor is open."""
 
     def save() -> None:
-        server.note_details["n-pack"].update(body="Someone else was here\n", etag='"n-pack-2"')
-        server.notes[ts.ROOM_A][1]["etag"] = '"n-pack-2"'
+        server.note_details["n-pack"].update(body="Someone else was here\n", etag="n-pack-2")
+        server.notes[ts.ROOM_A][1]["etag"] = "n-pack-2"
 
     return save
 
@@ -110,7 +110,7 @@ async def test_e_edits_a_rooms_note_in_the_editor_and_sends_if_match(monkeypatch
         await until(
             pilot,
             lambda: (
-                app.pane is not None and any(n.etag == '"n-pack-2"' for n in app.pane.notes or [])
+                app.pane is not None and any(n.etag == "n-pack-2" for n in app.pane.notes or [])
             ),
         )
 
@@ -241,7 +241,7 @@ async def conflict(
 
 async def test_412_overwrite_resends_the_text_against_the_new_etag(monkeypatch, tmp_path) -> None:
     server, handed, _said = await conflict(monkeypatch, tmp_path, "2")
-    assert [m for _p, _b, m in writes(server, "edit")] == ['"n-pack-1"', '"n-pack-2"']
+    assert [m for _p, _b, m in writes(server, "edit")] == ['"n-pack-1"', "n-pack-2"]
     assert writes(server, "edit")[1][1]["body"] == "My edit\n"
     assert server.note_details["n-pack"]["body"] == "My edit\n"
     assert len(handed) == 1
@@ -250,7 +250,7 @@ async def test_412_overwrite_resends_the_text_against_the_new_etag(monkeypatch, 
 async def test_412_reopen_runs_the_editor_on_the_users_text(monkeypatch, tmp_path) -> None:
     server, handed, _said = await conflict(monkeypatch, tmp_path, "1", "My edit, revised\n")
     assert handed[1] == "My edit\n"  # their own text, not the server's
-    assert [m for _p, _b, m in writes(server, "edit")] == ['"n-pack-1"', '"n-pack-2"']
+    assert [m for _p, _b, m in writes(server, "edit")] == ['"n-pack-1"', "n-pack-2"]
     assert server.note_details["n-pack"]["body"] == "My edit, revised\n"
 
 
