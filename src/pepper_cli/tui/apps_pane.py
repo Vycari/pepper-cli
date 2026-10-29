@@ -53,11 +53,16 @@ class PaneScroll(VerticalScroll):
         Binding("down", "move(1)", "Down", show=False),
         Binding("enter", "activate", "Open", show=False),
         Binding("escape", "back", "Back"),
+        # ``space`` is two bindings, one per app; check_action leaves exactly one live.
         Binding("space", "done", "Done"),
         Binding("x", "done", "Done", show=False),
         Binding("d", "dismiss", "Dismiss"),
         Binding("u", "reopen", "Reopen"),
         Binding("n", "add", "Add"),
+        Binding("c", "new_note", "New"),
+        Binding("e", "edit_note", "Edit"),
+        Binding("D", "delete_note", "Delete"),
+        Binding("space", "tick", "Tick"),
         Binding("m", "asks", "Asks of me"),
         Binding("r", "refresh", "Refresh"),
         Binding("o", "open_link", "Open link"),
@@ -96,15 +101,35 @@ class PaneScroll(VerticalScroll):
     class OpenLink(Message):
         """``o``: a todo's source link, or the first link in the open note."""
 
+    class NewNote(Message):
+        """``c``: a new note, written in ``$EDITOR``."""
+
+    class EditNote(Message):
+        """``e``: the selected (or open) note, in ``$EDITOR``."""
+
+    class DeleteNote(Message):
+        """``D``: delete the selected (or open) note, after asking."""
+
+    class Tick(Message):
+        """``space``: tick or untick a checklist line of the open note."""
+
     #: ``todo`` or ``notes``; ``m`` is a Todos key and is hidden elsewhere.
     slug: str = "todo"
+    #: A note is open (``space`` ticks only there).
+    note_open: bool = False
     #: Your own pane: the Pepper composer is the next stop, and the footer says so.
     composer_below: bool = False
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "composer":
             return self.composer_below
-        return not (action in TODO_ACTIONS and self.slug != "todo")
+        if action in TODO_ACTIONS:
+            return self.slug == "todo"
+        if action in ("new_note", "edit_note", "delete_note"):
+            return self.slug == "notes"
+        if action == "tick":
+            return self.slug == "notes" and self.note_open
+        return True
 
     def action_composer(self) -> None:
         self.app.action_focus_next()
@@ -138,6 +163,18 @@ class PaneScroll(VerticalScroll):
 
     def action_open_link(self) -> None:
         self.post_message(self.OpenLink())
+
+    def action_new_note(self) -> None:
+        self.post_message(self.NewNote())
+
+    def action_edit_note(self) -> None:
+        self.post_message(self.EditNote())
+
+    def action_delete_note(self) -> None:
+        self.post_message(self.DeleteNote())
+
+    def action_tick(self) -> None:
+        self.post_message(self.Tick())
 
 
 class ReplyStrip(VerticalScroll):

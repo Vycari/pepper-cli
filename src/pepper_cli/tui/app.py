@@ -45,14 +45,15 @@ import httpx
 from rich.console import Group
 from rich.text import Text
 from textual import events
-from textual.app import App, ComposeResult, ScreenStackError
+from textual.app import App, ComposeResult, ScreenStackError, SuspendNotSupported
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Static
 
+from pepper_cli import note_edit
 from pepper_cli import turn as turns
-from pepper_cli.api_client import ApiError, UpgradeRequiredError
+from pepper_cli.api_client import ApiError, ArtifactConflictError, UpgradeRequiredError
 from pepper_cli.terminal_text import sanitize_line
 from pepper_cli.tui import apps_pane, poller, rows, state, stream
 from pepper_cli.tui.apps_pane import AppPane, PaneScroll
@@ -77,6 +78,7 @@ if TYPE_CHECKING:
 
     from pepper_cli.api_client import (
         ApiClient,
+        ArtifactCreateResult,
         ArtifactDetail,
         ArtifactListResponse,
         ChatHistoryEntry,
@@ -143,6 +145,8 @@ _ON_DEMAND = (
     "shelf",
     # A todo write from the Todos pane (done, dismiss, reopen, add), one at a time.
     "todo",
+    # A note write (new, edit, delete, tick): one at a time, started by a key.
+    "notewrite",
 )
 #: Transport failures that mean a turn's request never reached the server, so it is safe to
 #: give the text back for the user to send again.
@@ -1987,6 +1991,7 @@ class PepperApp(App[None]):
         else:
             items = apps_pane.notes_items(pane, now=now)
         host = self.query_one(AppPane)
+        host.scroller.note_open = pane.note_id is not None
         host.show(
             items, pane.selected, slug=pane.slug, reset=reset, composer_below=pane.owner is None
         )
@@ -2375,6 +2380,281 @@ class PepperApp(App[None]):
             lambda entry: self._todo_written(pane, entry, row.id),
             on_error=lambda exc: self._todo_failed(pane, row.id, "add the todo", exc),
         )
+
+    # ------------------------------------------------------------------ Note writes (§6.8)
+    # New, edit, delete and tick, for your own notes and a room's alike (``pane.owner`` goes to
+    # every call as ``principal``). One write at a time (the ``notewrite`` loop); after each the
+    # response is applied at once and the list is read again (§6.6).
+
+    def _note_target(self) -> tuple[str, str] | None:
+        """The open note, or the selected one in the list; ``None`` after saying why not."""
+        pane = self.pane
+        if pane is None or pane.slug != "notes":
+            return None
+        if pane.note_id is not None:
+            return pane.note_id, pane.note_name
+        row = next((r for r in state.pane_rows(pane) if r.key == pane.selected), None)
+        if row is None or row.note is None:
+            self.notify("Select a note first.", timeout=2)
+            return None
+        return row.note.id, row.note.name
+
+    def _write_busy(self) -> bool:
+        if self._loops["notewrite"].busy:
+            self.notify("Still saving the last change.", timeout=2)
+            return True
+        return False
+
+    def _run_editor(self, initial: str, command: str) -> str | None:
+        """Hand the terminal to ``$EDITOR`` holding ``initial``; the edited text, or ``None``
+        after a notice (no terminal to hand over, or the editor failed).
+
+        Needs a real terminal: under Pilot, or anywhere ``App.suspend`` is not supported, the
+        notice points at ``pepper notes <command>`` instead."""
+        try:
+            with self.suspend():
+                text, error = note_edit.open_in_editor(initial, prefix="pepper-note-")
+        except SuspendNotSupported:
+            self.notify(
+                "This terminal can't hand over to an editor. "
+                f"Run `pepper notes {command}` from a shell instead.",
+                markup=False,
+                timeout=6,
+            )
+            return None
+        if error is not None:
+            self.notify(sanitize_line(error), severity="error", markup=False, timeout=6)
+        return text
+
+    def _note_write_failed(self, what: str, exc: Exception) -> bool:
+        """A note write failed. The server's own sentence for a refusal (an imported note that
+        can't be edited, a checklist line that has gone) is shown as it is; anything else
+        through the usual one-line failure."""
+        if isinstance(exc, ApiError) and exc.status in (400, 403, 409) and exc.detail:
+            self.notify(sanitize_line(exc.detail), severity="error", markup=False, timeout=6)
+            return False
+        return self._action_failed(what, exc)
+
+    def on_pane_scroll_new_note(self, _event: PaneScroll.NewNote) -> None:
+        pane = self.pane
+        if pane is None or pane.slug != "notes" or self._write_busy():
+            return
+        text = self._run_editor("", "create")
+        if text is None:
+            return
+        parsed = state.split_new_note(text)
+        if parsed is None:
+            self.notify("Nothing written. No note created.", timeout=3)
+            return
+        title, body = parsed
+        if not body:
+            self.notify("A note needs some text under its title. Nothing saved.", timeout=4)
+            return
+        owner = pane.owner
+        self._start(
+            "notewrite",
+            lambda: self._api.create_artifact(name=title, body=body, principal=owner),
+            lambda made: self._note_created(pane, made),
+            on_error=lambda exc: self._note_write_failed("create the note", exc),
+        )
+
+    def _note_created(self, pane: state.AppPaneState, made: ArtifactCreateResult) -> None:
+        self.notify(f"Created {sanitize_line(made.name)}.", markup=False, timeout=3)
+        if pane is self.pane:
+            pane.selected = f"note:{made.id}"
+            self._want("apps")
+
+    def on_pane_scroll_edit_note(self, _event: PaneScroll.EditNote) -> None:
+        pane = self.pane
+        if (target := self._note_target()) is None or pane is None or self._write_busy():
+            return
+        note_id = target[0]
+        # A fresh read, so the editor holds what is stored now and its etag is the precondition.
+        self._start(
+            "notewrite",
+            lambda: poller.fetch_note(self._api, note_id),
+            lambda detail: self._edit_in_editor(pane, detail),
+            on_error=lambda exc: self._action_failed("read the note", exc),
+        )
+
+    def _edit_in_editor(self, pane: state.AppPaneState, detail: ArtifactDetail) -> None:
+        if pane is not self.pane:
+            return
+        current = detail.body or ""
+        text = self._run_editor(current, "edit")
+        if text is None:
+            return
+        if note_edit.texts_match(current, text):
+            self.notify("No changes.", timeout=2)
+        elif not text.strip():
+            self.notify("The note would be empty. Nothing saved.", timeout=4)
+        else:
+            self._send_edit(pane, detail.id, detail.name, text, detail.etag)
+
+    def _send_edit(
+        self, pane: state.AppPaneState, note_id: str, name: str, text: str, etag: str | None
+    ) -> None:
+        owner = pane.owner
+        self._start(
+            "notewrite",
+            lambda: self._api.edit_artifact(note_id, body=text, principal=owner, if_match=etag),
+            lambda saved: self._note_saved(pane, saved),
+            on_error=lambda exc: self._edit_rejected(pane, note_id, name, text, exc),
+        )
+
+    def _note_saved(self, pane: state.AppPaneState, saved: ArtifactDetail) -> None:
+        self.notify(f"Saved {sanitize_line(saved.name)}.", markup=False, timeout=3)
+        if pane is self.pane:
+            if pane.note_id == saved.id:
+                self._got_note(pane, saved.id, saved)
+            self._want("apps")
+
+    def _edit_rejected(
+        self, pane: state.AppPaneState, note_id: str, name: str, text: str, exc: Exception
+    ) -> bool:
+        if isinstance(exc, ArtifactConflictError):
+            self._edit_conflict(pane, note_id, name, text, exc)
+            return False
+        return self._note_write_failed("save the note", exc)
+
+    def _edit_conflict(
+        self,
+        pane: state.AppPaneState,
+        note_id: str,
+        name: str,
+        text: str,
+        exc: ArtifactConflictError,
+    ) -> None:
+        """The note changed since it was read (412). As ``pepper notes edit`` does: the user's
+        text is saved beside the working directory, the diff is shown, and three choices follow."""
+        saved, save_error = note_edit.save_conflict_copy(name, exc.current_etag, text)
+        if saved is not None:
+            where = f"Your text is saved at {sanitize_line(saved)}."
+        else:
+            where = f"{sanitize_line(save_error or '')} Your text is in the diff below."
+        report = Text()
+        report.append("That note has changed since you read it.\n", style="bold")
+        report.append(f"{where}\n\n")
+        report.append(note_edit.note_diff(exc.current_body or "", text))
+        etag = exc.current_etag
+
+        def chosen(choice: str | None) -> None:
+            if pane is not self.pane or choice not in ("reopen", "overwrite"):
+                kept = f" Your text is kept at {sanitize_line(saved)}." if saved else ""
+                self.notify(f"Not saved.{kept}", markup=False, timeout=5)
+                return
+            if choice == "overwrite":
+                self._send_edit(pane, note_id, name, text, etag)
+                return
+            reopened = self._run_editor(text, "edit")
+            if reopened is None:
+                return
+            if not reopened.strip():
+                self.notify("The note would be empty. Nothing saved.", timeout=4)
+                return
+            self._send_edit(pane, note_id, name, reopened, etag)
+
+        picker = PickerScreen(
+            "Save your edit?",
+            [
+                ("reopen", "Re-open the editor on your text, against the new version"),
+                ("overwrite", "Overwrite the new version with your text"),
+                ("quit", "Quit (your text stays saved)"),
+            ],
+        )
+        self.push_screen(InfoScreen(report), lambda _: self.push_screen(picker, chosen))
+
+    def on_pane_scroll_delete_note(self, _event: PaneScroll.DeleteNote) -> None:
+        pane = self.pane
+        if (target := self._note_target()) is None or pane is None:
+            return
+        note_id, name = target
+        label = sanitize_line(name) or "this note"
+        self.push_screen(
+            ConfirmScreen(f"Delete {label}?"),
+            lambda yes: self._delete_note(pane, note_id, label) if yes else None,
+        )
+
+    def _delete_note(self, pane: state.AppPaneState, note_id: str, label: str) -> None:
+        if pane is not self.pane or self._write_busy():
+            return
+        owner = pane.owner
+        self._start(
+            "notewrite",
+            lambda: self._api.delete_artifact(note_id, principal=owner),
+            lambda _name: self._note_deleted(pane, note_id, label),
+            on_error=lambda exc: self._note_write_failed("delete the note", exc),
+        )
+
+    def _note_deleted(self, pane: state.AppPaneState, note_id: str, label: str) -> None:
+        self.notify(f"Deleted {label}.", markup=False, timeout=3)
+        if pane is not self.pane:
+            return
+        if pane.note_id == note_id:
+            self._end_note()
+        pane.notes = [n for n in pane.notes or [] if n.id != note_id]
+        pane.selected = state.settle_selection(state.pane_rows(pane), pane.selected)
+        self._render_pane(reset=True)
+        self.refresh_chrome()
+        self._want("apps")
+
+    def on_pane_scroll_tick(self, _event: PaneScroll.Tick) -> None:
+        pane = self.pane
+        if pane is None or pane.slug != "notes" or pane.note is None or self._write_busy():
+            return
+        items = state.checklist_items(pane.note.body)
+        if not items:
+            self.notify("This note has no checklist.", timeout=2)
+        elif len(items) == 1:
+            self._tick(pane, items[0])
+        else:
+            self.push_screen(
+                PickerScreen("Tick which line?", [(str(i.index), i.label) for i in items]),
+                lambda picked: self._tick(pane, items[int(picked)]) if picked is not None else None,
+            )
+
+    def _tick(self, pane: state.AppPaneState, item: state.ChecklistItem) -> None:
+        note_id = pane.note_id
+        if pane is not self.pane or note_id is None or self._write_busy():
+            return
+        owner = pane.owner
+        self._start(
+            "notewrite",
+            lambda: self._api.toggle_checklist(
+                note_id,
+                index=item.index,
+                checked=not item.checked,
+                text=item.text,
+                occurrence=item.occurrence,
+                matches=item.matches,
+                principal=owner,
+            ),
+            lambda detail: self._ticked(pane, note_id, detail),
+            on_error=lambda exc: self._tick_failed(pane, note_id, exc),
+        )
+
+    def _ticked(
+        self, pane: state.AppPaneState, note_id: str, detail: ArtifactDetail | None
+    ) -> None:
+        if pane is not self.pane:
+            return
+        if detail is not None:
+            self._got_note(pane, note_id, detail)
+        else:
+            self._reread_note()
+        self._want("apps")
+
+    def _tick_failed(self, pane: state.AppPaneState, note_id: str, exc: Exception) -> bool:
+        """A refused tick (409: the line has gone) says why, then the note is read again."""
+        self._note_write_failed("tick the line", exc)
+        if pane is self.pane and pane.note_id == note_id:
+            self._reread_note()
+        return False
+
+    def _reread_note(self) -> None:
+        """Read the open note again now, dropping a read that began before the write."""
+        self._loops["note"].generation += 1
+        self._read_note()
 
     # ------------------------------------------------------------------ Pepper turns (§6.5)
 

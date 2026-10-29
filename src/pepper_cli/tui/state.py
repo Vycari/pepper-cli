@@ -1672,6 +1672,47 @@ def checklist_lines(body: str | None) -> list[tuple[int, bool, str]]:
     return out
 
 
+@dataclass(frozen=True)
+class ChecklistItem:
+    """One task line as ``POST /artifacts/{id}/toggle`` names it: by its text, which of the
+    identically worded lines it is (``occurrence``) and how many read that way (``matches``).
+    ``index`` is its place among the task lines. Mirrors ``checklist_items`` on the server."""
+
+    index: int
+    checked: bool
+    text: str
+    occurrence: int
+    matches: int
+
+    @property
+    def label(self) -> str:
+        return f"{'☑' if self.checked else '☐'} {self.text}"
+
+
+def checklist_items(body: str | None) -> list[ChecklistItem]:
+    """The note's task lines with what a tick needs to name each (the server's own shape)."""
+    parsed = [(checked, text) for _number, checked, text in checklist_lines(body)]
+    totals: dict[str, int] = {}
+    for _checked, text in parsed:
+        totals[text] = totals.get(text, 0) + 1
+    seen: dict[str, int] = {}
+    items: list[ChecklistItem] = []
+    for index, (checked, text) in enumerate(parsed):
+        items.append(ChecklistItem(index, checked, text, seen.get(text, 0), totals[text]))
+        seen[text] = seen.get(text, 0) + 1
+    return items
+
+
+def split_new_note(text: str) -> tuple[str, str] | None:
+    """What the editor returned for a new note: the first non-blank line is the title and the
+    rest is the body. ``None`` for an empty result (nothing but whitespace)."""
+    lines = text.splitlines()
+    for number, line in enumerate(lines):
+        if line.strip():
+            return line.strip(), "\n".join(lines[number + 1 :]).strip()
+    return None
+
+
 def draw_checklist(body: str) -> str:
     """``body`` with each checklist box drawn as ``☐`` / ``☑`` (only on the lines the server
     counts, so a box inside a code fence stays as typed)."""

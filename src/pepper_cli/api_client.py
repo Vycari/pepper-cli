@@ -3643,6 +3643,50 @@ class ApiClient:
             ) from exc
         return _artifact_detail_from_dict(resp["artifact"])
 
+    def toggle_checklist(
+        self,
+        artifact_id: str,
+        *,
+        index: int,
+        checked: bool,
+        text: str,
+        occurrence: int,
+        matches: int,
+        principal: str | None = None,
+    ) -> ArtifactDetail | None:
+        """``POST /api/v1/artifacts/{id}/toggle`` — tick or untick one checklist line.
+
+        The line is named by what it says, not where it sat: ``text`` is its text,
+        ``occurrence`` which of the identically worded lines it is and ``matches`` how many
+        read that way (``state.checklist_items`` builds all three from a body). ``checked`` is
+        the state to set, not the state it was in. The server does the flip under the row
+        lock, so an edit to another line made in the meantime survives. ``principal`` is a
+        room's id for a room's note.
+
+        A 409 means the note no longer has that line (or the set of identical lines changed);
+        it raises :class:`ApiError` with the server's own sentence in ``detail``, to be shown
+        as it is, and the caller re-reads. Returns the note as the write left it, or ``None``
+        when the server sent none.
+        """
+        # MIRROR: src/pepper/api/artifacts.py::ArtifactToggleResponse
+        params: dict[str, Any] = {}
+        if principal is not None:
+            params["principal"] = principal
+        resp = self._request(
+            "POST",
+            f"/api/v1/artifacts/{artifact_id}/toggle",
+            json={
+                "index": index,
+                "checked": checked,
+                "text": text,
+                "occurrence": occurrence,
+                "matches": matches,
+            },
+            params=params or None,
+        ).json()
+        artifact = resp.get("artifact") if isinstance(resp, dict) else None
+        return _artifact_detail_from_dict(artifact) if isinstance(artifact, dict) else None
+
     def delete_artifact(
         self, artifact_id: str, *, principal: str | None = None, app: str = "notes"
     ) -> str:

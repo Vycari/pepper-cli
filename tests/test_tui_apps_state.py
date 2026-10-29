@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from pepper_cli import api_client
 from pepper_cli.tui import rows, state
 from tests import tui_support as ts
@@ -407,3 +409,30 @@ def test_a_turn_finds_its_reply_in_history_by_id_or_as_the_new_assistant_row() -
 
 def test_an_ask_is_not_also_labelled_from_request() -> None:
     assert state.todo_source_label(_todo("1", source="request")) == ""
+
+
+def test_checklist_items_name_each_line_by_text_occurrence_and_matches() -> None:
+    body = "- [ ] milk\n- [x] eggs\n```\n- [ ] in code\n```\n* [X] milk\n+ [ ] bread\nplain\n"
+    items = state.checklist_items(body)
+    assert [(i.index, i.checked, i.text, i.occurrence, i.matches) for i in items] == [
+        (0, False, "milk", 0, 2),
+        (1, True, "eggs", 0, 1),
+        (2, True, "milk", 1, 2),
+        (3, False, "bread", 0, 1),
+    ]
+    assert [i.label for i in items] == ["☐ milk", "☑ eggs", "☑ milk", "☐ bread"]
+    assert state.checklist_items(None) == []
+
+
+@pytest.mark.parametrize(
+    ("typed", "expected"),
+    [
+        ("Title\n\nBody line\nmore\n", ("Title", "Body line\nmore")),
+        ("\n \n  Padded title  \nbody", ("Padded title", "body")),
+        ("Only a title", ("Only a title", "")),
+        ("", None),
+        ("  \n\t\n", None),
+    ],
+)
+def test_split_new_note_takes_the_first_non_blank_line_as_the_title(typed, expected) -> None:
+    assert state.split_new_note(typed) == expected

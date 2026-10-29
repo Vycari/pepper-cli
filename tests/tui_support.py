@@ -329,6 +329,13 @@ class FakeServer:
     note_details: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: Each todo write received (``POST`` create / done / dismiss / reopen): path and JSON body.
     todo_writes: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    #: Note writes in arrival order: ``(route, principal, JSON body, If-Match)``, where the route
+    #: is ``new``, ``edit``, ``toggle`` or ``delete``.
+    note_writes: list[tuple[str, str | None, dict[str, Any], str | None]] = field(
+        default_factory=list
+    )
+    #: Answer the next note write with this ``(status, detail)`` instead of applying it.
+    note_write_error: tuple[int, str] | None = None
     clock: int = 0
     rev: int = 1
     requests: list[tuple[str, str, dict[str, str]]] = field(default_factory=list)
@@ -716,6 +723,11 @@ class FakeServer:
         if path == "/api/v1/artifacts":
             rows = self.notes.get(query.get("principal", ""), [])
             return httpx.Response(200, json={"truncated": self.notes_truncated, "items": rows})
+        if request.method == "POST" and (
+            path in ("/api/v1/artifacts/new", "/api/v1/apps/notes/actions/delete")
+            or (parts[:3] == ["api", "v1", "artifacts"] and parts[-1] in ("edit", "toggle"))
+        ):
+            return self._note_write(request, parts, query)
         if parts[:3] == ["api", "v1", "artifacts"] and parts[-1:] == ["detail"]:
             detail = self.note_details.get(parts[3])
             if detail is None:
@@ -743,6 +755,73 @@ class FakeServer:
         if parts[:3] == ["api", "v1", "groups"] and len(parts) == 4:
             return httpx.Response(200, json=self._room_info(parts[3]))
         return httpx.Response(404, json={"detail": f"unmocked {request.method} {path}"})
+
+    def _note_write(
+        self, request: httpx.Request, parts: list[str], query: dict[str, str]
+    ) -> httpx.Response:
+        """``new``, ``edit``, ``toggle`` and ``delete`` of a note, applied to the stored rows."""
+        body = json.loads(request.content)
+        route = "delete" if parts[-1] == "delete" else parts[-1]
+        principal = query.get("principal")
+        match = request.headers.get("If-Match")
+        self.note_writes.append((route, principal, body, match))
+        if self.note_write_error is not None:
+            status, detail = self.note_write_error
+            self.note_write_error = None
+            return httpx.Response(status, json={"detail": detail})
+        rows = self.notes.setdefault(principal or "", [])
+        if route == "new":
+            nid = f"n-new-{len(self.note_writes)}"
+            row = note_item(nid, body["name"], "2026-10-28T12:00:00+00:00")
+            rows.append(row)
+            self.note_details[nid] = {
+                **row,
+                "shared": principal is not None,
+                "body": body["body"],
+            }
+            return httpx.Response(200, json={"id": nid, "name": body["name"], "etag": row["etag"]})
+        note_id = body["params"]["id"] if route == "delete" else parts[3]
+        detail = self.note_details.get(note_id)
+        if detail is None:
+            return httpx.Response(404, json={"detail": "not found"})
+        if route == "delete":
+            self.notes[principal or ""] = [r for r in rows if r["id"] != note_id]
+            return httpx.Response(200, json={"result": {"name": detail["name"]}})
+        if route == "edit":
+            if match is not None and match != detail["etag"]:
+                return httpx.Response(
+                    412,
+                    json={
+                        "detail": "stale",
+                        "body": detail["body"],
+                        "etag": detail["etag"],
+                        "updated_at": detail["updated_at"],
+                    },
+                )
+            self._store_body(detail, body["body"], rows)
+        else:
+            lines = detail["body"].split("\n")
+            for number, line in enumerate(lines):
+                if line.lstrip("-* ").startswith(("[ ] " + body["text"], "[x] " + body["text"])):
+                    box = "[x]" if body["checked"] else "[ ]"
+                    lines[number] = line.replace("[ ]", box, 1).replace("[x]", box, 1)
+                    break
+            else:
+                return httpx.Response(
+                    409, json={"detail": "that note has changed — reload to see it as it is now."}
+                )
+            self._store_body(detail, "\n".join(lines), rows)
+        return httpx.Response(200, json={"id": note_id, "artifact": detail})
+
+    @staticmethod
+    def _store_body(detail: dict[str, Any], text: str, rows: list[dict[str, Any]]) -> None:
+        """A write landed: a new body, a new etag (``…-1`` becomes ``…-2``), on detail and row."""
+        stem, _, version = detail["etag"].strip('"').rpartition("-")
+        detail["body"] = text
+        detail["etag"] = f'"{stem}-{int(version) + 1}"'
+        for row in rows:
+            if row["id"] == detail["id"]:
+                row["etag"] = detail["etag"]
 
     def client(self) -> api_client.ApiClient:
         return api_client.ApiClient(

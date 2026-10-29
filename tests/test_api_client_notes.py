@@ -449,3 +449,70 @@ def test_delete_artifact_sends_the_principal_when_given() -> None:
         api.delete_artifact(_NID, principal=_GID)
 
     assert seen["params"] == {"principal": _GID}
+
+
+def test_toggle_checklist_names_the_line_by_its_text_and_passes_the_room() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"], seen["path"] = request.method, request.url.path
+        seen["params"] = dict(request.url.params)
+        seen["body"] = json.loads(request.content)
+        artifact = {
+            "id": _NID,
+            "name": "Packing",
+            "kind": "inline_text",
+            "updated_at": "2026-10-28T10:00:00+00:00",
+            "etag": "e2",
+            "shared": True,
+            "body": "- [x] milk\n",
+        }
+        return httpx.Response(200, json={"id": _NID, "artifact": artifact})
+
+    with _client(handler) as api:
+        detail = api.toggle_checklist(
+            _NID, index=2, checked=True, text="milk", occurrence=1, matches=2, principal=_GID
+        )
+
+    assert (seen["method"], seen["path"]) == ("POST", f"/api/v1/artifacts/{_NID}/toggle")
+    assert seen["params"] == {"principal": _GID}
+    assert seen["body"] == {
+        "index": 2,
+        "checked": True,
+        "text": "milk",
+        "occurrence": 1,
+        "matches": 2,
+    }
+    assert detail is not None
+    assert (detail.etag, detail.body) == ("e2", "- [x] milk\n")
+
+
+def test_toggle_checklist_for_your_own_note_sends_no_principal_and_tolerates_no_artifact() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(200, json={"id": _NID, "artifact": None})
+
+    with _client(handler) as api:
+        detail = api.toggle_checklist(
+            _NID, index=0, checked=False, text="a", occurrence=0, matches=1
+        )
+
+    assert seen["params"] == {}
+    assert detail is None
+
+
+def test_toggle_checklist_409_carries_the_servers_sentence() -> None:
+    sentence = "that note has changed — reload to see it as it is now."
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(409, json={"detail": sentence})
+
+    with _client(handler) as api:
+        try:
+            api.toggle_checklist(_NID, index=0, checked=True, text="a", occurrence=0, matches=1)
+        except api_client.ApiError as exc:
+            assert (exc.status, exc.detail) == (409, sentence)
+        else:
+            raise AssertionError("expected a 409")

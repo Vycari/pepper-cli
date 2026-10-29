@@ -19,7 +19,7 @@ import sys
 
 import pytest
 
-from pepper_cli import api_client, cli, credentials
+from pepper_cli import api_client, cli, credentials, note_edit
 from pepper_cli.secret import SecretStr
 
 _GID_TRIP = "00000000-0000-0000-0000-0000000000a1"
@@ -1015,7 +1015,7 @@ def test_notes_edit_conflict_copy_falls_back_to_the_temp_dir(
     fallback = tmp_path / "tmpdir"
     fallback.mkdir()
     monkeypatch.chdir(cwd)
-    monkeypatch.setattr(cli, "_conflict_fallback_dir", lambda: str(fallback))
+    monkeypatch.setattr(note_edit, "conflict_fallback_dir", lambda: str(fallback))
     real_open = os.open
 
     def refuse_cwd(path, flags, mode=0o777, **kwargs):
@@ -1047,7 +1047,7 @@ def test_notes_edit_conflict_copy_write_failure_falls_back_and_keeps_the_flow(
     fallback = tmp_path / "tmpdir"
     fallback.mkdir()
     monkeypatch.chdir(cwd)
-    monkeypatch.setattr(cli, "_conflict_fallback_dir", lambda: str(fallback))
+    monkeypatch.setattr(note_edit, "conflict_fallback_dir", lambda: str(fallback))
     real_fdopen = os.fdopen
     cwd_fds: set[int] = set()
     real_open = os.open
@@ -1101,7 +1101,7 @@ def _refuse_every_conflict_copy(monkeypatch, tmp_path) -> None:
     fallback = tmp_path / "tmpdir"
     fallback.mkdir()
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "_conflict_fallback_dir", lambda: str(fallback))
+    monkeypatch.setattr(note_edit, "conflict_fallback_dir", lambda: str(fallback))
     real_open = os.open
 
     def refuse_copies(path, flags, mode=0o777, **kwargs):
@@ -1182,7 +1182,7 @@ def test_conflict_fallback_dir_is_the_temp_dir_on_posix(monkeypatch) -> None:
 
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(tempfile, "gettempdir", lambda: "/shared/tmp")
-    assert cli._conflict_fallback_dir() == "/shared/tmp"
+    assert note_edit.conflict_fallback_dir() == "/shared/tmp"
 
 
 def test_conflict_fallback_dir_on_windows_is_per_user_not_temp(monkeypatch, tmp_path) -> None:
@@ -1194,7 +1194,7 @@ def test_conflict_fallback_dir_on_windows_is_per_user_not_temp(monkeypatch, tmp_
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("LOCALAPPDATA", str(local))
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(shared))
-    assert cli._conflict_fallback_dir() == str(local / "pepper")
+    assert note_edit.conflict_fallback_dir() == str(local / "pepper")
     assert (local / "pepper").is_dir()
     assert not shared.exists()
 
@@ -1204,7 +1204,7 @@ def test_conflict_fallback_dir_on_windows_without_localappdata_uses_the_profile(
 ) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.delenv("LOCALAPPDATA", raising=False)
-    assert cli._conflict_fallback_dir() == str(tmp_home / "AppData" / "Local" / "pepper")
+    assert note_edit.conflict_fallback_dir() == str(tmp_home / "AppData" / "Local" / "pepper")
 
 
 def test_conflict_fallback_dir_on_windows_ignores_a_relative_localappdata(
@@ -1212,7 +1212,7 @@ def test_conflict_fallback_dir_on_windows_ignores_a_relative_localappdata(
 ) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("LOCALAPPDATA", "relative\\dir")
-    assert cli._conflict_fallback_dir() == str(tmp_home / "AppData" / "Local" / "pepper")
+    assert note_edit.conflict_fallback_dir() == str(tmp_home / "AppData" / "Local" / "pepper")
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: real %LOCALAPPDATA% fallback")
@@ -1503,7 +1503,7 @@ def test_notes_edit_conflict_dir_env_uncreatable_falls_back_to_the_temp_dir(
     fallback = tmp_path / "tmpdir"
     fallback.mkdir()
     monkeypatch.setenv("PEPPER_CONFLICT_DIR", str(blocker / "sub"))
-    monkeypatch.setattr(cli, "_conflict_fallback_dir", lambda: str(fallback))
+    monkeypatch.setattr(note_edit, "conflict_fallback_dir", lambda: str(fallback))
     _login(tmp_home)
     patch_api(detail=_detail(name="Packing list", body="old\n", etag="stale1"), edit=_conflict())
     monkeypatch.setattr(cli, "_open_in_editor", lambda initial: "mine text\n")
@@ -1523,7 +1523,7 @@ def test_notes_edit_conflict_dir_env_unknown_user_falls_back_to_the_temp_dir(
     fallback = tmp_path / "tmpdir"
     fallback.mkdir()
     monkeypatch.setenv("PEPPER_CONFLICT_DIR", "~pepper-no-such-user-xyzzy/copies")
-    monkeypatch.setattr(cli, "_conflict_fallback_dir", lambda: str(fallback))
+    monkeypatch.setattr(note_edit, "conflict_fallback_dir", lambda: str(fallback))
     _login(tmp_home)
     patch_api(detail=_detail(name="Packing list", body="old\n", etag="stale1"), edit=_conflict())
     monkeypatch.setattr(cli, "_open_in_editor", lambda initial: "mine text\n")

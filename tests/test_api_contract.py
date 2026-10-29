@@ -147,6 +147,11 @@ NOT_CHECKABLE: dict[tuple[str, str], NotCheckable] = {
         "answer only as an open object (``additionalProperties: true``, no properties to "
         "check against), and its items are stored documents, not TodoEntry rows.",
     ),
+    ("api_client.py", "src/pepper/api/artifacts.py::ArtifactToggleResponse"): NotCheckable(
+        "Names the response model of ``ApiClient.toggle_checklist``, which parses its "
+        "``artifact`` field (an open object, the same ``read_detail`` dict as ArtifactDetail) "
+        "rather than mapping a dataclass; the request body is spelled out in the method.",
+    ),
     ("api_client.py", "src/pepper/agent/artifacts/applet.py::read_detail"): NotCheckable(
         "Names the function behind the artifact detail route (ArtifactDetail), which answers "
         f"a bare JSONResponse. {_UNTYPED}",
