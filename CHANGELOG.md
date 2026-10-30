@@ -4,10 +4,12 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (while 0.x, a minor bump may change flags or output).
 
-## Unreleased
+## 0.7.0 — 2026-10-30
 
-The terminal UI no longer decides what is unread: it shows the server's `unread` rows
-(read-state-sync phase 5c, tracked by Vycari/groups#274).
+The terminal UI gets Todos and Notes panes, for a room and for you, with writes; `pepper todos`
+commands take the number from the last listing; and the TUI no longer decides what is unread, it
+shows the server's `unread` rows (read-state-sync phase 5c, tracked by Vycari/groups#274). Every PR
+merged since 0.6.0 is listed below.
 
 Upgrade notes:
 
@@ -16,8 +18,46 @@ Upgrade notes:
   read as of its last activity.
 - A server without `GET /api/v1/groups/unread` (older than read-state-sync phase 5b) shows no
   unread markers at all, where the local rule used to light them.
+- `pepper todos list` and `pepper next` now save their numbered rows next to the credentials
+  (`todos-view.json`); `logout` and `login` remove the file.
+- The TUI checks for a newer `vycari-pepper` in the background (cached for 24 hours). Set
+  `PEPPER_NO_UPDATE_CHECK=1` to turn it off.
 
 ### Added
+
+- TUI Todos and Notes panes for a room (P1a, #163, design in `planning/tui-room-todos-notes.md`):
+  press `a` in a room, or type `/todo` or `/notes` in its composer, and Todos or Notes opens in
+  place of the thread, re-read every 30 seconds. Up/Down and Enter open a todo's details, fold the
+  Closed list or open a note; Esc goes back. `m` keeps only the todos asked of you, `r` reads
+  again, `o` opens a todo's source link or a note's first link. Any other app opens in the
+  browser.
+- TUI panes for your own Todos and Notes, and the Pepper reply strip (P1b, #167): Todos and Notes
+  rows above Pepper in the sidebar (also `/todo` and `/notes` in the Pepper chat's composer, and
+  Ctrl+K). Your Todos list each of your rooms' open items in a section per room under your own,
+  and fold every closed item into one Closed list. The Pepper composer stays under the pane;
+  what you send is an ordinary turn that tells Pepper which app, and which open note, is on
+  screen, and the last two exchanges show in a strip at the foot of the pane.
+- TUI todo actions (P2, #173): in a Todos pane `space` or `x` marks the selected todo done, `d`
+  dismisses it, `u` reopens a closed one, and `n` adds one: a title, then an optional due date
+  (`YYYY-MM-DD`, or `YYYY-MM-DD HH:MM` in your local zone on your own list; a bare day in a
+  room). In a room's Todos, `n` then offers a member to ask. On your own Todos a row in a room's
+  section writes to that room, and `n` always adds to your own list. The row shows `…` until the
+  server answers, and a failure puts it back and says why.
+- TUI note writes (P3, #180): in a Notes pane, your own or a room's, `c` writes a new note (the
+  first non-blank line is its title), `e` edits the selected or open note in `$VISUAL`/`$EDITOR`
+  (`vi` if neither is set), `D` deletes after a confirmation, and Space ticks or unticks a
+  checklist line of the open note (a picker when there are several). An edit is saved against the
+  version you read; if the note changed meanwhile, your text is saved to a `.mine.md` file as
+  `pepper notes edit` does, you see the difference, and you choose to re-open the editor,
+  overwrite, or quit.
+- Numbered todos (#140): `pepper todos list` numbers its rows and remembers them per profile, so
+  `pepper todos done|reopen|dismiss|edit 3` acts on the third todo you just saw instead of a
+  pasted UUID. `pepper next` saves its numbers too. A bad number exits 2 before any request; a
+  full UUID works as before.
+- TUI update notification (#80, fixes #79): when PyPI (or, for a git install, GitHub) has a newer
+  release, an `F10 Update` action appears in the footer. It asks for confirmation (the default
+  answer is No), exits the TUI, and on a `uv tool` install other than on Windows runs
+  `uv tool upgrade vycari-pepper`; with `pipx`, `pip` or on Windows it prints the command to run.
 
 - Agent skill: an agent token can also run `notes list|search|show|edit --room <room>` on the
   text notes of a room it belongs to (pepper#5537); the guide now lists seventeen commands, keeps
@@ -55,6 +95,25 @@ Upgrade notes:
   being asked on every poll, and the room list's ETag is kept so unchanged polls are 304 again
   (#154).
 
+### Fixed
+
+- The TUI ignores a queued scroll message once the thread is gone, which fixes an intermittent
+  `NoMatches: 'ThreadView'` at teardown (#146, fixes #139).
+- Error lines no longer hard-wrap at the terminal width, so a long credentials path cannot split
+  `Run 'pepper login' first.` and break a copied command (#150, fixes #108).
+- Quitting the TUI no longer waits for a slow background release lookup; it stops the remaining
+  lookups and drops a late result (#162, fixes #160).
+- A Pepper DM turn whose stream dropped now takes the first assistant reply created after its own
+  user row and in the same trajectory, instead of any new assistant row, which could be a reply to
+  another device or a proactive message. It does not guess when it cannot find that row (#170,
+  fixes #168).
+- `agents claude-channel serve` waits up to 5 seconds for the worker's exit code after pushing
+  `ended`, so a session that closes stdin on `ended` no longer sees 0 where the worker meant 2
+  (refused cursor file) or 1 (auth failure) (#172, fixes #159).
+- Opening Todos or Notes for a room whose topics are all archived now moves the conversation to
+  that room, so the header, the sidebar marker and Esc agree. Esc lands in the room's empty
+  thread, and a send there is refused with a notice and keeps the draft (#178, fixes #165).
+
 ### Removed
 
 - `ApiClient.get_group_read_state`, `GroupReadState` and the read-mark fetch pool; the poller no
@@ -69,6 +128,8 @@ Upgrade notes:
   A parametrized claude-channel test now has fixed ids, since xdist needs every worker to collect
   identical ones; the TUI's worker-to-UI hop no longer raises a cancelled-future error when the
   app closes mid-call.
+- The release workflow also creates a GitHub Release with the dist files and generated notes when
+  a tag is published (#80).
 
 ## 0.6.0 — 2026-10-26
 
