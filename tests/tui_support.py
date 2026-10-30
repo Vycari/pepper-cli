@@ -41,6 +41,12 @@ TOPIC_B1 = "00000000-0000-0000-0000-0000000000b3"
 
 APP_ROUTES = ("apps", "todos")
 
+#: How long a fake-server gate holds a request before giving up. Tests always release a gate
+#: they set; this only bounds a hang. It must outlast a loaded runner (4 xdist workers on 4
+#: cores with coverage took well over 10 seconds between a test setting a gate and releasing it,
+#: and the request then answered early and failed the test).
+GATE_TIMEOUT = 30
+
 
 async def until(pilot, condition: Callable[[], bool], *, seconds: float = 5.0) -> None:
     deadline = asyncio.get_running_loop().time() + seconds
@@ -350,7 +356,7 @@ class FakeServer:
             self.posts.append({**body, "key": request.headers.get("Idempotency-Key")})
         gate = self.gates.get(keyed) or self.gates.get(path)
         if gate is not None:
-            gate.wait(timeout=10)
+            gate.wait(timeout=GATE_TIMEOUT)
         for prefix, exc in list(self.raise_on.items()):
             if path.startswith(prefix) or keyed.startswith(prefix):
                 raise exc
@@ -631,7 +637,7 @@ class FakeServer:
             stored = False
             for i, (kind, payload) in enumerate(script.frames):
                 if (gate := script.gates.get(i)) is not None:
-                    gate.wait(timeout=10)
+                    gate.wait(timeout=GATE_TIMEOUT)
                 if kind in ("reply", "error") and not stored:
                     # The server stores the turn before its terminal frame, and the client
                     # stops reading at that frame.
@@ -654,7 +660,7 @@ class FakeServer:
         def body() -> Any:
             for i, frame in enumerate(script.frames):
                 if (gate := script.gates.get(i)) is not None:
-                    gate.wait(timeout=10)
+                    gate.wait(timeout=GATE_TIMEOUT)
                 yield frame
             if script.hold is not None:
                 script.hold.wait(timeout=10)
