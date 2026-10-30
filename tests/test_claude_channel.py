@@ -1060,6 +1060,9 @@ def _scoped_cursor_file(path: Path, cursor: int) -> Path:
         (_event(4, created=_now() - timedelta(hours=2)), "backlog"),
         (_event(4, kind="some.new.kind"), "resync"),
     ],
+    # Stable ids: the frames embed a wall-clock timestamp, and xdist needs every worker to
+    # collect identical test ids.
+    ids=["backlog", "resync"],
 )
 def test_a_restart_before_a_pending_notice_is_pushed_still_owes_it(
     monkeypatch, tmp_path, event, notice

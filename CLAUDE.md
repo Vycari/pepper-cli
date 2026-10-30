@@ -27,8 +27,8 @@ uv sync --extra dev
 uv run ruff format --check
 uv run ruff check
 uv run ty check src/pepper_cli/
-uv run pytest
-uv run pytest --cov --cov-report=json:coverage-summary.json   # what CI runs
+uv run pytest -n auto                                            # parallel; plain `uv run pytest` runs one process
+uv run pytest -n auto --cov --cov-report=json:coverage-summary.json   # what CI runs
 ```
 
 ## Rules that matter here

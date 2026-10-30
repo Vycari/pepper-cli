@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import subprocess
 
 import pytest
@@ -345,3 +346,18 @@ async def test_update_result_after_quit_is_dropped(monkeypatch) -> None:
         assert app.update_version is None
     finally:
         release.set()
+
+
+@pytest.mark.parametrize(
+    "closing", [RuntimeError, concurrent.futures.CancelledError], ids=["loop-gone", "cancelled"]
+)
+def test_a_post_racing_the_loop_closing_is_dropped(monkeypatch, closing) -> None:
+    # Not quitting yet, so _post reaches call_from_thread; the loop closes under it.
+    app = tui_app.PepperApp(ts.standard_server().client(), live=False)
+
+    def call_from_thread(*_args):
+        raise closing
+
+    monkeypatch.setattr(app, "call_from_thread", call_from_thread)
+    assert not app._quitting
+    app._post(lambda: None)

@@ -62,7 +62,7 @@ jobs:
       # also how the suite runs at all — there is no separate test step, so a test failure fails
       # here rather than being masked by the gate below.
       - name: Test and measure coverage
-        run: uv run --no-sync pytest --cov --cov-report=json:coverage-summary.json
+        run: uv run --no-sync pytest -n auto --cov --cov-report=json:coverage-summary.json
 
       # coverage.py's JSON is not the summary contract; the adapter rewrites it to
       # {"metric": "lines", "percent": N}. Vendored under .claude/maintainerd/ so CI runs it
@@ -109,7 +109,7 @@ jobs:
         run: uv sync --frozen --extra dev
 
       - name: Test
-        run: uv run --no-sync pytest
+        run: uv run --no-sync pytest -n auto
 
   # Markdown lint over the whole tree. Config, and the reason each rule is off, are in
   # .markdownlint-cli2.jsonc.
