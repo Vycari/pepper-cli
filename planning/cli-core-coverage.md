@@ -227,7 +227,7 @@ listed under Breaking in the CHANGELOG (§9).
   `todos assign`. `dash do` and `dash dismiss` do too, because a mistyped card number would act on
   the wrong card.
 - **No hand edits to the contract snapshot.** `contracts/api-v1.openapi.json` is refreshed by the
-  sync workflow only (`CLAUDE.md`).
+  sync workflow only (`AGENTS.md`).
 - **Server first, then the snapshot refresh, then the CLI.** `tests/test_api_contract.py` checks
   every `# MIRROR:` field against the snapshot, so a CLI PR that mirrors a new server field merges
   only after the server change is deployed and synced. On `proto` the snapshot carries the

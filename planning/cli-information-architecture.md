@@ -343,7 +343,7 @@ today); **S** needs a server change (or verification first); **N** a room is not
 | 10 | `whoami` returns 401 for agent tokens, so `whoami --json` cannot be the agent login check | note only |
 | 11 | Research project routes, personal and room, with receipts, iterations, report and flag-off codes. Still open: the schedule-detach route path, an iteration id on report changelog entries, the pressing member on iterations, and the `web-research` default skill (`planning/research-projects.md` §10) | pepper `planning/research-projects-api.md` (pepper#5028) |
 
-Order per `CLAUDE.md`: server lands → weekly snapshot refresh of `contracts/api-v1.openapi.json`
+Order per `AGENTS.md`: server lands → weekly snapshot refresh of `contracts/api-v1.openapi.json`
 (never hand-edited) → CLI.
 
 ## 7. Compatibility: a hard break in 0.2.0

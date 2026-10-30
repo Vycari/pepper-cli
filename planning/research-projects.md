@@ -65,7 +65,7 @@ defines them: personal under `/api/v1/research-projects` (its §5.2) and the sam
 `/api/v1/groups/{gid}/research-projects` for a room (its §5.7). Below, `…/{pid}` means either prefix.
 Where that doc does not yet answer something this one needs, the requirement is marked **(open on
 the server)** in §10. The CLI phases (§12) start only after the routes are deployed and the weekly
-refresh has put them in `contracts/api-v1.openapi.json` (`CLAUDE.md`: server, then snapshot, then CLI).
+refresh has put them in `contracts/api-v1.openapi.json` (`AGENTS.md`: server, then snapshot, then CLI).
 
 ### 1.4 Server decisions this doc builds on (pepper#5028, taken 2026-10-20)
 
