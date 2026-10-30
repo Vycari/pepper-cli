@@ -46,3 +46,11 @@ uv run pytest -n auto --cov --cov-report=json:coverage-summary.json   # what CI 
 - The bundled `SKILL.md` documents the commands; change it together with the CLI.
 - Guidelines: `.claude/guidelines/`. Vycari-wide house rules (review, PR template, escalation)
   load from the `vycari-ops` plugin enabled in `.claude/settings.json`.
+
+**Review.** This repo is on first-line review (`review.mode: "first-line"` in
+`.claude/maintainerd.json`): Vycari Review (VR) reviews first, agents answer VR's findings and then
+Greptile's on the capable tier, and agents never request a Greptile review themselves. VR posts
+`@greptileai review` once, when it is happy, and a human may too. Greptile at
+`review.approvalThreshold` is still the merge gate. A `greptile:skip` PR (prose, design docs,
+config) gets neither reviewer and never needs a Greptile review: open it as a draft, label it,
+then mark it ready. The design is `docs/design/vr-first-line-review.md` in `Vycari/vycari`.
