@@ -41,6 +41,14 @@ Upgrade notes:
 - `ReadMarks.seed_first_sight`, the local "activity later than the mark" unread rule, the
   open-topic exception that went with it, and the per-topic mention fetch (`Mentions`) (#145).
 
+### Internal
+
+- The suite runs in parallel with `pytest-xdist` (`pytest -n auto`, in CI and in
+  `.claude/maintainerd.json`), cutting a full local run from about 7 minutes to about 1 (#181).
+  A parametrized claude-channel test now has fixed ids, since xdist needs every worker to collect
+  identical ones; the TUI's worker-to-UI hop no longer raises a cancelled-future error when the
+  app closes mid-call.
+
 ## 0.6.0 — 2026-10-26
 
 The CLI now declares how it renders replies, and the terminal UI follows the person event stream so

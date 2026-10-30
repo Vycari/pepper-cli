@@ -295,7 +295,9 @@ async def test_nothing_is_marked_read_while_the_thread_is_scrolled_up(
         await until(pilot, lambda: (ts.TOPIC_A1, arrived) in server.puts)
 
 
-async def test_a_pin_change_delivered_after_the_thread_is_gone_is_ignored() -> None:
+async def test_a_pin_change_delivered_after_the_thread_is_gone_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The cue can be dispatched during teardown, once the thread is gone (#139): no crash."""
     server = ts.standard_server()
     app = tui_app.PepperApp(server.client())
@@ -303,6 +305,10 @@ async def test_a_pin_change_delivered_after_the_thread_is_gone_is_ignored() -> N
         await until(pilot, lambda: len(app.rooms) == 2)
         app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
         await until(pilot, lambda: app.loaded_topic)
+        # Let the open-topic poll finish first: one delivered after the removal below hits the
+        # missing thread body in the app's worker, which is a different failure than this test
+        # is about (it flaked under a loaded parallel run).
+        await _quiet(pilot, app, monkeypatch)
         await app.thread.remove()
         app.on_thread_view_pin_changed(ThreadView.PinChanged(True))
 

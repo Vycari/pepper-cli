@@ -6,8 +6,8 @@
     "format": "uv run ruff format --check",
     "lint": "uv run ruff check",
     "build": null,
-    "test": "uv run pytest",
-    "coverage": "uv run pytest --cov --cov-report=json:coverage-summary.json",
+    "test": "uv run pytest -n auto",
+    "coverage": "uv run pytest -n auto --cov --cov-report=json:coverage-summary.json",
     "typecheck": "uv run ty check src/pepper_cli/"
   },
   "coverage": {

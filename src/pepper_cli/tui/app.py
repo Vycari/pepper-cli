@@ -30,6 +30,7 @@ it stops trying fallback sources once the app starts closing.
 
 from __future__ import annotations
 
+import concurrent.futures
 import contextlib
 import os
 import threading
@@ -389,11 +390,13 @@ class PepperApp(App[None]):
 
         ``call_from_thread`` raises once the app's event loop is gone, and a worker (above
         all the turn thread) can outlive it. A result that arrives after quit has nowhere
-        to go and nothing waiting on it, so it is dropped rather than raised.
+        to go and nothing waiting on it, so it is dropped rather than raised. The loop can also
+        close between the check above and the call, which cancels the call's future: that is
+        the same "app is closing" answer, not an error in the worker thread.
         """
         if self._quitting:
             return
-        with contextlib.suppress(RuntimeError):
+        with contextlib.suppress(RuntimeError, concurrent.futures.CancelledError):
             self.call_from_thread(callback, *args)
 
     def exit(self, *args: Any, **kwargs: Any) -> None:
