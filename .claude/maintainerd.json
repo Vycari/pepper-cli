@@ -74,13 +74,24 @@
     "requireIssueForDeferredWork": true
   },
   "review": {
+    "mode": "first-line",
     "bots": [
       "greptile-apps[bot]"
     ],
     "approvalThreshold": "5/5",
     "responderTier": "capable",
     "impasseRounds": 2,
-    "sameFileRoundCap": 3
+    "sameFileRoundCap": 3,
+    "skipLabel": "greptile:skip",
+    "rereviewCommand": "@greptileai review",
+    "firstLine": {
+      "bots": ["vycari-review[bot]"],
+      "checkName": "Vycari Review",
+      "checkApp": "vycari-review",
+      "maxRounds": 3,
+      "unavailableMinutes": 45,
+      "disputePrefix": "Disputed:"
+    }
   },
   "release": null
 }
