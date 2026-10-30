@@ -19,7 +19,7 @@
     "designDocs": ["planning/"],
     "productDocs": [
       "README.md",
-      "CLAUDE.md"
+      "AGENTS.md"
     ],
     "changelogDir": null,
     "researchRadarDir": null,

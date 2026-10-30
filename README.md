@@ -613,7 +613,7 @@ uv run ty check src/pepper_cli/
 
 The CLI mirrors the server's `/api/v1` response shapes (see the `# MIRROR:` comments
 in `src/pepper_cli/api_client.py`) and tolerates unknown fields and stream frames.
-`CLAUDE.md` describes the layout for contributors and coding agents.
+`AGENTS.md` describes the layout for contributors and coding agents.
 
 ### API contract
 
