@@ -729,7 +729,8 @@ class PepperApp(App[None]):
                 # by itself. Paused like the topic poll while blurred; focus reads it.
                 if message_id not in self._stale_rows:
                     self._stale_rows.append(message_id)
-                self._run("refresh")
+                if self._loops["refresh"].failures == 0:
+                    self._run("refresh")
                 return
             if kind != "message.created":
                 # An edit, delete or preview changes a row the since-fetch will not return.
