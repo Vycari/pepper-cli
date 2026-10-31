@@ -539,7 +539,7 @@ async def test_a_row_refresh_that_fails_in_transit_is_retried(
 async def test_a_stream_edit_during_a_refresh_backoff_does_not_skip_the_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(state, "BACKOFF_STEPS", (1.0, 1.0, 1.0, 1.0))
+    monkeypatch.setattr(state, "BACKOFF_STEPS", (60.0, 60.0, 60.0, 60.0))
     server = ts.standard_server()
     server.messages[ts.TOPIC_A1].append(
         ts.message("m2", "2026-09-16T17:31:00+00:00", "second flight")
@@ -575,12 +575,15 @@ async def test_a_stream_edit_during_a_refresh_backoff_does_not_skip_the_retry(
             server.raise_on[path] = httpx.ConnectError("down")
             gate_edit.set()
             await until(pilot, lambda: app._loops["refresh"].failures == 1)
+            assert app._loops["refresh"].timer is not None
             gate_second.set()
             await until(pilot, lambda: "m2" in app._stale_rows)
-            await pilot.pause(0.2)
+            assert app._loops["refresh"].failures == 1
+            assert app._loops["refresh"].timer is not None
             ats = [q["at"] for m, _p, q in server.requests if m == "GET" and "at" in q]
             assert ats == ["m1"]  # the armed retry still owns the timer
             server.raise_on.clear()
+            app._run("refresh")  # the armed retry would call this
             await until(pilot, lambda: app.store.rows["m1"].raw_body == "edited")
             await until(pilot, lambda: app.store.rows["m2"].raw_body == "second edited")
             ats = [q["at"] for m, _p, q in server.requests if m == "GET" and "at" in q]
