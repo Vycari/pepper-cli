@@ -1029,14 +1029,17 @@ class PepperApp(App[None]):
         self.store = state.MessageStore()
         self.loaded_topic = False
         self._topic_error = None
-        # A new subject for the topic loop: cancel its timer, and let a request still in
-        # flight for the old topic land as stale rather than block or overwrite this one.
+        # A new subject for the topic and refresh loops: cancel their timers, clear the
+        # previous subject's failures, and let a request still in flight land as stale.
         topic = self._loops["topic"]
         topic.stop_timer()
         topic.failures = 0
         topic.generation += 1
+        refresh = self._loops["refresh"]
+        refresh.stop_timer()
+        refresh.failures = 0
+        refresh.generation += 1
         self._loops["older"].generation += 1
-        self._loops["refresh"].generation += 1
         # A launcher still being read was asked for where the user was: its answer would
         # open a picker or a pane for a place they have left.
         self._loops["shelf"].generation += 1
