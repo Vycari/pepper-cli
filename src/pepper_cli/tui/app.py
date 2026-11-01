@@ -424,7 +424,10 @@ class PepperApp(App[None]):
             # callback queued behind it can find the sidebar still there and the header gone.
             return False
         try:
-            return bool(self.query(Sidebar))
+            if not self.query(Sidebar):
+                return False
+            # A thread on its way out (#177) still answers a query but has no children to paint.
+            return not any(thread.going for thread in self.query(ThreadView))
         except ScreenStackError:
             return False
 
