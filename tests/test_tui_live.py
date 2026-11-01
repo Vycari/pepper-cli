@@ -534,3 +534,106 @@ async def test_a_row_refresh_that_fails_in_transit_is_retried(
             assert len(ats) >= 2 and set(ats) == {"m1"}
     finally:
         hold.set()
+
+
+async def test_a_stream_edit_during_a_refresh_backoff_does_not_skip_the_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(state, "BACKOFF_STEPS", (60.0, 60.0, 60.0, 60.0))
+    server = ts.standard_server()
+    server.messages[ts.TOPIC_A1].append(
+        ts.message("m2", "2026-09-16T17:31:00+00:00", "second flight")
+    )
+    gate_edit, gate_second, hold = (threading.Event() for _ in range(3))
+    server.streams = [
+        ts.StreamScript(
+            frames=[
+                ts.CURSOR_HEAD,
+                ts.feed_frame("message.edited", {"topic_id": ts.TOPIC_A1, "message_id": "m1"}, 2),
+                ts.feed_frame("message.edited", {"topic_id": ts.TOPIC_A1, "message_id": "m2"}, 3),
+            ],
+            gates={1: gate_edit, 2: gate_second},
+            hold=hold,
+        )
+    ]
+    path = f"/api/v1/groups/{ts.ROOM_A}/topics/{ts.TOPIC_A1}/messages"
+    app = tui_app.PepperApp(server.client())
+    try:
+        async with app.run_test(size=(120, 40)) as pilot:
+            await until(pilot, lambda: len(app.rooms) == 2 and app._stream_healthy)
+            app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+            await until(pilot, lambda: "second flight" in body_text(app))
+            await _settled(pilot, server)
+            server.messages[ts.TOPIC_A1][0].update(
+                raw_body="edited", is_edited=True, edited_at="2026-09-16T18:00:00+00:00"
+            )
+            server.messages[ts.TOPIC_A1][1].update(
+                raw_body="second edited",
+                is_edited=True,
+                edited_at="2026-09-16T18:01:00+00:00",
+            )
+            server.raise_on[path] = httpx.ConnectError("down")
+            gate_edit.set()
+            await until(pilot, lambda: app._loops["refresh"].failures == 1)
+            assert app._loops["refresh"].timer is not None
+            gate_second.set()
+            await until(pilot, lambda: "m2" in app._stale_rows)
+            assert app._loops["refresh"].failures == 1
+            assert app._loops["refresh"].timer is not None
+            ats = [q["at"] for m, _p, q in server.requests if m == "GET" and "at" in q]
+            assert ats == ["m1"]  # the armed retry still owns the timer
+            server.raise_on.clear()
+            app._run("refresh")  # the armed retry would call this
+            await until(pilot, lambda: app.store.rows["m1"].raw_body == "edited")
+            await until(pilot, lambda: app.store.rows["m2"].raw_body == "second edited")
+            ats = [q["at"] for m, _p, q in server.requests if m == "GET" and "at" in q]
+            assert set(ats) == {"m1", "m2"}
+    finally:
+        hold.set()
+
+
+async def test_a_refresh_failure_does_not_survive_a_conversation_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(state, "BACKOFF_STEPS", (0.5, 0.5, 0.5, 0.5))
+    server = ts.standard_server()
+    gate_edit, gate_second, hold = (threading.Event() for _ in range(3))
+    server.streams = [
+        ts.StreamScript(
+            frames=[
+                ts.CURSOR_HEAD,
+                ts.feed_frame("message.edited", {"topic_id": ts.TOPIC_A1, "message_id": "m1"}, 2),
+                ts.feed_frame("message.edited", {"topic_id": ts.TOPIC_A2, "message_id": "m2"}, 3),
+            ],
+            gates={1: gate_edit, 2: gate_second},
+            hold=hold,
+        )
+    ]
+    path = f"/api/v1/groups/{ts.ROOM_A}/topics/{ts.TOPIC_A1}/messages"
+    app = tui_app.PepperApp(server.client())
+    try:
+        async with app.run_test(size=(120, 40)) as pilot:
+            await until(pilot, lambda: len(app.rooms) == 2 and app._stream_healthy)
+            app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+            await until(pilot, lambda: "flight options" in body_text(app))
+            await _settled(pilot, server)
+            server.messages[ts.TOPIC_A1][0].update(
+                raw_body="edited", is_edited=True, edited_at="2026-09-16T18:00:00+00:00"
+            )
+            server.raise_on[path] = httpx.ConnectError("down")
+            gate_edit.set()
+            await until(pilot, lambda: app._loops["refresh"].failures == 1)
+            app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A2))
+            await until(pilot, lambda: "hotel options" in body_text(app))
+            await _settled(pilot, server)
+            await pilot.pause(0.6)  # the old retry timer fires with an empty queue
+            server.raise_on.clear()
+            server.messages[ts.TOPIC_A2][0].update(
+                raw_body="hotel edited",
+                is_edited=True,
+                edited_at="2026-09-16T18:01:00+00:00",
+            )
+            gate_second.set()
+            await until(pilot, lambda: app.store.rows["m2"].raw_body == "hotel edited")
+    finally:
+        hold.set()
