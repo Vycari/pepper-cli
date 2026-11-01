@@ -17,7 +17,7 @@ from textual import events
 from textual.widgets import Static
 
 from pepper_cli.tui import app as tui_app
-from pepper_cli.tui import poller, state, stream
+from pepper_cli.tui import state, stream
 from pepper_cli.tui.thread import ThreadView
 from tests import tui_support as ts
 from tests.tui_support import body_text, until
@@ -324,16 +324,15 @@ async def test_a_topic_page_delivered_while_the_thread_is_being_removed_is_dropp
         app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
         await until(pilot, lambda: app.loaded_topic)
         loop = app._loops["topic"]
-        await until(pilot, lambda: not loop.busy)
         thread = app.thread
         removal = thread.remove()
         await thread.query_children("*").remove()
         assert thread.is_attached  # half removed: the state the failing run delivered into
-        page = poller.fetch_topic(app._api, app.current, since=None)
+        delivered: list[object] = []
         loop.in_flight = loop.generation
-        app._delivered("topic", lambda p: app._on_topic_page(p, newest=True), page, loop.generation)
+        app._delivered("topic", delivered.append, "page", loop.generation)
         await removal
-        assert not loop.busy
+        assert delivered == []  # dropped, not painted into the half-removed thread
 
 
 async def test_reaching_the_end_marks_the_newest_row_read(monkeypatch: pytest.MonkeyPatch) -> None:
