@@ -102,6 +102,12 @@ class ThreadView(Vertical):
         yield Static("", id="thread-new")
 
     @property
+    def going(self) -> bool:
+        """Removal has begun. Textual sets this at once but takes the children out one await
+        later, so for a moment the thread is in the tree with no body to paint (#177)."""
+        return self._pruning or self._closing
+
+    @property
     def scroller(self) -> ThreadScroll:
         return self.query_one("#thread-scroll", ThreadScroll)
 

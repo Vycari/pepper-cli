@@ -17,7 +17,7 @@ from textual import events
 from textual.widgets import Static
 
 from pepper_cli.tui import app as tui_app
-from pepper_cli.tui import state, stream
+from pepper_cli.tui import poller, state, stream
 from pepper_cli.tui.thread import ThreadView
 from tests import tui_support as ts
 from tests.tui_support import body_text, until
@@ -311,6 +311,29 @@ async def test_a_pin_change_delivered_after_the_thread_is_gone_is_ignored(
         await _quiet(pilot, app, monkeypatch)
         await app.thread.remove()
         app.on_thread_view_pin_changed(ThreadView.PinChanged(True))
+
+
+async def test_a_topic_page_delivered_while_the_thread_is_being_removed_is_dropped() -> None:
+    """A poll result can land between the start of the thread's removal and its end (#177): the
+    children are gone and the thread is still in the tree, so painting it raised ``NoMatches``.
+    Staged by hand here so it does not depend on a request finishing at the wrong moment."""
+    server = ts.standard_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 20)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: app.loaded_topic)
+        loop = app._loops["topic"]
+        await until(pilot, lambda: not loop.busy)
+        thread = app.thread
+        removal = thread.remove()
+        await thread.query_children("*").remove()
+        assert thread.is_attached  # half removed: the state the failing run delivered into
+        page = poller.fetch_topic(app._api, app.current, since=None)
+        loop.in_flight = loop.generation
+        app._delivered("topic", lambda p: app._on_topic_page(p, newest=True), page, loop.generation)
+        await removal
+        assert not loop.busy
 
 
 async def test_reaching_the_end_marks_the_newest_row_read(monkeypatch: pytest.MonkeyPatch) -> None:
