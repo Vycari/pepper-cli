@@ -426,8 +426,13 @@ async def _race_a_read_past_the_frame(*, extra: list[dict], dot_after: bool) -> 
     app = tui_app.PepperApp(server.client())
     async with app.run_test(size=SIZE) as pilot:
         await open_own(app, pilot)
+        # A history read already in flight here (focus or the stream catching up asks for one)
+        # would make the `_run` below a no-op and answer before the reply rows exist; the turn
+        # then pauses DM polling and the rows never land (#183). Let it land first.
+        await until(pilot, lambda: not app._loops["dm"].busy)
         server.gates["/api/v1/chat/history"] = read_gate
         app._run("dm")  # held at the server
+        assert app._loops["dm"].busy
         await say(pilot, app, "a question")
         await until(pilot, lambda: "Looking into it" in plain(app, "#dm-status"))
         server.history.extend([*rows, *extra])
