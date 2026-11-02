@@ -324,8 +324,9 @@ async def test_older_rows_keep_the_view_where_it_was() -> None:
         scroller = app.thread.scroller
         scroller.scroll_to(y=0, animate=False)
         await until(pilot, lambda: "body 7" in body_text(app))
-        await pilot.pause()
-        assert scroller.scroll_y > 0  # not left at the top of the new, longer thread
+        # The rows land before the view moves: the scroll past them waits for the next
+        # refresh, so poll for it rather than reading it after one pause.
+        await until(pilot, lambda: scroller.scroll_y > 0)  # not left at the top
 
 
 async def test_o_opens_the_first_link_and_never_a_non_web_url() -> None:
