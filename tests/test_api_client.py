@@ -917,6 +917,64 @@ def test_put_client_capabilities_raises_other_errors() -> None:
     assert info.value.status == 403
 
 
+def _chat_send_body(**extra: object) -> dict[str, object]:
+    return {
+        "reply": "hi",
+        "trajectory_id": None,
+        "user_message_id": "u",
+        "assistant_message_id": "a",
+        "steps": [],
+        **extra,
+    }
+
+
+def test_chat_send_reads_client_message_id_and_replayed() -> None:
+    body = _chat_send_body(client_message_id="c-1", replayed=True)
+    with api_client.ApiClient(
+        server_url="http://example.com",
+        token=SecretStr("pep_pat_abc"),
+        client=_mock(lambda _r: httpx.Response(200, json=body)),
+    ) as api:
+        reply = api.chat_send("hi")
+    assert reply.client_message_id == "c-1"
+    assert reply.replayed is True
+
+
+@pytest.mark.parametrize(
+    "extra", [{}, {"client_message_id": None, "replayed": False}], ids=["older-server", "null"]
+)
+def test_chat_send_defaults_client_message_id_and_replayed(extra: dict[str, object]) -> None:
+    with api_client.ApiClient(
+        server_url="http://example.com",
+        token=SecretStr("pep_pat_abc"),
+        client=_mock(lambda _r: httpx.Response(200, json=_chat_send_body(**extra))),
+    ) as api:
+        reply = api.chat_send("hi")
+    assert reply.client_message_id is None
+    assert reply.replayed is False
+
+
+def test_chat_history_reads_client_message_id_and_tolerates_its_absence() -> None:
+    row = {
+        "role": "user",
+        "text": "q",
+        "channel": "client_api",
+        "created_at": "2026-09-16T10:00:00Z",
+    }
+    rows_json = [
+        {**row, "id": "u1", "client_message_id": "c-1"},
+        {**row, "id": "u2", "client_message_id": None},
+        {**row, "id": "u3"},
+    ]
+    with api_client.ApiClient(
+        server_url="http://example.com",
+        token=SecretStr("pep_pat_abc"),
+        client=_mock(lambda _r: httpx.Response(200, json=rows_json)),
+    ) as api:
+        rows = api.chat_history()
+    assert [r.client_message_id for r in rows] == ["c-1", None, None]
+
+
 def test_chat_history_reads_the_trajectory_id_and_tolerates_its_absence() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         row = {"role": "user", "text": "q", "channel": "client_api"}

@@ -415,8 +415,9 @@ class StreamEvent:
       No further events follow.
     - ``"reply"`` — terminal success. ``payload`` mirrors
       :class:`ChatReply` field-for-field (``reply``, ``trajectory_id``,
-      ``user_message_id``, ``assistant_message_id``, ``steps``).
-      No further events follow.
+      ``user_message_id``, ``assistant_message_id``, ``steps``, and the
+      optional ``client_message_id`` / ``replayed`` that an older server omits;
+      the payload is passed through unparsed). No further events follow.
 
     Unknown ``kind`` values pass through unchanged so a forward-
     compatible client (or one talking to a newer server) sees novel
@@ -513,6 +514,9 @@ class ChatHistoryEntry:
     #: same id in one transaction. A row written outside a chat turn (a reminder, a scheduled
     #: announcement) has none or its own.
     trajectory_id: str | None = None
+    #: The ``client_message_id`` the sender gave this message (user rows only; ``None`` on an
+    #: assistant row, a row sent without one, or a server that predates the field).
+    client_message_id: str | None = None
 
 
 # MIRROR: src/pepper/gateway/channels/client_api/adapter.py::ChatSendResponse
@@ -539,6 +543,12 @@ class ChatReply:
     #: client tools need the streaming path, which is why ``--root`` makes
     #: ``pepper chat`` stream even for a one-shot message.
     client_tools_ignored: str | None = None
+    #: The ``client_message_id`` the request carried, echoed back; ``None`` when the request
+    #: carried none or the server predates the field. The CLI does not send one yet.
+    client_message_id: str | None = None
+    #: ``True`` when the server answered a duplicate send from the original turn's stored
+    #: reply instead of running a new turn. ``False`` on a fresh turn or an older server.
+    replayed: bool = False
 
 
 # MIRROR: src/pepper/api/router.py::TodoPerson
@@ -2617,6 +2627,7 @@ class ApiClient:
                 attachments=list(r.get("attachments") or []),
                 reactions=list(r.get("reactions") or []),
                 trajectory_id=str(t) if (t := r.get("trajectory_id")) else None,
+                client_message_id=str(c) if (c := r.get("client_message_id")) else None,
             )
             for r in rows
             if isinstance(r, dict)
@@ -2698,6 +2709,8 @@ class ApiClient:
             assistant_message_id=body["assistant_message_id"],
             steps=body.get("steps") or [],
             client_tools_ignored=body.get("client_tools_ignored"),
+            client_message_id=body.get("client_message_id") or None,
+            replayed=body.get("replayed") is True,
         )
 
     def chat_send_stream(
