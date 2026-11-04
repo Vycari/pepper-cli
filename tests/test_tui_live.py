@@ -659,3 +659,51 @@ async def test_a_refresh_failure_does_not_survive_a_conversation_switch(
             await until(pilot, lambda: app.store.rows["m2"].raw_body == "hotel edited")
     finally:
         hold.set()
+
+
+async def test_a_topic_event_held_behind_a_request_is_dropped_when_the_pane_switches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rerun an event queues waits for the request in flight. That request was about the
+    conversation being left, so the rerun belongs to it too: the switch drops it with the
+    rest of the topic loop's state, or it reads the new conversation a second time."""
+    monkeypatch.setattr(state, "TOPIC_INTERVAL_LIVE", 1000.0)
+    server = ts.standard_server()
+    gate_event, gate_old_poll, hold = (threading.Event() for _ in range(3))
+    server.streams = [
+        ts.StreamScript(
+            frames=[
+                ts.CURSOR_HEAD,
+                ts.feed_frame("message.created", {"topic_id": ts.TOPIC_A1}, 2),
+            ],
+            gates={1: gate_event},
+            hold=hold,
+        )
+    ]
+    old_path = f"/api/v1/groups/{ts.ROOM_A}/topics/{ts.TOPIC_A1}/messages"
+    new_path = f"/api/v1/groups/{ts.ROOM_A}/topics/{ts.TOPIC_A2}/messages"
+    app = tui_app.PepperApp(server.client())
+    try:
+        async with app.run_test(size=(120, 40)) as pilot:
+            await until(pilot, lambda: len(app.rooms) == 2 and app._stream_healthy)
+            app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+            await until(pilot, lambda: "flight options" in body_text(app))
+            await _settled(pilot, server)
+            server.gates[old_path] = gate_old_poll
+            app._run("topic")
+            await until(
+                pilot,
+                lambda: sum(1 for _m, path, _q in server.requests if path == old_path) == 2,
+            )
+            gate_event.set()
+            await until(pilot, lambda: "topic" in app._dirty)
+            app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A2))
+            await until(pilot, lambda: "hotel options" in body_text(app))
+            gate_old_poll.set()
+            await _settled(pilot, server)
+            await pilot.pause(0.2)
+            assert sum(1 for _m, path, _q in server.requests if path == new_path) == 1
+    finally:
+        hold.set()
+        gate_old_poll.set()
+
