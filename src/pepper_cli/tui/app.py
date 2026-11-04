@@ -529,7 +529,7 @@ class PepperApp(App[None]):
         self._poll_now()
         if self.pane is not None:
             self._run("apps")
-        if self._stale_rows:
+        if self._stale_rows and self._loops["refresh"].timer is None:
             self._run("refresh")
 
     # ------------------------------------------------------------------ scheduling

@@ -707,3 +707,49 @@ async def test_a_topic_event_held_behind_a_request_is_dropped_when_the_pane_swit
         hold.set()
         gate_old_poll.set()
 
+
+async def test_focus_return_while_blurred_does_not_skip_a_refresh_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A row edit that arrives while blurred waits for focus. If its read then fails, the retry
+    is armed on the backoff like any other. A focus that lands before that timer fires must not
+    start the read early: the retry delay is not focus's to skip."""
+    monkeypatch.setattr(state, "BACKOFF_STEPS", (60.0, 60.0, 60.0, 60.0))
+    server = ts.standard_server()
+    gate, hold = threading.Event(), threading.Event()
+    path = f"/api/v1/groups/{ts.ROOM_A}/topics/{ts.TOPIC_A1}/messages"
+    server.streams = [
+        ts.StreamScript(
+            frames=[
+                ts.CURSOR_HEAD,
+                ts.feed_frame("message.edited", {"topic_id": ts.TOPIC_A1, "message_id": "m1"}, 2),
+            ],
+            gates={1: gate},
+            hold=hold,
+        )
+    ]
+    app = tui_app.PepperApp(server.client())
+    try:
+        async with app.run_test(size=(120, 40)) as pilot:
+            await until(pilot, lambda: len(app.rooms) == 2 and app._stream_healthy)
+            app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+            await until(pilot, lambda: "flight options" in body_text(app))
+            await _settled(pilot, server)
+            server.messages[ts.TOPIC_A1][0].update(
+                raw_body="edited", is_edited=True, edited_at="2026-09-16T18:00:00+00:00"
+            )
+            app.on_app_blur(events.AppBlur())
+            gate.set()
+            await until(pilot, lambda: "m1" in app._stale_rows)  # paused: focus reads it
+            app.on_app_focus(events.AppFocus())
+            await until(pilot, lambda: app._loops["refresh"].busy)
+            server.raise_on[path] = httpx.ConnectError("down")
+            await until(pilot, lambda: app._loops["refresh"].failures == 1)
+            assert app._loops["refresh"].timer is not None  # the retry is armed on the backoff
+            assert "m1" in app._stale_rows
+            app.on_app_focus(events.AppFocus())  # still focused to the user: a no-op on focus
+            await _settled(pilot, server)
+            ats = [q.get("at") for m, _p, q in server.requests if m == "GET" and "at" in q]
+            assert ats == ["m1"]  # the failed read alone, not an early retry
+    finally:
+        hold.set()
