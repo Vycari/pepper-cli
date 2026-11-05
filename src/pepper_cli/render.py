@@ -33,13 +33,16 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 from datetime import UTC, datetime, tzinfo
 from typing import TYPE_CHECKING, Any
 
 from rich.console import Console, ConsoleOptions, ConsoleRenderable, RenderHook, RenderResult
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.markup import escape
 from rich.segment import Segment
+from rich.spinner import Spinner
 from rich.text import Text
 
 from pepper_cli import credentials
@@ -158,6 +161,65 @@ def render_markdown(text: str) -> None:
         sys.stdout.write(text)
         return
     _stdout.print(Markdown(sanitize_text(text)))
+
+
+def wait_status_enabled() -> bool:
+    """Whether a waiting spinner may be drawn: only on an interactive stderr.
+
+    Pipes, redirects and dumb terminals get nothing, so scripted output is unchanged.
+    """
+    return _stderr.is_terminal and not _stderr.is_dumb_terminal
+
+
+def status_tail(text: str, width: int = 70) -> str:
+    """``text`` on one line, cut to its last ``width`` characters (a thought's recent end)."""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= width else "…" + flat[-(width - 1) :]
+
+
+class WaitStatus:
+    """A transient stderr spinner with a one-line status.
+
+    Shows "Thinking…" until :meth:`set` replaces the line (the server's ``status_phrase``
+    frames, or what the turn is doing). :meth:`stop` erases it, leaving no residue before
+    the reply. Rich's refresh thread only redraws; the state is lock-guarded against
+    :meth:`set` from the caller's thread.
+    """
+
+    #: The line before anything better is known, and again after a local tool has run.
+    IDLE = "Thinking…"
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._text = self.IDLE
+        self._spinner = Spinner("dots", style="dim")
+        self._live = Live(
+            self,
+            console=_stderr,
+            transient=True,
+            refresh_per_second=4,
+            redirect_stdout=False,
+            redirect_stderr=False,
+        )
+
+    def start(self) -> None:
+        """Show the line (idempotent)."""
+        self._live.start(refresh=True)
+
+    def stop(self) -> None:
+        """Erase the line (idempotent). Call before anything else prints."""
+        self._live.stop()
+
+    def set(self, text: str) -> None:
+        """Show ``text`` (server-supplied text is made one safe line)."""
+        with self._lock:
+            self._text = sanitize_line(text)
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        with self._lock:
+            text = self._text
+        self._spinner.text = Text(" " + text, style="dim", no_wrap=True, overflow="ellipsis")
+        yield self._spinner
 
 
 def render_reply(markdown_text: str) -> None:

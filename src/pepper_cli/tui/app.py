@@ -2721,7 +2721,7 @@ class PepperApp(App[None]):
         loop.in_flight = generation
         # An earlier answered turn's rows may not be in history yet; they are not this turn's.
         turn.snapshot = frozenset(self.dm.entries) | self._answered_ids
-        turn.phase, turn.status = "streaming", "Sending…"
+        turn.phase, turn.status = "streaming", "Thinking…"
         self._loops["dm"].stop_timer()
         self._paint_dm_status()
         if turn.subject is not None:
@@ -2912,33 +2912,54 @@ class _TurnStatus(turns.TurnSink):
         self.api = api
         self.provider = provider
         self.thought = ""
+        #: A refusal or failure notice is on the line. A loading phrase never replaces one (the
+        #: server sends phrases in exactly the quiet gaps a notice would otherwise stay up in);
+        #: the turn's next real status does, as before.
+        self._notice = False
+        #: A ``status_phrase`` arrived this turn. Until one does (an older server sends none),
+        #: a streaming thought paints its tail live, as it always has.
+        self._phrases = False
         #: The terminal frame's payload (reply or error), read by the app when the turn ends.
         self.payload: dict[str, Any] = {}
 
+    def _show(self, text: str, *, notice: bool = False) -> None:
+        self._notice = notice
+        self._status(text)
+
     def thought_delta(self, text: str, *, first: bool) -> None:
+        # With loading phrases the line is the server's, so fragments are only accumulated (a
+        # repaint per token would fight the phrase); the block that closes the thought paints
+        # its tail once. Without them the live tail is the only sign of progress.
         self.thought = text if first else self.thought + text
-        self._status("Thinking: " + _tail(self.thought))
+        if not self._phrases and self.thought.strip():
+            self._show(_tail(self.thought))
 
     def thought_block(self, text: str, *, streamed: str) -> None:
         self.thought = ""
-        self._status("Thinking: " + _tail(text))
+        if text.strip():
+            self._show(_tail(text))
 
     def retry(self, *, streamed: str) -> None:
         self.thought = ""
-        self._status("Retrying…")
+        self._show("Retrying…")
+
+    def status_phrase(self, text: str) -> None:
+        self._phrases = True
+        if not self._notice:
+            self._show(text)
 
     def tool_call(self, payload: dict[str, Any]) -> None:
-        self._status(f"Using {payload.get('name') or 'a tool'}…")
+        self._show(f"Calling {payload.get('name') or 'a tool'}…")
 
     def tool_result(self, payload: dict[str, Any]) -> None:
-        self._status("Thinking…")
+        self._show(f"{payload.get('name') or 'tool'} → {payload.get('status') or 'ok'}")
 
     def client_tools(self, payload: dict[str, Any]) -> None:
         if payload.get("manifest_reason"):
-            self._status(f"Local tools refused: {payload['manifest_reason']}")
+            self._show(f"Local tools refused: {payload['manifest_reason']}", notice=True)
 
     def client_tool_call(self, payload: dict[str, Any]) -> None:
-        self._status(f"Running local tool {payload.get('name') or ''}…")
+        self._show(f"Running local tool {payload.get('name') or ''}…")
         answer = turns.answer_client_tool_call(self.api, payload, provider=self.provider)
         if answer is None or answer.post_error is None:
             return
@@ -2949,7 +2970,7 @@ class _TurnStatus(turns.TurnSink):
             raise error
         # A call the server no longer waits on (404) or a network blip: the reply may still
         # come, so the stream is read on.
-        self._status(f"Couldn't return {answer.name!r} to the server.")
+        self._show(f"Couldn't return {answer.name!r} to the server.", notice=True)
 
     def reply(self, payload: dict[str, Any]) -> None:
         self.payload = payload

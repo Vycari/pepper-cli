@@ -282,7 +282,7 @@ def reply_turn(text: str, n: int, **over) -> ts.ScriptedTurn:
     user, assistant = f"u{n}", f"a{n}"
     return ts.ScriptedTurn(
         frames=[
-            ("model_thought", {"text": "Looking into it"}),
+            ("model_thought_block", {"text": "Looking into it"}),
             ("reply", {"reply": text, "user_message_id": user, "assistant_message_id": assistant}),
         ],
         history=[
@@ -301,7 +301,7 @@ async def test_a_turn_streams_into_the_status_line_and_its_reply_becomes_a_messa
     async with app.run_test(size=(120, 40)) as pilot:
         await until(pilot, lambda: len(app.dm.entries) == 2)
         await send(pilot, app, "question 1")
-        await until(pilot, lambda: "Thinking: Looking into it" in status_line(app))
+        await until(pilot, lambda: "Looking into it" in status_line(app))
         assert "question 1" in body_text(app)  # the provisional row
         gate.set()
         await until(pilot, lambda: not app.turns)
@@ -399,7 +399,7 @@ async def test_a_second_send_waits_until_the_current_turn_finishes() -> None:
     async with app.run_test(size=(120, 40)) as pilot:
         await until(pilot, lambda: len(app.dm.entries) == 2)
         await send(pilot, app, "question 1")
-        await until(pilot, lambda: "Thinking" in status_line(app))
+        await until(pilot, lambda: "Looking into it" in status_line(app))
         await send(pilot, app, "question 2")
         assert "waiting to send" in body_text(app)
         await pilot.pause(0.1)
@@ -427,7 +427,7 @@ async def test_an_answered_turn_whose_user_row_never_shows_does_not_hold_the_que
     async with app.run_test(size=(120, 40)) as pilot:
         await until(pilot, lambda: len(app.dm.entries) == 2)
         await send(pilot, app, "question 1")
-        await until(pilot, lambda: "Thinking" in status_line(app))
+        await until(pilot, lambda: "Looking into it" in status_line(app))
         await send(pilot, app, "question 2")
         gate.set()
         await until(pilot, lambda: len(server.turn_bodies) == 2)
@@ -458,7 +458,7 @@ async def test_a_dropped_turn_never_takes_a_retired_earlier_turns_reply(monkeypa
     async with app.run_test(size=(120, 40)) as pilot:
         await until(pilot, lambda: len(app.dm.entries) == 2)
         await send(pilot, app, "question 1")
-        await until(pilot, lambda: "Thinking" in status_line(app))
+        await until(pilot, lambda: "Looking into it" in status_line(app))
         await send(pilot, app, "question 2")
         await send(pilot, app, "question 3")
         first.set()  # turn 2 starts at once: no history read in between
@@ -505,7 +505,7 @@ async def test_a_refused_turn_keeps_a_draft_typed_while_it_was_sending() -> None
     async with app.run_test(size=(120, 40)) as pilot:
         await until(pilot, lambda: len(app.dm.entries) == 2)
         await send(pilot, app, "try this")
-        await until(pilot, lambda: "Sending" in status_line(app))
+        await until(pilot, lambda: status_line(app).strip() == "Thinking…")
         app.composer.insert("and then this")
         gate.set()
         await until(pilot, lambda: "Couldn't send (HTTP 503)" in status_line(app))
@@ -584,6 +584,71 @@ async def test_a_missing_call_returning_a_client_tool_result_reads_on(tmp_path) 
         assert not app.fatal
 
 
+async def test_a_loading_phrase_does_not_replace_a_couldnt_return_notice(tmp_path) -> None:
+    server = ts.standard_server()
+    gates = {i: threading.Event() for i in range(1, 3)}
+    server.turns = [
+        ts.ScriptedTurn(
+            frames=[
+                ("client_tool_call", {"call_id": "c1", "name": "fs_list", "arguments": {}}),
+                ("status_phrase", {"text": "Counting electrons"}),
+                ("reply", {"reply": "Done.", "assistant_message_id": "a1"}),
+            ],
+            gates=gates,
+        )
+    ]
+    server.fail["/api/v1/chat/tool-result"] = 404
+    app = tui_app.PepperApp(server.client(), provider=FilesystemProvider([tmp_path]))
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.dm.entries) == 2)
+        await send(pilot, app, "list my files")
+        await until(pilot, lambda: "Couldn't return 'fs_list'" in status_line(app))
+        gates[1].set()  # the phrase frame arrives while the notice is up
+        await pilot.pause(0.2)
+        assert "Couldn't return 'fs_list'" in status_line(app)
+        assert "Counting electrons" not in status_line(app)
+        gates[2].set()
+        await until(pilot, lambda: "Done." in body_text(app))
+
+
+async def test_an_older_server_s_streaming_thought_moves_the_status_line() -> None:
+    server = ts.standard_server()
+    gate = threading.Event()
+    server.turns = [reply_turn("ok", 1, gates={1: gate})]
+    server.turns[0].frames[0] = ("model_thought", {"text": "Looking into it"})
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.dm.entries) == 2)
+        await send(pilot, app, "question 1")
+        await until(pilot, lambda: "Looking into it" in status_line(app))
+        gate.set()
+        await until(pilot, lambda: not app.turns)
+
+
+def test_after_a_phrase_thought_fragments_no_longer_repaint_the_line() -> None:
+    lines: list[str] = []
+    sink = tui_app._TurnStatus(lines.append, ts.standard_server().client(), None)
+    sink.thought_delta("Hm", first=True)
+    assert lines == ["Hm"]
+    sink.status_phrase("Counting electrons")
+    sink.thought_delta("m, let me see", first=False)
+    assert lines == ["Hm", "Counting electrons"]
+    sink.thought_block("Hmm, let me see", streamed="Hmm, let me see")
+    assert lines[-1] == "Hmm, let me see"
+
+
+def test_a_refusal_notice_holds_against_phrases_until_a_real_status() -> None:
+    lines: list[str] = []
+    sink = tui_app._TurnStatus(lines.append, ts.standard_server().client(), None)
+    sink.status_phrase("Grinding fresh pepper")
+    sink.client_tools({"accepted": [], "manifest_reason": "too many tools"})
+    sink.status_phrase("Counting electrons")
+    assert lines[-1] == "Local tools refused: too many tools"
+    sink.tool_call({"name": "x"})
+    sink.status_phrase("Counting electrons")
+    assert lines[-2:] == ["Calling x…", "Counting electrons"]
+
+
 async def test_quitting_mid_stream_stops_reading_and_closes_the_stream(monkeypatch) -> None:
     server = ts.standard_server()
     gate = threading.Event()
@@ -600,7 +665,7 @@ async def test_quitting_mid_stream_stops_reading_and_closes_the_stream(monkeypat
     async with app.run_test(size=(120, 40)) as pilot:
         await until(pilot, lambda: len(app.dm.entries) == 2)
         await send(pilot, app, "question 1")
-        await until(pilot, lambda: "Thinking" in status_line(app))
+        await until(pilot, lambda: "Looking into it" in status_line(app))
         await pilot.press("ctrl+q")
     assert app.return_code == 0
     gate.set()  # the next frame arrives after quit: it is not dispatched
@@ -610,3 +675,69 @@ async def test_quitting_mid_stream_stops_reading_and_closes_the_stream(monkeypat
     assert outcomes == ["stopped"]
     assert app.turns[0].reply is None  # nothing was posted back to the closed app
     assert len(server.turn_bodies) == 1
+
+
+def _tool_turn(gates: dict[int, threading.Event], *, phrases: bool = True) -> ts.ScriptedTurn:
+    frames: list[tuple[str, dict]] = []
+    if phrases:
+        frames.append(("status_phrase", {"text": "Grinding fresh pepper"}))
+    frames += [
+        ("model_thought", {"text": "Hm"}),
+        ("tool_call", {"name": "x", "args": {}}),
+        ("tool_result", {"name": "x", "status": "ok", "text": "fine"}),
+        ("status_phrase", {"text": "Counting electrons"}) if phrases else ("retry_attempt", {}),
+        ("reply", {"reply": "Done", "user_message_id": "u1", "assistant_message_id": "a1"}),
+    ]
+    return ts.ScriptedTurn(
+        frames=frames,
+        gates=gates,
+        history=[
+            ts.history_entry("u1", "user", "go", "2026-09-16T09:00:01Z"),
+            ts.history_entry("a1", "assistant", "Done", "2026-09-16T09:00:11Z"),
+        ],
+    )
+
+
+async def test_the_status_line_starts_plain_then_follows_server_phrases_and_tools() -> None:
+    server = ts.standard_server()
+    gates = {i: threading.Event() for i in range(6)}
+    server.turns = [_tool_turn(gates)]
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.dm.entries) == 2)
+        await send(pilot, app, "go")
+        await until(pilot, lambda: status_line(app).strip() == "Thinking…")
+        gates[0].set()
+        await until(pilot, lambda: status_line(app).strip() == "Grinding fresh pepper")
+        gates[1].set()  # a thought fragment is accumulated, never painted
+        await pilot.pause(0.2)
+        assert status_line(app).strip() == "Grinding fresh pepper"
+        gates[2].set()
+        await until(pilot, lambda: status_line(app).strip() == "Calling x…")
+        gates[3].set()
+        await until(pilot, lambda: status_line(app).strip() == "x → ok")
+        gates[4].set()
+        await until(pilot, lambda: status_line(app).strip() == "Counting electrons")
+        gates[5].set()
+        await until(pilot, lambda: not app.turns)
+
+
+async def test_an_older_server_without_status_phrase_frames_shows_the_plain_statuses() -> None:
+    server = ts.standard_server()
+    gates = {i: threading.Event() for i in range(5)}
+    server.turns = [_tool_turn(gates, phrases=False)]
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.dm.entries) == 2)
+        await send(pilot, app, "go")
+        await until(pilot, lambda: status_line(app).strip() == "Thinking…")
+        gates[0].set()
+        gates[1].set()
+        await until(pilot, lambda: status_line(app).strip() == "Calling x…")
+        gates[2].set()
+        await until(pilot, lambda: status_line(app).strip() == "x → ok")
+        gates[3].set()
+        await until(pilot, lambda: status_line(app).strip() == "Retrying…")
+        gates[4].set()
+        await until(pilot, lambda: not app.turns)
+        assert app.query_one("#dm-status").has_class("empty")

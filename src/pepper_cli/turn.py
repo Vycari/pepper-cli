@@ -54,6 +54,9 @@ class TurnSink:
     def retry(self, *, streamed: str) -> None:
         """The attempt was abandoned and is being re-run; ``streamed`` is what it left."""
 
+    def status_phrase(self, text: str) -> None:
+        """A loading phrase from the server for a status line (cosmetic; may never come)."""
+
     def tool_call(self, payload: dict[str, Any]) -> None:
         """A server-side tool started."""
 
@@ -107,6 +110,10 @@ def dispatch(
         elif kind == "retry_attempt":
             sink.retry(streamed=streamed)
             streamed = ""
+        elif kind == "status_phrase":
+            text = event.payload.get("text")
+            if isinstance(text, str) and text.strip():
+                sink.status_phrase(text)
         elif kind == "tool_call":
             sink.tool_call(event.payload)
         elif kind == "tool_result":
