@@ -595,6 +595,13 @@ def test_preferences_edit_refuses_a_bad_view_setting(server, capsys, argv) -> No
     assert not server.to("POST", "/api/v1/calendars/preferences")
 
 
+@pytest.mark.parametrize("flag", ["--hide-calendar", "--show-calendar"])
+def test_preferences_edit_changes_nothing_when_calendars_cannot_be_read(server, flag) -> None:
+    server.fail[("GET", "/api/v1/calendars/range")] = (500, "x")
+    assert cli.main(["preferences", "edit", flag, "Work", "--json"]) == 2
+    assert not server.to("POST", "/api/v1/calendars/preferences")
+
+
 @pytest.mark.parametrize(
     ("status", "words"),
     [(200, "Sent."), (409, "Not sent. another window"), (404, "Not sent. That is not a draft")],

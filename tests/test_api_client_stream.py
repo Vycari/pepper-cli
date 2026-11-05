@@ -397,12 +397,13 @@ def test_one_shot_reply_shows_each_unsent_draft_with_its_send_command(capsys) ->
 def test_chat_history_reads_drafts_and_skips_malformed_ones() -> None:
     row = {"id": "a1", "role": "assistant", "text": "t", "channel": "x", "created_at": "z"}
     good = {"draft_id": "d1", "to": "a@x.com", "subject": "s", "body": "b", "sent": True}
-    rows = [{**row, "drafts": [good, {"to": "no id"}, "junk"]}, {**row, "id": "a2"}]
+    odd = {"draft_id": "d2", "accounts": 5}
+    rows = [{**row, "drafts": [good, odd, {"to": "no id"}, "junk"]}, {**row, "id": "a2"}]
     with api_client.ApiClient(
         server_url="http://example.com",
         token=SecretStr("pep_pat_abc"),
         client=_mock(lambda _r: httpx.Response(200, json=rows)),
     ) as api:
         first, second = api.chat_history()
-    assert [(d.draft_id, d.sent) for d in first.drafts] == [("d1", True)]
+    assert [(d.draft_id, d.sent) for d in first.drafts] == [("d1", True), ("d2", False)]
     assert second.drafts == []

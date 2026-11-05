@@ -119,9 +119,6 @@ def resolve_calendars(names: list[str], known: list[dict[str, Any]]) -> list[str
         exact = [c for c in known if low in (str(c.get("id")).lower(), str(c.get("name")).lower())]
         near = [c for c in known if str(c.get("name") or "").lower().startswith(low)]
         found = exact or near
-        if not found and not known:
-            ids.append(want.strip())  # no calendar list to check against: take it as an id
-            continue
         if len(found) != 1:
             what = "matches more than one calendar" if found else "is not one of your calendars"
             raise PrefsError(f"{want!r} {what}")

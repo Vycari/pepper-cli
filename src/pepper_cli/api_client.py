@@ -513,13 +513,16 @@ def draft_cards_from(raw: object) -> list[DraftCard]:
     cards: list[DraftCard] = []
     for d in raw if isinstance(raw, list) else []:
         if isinstance(d, dict) and d.get("draft_id"):
+            accounts = d.get("accounts")
             cards.append(
                 DraftCard(
                     draft_id=str(d["draft_id"]),
                     to=str(d.get("to") or ""),
                     subject=str(d.get("subject") or ""),
                     body=str(d.get("body") or ""),
-                    accounts=[list(a) for a in d.get("accounts") or [] if isinstance(a, list)],
+                    accounts=[list(a) for a in accounts if isinstance(a, list)]
+                    if isinstance(accounts, list)
+                    else [],
                     account_id=str(d.get("account_id") or ""),
                     sent=d.get("sent") is True,
                 )

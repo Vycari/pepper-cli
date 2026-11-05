@@ -8435,9 +8435,15 @@ def _hidden_after(
 ) -> list[str]:
     """The hidden-calendar ids once ``hide`` is added to and ``show`` taken from the stored
     list; ``show`` of ``all`` empties it."""
-    known = _known_calendars(api)
+    show_all = [s.lower() for s in show] == ["all"]
+    named = hide + ([] if show_all else show)
+    known = _known_calendars(api) if named else []
+    if named and not known:
+        raise preferences_view.PrefsError(
+            "Could not read your calendars to check that name, so nothing changed. Try again."
+        )
     hidden = list(current.get("hidden_calendar_ids") or [])
-    if [s.lower() for s in show] == ["all"]:
+    if show_all:
         hidden = []
     else:
         hidden = [i for i in hidden if i not in preferences_view.resolve_calendars(show, known)]
