@@ -2827,11 +2827,14 @@ class _ReplTurnSink(turn.TurnSink):
 
     def client_tool_call(self, payload: dict) -> None:
         # A local tool may print or prompt: clear the line first, and bring it back after.
+        # The pre-tool line is stale by then, so it returns as the idle "Thinking…" until
+        # the next phrase or thought replaces it.
         self._pause()
         try:
             _serve_client_tool_call(self.api, payload, provider=self.provider, trace=self.trace)
         finally:
             if self.wait is not None:
+                self.wait.set(self.wait.IDLE)
                 self.wait.start()
 
     def reply(self, payload: dict) -> None:

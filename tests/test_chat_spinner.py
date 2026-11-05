@@ -149,3 +149,15 @@ def test_the_phrase_is_a_safe_single_line(tty) -> None:
 
 def test_wait_status_is_disabled_off_a_terminal() -> None:
     assert render.wait_status_enabled() is False  # pytest's stderr is captured
+
+
+def test_spinner_returns_idle_after_a_local_tool_not_the_stale_line(tty, monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_serve_client_tool_call", lambda *a, **k: None)
+    spy = _Spy()
+    api: Any = object()
+    sink = cli._ReplTurnSink(api, provider=None, trace=False, wait=spy)
+    sink.status_phrase("Counting electrons")
+    sink.client_tool_call({"name": "read_file"})
+    assert spy.log == ["Counting electrons", "stop", render.WaitStatus.IDLE, "start"]
+    assert spy._text == "Thinking…"
+    spy.stop()

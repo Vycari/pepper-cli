@@ -186,9 +186,12 @@ class WaitStatus:
     :meth:`set` from the caller's thread.
     """
 
+    #: The line before anything better is known, and again after a local tool has run.
+    IDLE = "Thinking…"
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._text = "Thinking…"
+        self._text = self.IDLE
         self._spinner = Spinner("dots", style="dim")
         self._live = Live(
             self,
