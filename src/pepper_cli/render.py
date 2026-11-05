@@ -34,7 +34,6 @@ from __future__ import annotations
 import json
 import sys
 import threading
-import time
 from datetime import UTC, datetime, tzinfo
 from typing import TYPE_CHECKING, Any
 
@@ -46,7 +45,7 @@ from rich.segment import Segment
 from rich.spinner import Spinner
 from rich.text import Text
 
-from pepper_cli import credentials, witty_phrases
+from pepper_cli import credentials
 from pepper_cli.terminal_text import sanitize_line, sanitize_text
 
 if TYPE_CHECKING:
@@ -172,20 +171,24 @@ def wait_status_enabled() -> bool:
     return _stderr.is_terminal and not _stderr.is_dumb_terminal
 
 
-class WaitStatus:
-    """A stderr spinner with a one-line status that rotates through witty phrases.
+def status_tail(text: str, width: int = 70) -> str:
+    """``text`` on one line, cut to its last ``width`` characters (a thought's recent end)."""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= width else "…" + flat[-(width - 1) :]
 
-    Starts on a random phrase; :meth:`set` replaces the line with what the turn is doing.
-    When nothing changes the line for ``ROTATE_SECONDS`` it moves to a fresh phrase. The
-    rotation is checked each time Rich's refresh thread renders the line, so there is no
-    thread of our own; a lock guards the state against :meth:`set` from the caller's thread.
-    The line is transient: :meth:`stop` erases it, leaving no residue before the reply.
+
+class WaitStatus:
+    """A transient stderr spinner with a one-line status.
+
+    Shows "Thinking…" until :meth:`set` replaces the line (the server's ``status_phrase``
+    frames, or what the turn is doing). :meth:`stop` erases it, leaving no residue before
+    the reply. Rich's refresh thread only redraws; the state is lock-guarded against
+    :meth:`set` from the caller's thread.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._text = witty_phrases.pick()
-        self._changed = time.monotonic()
+        self._text = "Thinking…"
         self._spinner = Spinner("dots", style="dim")
         self._live = Live(
             self,
@@ -205,17 +208,12 @@ class WaitStatus:
         self._live.stop()
 
     def set(self, text: str) -> None:
-        """Show ``text`` (server-supplied text is made one safe line) and restart the clock."""
+        """Show ``text`` (server-supplied text is made one safe line)."""
         with self._lock:
             self._text = sanitize_line(text)
-            self._changed = time.monotonic()
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         with self._lock:
-            now = time.monotonic()
-            if now - self._changed >= witty_phrases.ROTATE_SECONDS:
-                self._text = witty_phrases.pick(self._text)
-                self._changed = now
             text = self._text
         self._spinner.text = Text(" " + text, style="dim", no_wrap=True, overflow="ellipsis")
         yield self._spinner

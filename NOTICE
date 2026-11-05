@@ -1,7 +1,2 @@
 Pepper command-line client (pepper-cli)
 Copyright 2026 Vycari
-
-This product includes a list of loading phrases derived from Gemini CLI
-(https://github.com/google-gemini/gemini-cli), Copyright 2025 Google LLC,
-licensed under the Apache License, Version 2.0. Google-specific lines were
-removed and Pepper lines added (src/pepper_cli/witty_phrases.py).

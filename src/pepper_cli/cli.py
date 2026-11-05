@@ -137,7 +137,6 @@ from pepper_cli import (
     todos_view,
     turn,
     window_title,
-    witty_phrases,
 )
 from pepper_cli.due import parse_due
 from pepper_cli.provider import fs as provider_fs
@@ -2799,7 +2798,7 @@ class _ReplTurnSink(turn.TurnSink):
         if self.trace:
             render.end_thought(text, streamed=streamed)
         elif text.strip():
-            self._status(witty_phrases.tail(text))
+            self._status(render.status_tail(text))
 
     def retry(self, *, streamed: str) -> None:
         # The abandoned attempt's fragments stay on screen; end their line so the retry's
@@ -2808,6 +2807,9 @@ class _ReplTurnSink(turn.TurnSink):
         if self.trace and streamed:
             render.discard_thought()
         self._status("Retrying…")
+
+    def status_phrase(self, text: str) -> None:
+        self._status(text)
 
     def tool_call(self, payload: dict) -> None:
         if self.trace:

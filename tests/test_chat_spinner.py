@@ -8,9 +8,8 @@ from collections.abc import Iterator
 from typing import Any, Self
 
 import pytest
-from rich.console import Console
 
-from pepper_cli import api_client, cli, render, witty_phrases
+from pepper_cli import api_client, cli, render
 
 
 class _Api:
@@ -30,8 +29,14 @@ class _Api:
             yield event
 
 
-def _events() -> list[Any]:
+def _events(*, phrases: bool = True) -> list[Any]:
+    lead = (
+        [api_client.StreamEvent(kind="status_phrase", payload={"text": "Counting electrons"})]
+        if phrases
+        else []
+    )
     return [
+        *lead,
         api_client.StreamEvent(kind="tool_call", payload={"name": "x", "args": {}}),
         api_client.StreamEvent(kind="tool_result", payload={"name": "x", "status": "ok"}),
         api_client.StreamEvent(kind="reply", payload={"reply": "here you go"}),
@@ -70,9 +75,9 @@ def tty(monkeypatch: pytest.MonkeyPatch) -> io.StringIO:
     return buf
 
 
-def _turn(*, trace: bool, json_mode: bool = False) -> bool:
+def _turn(*, trace: bool, json_mode: bool = False, phrases: bool = True) -> bool:
     json_args = argparse.Namespace(json=True) if json_mode else None
-    api: Any = _Api(_events())
+    api: Any = _Api(_events(phrases=phrases))
     return cli._stream_one_turn(api, "hi", trace=trace, json_args=json_args)
 
 
@@ -93,7 +98,8 @@ def test_no_spinner_with_json_even_on_a_terminal(tty, capsys) -> None:
 def test_no_spinner_in_trace_mode_even_on_a_terminal(tty, capsys) -> None:
     assert _turn(trace=True) is True
     assert "x" in tty.getvalue()  # the trace chatter, not a spinner
-    assert not any(phrase in tty.getvalue() for phrase in witty_phrases.WITTY_PHRASES)
+    assert "Thinking…" not in tty.getvalue()
+    assert "Counting electrons" not in tty.getvalue()
     assert capsys.readouterr().out == "here you go\n"
 
 
@@ -101,10 +107,10 @@ def test_spinner_on_a_terminal_follows_the_turn_and_stops_before_the_reply(tty, 
     assert _turn(trace=False) is True
     spy = _Spy.last
     assert spy.log[0] == "start"
-    assert spy.log[1:3] == ["Calling x…", "x → ok"]
+    assert spy.log[1:4] == ["Counting electrons", "Calling x…", "x → ok"]
     assert spy.log[-1] == "stop"
     assert capsys.readouterr().out == "here you go\n"
-    assert any(phrase in tty.getvalue() for phrase in witty_phrases.WITTY_PHRASES)
+    assert "Thinking…" in tty.getvalue()
 
 
 def test_spinner_is_stopped_on_error_and_on_ctrl_c(tty) -> None:
@@ -118,20 +124,27 @@ def test_spinner_is_stopped_on_error_and_on_ctrl_c(tty) -> None:
     assert _Spy.last.log[-1] == "stop"
 
 
-def test_the_line_rotates_when_nothing_changes(monkeypatch) -> None:
-    monkeypatch.setattr(witty_phrases, "ROTATE_SECONDS", 0.0)
+def test_an_older_server_without_phrases_shows_thinking_then_the_tool_statuses(tty, capsys) -> None:
+    assert _turn(trace=False, phrases=False) is True
+    assert _Spy.last.log[:3] == ["start", "Calling x…", "x → ok"]
+    assert "Thinking…" in tty.getvalue()
+    assert capsys.readouterr().out == "here you go\n"
+
+
+def test_status_phrase_frames_leave_non_terminal_output_unchanged(capsys) -> None:
+    assert _turn(trace=False) is True
+    plain = capsys.readouterr()
+    assert _turn(trace=False, phrases=False) is True
+    assert capsys.readouterr() == plain
+    assert plain.out == "here you go\n"
+    assert plain.err == ""
+
+
+def test_the_phrase_is_a_safe_single_line(tty) -> None:
     status = render.WaitStatus()
-    console = Console(file=io.StringIO(), width=80)
-    seen = {status._text}
-    for _ in range(5):
-        list(status.__rich_console__(console, console.options))
-        seen.add(status._text)
-    assert len(seen) > 1
-    assert seen <= set(witty_phrases.WITTY_PHRASES)
-    status.set("Calling x…")
-    monkeypatch.setattr(witty_phrases, "ROTATE_SECONDS", 3600.0)
-    list(status.__rich_console__(console, console.options))
-    assert status._text == "Calling x…"
+    status.set("a\x1b[31m\nb")
+    assert "\x1b" not in status._text
+    assert "\n" not in status._text
 
 
 def test_wait_status_is_disabled_off_a_terminal() -> None:

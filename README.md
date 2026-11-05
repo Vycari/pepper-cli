@@ -186,7 +186,7 @@ Every command except `login` and the interactive REPL takes `--json`, and also s
 | --- | --- |
 | `pepper` | On a terminal, open the full-screen UI (`pepper tui`). With stdin or stdout piped or redirected, `TERM=dumb`, or `PEPPER_NO_TUI=1`, open the interactive REPL (shorthand for `pepper chat`) as before. |
 | `pepper <message>` | Send a one-shot message — multi-word, no quotes needed. |
-| `pepper chat ["msg"]` | One-shot with a message, or the REPL with none (the way back to the REPL on a terminal). On a terminal, with `--json` and trace off, a dim spinner on stderr shows what the turn is doing; pipes and `--json` output are unchanged. |
+| `pepper chat ["msg"]` | One-shot with a message, or the REPL with none (the way back to the REPL on a terminal). On a terminal (not `--json`, trace off), a dim spinner on stderr shows what the turn is doing; pipes and `--json` output are unchanged. |
 | `pepper chat --root PATH ["msg"]` | Same, but let this session read files under `PATH` (repeatable). |
 | `pepper whoami [--json]` | Print the user behind the current credentials. |
 | `pepper tui` | Full-screen terminal UI: read and post in your rooms, and chat with Pepper. Needs a terminal; bare `pepper` opens it on one. See [`pepper tui`](#pepper-tui). |

@@ -400,6 +400,10 @@ class StreamEvent:
       ...}``).
     - ``"tool_result"`` — tool returned. ``payload`` carries
       ``{"name", "status", "text", "latency_ms", "error", ...}``.
+    - ``"status_phrase"`` — a short loading phrase for a status line while the
+      turn runs, ``{"text": "..."}``. The server sends one at stream open and
+      another whenever a few seconds pass with no other frame. Purely
+      cosmetic; an older server never sends it.
     - ``"client_tools"`` — which of the tools this client declared the
       server accepted, and why it dropped the rest. ``payload`` carries
       ``{"accepted": [{"name", "exposed_name"}], "rejected": [{"name",

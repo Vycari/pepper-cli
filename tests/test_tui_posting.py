@@ -13,13 +13,11 @@ import httpx
 import pytest
 from textual import events
 
-from pepper_cli import witty_phrases
 from pepper_cli.provider.fs import FilesystemProvider
 from pepper_cli.tui import app as tui_app
 from pepper_cli.tui import state
 from pepper_cli.tui.composer import Composer
 from pepper_cli.tui.thread import ThreadScroll
-from pepper_cli.witty_phrases import WITTY_PHRASES
 from tests import tui_support as ts
 from tests.tui_support import body_text, plain, until
 
@@ -507,7 +505,7 @@ async def test_a_refused_turn_keeps_a_draft_typed_while_it_was_sending() -> None
     async with app.run_test(size=(120, 40)) as pilot:
         await until(pilot, lambda: len(app.dm.entries) == 2)
         await send(pilot, app, "try this")
-        await until(pilot, lambda: status_line(app).strip() in WITTY_PHRASES)
+        await until(pilot, lambda: status_line(app).strip() == "Thinking…")
         app.composer.insert("and then this")
         gate.set()
         await until(pilot, lambda: "Couldn't send (HTTP 503)" in status_line(app))
@@ -614,15 +612,19 @@ async def test_quitting_mid_stream_stops_reading_and_closes_the_stream(monkeypat
     assert len(server.turn_bodies) == 1
 
 
-def _tool_turn(gates: dict[int, threading.Event]) -> ts.ScriptedTurn:
+def _tool_turn(gates: dict[int, threading.Event], *, phrases: bool = True) -> ts.ScriptedTurn:
+    frames: list[tuple[str, dict]] = []
+    if phrases:
+        frames.append(("status_phrase", {"text": "Grinding fresh pepper"}))
+    frames += [
+        ("model_thought", {"text": "Hm"}),
+        ("tool_call", {"name": "x", "args": {}}),
+        ("tool_result", {"name": "x", "status": "ok", "text": "fine"}),
+        ("status_phrase", {"text": "Counting electrons"}) if phrases else ("retry_attempt", {}),
+        ("reply", {"reply": "Done", "user_message_id": "u1", "assistant_message_id": "a1"}),
+    ]
     return ts.ScriptedTurn(
-        frames=[
-            ("model_thought", {"text": "Hm"}),
-            ("model_thought", {"text": "mm"}),
-            ("tool_call", {"name": "x", "args": {}}),
-            ("tool_result", {"name": "x", "status": "ok", "text": "fine"}),
-            ("reply", {"reply": "Done", "user_message_id": "u1", "assistant_message_id": "a1"}),
-        ],
+        frames=frames,
         gates=gates,
         history=[
             ts.history_entry("u1", "user", "go", "2026-09-16T09:00:01Z"),
@@ -631,42 +633,46 @@ def _tool_turn(gates: dict[int, threading.Event]) -> ts.ScriptedTurn:
     )
 
 
-async def test_the_status_line_starts_on_a_phrase_and_follows_the_tool_calls(monkeypatch) -> None:
-    monkeypatch.setattr(witty_phrases, "ROTATE_SECONDS", 30.0)
+async def test_the_status_line_starts_plain_then_follows_server_phrases_and_tools() -> None:
     server = ts.standard_server()
-    gates = {i: threading.Event() for i in (1, 2, 3, 4)}
+    gates = {i: threading.Event() for i in range(6)}
     server.turns = [_tool_turn(gates)]
     app = tui_app.PepperApp(server.client())
     async with app.run_test(size=(120, 40)) as pilot:
         await until(pilot, lambda: len(app.dm.entries) == 2)
         await send(pilot, app, "go")
-        await until(pilot, lambda: status_line(app).strip() in WITTY_PHRASES)
-        gates[1].set()  # one thought fragment: accumulated, never painted
+        await until(pilot, lambda: status_line(app).strip() == "Thinking…")
+        gates[0].set()
+        await until(pilot, lambda: status_line(app).strip() == "Grinding fresh pepper")
+        gates[1].set()  # a thought fragment is accumulated, never painted
         await pilot.pause(0.2)
-        assert status_line(app).strip() in WITTY_PHRASES
+        assert status_line(app).strip() == "Grinding fresh pepper"
         gates[2].set()
         await until(pilot, lambda: status_line(app).strip() == "Calling x…")
         gates[3].set()
         await until(pilot, lambda: status_line(app).strip() == "x → ok")
         gates[4].set()
+        await until(pilot, lambda: status_line(app).strip() == "Counting electrons")
+        gates[5].set()
         await until(pilot, lambda: not app.turns)
 
 
-async def test_an_unchanged_status_line_rotates_and_stops_with_the_turn(monkeypatch) -> None:
-    monkeypatch.setattr(witty_phrases, "ROTATE_SECONDS", 0.1)
+async def test_an_older_server_without_status_phrase_frames_shows_the_plain_statuses() -> None:
     server = ts.standard_server()
-    gate = threading.Event()
-    server.turns = [_tool_turn({1: gate})]
+    gates = {i: threading.Event() for i in range(5)}
+    server.turns = [_tool_turn(gates, phrases=False)]
     app = tui_app.PepperApp(server.client())
     async with app.run_test(size=(120, 40)) as pilot:
         await until(pilot, lambda: len(app.dm.entries) == 2)
         await send(pilot, app, "go")
-        await until(pilot, lambda: status_line(app).strip() in WITTY_PHRASES)
-        seen = {status_line(app).strip()}
-        await until(pilot, lambda: seen.add(status_line(app).strip()) or len(seen) >= 3)
-        assert seen <= set(WITTY_PHRASES)
-        gate.set()
+        await until(pilot, lambda: status_line(app).strip() == "Thinking…")
+        gates[0].set()
+        gates[1].set()
+        await until(pilot, lambda: status_line(app).strip() == "Calling x…")
+        gates[2].set()
+        await until(pilot, lambda: status_line(app).strip() == "x → ok")
+        gates[3].set()
+        await until(pilot, lambda: status_line(app).strip() == "Retrying…")
+        gates[4].set()
         await until(pilot, lambda: not app.turns)
-        assert app._rotate_timer is None
-        await pilot.pause(0.3)
-        assert app.query_one("#dm-status").has_class("empty")  # a stale timer paints nothing
+        assert app.query_one("#dm-status").has_class("empty")
