@@ -2916,6 +2916,9 @@ class _TurnStatus(turns.TurnSink):
         #: server sends phrases in exactly the quiet gaps a notice would otherwise stay up in);
         #: the turn's next real status does, as before.
         self._notice = False
+        #: A ``status_phrase`` arrived this turn. Until one does (an older server sends none),
+        #: a streaming thought paints its tail live, as it always has.
+        self._phrases = False
         #: The terminal frame's payload (reply or error), read by the app when the turn ends.
         self.payload: dict[str, Any] = {}
 
@@ -2924,9 +2927,12 @@ class _TurnStatus(turns.TurnSink):
         self._status(text)
 
     def thought_delta(self, text: str, *, first: bool) -> None:
-        # Accumulated but not painted: a repaint per token flickers the line. The block that
-        # closes the thought paints its tail once.
+        # With loading phrases the line is the server's, so fragments are only accumulated (a
+        # repaint per token would fight the phrase); the block that closes the thought paints
+        # its tail once. Without them the live tail is the only sign of progress.
         self.thought = text if first else self.thought + text
+        if not self._phrases and self.thought.strip():
+            self._show(_tail(self.thought))
 
     def thought_block(self, text: str, *, streamed: str) -> None:
         self.thought = ""
@@ -2938,6 +2944,7 @@ class _TurnStatus(turns.TurnSink):
         self._show("Retrying…")
 
     def status_phrase(self, text: str) -> None:
+        self._phrases = True
         if not self._notice:
             self._show(text)
 

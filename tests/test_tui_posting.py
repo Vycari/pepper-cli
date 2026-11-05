@@ -611,6 +611,32 @@ async def test_a_loading_phrase_does_not_replace_a_couldnt_return_notice(tmp_pat
         await until(pilot, lambda: "Done." in body_text(app))
 
 
+async def test_an_older_server_s_streaming_thought_moves_the_status_line() -> None:
+    server = ts.standard_server()
+    gate = threading.Event()
+    server.turns = [reply_turn("ok", 1, gates={1: gate})]
+    server.turns[0].frames[0] = ("model_thought", {"text": "Looking into it"})
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.dm.entries) == 2)
+        await send(pilot, app, "question 1")
+        await until(pilot, lambda: "Looking into it" in status_line(app))
+        gate.set()
+        await until(pilot, lambda: not app.turns)
+
+
+def test_after_a_phrase_thought_fragments_no_longer_repaint_the_line() -> None:
+    lines: list[str] = []
+    sink = tui_app._TurnStatus(lines.append, ts.standard_server().client(), None)
+    sink.thought_delta("Hm", first=True)
+    assert lines == ["Hm"]
+    sink.status_phrase("Counting electrons")
+    sink.thought_delta("m, let me see", first=False)
+    assert lines == ["Hm", "Counting electrons"]
+    sink.thought_block("Hmm, let me see", streamed="Hmm, let me see")
+    assert lines[-1] == "Hmm, let me see"
+
+
 def test_a_refusal_notice_holds_against_phrases_until_a_real_status() -> None:
     lines: list[str] = []
     sink = tui_app._TurnStatus(lines.append, ts.standard_server().client(), None)
