@@ -137,6 +137,7 @@ from pepper_cli import (
     todos_view,
     turn,
     window_title,
+    witty_phrases,
 )
 from pepper_cli.due import parse_due
 from pepper_cli.provider import fs as provider_fs
@@ -2732,11 +2733,22 @@ def _stream_one_turn(
     on stderr.
     """
     sink: turn.TurnSink
+    wait: render.WaitStatus | None = None
     if json_args is not None:
         sink = _JsonTurnSink(api, provider=provider, json_args=json_args)
     else:
-        sink = _ReplTurnSink(api, provider=provider, trace=trace)
-    outcome = turn.run_turn(api, message, sink, provider=provider)
+        # The waiting spinner: only for a person at a terminal. Pipes, scripts, ``--json`` and
+        # trace output never get it, so their bytes are unchanged.
+        wait = render.WaitStatus() if not trace and render.wait_status_enabled() else None
+        sink = _ReplTurnSink(api, provider=provider, trace=trace, wait=wait)
+    if wait is not None:
+        wait.start()
+    try:
+        outcome = turn.run_turn(api, message, sink, provider=provider)
+    finally:
+        # Also on an error and on Ctrl-C: never leave the line dangling.
+        if wait is not None:
+            wait.stop()
     if outcome == "reply":
         return True
     if outcome == "ended":
@@ -2761,10 +2773,23 @@ class _ReplTurnSink(turn.TurnSink):
         *,
         provider: provider_fs.FilesystemProvider | None,
         trace: bool,
+        wait: render.WaitStatus | None = None,
     ) -> None:
         self.api = api
         self.provider = provider
         self.trace = trace
+        #: The waiting spinner, only when stderr is a terminal and nothing else is drawn
+        #: (``_stream_one_turn`` decides). It starts and stops around the turn there; this sink
+        #: updates its line and pauses it for anything that prints.
+        self.wait = wait
+
+    def _status(self, text: str) -> None:
+        if self.wait is not None:
+            self.wait.set(text)
+
+    def _pause(self) -> None:
+        if self.wait is not None:
+            self.wait.stop()
 
     def thought_delta(self, text: str, *, first: bool) -> None:
         if self.trace:
@@ -2773,6 +2798,8 @@ class _ReplTurnSink(turn.TurnSink):
     def thought_block(self, text: str, *, streamed: str) -> None:
         if self.trace:
             render.end_thought(text, streamed=streamed)
+        elif text.strip():
+            self._status(witty_phrases.tail(text))
 
     def retry(self, *, streamed: str) -> None:
         # The abandoned attempt's fragments stay on screen; end their line so the retry's
@@ -2780,26 +2807,37 @@ class _ReplTurnSink(turn.TurnSink):
         # line to end.
         if self.trace and streamed:
             render.discard_thought()
+        self._status("Retrying…")
 
     def tool_call(self, payload: dict) -> None:
         if self.trace:
             render.render_tool_call(payload)
+        self._status(f"Calling {payload.get('name') or 'a tool'}…")
 
     def tool_result(self, payload: dict) -> None:
         if self.trace:
             render.render_tool_result(payload)
+        self._status(f"{payload.get('name') or 'tool'} → {payload.get('status') or 'ok'}")
 
     def client_tools(self, payload: dict) -> None:
         if self.trace:
             _render_client_tools_ack(payload)
 
     def client_tool_call(self, payload: dict) -> None:
-        _serve_client_tool_call(self.api, payload, provider=self.provider, trace=self.trace)
+        # A local tool may print or prompt: clear the line first, and bring it back after.
+        self._pause()
+        try:
+            _serve_client_tool_call(self.api, payload, provider=self.provider, trace=self.trace)
+        finally:
+            if self.wait is not None:
+                self.wait.start()
 
     def reply(self, payload: dict) -> None:
+        self._pause()
         render.render_reply(payload.get("reply") or "")
 
     def error(self, payload: dict) -> None:
+        self._pause()
         render.error(payload.get("message") or "model service unavailable")
 
 

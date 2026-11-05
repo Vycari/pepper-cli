@@ -33,16 +33,20 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+import time
 from datetime import UTC, datetime, tzinfo
 from typing import TYPE_CHECKING, Any
 
 from rich.console import Console, ConsoleOptions, ConsoleRenderable, RenderHook, RenderResult
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.markup import escape
 from rich.segment import Segment
+from rich.spinner import Spinner
 from rich.text import Text
 
-from pepper_cli import credentials
+from pepper_cli import credentials, witty_phrases
 from pepper_cli.terminal_text import sanitize_line, sanitize_text
 
 if TYPE_CHECKING:
@@ -158,6 +162,63 @@ def render_markdown(text: str) -> None:
         sys.stdout.write(text)
         return
     _stdout.print(Markdown(sanitize_text(text)))
+
+
+def wait_status_enabled() -> bool:
+    """Whether a waiting spinner may be drawn: only on an interactive stderr.
+
+    Pipes, redirects and dumb terminals get nothing, so scripted output is unchanged.
+    """
+    return _stderr.is_terminal and not _stderr.is_dumb_terminal
+
+
+class WaitStatus:
+    """A stderr spinner with a one-line status that rotates through witty phrases.
+
+    Starts on a random phrase; :meth:`set` replaces the line with what the turn is doing.
+    When nothing changes the line for ``ROTATE_SECONDS`` it moves to a fresh phrase. The
+    rotation is checked each time Rich's refresh thread renders the line, so there is no
+    thread of our own; a lock guards the state against :meth:`set` from the caller's thread.
+    The line is transient: :meth:`stop` erases it, leaving no residue before the reply.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._text = witty_phrases.pick()
+        self._changed = time.monotonic()
+        self._spinner = Spinner("dots", style="dim")
+        self._live = Live(
+            self,
+            console=_stderr,
+            transient=True,
+            refresh_per_second=4,
+            redirect_stdout=False,
+            redirect_stderr=False,
+        )
+
+    def start(self) -> None:
+        """Show the line (idempotent)."""
+        self._live.start(refresh=True)
+
+    def stop(self) -> None:
+        """Erase the line (idempotent). Call before anything else prints."""
+        self._live.stop()
+
+    def set(self, text: str) -> None:
+        """Show ``text`` (server-supplied text is made one safe line) and restart the clock."""
+        with self._lock:
+            self._text = sanitize_line(text)
+            self._changed = time.monotonic()
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        with self._lock:
+            now = time.monotonic()
+            if now - self._changed >= witty_phrases.ROTATE_SECONDS:
+                self._text = witty_phrases.pick(self._text)
+                self._changed = now
+            text = self._text
+        self._spinner.text = Text(" " + text, style="dim", no_wrap=True, overflow="ellipsis")
+        yield self._spinner
 
 
 def render_reply(markdown_text: str) -> None:

@@ -52,7 +52,7 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Static
 
-from pepper_cli import note_edit
+from pepper_cli import note_edit, witty_phrases
 from pepper_cli import turn as turns
 from pepper_cli.api_client import ApiError, ArtifactConflictError, UpgradeRequiredError
 from pepper_cli.terminal_text import sanitize_line
@@ -321,6 +321,9 @@ class PepperApp(App[None]):
         self._update_checker = update_checker
         #: Set once quitting starts; workers and the turn thread then post nothing back.
         self._quitting = False
+        #: Rotates the running turn's status line to a fresh phrase once it has sat unchanged
+        #: for ``ROTATE_SECONDS``. UI-thread only (a Textual timer, never a thread).
+        self._rotate_timer: Timer | None = None
 
     # ------------------------------------------------------------------ layout
 
@@ -405,6 +408,7 @@ class PepperApp(App[None]):
 
     def exit(self, *args: Any, **kwargs: Any) -> None:
         self._quitting = True
+        self._stop_rotation()
         if self._person_stream is not None:
             self._person_stream.stop()
         super().exit(*args, **kwargs)
@@ -2721,9 +2725,10 @@ class PepperApp(App[None]):
         loop.in_flight = generation
         # An earlier answered turn's rows may not be in history yet; they are not this turn's.
         turn.snapshot = frozenset(self.dm.entries) | self._answered_ids
-        turn.phase, turn.status = "streaming", "Sending…"
+        turn.phase, turn.status = "streaming", witty_phrases.pick()
         self._loops["dm"].stop_timer()
         self._paint_dm_status()
+        self._arm_rotation(turn, generation)
         if turn.subject is not None:
             self._render_strip()  # no longer "waiting to send"
         worker = threading.Thread(
@@ -2759,6 +2764,31 @@ class PepperApp(App[None]):
             return
         turn.status = text
         self._paint_dm_status()
+        self._arm_rotation(turn, generation)
+
+    def _arm_rotation(self, turn: state.DmTurn, generation: int) -> None:
+        """(Re)start the countdown to the next phrase; any status change restarts it."""
+        self._stop_rotation()
+        self._rotate_timer = self.set_timer(
+            witty_phrases.ROTATE_SECONDS, lambda: self._rotate_status(turn, generation)
+        )
+
+    def _stop_rotation(self) -> None:
+        if self._rotate_timer is not None:
+            self._rotate_timer.stop()
+            self._rotate_timer = None
+
+    def _rotate_status(self, turn: state.DmTurn, generation: int) -> None:
+        """The line sat unchanged: show a fresh phrase. A timer left over from an earlier turn
+        (a stale generation) or one whose turn is no longer streaming paints nothing."""
+        self._rotate_timer = None
+        if self._quitting or generation != self._loops["turn"].generation:
+            return
+        if turn.phase != "streaming":
+            return
+        turn.status = witty_phrases.pick(turn.status)
+        self._paint_dm_status()
+        self._arm_rotation(turn, generation)
 
     def _turn_ended(
         self,
@@ -2771,6 +2801,7 @@ class PepperApp(App[None]):
         loop = self._loops["turn"]
         if loop.in_flight == generation:
             loop.in_flight = None
+            self._stop_rotation()
         if not self._mounted() or self.fatal or turn not in self.turns:
             return
         if isinstance(error, ApiError) and error.status == 401:
@@ -2916,22 +2947,24 @@ class _TurnStatus(turns.TurnSink):
         self.payload: dict[str, Any] = {}
 
     def thought_delta(self, text: str, *, first: bool) -> None:
+        # Accumulated but not painted: a repaint per token flickers the line. The block that
+        # closes the thought paints its tail once.
         self.thought = text if first else self.thought + text
-        self._status("Thinking: " + _tail(self.thought))
 
     def thought_block(self, text: str, *, streamed: str) -> None:
         self.thought = ""
-        self._status("Thinking: " + _tail(text))
+        if text.strip():
+            self._status(_tail(text))
 
     def retry(self, *, streamed: str) -> None:
         self.thought = ""
         self._status("Retrying…")
 
     def tool_call(self, payload: dict[str, Any]) -> None:
-        self._status(f"Using {payload.get('name') or 'a tool'}…")
+        self._status(f"Calling {payload.get('name') or 'a tool'}…")
 
     def tool_result(self, payload: dict[str, Any]) -> None:
-        self._status("Thinking…")
+        self._status(f"{payload.get('name') or 'tool'} → {payload.get('status') or 'ok'}")
 
     def client_tools(self, payload: dict[str, Any]) -> None:
         if payload.get("manifest_reason"):
@@ -2959,5 +2992,4 @@ class _TurnStatus(turns.TurnSink):
 
 
 def _tail(text: str, width: int = 70) -> str:
-    flat = " ".join(text.split())
-    return flat if len(flat) <= width else "…" + flat[-(width - 1) :]
+    return witty_phrases.tail(text, width)

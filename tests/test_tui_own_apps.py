@@ -86,7 +86,7 @@ def reply_turn(text: str, n: int = 1, **over) -> ts.ScriptedTurn:
     user, assistant = f"u{n}", f"a{n}"
     return ts.ScriptedTurn(
         frames=[
-            ("model_thought", {"text": "Looking into it"}),
+            ("model_thought_block", {"text": "Looking into it"}),
             ("reply", {"reply": text, "user_message_id": user, "assistant_message_id": assistant}),
         ],
         history=[
@@ -268,7 +268,7 @@ async def test_a_send_carries_the_subject_streams_into_the_strip_and_rereads_the
     async with app.run_test(size=SIZE) as pilot:
         await open_own(app, pilot)
         await say(pilot, app, "add buy stamps")
-        await until(pilot, lambda: "Thinking: Looking into it" in plain(app, "#dm-status"))
+        await until(pilot, lambda: "Looking into it" in plain(app, "#dm-status"))
         assert app.query_one("#reply-strip").display
         assert "add buy stamps" in strip(app)
         assert "Pepper" in strip(app)
@@ -391,7 +391,7 @@ async def test_a_turn_already_running_when_the_pane_opens_does_not_appear_in_the
     async with app.run_test(size=SIZE) as pilot:
         await until(pilot, lambda: len(app.dm.entries) == 2)
         await say(pilot, app, "from the DM")
-        await until(pilot, lambda: "Thinking" in plain(app, "#dm-status"))
+        await until(pilot, lambda: "Looking into it" in plain(app, "#dm-status"))
         await open_own(app, pilot)
         gate.set()
         await until(pilot, lambda: not app.turns)

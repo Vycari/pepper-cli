@@ -13,11 +13,13 @@ import httpx
 import pytest
 from textual import events
 
+from pepper_cli import witty_phrases
 from pepper_cli.provider.fs import FilesystemProvider
 from pepper_cli.tui import app as tui_app
 from pepper_cli.tui import state
 from pepper_cli.tui.composer import Composer
 from pepper_cli.tui.thread import ThreadScroll
+from pepper_cli.witty_phrases import WITTY_PHRASES
 from tests import tui_support as ts
 from tests.tui_support import body_text, plain, until
 
@@ -282,7 +284,7 @@ def reply_turn(text: str, n: int, **over) -> ts.ScriptedTurn:
     user, assistant = f"u{n}", f"a{n}"
     return ts.ScriptedTurn(
         frames=[
-            ("model_thought", {"text": "Looking into it"}),
+            ("model_thought_block", {"text": "Looking into it"}),
             ("reply", {"reply": text, "user_message_id": user, "assistant_message_id": assistant}),
         ],
         history=[
@@ -301,7 +303,7 @@ async def test_a_turn_streams_into_the_status_line_and_its_reply_becomes_a_messa
     async with app.run_test(size=(120, 40)) as pilot:
         await until(pilot, lambda: len(app.dm.entries) == 2)
         await send(pilot, app, "question 1")
-        await until(pilot, lambda: "Thinking: Looking into it" in status_line(app))
+        await until(pilot, lambda: "Looking into it" in status_line(app))
         assert "question 1" in body_text(app)  # the provisional row
         gate.set()
         await until(pilot, lambda: not app.turns)
@@ -399,7 +401,7 @@ async def test_a_second_send_waits_until_the_current_turn_finishes() -> None:
     async with app.run_test(size=(120, 40)) as pilot:
         await until(pilot, lambda: len(app.dm.entries) == 2)
         await send(pilot, app, "question 1")
-        await until(pilot, lambda: "Thinking" in status_line(app))
+        await until(pilot, lambda: "Looking into it" in status_line(app))
         await send(pilot, app, "question 2")
         assert "waiting to send" in body_text(app)
         await pilot.pause(0.1)
@@ -427,7 +429,7 @@ async def test_an_answered_turn_whose_user_row_never_shows_does_not_hold_the_que
     async with app.run_test(size=(120, 40)) as pilot:
         await until(pilot, lambda: len(app.dm.entries) == 2)
         await send(pilot, app, "question 1")
-        await until(pilot, lambda: "Thinking" in status_line(app))
+        await until(pilot, lambda: "Looking into it" in status_line(app))
         await send(pilot, app, "question 2")
         gate.set()
         await until(pilot, lambda: len(server.turn_bodies) == 2)
@@ -458,7 +460,7 @@ async def test_a_dropped_turn_never_takes_a_retired_earlier_turns_reply(monkeypa
     async with app.run_test(size=(120, 40)) as pilot:
         await until(pilot, lambda: len(app.dm.entries) == 2)
         await send(pilot, app, "question 1")
-        await until(pilot, lambda: "Thinking" in status_line(app))
+        await until(pilot, lambda: "Looking into it" in status_line(app))
         await send(pilot, app, "question 2")
         await send(pilot, app, "question 3")
         first.set()  # turn 2 starts at once: no history read in between
@@ -505,7 +507,7 @@ async def test_a_refused_turn_keeps_a_draft_typed_while_it_was_sending() -> None
     async with app.run_test(size=(120, 40)) as pilot:
         await until(pilot, lambda: len(app.dm.entries) == 2)
         await send(pilot, app, "try this")
-        await until(pilot, lambda: "Sending" in status_line(app))
+        await until(pilot, lambda: status_line(app).strip() in WITTY_PHRASES)
         app.composer.insert("and then this")
         gate.set()
         await until(pilot, lambda: "Couldn't send (HTTP 503)" in status_line(app))
@@ -600,7 +602,7 @@ async def test_quitting_mid_stream_stops_reading_and_closes_the_stream(monkeypat
     async with app.run_test(size=(120, 40)) as pilot:
         await until(pilot, lambda: len(app.dm.entries) == 2)
         await send(pilot, app, "question 1")
-        await until(pilot, lambda: "Thinking" in status_line(app))
+        await until(pilot, lambda: "Looking into it" in status_line(app))
         await pilot.press("ctrl+q")
     assert app.return_code == 0
     gate.set()  # the next frame arrives after quit: it is not dispatched
@@ -610,3 +612,61 @@ async def test_quitting_mid_stream_stops_reading_and_closes_the_stream(monkeypat
     assert outcomes == ["stopped"]
     assert app.turns[0].reply is None  # nothing was posted back to the closed app
     assert len(server.turn_bodies) == 1
+
+
+def _tool_turn(gates: dict[int, threading.Event]) -> ts.ScriptedTurn:
+    return ts.ScriptedTurn(
+        frames=[
+            ("model_thought", {"text": "Hm"}),
+            ("model_thought", {"text": "mm"}),
+            ("tool_call", {"name": "x", "args": {}}),
+            ("tool_result", {"name": "x", "status": "ok", "text": "fine"}),
+            ("reply", {"reply": "Done", "user_message_id": "u1", "assistant_message_id": "a1"}),
+        ],
+        gates=gates,
+        history=[
+            ts.history_entry("u1", "user", "go", "2026-09-16T09:00:01Z"),
+            ts.history_entry("a1", "assistant", "Done", "2026-09-16T09:00:11Z"),
+        ],
+    )
+
+
+async def test_the_status_line_starts_on_a_phrase_and_follows_the_tool_calls(monkeypatch) -> None:
+    monkeypatch.setattr(witty_phrases, "ROTATE_SECONDS", 30.0)
+    server = ts.standard_server()
+    gates = {i: threading.Event() for i in (1, 2, 3, 4)}
+    server.turns = [_tool_turn(gates)]
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.dm.entries) == 2)
+        await send(pilot, app, "go")
+        await until(pilot, lambda: status_line(app).strip() in WITTY_PHRASES)
+        gates[1].set()  # one thought fragment: accumulated, never painted
+        await pilot.pause(0.2)
+        assert status_line(app).strip() in WITTY_PHRASES
+        gates[2].set()
+        await until(pilot, lambda: status_line(app).strip() == "Calling x…")
+        gates[3].set()
+        await until(pilot, lambda: status_line(app).strip() == "x → ok")
+        gates[4].set()
+        await until(pilot, lambda: not app.turns)
+
+
+async def test_an_unchanged_status_line_rotates_and_stops_with_the_turn(monkeypatch) -> None:
+    monkeypatch.setattr(witty_phrases, "ROTATE_SECONDS", 0.1)
+    server = ts.standard_server()
+    gate = threading.Event()
+    server.turns = [_tool_turn({1: gate})]
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.dm.entries) == 2)
+        await send(pilot, app, "go")
+        await until(pilot, lambda: status_line(app).strip() in WITTY_PHRASES)
+        seen = {status_line(app).strip()}
+        await until(pilot, lambda: seen.add(status_line(app).strip()) or len(seen) >= 3)
+        assert seen <= set(WITTY_PHRASES)
+        gate.set()
+        await until(pilot, lambda: not app.turns)
+        assert app._rotate_timer is None
+        await pilot.pause(0.3)
+        assert app.query_one("#dm-status").has_class("empty")  # a stale timer paints nothing
