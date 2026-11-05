@@ -584,6 +584,45 @@ async def test_a_missing_call_returning_a_client_tool_result_reads_on(tmp_path) 
         assert not app.fatal
 
 
+async def test_a_loading_phrase_does_not_replace_a_couldnt_return_notice(tmp_path) -> None:
+    server = ts.standard_server()
+    gates = {i: threading.Event() for i in range(1, 3)}
+    server.turns = [
+        ts.ScriptedTurn(
+            frames=[
+                ("client_tool_call", {"call_id": "c1", "name": "fs_list", "arguments": {}}),
+                ("status_phrase", {"text": "Counting electrons"}),
+                ("reply", {"reply": "Done.", "assistant_message_id": "a1"}),
+            ],
+            gates=gates,
+        )
+    ]
+    server.fail["/api/v1/chat/tool-result"] = 404
+    app = tui_app.PepperApp(server.client(), provider=FilesystemProvider([tmp_path]))
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.dm.entries) == 2)
+        await send(pilot, app, "list my files")
+        await until(pilot, lambda: "Couldn't return 'fs_list'" in status_line(app))
+        gates[1].set()  # the phrase frame arrives while the notice is up
+        await pilot.pause(0.2)
+        assert "Couldn't return 'fs_list'" in status_line(app)
+        assert "Counting electrons" not in status_line(app)
+        gates[2].set()
+        await until(pilot, lambda: "Done." in body_text(app))
+
+
+def test_a_refusal_notice_holds_against_phrases_until_a_real_status() -> None:
+    lines: list[str] = []
+    sink = tui_app._TurnStatus(lines.append, ts.standard_server().client(), None)
+    sink.status_phrase("Grinding fresh pepper")
+    sink.client_tools({"accepted": [], "manifest_reason": "too many tools"})
+    sink.status_phrase("Counting electrons")
+    assert lines[-1] == "Local tools refused: too many tools"
+    sink.tool_call({"name": "x"})
+    sink.status_phrase("Counting electrons")
+    assert lines[-2:] == ["Calling x…", "Counting electrons"]
+
+
 async def test_quitting_mid_stream_stops_reading_and_closes_the_stream(monkeypatch) -> None:
     server = ts.standard_server()
     gate = threading.Event()

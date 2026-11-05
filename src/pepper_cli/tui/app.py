@@ -2912,8 +2912,16 @@ class _TurnStatus(turns.TurnSink):
         self.api = api
         self.provider = provider
         self.thought = ""
+        #: A refusal or failure notice is on the line. A loading phrase never replaces one (the
+        #: server sends phrases in exactly the quiet gaps a notice would otherwise stay up in);
+        #: the turn's next real status does, as before.
+        self._notice = False
         #: The terminal frame's payload (reply or error), read by the app when the turn ends.
         self.payload: dict[str, Any] = {}
+
+    def _show(self, text: str, *, notice: bool = False) -> None:
+        self._notice = notice
+        self._status(text)
 
     def thought_delta(self, text: str, *, first: bool) -> None:
         # Accumulated but not painted: a repaint per token flickers the line. The block that
@@ -2923,27 +2931,28 @@ class _TurnStatus(turns.TurnSink):
     def thought_block(self, text: str, *, streamed: str) -> None:
         self.thought = ""
         if text.strip():
-            self._status(_tail(text))
+            self._show(_tail(text))
 
     def retry(self, *, streamed: str) -> None:
         self.thought = ""
-        self._status("Retrying…")
+        self._show("Retrying…")
 
     def status_phrase(self, text: str) -> None:
-        self._status(text)
+        if not self._notice:
+            self._show(text)
 
     def tool_call(self, payload: dict[str, Any]) -> None:
-        self._status(f"Calling {payload.get('name') or 'a tool'}…")
+        self._show(f"Calling {payload.get('name') or 'a tool'}…")
 
     def tool_result(self, payload: dict[str, Any]) -> None:
-        self._status(f"{payload.get('name') or 'tool'} → {payload.get('status') or 'ok'}")
+        self._show(f"{payload.get('name') or 'tool'} → {payload.get('status') or 'ok'}")
 
     def client_tools(self, payload: dict[str, Any]) -> None:
         if payload.get("manifest_reason"):
-            self._status(f"Local tools refused: {payload['manifest_reason']}")
+            self._show(f"Local tools refused: {payload['manifest_reason']}", notice=True)
 
     def client_tool_call(self, payload: dict[str, Any]) -> None:
-        self._status(f"Running local tool {payload.get('name') or ''}…")
+        self._show(f"Running local tool {payload.get('name') or ''}…")
         answer = turns.answer_client_tool_call(self.api, payload, provider=self.provider)
         if answer is None or answer.post_error is None:
             return
@@ -2954,7 +2963,7 @@ class _TurnStatus(turns.TurnSink):
             raise error
         # A call the server no longer waits on (404) or a network blip: the reply may still
         # come, so the stream is read on.
-        self._status(f"Couldn't return {answer.name!r} to the server.")
+        self._show(f"Couldn't return {answer.name!r} to the server.", notice=True)
 
     def reply(self, payload: dict[str, Any]) -> None:
         self.payload = payload
