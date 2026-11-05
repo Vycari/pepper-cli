@@ -492,6 +492,41 @@ class TrajectoryListEntry:
     group_name: str | None
 
 
+# MIRROR: src/pepper/api/router.py::EmailDraftCardEntry
+@dataclass(frozen=True)
+class DraftCard:
+    """One outbound draft Pepper staged in a turn: an email, or a calendar suggestion to an
+    organizer. Nothing leaves until the user sends it (:meth:`ApiClient.send_draft`)."""
+
+    draft_id: str
+    to: str
+    subject: str
+    body: str
+    #: ``[id, label]`` per account the draft could go from; more than one means a choice.
+    accounts: list[list[str]] = field(default_factory=list)
+    account_id: str = ""
+    sent: bool = False
+
+
+def draft_cards_from(raw: object) -> list[DraftCard]:
+    """The ``drafts`` list of a reply or history row; anything malformed is skipped."""
+    cards: list[DraftCard] = []
+    for d in raw if isinstance(raw, list) else []:
+        if isinstance(d, dict) and d.get("draft_id"):
+            cards.append(
+                DraftCard(
+                    draft_id=str(d["draft_id"]),
+                    to=str(d.get("to") or ""),
+                    subject=str(d.get("subject") or ""),
+                    body=str(d.get("body") or ""),
+                    accounts=[list(a) for a in d.get("accounts") or [] if isinstance(a, list)],
+                    account_id=str(d.get("account_id") or ""),
+                    sent=d.get("sent") is True,
+                )
+            )
+    return cards
+
+
 # MIRROR: src/pepper/api/router.py::ChatHistoryEntry
 @dataclass(frozen=True)
 class ChatHistoryEntry:
@@ -499,8 +534,8 @@ class ChatHistoryEntry:
 
     Only the fields the terminal UI reads. ``role`` is ``"user"`` or
     ``"assistant"``; ``created_at`` is raw UTC ISO-8601 (``Z`` suffix), so a
-    client localizes it itself. The mail, brief, draft and schedule-proposal
-    cards the server also sends are not mirrored: the UI shows ``text`` only.
+    client localizes it itself. The mail, brief and schedule-proposal cards the server
+    also sends are not mirrored; ``drafts`` is, since a draft waits for a send.
     """
 
     id: str
@@ -517,6 +552,8 @@ class ChatHistoryEntry:
     #: The ``client_message_id`` the sender gave this message (user rows only; ``None`` on an
     #: assistant row, a row sent without one, or a server that predates the field).
     client_message_id: str | None = None
+    #: Drafts this turn staged (assistant rows), oldest first.
+    drafts: list[DraftCard] = field(default_factory=list)
 
 
 # MIRROR: src/pepper/gateway/channels/client_api/adapter.py::ChatSendResponse
@@ -2628,6 +2665,7 @@ class ApiClient:
                 reactions=list(r.get("reactions") or []),
                 trajectory_id=str(t) if (t := r.get("trajectory_id")) else None,
                 client_message_id=str(c) if (c := r.get("client_message_id")) else None,
+                drafts=draft_cards_from(r.get("drafts")),
             )
             for r in rows
             if isinstance(r, dict)
@@ -3946,6 +3984,12 @@ class ApiClient:
         if not isinstance(resp, dict) or not resp.get("id"):
             raise ApiError(status=200, body=str(resp), detail="malformed response")
         return resp
+
+    def send_draft(self, draft_id: str) -> None:
+        """``POST /api/v1/chat/drafts/send``: send a draft Pepper staged. 404 is not a draft
+        of yours, 409 is already being sent from another window or changed since, 502 is a
+        send that failed."""
+        self._request("POST", "/api/v1/chat/drafts/send", json={"draft_id": draft_id})
 
     def get_calendar_preferences(self) -> dict[str, Any]:
         """``GET /api/v1/calendars/preferences``: the Calendar > Preferences page's values

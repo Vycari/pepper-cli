@@ -26,11 +26,11 @@ from pepper_cli.terminal_text import sanitize_line, sanitize_text
 from pepper_cli.tui.state import draw_checklist, parse_ts, url_domain
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Collection, Iterable
 
     from rich.console import RenderableType
 
-    from pepper_cli.api_client import ChatHistoryEntry, GroupCard, GroupMessage
+    from pepper_cli.api_client import ChatHistoryEntry, DraftCard, GroupCard, GroupMessage
     from pepper_cli.tui.state import PendingSend
 
 _HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
@@ -207,6 +207,19 @@ def _card_panel(card: GroupCard) -> RenderableType:
     )
 
 
+def draft_panel(draft: DraftCard) -> RenderableType:
+    """A boxed draft Pepper staged: who it goes to, its subject and body, and the key that
+    sends it (as :func:`_card_panel` boxes an app card)."""
+    body = Text(f"Draft, not sent: to {sanitize_line(draft.to)}", style="bold")
+    body.append(f"\n{sanitize_line(draft.subject)}")
+    body.append("\n" + sanitize_text(draft.body))
+    body.append("\nsend (s)", style="dim")
+    return Padding(
+        Panel(body, box=ROUNDED, border_style="dim", expand=False, padding=(0, 1)),
+        (0, 0, 0, len(INDENT)),
+    )
+
+
 def _quote_line(quote: object) -> Text | None:
     """The quoted parent as ``┃ Author: excerpt``, or ``None`` when the message quotes nothing.
 
@@ -331,12 +344,14 @@ def dm_renderable(
     *,
     hour24: bool = False,
     provisional: Iterable[tuple[str, str, str]] = (),
+    sent_drafts: Collection[str] = (),
 ) -> RenderableType:
     """Today's Pepper thread. ``You`` and ``Pepper`` take a name line on each change of speaker.
 
     ``provisional`` rows are this session's turns not yet in history, as ``(role, text,
     label)``: an own message still sending (dimmed, ``label`` saying so), or a reply the
-    stream delivered before the history read caught up with it.
+    stream delivered before the history read caught up with it. A draft the turn staged is
+    boxed under its reply until it is sent (``sent_drafts`` holds ids sent this session).
     """
     parts: list[RenderableType] = [day_divider("Today")]
     previous_role: str | None = None
@@ -357,6 +372,9 @@ def dm_renderable(
         parts.extend(_attachment_lines(entry.attachments))
         if entry.reactions and (line := _reaction_line(entry.reactions)):
             parts.append(line)
+        parts.extend(
+            draft_panel(d) for d in entry.drafts if not d.sent and d.draft_id not in sent_drafts
+        )
     for role, text, label in provisional:
         mine = role == "user"
         if role != previous_role or label:

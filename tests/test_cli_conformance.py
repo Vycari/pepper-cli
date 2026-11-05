@@ -62,6 +62,8 @@ NOUNS = frozenset(
         # (planning/cli-information-architecture.md §2).
         "artifacts",
         "preferences",
+        # `drafts` are what Pepper staged in chat for you to send.
+        "drafts",
         "agents",
         "calendar",
         "next",
@@ -119,6 +121,8 @@ VERBS = frozenset(
         "resolve",
         "download",
         "run",
+        # `send DRAFT` sends a draft Pepper staged in chat (the card's Send).
+        "send",
         # `runs OBJECT` is the run history of an object that runs (IA §3.1).
         "runs",
         "guide",
@@ -171,6 +175,7 @@ ROOM_NA = {
     "brief": "your own morning brief; the server exposes no room's brief to a PAT here",
     "artifacts show": "reads any artifact the viewer can see; the id carries the room",
     "artifacts download": "reads any artifact the viewer can see; the id carries the room",
+    "drafts send": "a draft's id says whose it is",
     "preferences show": "your own account's Calendar preferences",
     "preferences edit": "your own account's Calendar preferences",
     "login": "session command",
@@ -932,6 +937,7 @@ POST_ROUTES: dict[str, object] = {
         "byte_size": 4,
     },
     "/api/v1/calendars/preferences": {"timezone": "America/Chicago", "work_days": [0, 1]},
+    "/api/v1/chat/drafts/send": {"draft_id": "d1"},
     "/api/v1/apps/brief/actions/run_now": {"result": {"started": True, "message": "Running."}},
     "/api/v1/apps/following/actions/search": {
         "result": {
@@ -1132,6 +1138,7 @@ JSON_CASES: dict[str, list[str]] = {
     "artifacts download": ["artifacts", "download", _BLOB, "--out", "got.png", "--force"],
     "artifacts create": ["artifacts", "create", "--file", "pic.png"],
     "artifacts delete": ["artifacts", "delete", _BLOB, "--yes"],
+    "drafts send": ["drafts", "send", "d1"],
     "preferences show": ["preferences", "show"],
     "preferences edit": ["preferences", "edit", "--timezone", "America/Chicago"],
     "todos create": ["todos", "create", "Buy milk"],

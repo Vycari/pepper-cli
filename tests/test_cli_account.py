@@ -62,7 +62,16 @@ PREFS = {
     "workout": {"at": "07:30", "minutes": 45},
     "run_minutes": 90,
     "break_minutes": 15,
+    "hidden_calendar_ids": ["work@x"],
+    "week_start": 0,
+    "view_days": "work",
+    "show_declined": False,
 }
+CALENDARS = [
+    {"id": "me@x", "name": "Personal"},
+    {"id": "work@x", "name": "Work"},
+    {"id": "fam@x", "name": "Family"},
+]
 
 
 class _Calls(list):
@@ -149,6 +158,12 @@ def server(monkeypatch, tmp_path):
                     ],
                 },
             )
+        if key == ("POST", "/api/v1/chat/drafts/send"):
+            return httpx.Response(200, json={"draft_id": json.loads(request.content)["draft_id"]})
+        if key == ("GET", "/api/v1/whoami"):
+            return httpx.Response(200, json={"user_id": "u", "display_name": "Me"})
+        if key == ("GET", "/api/v1/calendars/range"):
+            return httpx.Response(200, json={"calendars": CALENDARS})
         if key == ("GET", "/api/v1/calendars/preferences"):
             return httpx.Response(200, json=PREFS)
         if key == ("POST", "/api/v1/calendars/preferences"):
@@ -544,6 +559,57 @@ def test_preferences_edit_clears_an_address_and_refuses_nothing(server, capsys) 
     capsys.readouterr()
     assert cli.main(["preferences", "edit", "--json"]) == 2
     assert "nothing to change" in _err(capsys)["message"]
+
+
+def test_preferences_show_names_the_hidden_calendars_and_the_week_settings(server, capsys) -> None:
+    assert cli.main(["preferences", "show"]) == 0
+    out = capsys.readouterr().out
+    assert "Hidden calendars" in out and "Work" in out and "work@x" not in out
+    assert "Week starts on" in out and "Mon" in out and "work days only" in out
+
+
+@pytest.mark.parametrize(
+    ("argv", "sent"),
+    [
+        (["--week-start", "wed"], {"week_start": 2}),
+        (["--week-start", "today"], {"week_start": None}),
+        (["--view-days", "work"], {"view_days": "work"}),
+        (["--view-days", "5"], {"view_days": 5}),
+        (["--show", "declined"], {"show_declined": True}),
+        (["--hide-calendar", "fam"], {"hidden_calendar_ids": ["work@x", "fam@x"]}),
+        (["--show-calendar", "Work"], {"hidden_calendar_ids": []}),
+        (["--hide-calendar", "me@x", "--show-calendar", "all"], {"hidden_calendar_ids": ["me@x"]}),
+    ],
+)
+def test_preferences_edit_sends_the_view_settings(server, capsys, argv, sent) -> None:
+    assert cli.main(["preferences", "edit", *argv, "--json"]) == 0
+    assert json.loads(server.to("POST", "/api/v1/calendars/preferences")[0].content) == sent
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["--week-start", "someday"], ["--view-days", "9"], ["--hide-calendar", "Nowhere"]],
+)
+def test_preferences_edit_refuses_a_bad_view_setting(server, capsys, argv) -> None:
+    assert cli.main(["preferences", "edit", *argv, "--json"]) == 2
+    assert not server.to("POST", "/api/v1/calendars/preferences")
+
+
+@pytest.mark.parametrize(
+    ("status", "words"),
+    [(200, "Sent."), (409, "Not sent. another window"), (404, "Not sent. That is not a draft")],
+)
+def test_drafts_send_says_what_happened(server, capsys, status, words) -> None:
+    if status != 200:
+        server.fail[("POST", "/api/v1/chat/drafts/send")] = (
+            status,
+            "another window" if status == 409 else "x",
+        )
+    assert cli.main(["drafts", "send", "d1"]) == (0 if status == 200 else 1)
+    assert words in capsys.readouterr().err
+    assert json.loads(server.to("POST", "/api/v1/chat/drafts/send")[0].content) == {
+        "draft_id": "d1"
+    }
 
 
 @pytest.mark.parametrize(

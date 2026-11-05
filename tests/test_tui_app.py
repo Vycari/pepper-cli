@@ -482,3 +482,18 @@ async def test_terminal_app_keeps_the_mouse_in_cells(monkeypatch: pytest.MonkeyP
 
     assert query_written("Apple_Terminal") == []
     assert query_written("ghostty") == ["\x1b[?2048$p"]
+
+
+async def test_a_staged_draft_is_boxed_under_its_reply_and_s_sends_it_after_a_confirmation() -> (
+    None
+):
+    server = ts.standard_server()
+    staged = {"draft_id": "d1", "to": "ann@example.com", "subject": "Lunch?", "body": "Noon?"}
+    server.history[-1]["drafts"] = [staged]
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: "Draft, not sent: to ann@example.com" in body_text(app))
+        app.thread.focus_scroller()
+        await pilot.press("s", "y")
+        await until(pilot, lambda: server.drafts_sent == ["d1"])
+        await until(pilot, lambda: "Draft, not sent" not in body_text(app))

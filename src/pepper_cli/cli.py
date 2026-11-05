@@ -539,6 +539,20 @@ def _register_account_commands(sub: Any) -> None:
     p.add_argument("artifact", help=_ARTIFACT_REF_HELP)
     p.set_defaults(handler=cmd_artifacts_delete)
 
+    # -- drafts -------------------------------------------------------------
+    p_drafts = sub.add_parser(
+        "drafts",
+        help="Drafts Pepper staged in chat (an email, or a suggested change to an event). `send`.",
+    )
+    sub_drafts = p_drafts.add_subparsers(dest="drafts_action", required=True)
+    p = sub_drafts.add_parser(
+        "send",
+        help="Send a draft Pepper staged. Nothing is sent until you run this.",
+        parents=[_json_parent],
+    )
+    p.add_argument("draft_id", metavar="DRAFT_ID", help="The id shown under the draft in chat.")
+    p.set_defaults(handler=cmd_drafts_send)
+
     # -- preferences --------------------------------------------------------
     p_prefs = sub.add_parser(
         "preferences",
@@ -582,6 +596,30 @@ def _register_account_commands(sub: Any) -> None:
     p.add_argument("--workout-minutes", type=int, metavar="MIN", help="Length of a session.")
     p.add_argument("--run-minutes", type=int, metavar="MIN", help="Schedule: minutes of work run.")
     p.add_argument("--break-minutes", type=int, metavar="MIN", help="Schedule: minutes of break.")
+    p.add_argument(
+        "--hide-calendar",
+        action="append",
+        metavar="CALENDAR",
+        help="Stop drawing a calendar's events in your calendar views (its name or id); "
+        "repeatable. Planning and busy time still count it.",
+    )
+    p.add_argument(
+        "--show-calendar",
+        action="append",
+        metavar="CALENDAR",
+        help="Draw a hidden calendar again (its name or id); 'all' shows every one.",
+    )
+    p.add_argument(
+        "--week-start",
+        metavar="DAY",
+        help="The weekday the week view starts on (mon ... sun), or today to start on the "
+        "date shown.",
+    )
+    p.add_argument(
+        "--view-days",
+        metavar="N",
+        help="Days the week view shows: 2 to 7, or work for your work days only.",
+    )
     p.set_defaults(handler=cmd_preferences_edit)
 
 
@@ -2798,6 +2836,7 @@ class _ReplTurnSink(turn.TurnSink):
 
     def reply(self, payload: dict) -> None:
         render.render_reply(payload.get("reply") or "")
+        render.render_drafts(api_client.draft_cards_from(payload.get("drafts")))
 
     def error(self, payload: dict) -> None:
         render.error(payload.get("message") or "model service unavailable")
@@ -3071,10 +3110,22 @@ def cmd_calendar(args: argparse.Namespace) -> int:
                 return room
             principal = room
         # "Today" is the account's date, not the host's: the server reads start in user's zone.
-        start = args.start or next_view.user_now(api).date().isoformat()
-        payload = api.calendar_range(start=start, days=days, principal=principal)
+        today = next_view.user_now(api).date()
+        start, span, weekdays, hidden = args.start or today.isoformat(), days, None, []
+        if principal is None:
+            # Your own view settings; a failed read leaves the plain calendar.
+            try:
+                prefs = api.get_calendar_preferences()
+            except (api_client.ApiError, httpx.RequestError):
+                prefs = {}
+            hidden = [str(i) for i in prefs.get("hidden_calendar_ids") or []]
+            if args.window == "week" and args.days is None and not args.start:
+                first, span, weekdays = preferences_view.week_window(prefs, today)
+                start = first.isoformat()
+        payload = api.calendar_range(start=start, days=span, principal=principal)
+        preferences_view.apply_view(payload, hidden, weekdays)
         planning = (
-            api.calendar_planning(start=start, days=days, principal=principal)
+            api.calendar_planning(start=start, days=span, principal=principal)
             if args.planning
             else None
         )
@@ -8319,13 +8370,41 @@ def _report_account_error(args: argparse.Namespace, exc: api_client.ApiError) ->
     return _fail_api(args, exc)
 
 
+def _report_draft_error(args: argparse.Namespace, exc: api_client.ApiError) -> int:
+    """:func:`_fail_api`, but with the reason a draft was not sent in plain words."""
+    said = {
+        404: "That is not a draft Pepper staged for you.",
+        409: exc.detail or "That draft is being sent from another window, or changed since.",
+    }
+    if exc.status in said:
+        _emit_error(args, _error_code_for_status(exc.status), f"Not sent. {said[exc.status]}")
+        return 1
+    return _fail_api(args, exc)
+
+
+def cmd_drafts_send(args: argparse.Namespace) -> int:
+    """``pepper drafts send DRAFT_ID [--json]``: ``POST /api/v1/chat/drafts/send``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        api.send_draft(args.draft_id.strip())
+        _emit(
+            {"draft_id": args.draft_id.strip(), "sent": True},
+            args,
+            lambda: render.info("Sent."),
+        )
+        return 0
+
+    return _run_personal(args, run, _report_draft_error)
+
+
 def cmd_preferences_show(args: argparse.Namespace) -> int:
     """``pepper preferences show [--json]``: ``GET /api/v1/calendars/preferences`` without the
     page's own ``timezones`` menu and ``maps`` flag."""
 
     def run(api: api_client.ApiClient) -> int:
         prefs = preferences_view.public(api.get_calendar_preferences())
-        _emit(prefs, args, lambda: account_render.preferences(prefs))
+        known = _known_calendars(api) if prefs.get("hidden_calendar_ids") else []
+        _emit(prefs, args, lambda: account_render.preferences(prefs, known))
         return 0
 
     return _run_personal(args, run, _report_account_error)
@@ -8341,10 +8420,36 @@ def _names(value: str | None, flag: str) -> list[str]:
     return names
 
 
+def _known_calendars(api: api_client.ApiClient) -> list[dict[str, Any]]:
+    """The caller's calendars (``id``, ``name``) as the range read lists them; none when the
+    read fails."""
+    try:
+        start = next_view.user_now(api).date().isoformat()
+        return list(api.calendar_range(start=start, days=1).get("calendars") or [])
+    except (api_client.ApiError, httpx.RequestError):
+        return []
+
+
+def _hidden_after(
+    api: api_client.ApiClient, current: dict[str, Any], hide: list[str], show: list[str]
+) -> list[str]:
+    """The hidden-calendar ids once ``hide`` is added to and ``show`` taken from the stored
+    list; ``show`` of ``all`` empties it."""
+    known = _known_calendars(api)
+    hidden = list(current.get("hidden_calendar_ids") or [])
+    if [s.lower() for s in show] == ["all"]:
+        hidden = []
+    else:
+        hidden = [i for i in hidden if i not in preferences_view.resolve_calendars(show, known)]
+    added = preferences_view.resolve_calendars(hide, known)
+    return hidden + [i for i in added if i not in hidden]
+
+
 def cmd_preferences_edit(args: argparse.Namespace) -> int:
     """``pepper preferences edit [--timezone Z] [--home-address T] [--work-address T]
     [--work-days D] [--work-start T] [--work-end T] [--show N] [--hide N] [--meal M]…
-    [--workout-at T] [--workout-minutes N] [--json]``: ``POST /api/v1/calendars/preferences``
+    [--workout-at T] [--workout-minutes N] [--hide-calendar C]… [--show-calendar C]…
+    [--week-start D] [--view-days N] [--json]``: ``POST /api/v1/calendars/preferences``
     with only the fields given (the server keeps the rest). Answers the saved preferences.
     Times, zones and addresses are sent as typed; the server checks them and its 422 is shown."""
     pv = preferences_view
@@ -8363,6 +8468,10 @@ def cmd_preferences_edit(args: argparse.Namespace) -> int:
             "workout_minutes": args.workout_minutes,
             "run_minutes": args.run_minutes,
             "break_minutes": args.break_minutes,
+            "week_start": (
+                pv.parse_week_start(args.week_start) if args.week_start is not None else pv.KEEP
+            ),
+            "view_days": pv.parse_view_days(args.view_days) if args.view_days is not None else None,
         }
         both = set(parsed["show"]) & set(parsed["hide"])
         if both:
@@ -8372,7 +8481,12 @@ def cmd_preferences_edit(args: argparse.Namespace) -> int:
         return 2
     # An empty list from --show/--hide/--meal means the flag was not given; --work-days none
     # is an empty list too, and it is a change (clear the work days), so only None counts there.
-    if parsed["work_days"] is None and all(v is None or v == [] for v in parsed.values()):
+    hide_cal, show_cal = args.hide_calendar or [], args.show_calendar or []
+    if (
+        parsed["work_days"] is None
+        and not (hide_cal or show_cal or args.week_start)
+        and all(v is None or v in ([], pv.KEEP) for v in parsed.values())
+    ):
         _emit_error(args, "usage", "nothing to change: give at least one flag (see --help)")
         return 2
 
@@ -8382,14 +8496,18 @@ def cmd_preferences_edit(args: argparse.Namespace) -> int:
             or parsed["workout_at"] is not None
             or parsed["workout_minutes"] is not None
         )
-        current = api.get_calendar_preferences() if needs_current else {}
+        by_calendar = bool(hide_cal or show_cal)
+        current = api.get_calendar_preferences() if needs_current or by_calendar else {}
         try:
+            if by_calendar:
+                parsed["hidden_calendars"] = _hidden_after(api, current, hide_cal, show_cal)
             changes = pv.build_changes(current, **parsed)
         except pv.PrefsError as exc:
             _emit_error(args, "usage", str(exc))
             return 2
         saved = pv.public(api.set_calendar_preferences(changes))
-        _emit(saved, args, lambda: account_render.preferences(saved))
+        known = _known_calendars(api) if saved.get("hidden_calendar_ids") else []
+        _emit(saved, args, lambda: account_render.preferences(saved, known))
         return 0
 
     return _run_personal(args, run, _report_account_error)

@@ -48,6 +48,7 @@ from pepper_cli.terminal_text import sanitize_line, sanitize_text
 if TYPE_CHECKING:
     from pepper_cli.api_client import (
         ArtifactListResponse,
+        DraftCard,
         GroupList,
         GroupMessage,
         GroupMessagePage,
@@ -173,6 +174,25 @@ def render_reply(markdown_text: str) -> None:
     render_markdown(markdown_text)
     if not sys.stdout.isatty() and not markdown_text.endswith("\n"):
         sys.stdout.write("\n")
+
+
+def render_drafts(drafts: list[DraftCard]) -> None:
+    """Print each unsent draft a turn staged, with the command that sends it.
+
+    Nothing is sent until the user runs that command."""
+    for d in drafts:
+        if d.sent:
+            continue
+        out = _stdout
+        out.print("")
+        out.print(f"[bold]Draft, not sent[/bold]  to {_s(d.to)}", soft_wrap=True)
+        out.print(f"  Subject: {_s(d.subject)}", soft_wrap=True)
+        out.print(
+            Text("\n".join("  " + ln for ln in sanitize_text(d.body).split("\n"))), soft_wrap=True
+        )
+        out.print(
+            f"  Send it with: [bold]pepper drafts send {_s(d.draft_id)}[/bold]", soft_wrap=True
+        )
 
 
 def write_document(text: str) -> None:
@@ -471,6 +491,14 @@ def _ask_suffix(row: TodoEntry) -> str:
 _IMPUTED = {"followed": "followed", "email": "suggested - from email"}
 
 
+_EVENT_TYPES = {"outOfOffice": "out of office", "focusTime": "focus time"}
+
+
+def _working_location_line(ev: dict[str, Any]) -> str:
+    """A day's working-location event as a short dim note rather than a meeting line."""
+    return f"  [dim]working from {_s(ev.get('summary') or 'another place')}[/dim]"
+
+
 def _calendar_event_line(ev: dict[str, Any]) -> str:
     """One agenda line from an event's server-preformatted fields."""
     if ev.get("all_day"):
@@ -486,6 +514,12 @@ def _calendar_event_line(ev: dict[str, Any]) -> str:
         line += f"  {_s('[' + (conf.get('name') or 'call') + ']')}"
     if ev.get("my_response") in ("declined", "tentative"):
         line += f"  ({ev['my_response']})"
+    if kind := _EVENT_TYPES.get(str(ev.get("event_type"))):
+        line += f"  ({kind})"
+    zone = ev.get("time_zone")
+    if isinstance(zone, dict) and zone.get("range"):
+        own = f"{zone['range']} ({zone.get('label') or zone.get('name')} time)"
+        line += f"  [dim]{_s(own)}[/dim]"
     if ev.get("kind") in _IMPUTED:
         line += f"  [dim]({_IMPUTED[ev['kind']]})[/dim]"
     return f"[bold]{line}[/bold]" if ev.get("is_next") else line
@@ -505,6 +539,9 @@ def _day_rows(day: dict[str, Any], mode: str) -> list[tuple[tuple[bool, datetime
     rows = []
     for ev in day.get("events") or []:
         if ev.get("kind") in _IMPUTED and mode != "planning":
+            continue
+        if ev.get("event_type") == "workingLocation":
+            rows.append((_sort_key(True, ev.get("start")), _working_location_line(ev)))
             continue
         rows.append((_sort_key(bool(ev.get("all_day")), ev.get("start")), _calendar_event_line(ev)))
     if mode == "schedule":
