@@ -532,7 +532,7 @@ class PepperApp(App[None]):
         self._poll_now()
         if self.pane is not None:
             self._run("apps")
-        if self._stale_rows:
+        if self._stale_rows and self._loops["refresh"].timer is None:
             self._run("refresh")
 
     # ------------------------------------------------------------------ scheduling
@@ -1039,7 +1039,8 @@ class PepperApp(App[None]):
         self.loaded_topic = False
         self._topic_error = None
         # A new subject for the topic and refresh loops: cancel their timers, clear the
-        # previous subject's failures, and let a request still in flight land as stale.
+        # previous subject's failures and any rerun held behind its in-flight request, and
+        # let a request still in flight land as stale.
         topic = self._loops["topic"]
         topic.stop_timer()
         topic.failures = 0
@@ -1048,6 +1049,7 @@ class PepperApp(App[None]):
         refresh.stop_timer()
         refresh.failures = 0
         refresh.generation += 1
+        self._dirty.discard("topic")
         self._loops["older"].generation += 1
         # A launcher still being read was asked for where the user was: its answer would
         # open a picker or a pane for a place they have left.
