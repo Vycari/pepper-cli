@@ -135,15 +135,35 @@ def test_destructive_commands_need_yes_off_a_terminal(api, argv, expected) -> No
     assert api.calls == [expected]
 
 
-def test_invite_adds_an_agent_with_the_servers_default(api, capsys) -> None:
+def _invite_replies(monkeypatch, *replies: dict) -> None:
+    """``invite_to_group`` answers each reply in turn, recording its calls."""
+    remaining = list(replies)
+
+    def invite(self, group_id, **kwargs):
+        _Api.calls.append(("invite_to_group", group_id, kwargs))
+        return remaining.pop(0)
+
+    monkeypatch.setattr(_Api, "invite_to_group", invite, raising=False)
+
+
+def test_invite_adds_an_agent_with_the_servers_default(api, monkeypatch, capsys) -> None:
     address = "helper@agents.vycari.ai"
-    _Api.canned["invite_to_group"] = {"agent_pick": {"default_profile": "converse"}}
+    _invite_replies(monkeypatch, {"agent_pick": {"default_profile": "converse"}}, {"invited": True})
     assert cli.main(["members", "invite", "--room", "Trip", address]) == 0
     assert api.calls == [
         ("invite_to_group", GID, {"handle": address}),
         ("invite_to_group", GID, {"handle": address, "profile": "converse"}),
     ]
     assert "Invited." in capsys.readouterr().err
+
+
+def test_invite_fails_when_the_server_still_asks_after_the_default(
+    api, monkeypatch, capsys
+) -> None:
+    pick = {"agent_pick": {"default_profile": "converse"}}
+    _invite_replies(monkeypatch, pick, pick)
+    assert cli.main(["members", "invite", "--room", "Trip", "helper@agents.vycari.ai"]) == 1
+    assert "Invited" not in capsys.readouterr().err
 
 
 def test_invite_refuses_an_agent_the_server_offers_no_default_for(api, capsys) -> None:

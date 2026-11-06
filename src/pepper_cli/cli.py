@@ -5799,7 +5799,11 @@ def cmd_members_invite(args: argparse.Namespace) -> int:
         if default is None:
             _emit_error(args, "forbidden", "You can't add this agent. Ask its sponsor to add it.")
             raise _UnavailableError
-        return api.invite_to_group(g, handle=args.handle, profile=default), g
+        added = api.invite_to_group(g, handle=args.handle, profile=default)
+        if "agent_pick" in added:  # still asking, so nothing was added
+            _emit_error(args, "server", "The server didn't add this agent. Try again.")
+            raise _UnavailableError
+        return added, g
 
     return _room_act(args, call, "Invited.")
 
