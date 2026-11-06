@@ -70,6 +70,20 @@
     "maxPrsInFlight": 1,
     "orphanReclaimMinutes": 90
   },
+  "depsFlow": {
+    "enabled": true,
+    "botLogins": ["dependabot[bot]"],
+    "marker": "<!-- deps-flow -->",
+    "autoMergeSemver": ["patch", "minor"],
+    "holdPackages": [],
+    "mergeMethod": "squash",
+    "requireApproval": false,
+    "maxMergesPerRun": 5,
+    "rebaseNudgeMinutes": 30,
+    "blockedLabel": "deps:blocked",
+    "drainPollMinutes": 5,
+    "drainMaxMinutes": 90
+  },
   "createPr": {
     "requireIssueForDeferredWork": true
   },

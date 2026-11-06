@@ -17,6 +17,7 @@
     "maintainerd-core@maintainerd": true,
     "repo-ops@maintainerd": true,
     "audits@maintainerd": true,
+    "deps-flow@maintainerd": true,
     "vycari-ops@vycari": true
   }
 }
