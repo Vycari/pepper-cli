@@ -65,8 +65,9 @@ class ProxyEnvironmentError(Exception):
     """``httpx`` could not build a client from the proxy environment.
 
     Raised by :func:`make_http_client` when ``HTTP_PROXY``/``HTTPS_PROXY``/``ALL_PROXY`` or a
-    ``NO_PROXY`` entry that cannot be skipped is malformed. The message names the variables
-    and never carries their values (a proxy URL can hold a password).
+    ``NO_PROXY`` entry is malformed. The message names the variables (and, for ``NO_PROXY``, the
+    position of the bad entry) and never carries their values: a proxy URL can hold a
+    password, and a ``NO_PROXY`` entry can be one pasted in by mistake.
     """
 
 
@@ -87,7 +88,9 @@ def _no_proxy_entry_builds(entry: str) -> bool:
     """Whether ``entry`` alone, as the whole ``NO_PROXY``, builds a client.
 
     Every other proxy variable is hidden meanwhile, so a malformed ``HTTPS_PROXY`` is not
-    blamed on the entry; the environment is restored before returning.
+    blamed on the entry; the environment is restored before returning. (On Windows the
+    environment is case-insensitive, so ``NO_PROXY`` and ``no_proxy`` are one variable; the
+    save and restore below work either way.)
     """
     saved = {key: value for key, value in os.environ.items() if key.upper() in _PROXY_ENV_NAMES}
     for key in saved:
@@ -101,53 +104,51 @@ def _no_proxy_entry_builds(entry: str) -> bool:
         os.environ.update(saved)
 
 
-def _drop_malformed_no_proxy() -> list[str]:
-    """Remove from ``NO_PROXY``/``no_proxy`` (this process only) the entries ``httpx`` cannot
-    parse, and return them."""
-    dropped: list[str] = []
-    for name in ("NO_PROXY", "no_proxy"):
+def _malformed_no_proxy_entries() -> list[str]:
+    """Where the ``NO_PROXY``/``no_proxy`` entries ``httpx`` cannot parse sit, as
+    ``"NO_PROXY entry 2"`` labels: the variable and the 1-based position, never the value."""
+    found: list[str] = []
+    # On Windows the two spellings are one variable; read it once.
+    names = ("NO_PROXY",) if os.name == "nt" else ("NO_PROXY", "no_proxy")
+    for name in names:
         raw = os.environ.get(name)
         if not raw:
             continue
-        kept: list[str] = []
-        for part in raw.split(","):
+        for position, part in enumerate(raw.split(","), start=1):
             entry = part.strip()
             if entry and not _no_proxy_entry_builds(entry):
-                dropped.append(entry)
-            else:
-                kept.append(part)
-        if len(kept) != len(raw.split(",")):
-            os.environ[name] = ",".join(kept)
-    return dropped
+                found.append(f"{name} entry {position}")
+    return found
 
 
 def make_http_client(*, timeout: float) -> httpx.Client:
-    """An ``httpx.Client`` that tolerates a malformed ``NO_PROXY``.
+    """An ``httpx.Client`` built from the proxy environment, or :class:`ProxyEnvironmentError`.
 
     ``httpx`` parses the proxy environment when the client is built and raises
-    ``httpx.InvalidURL`` (not a ``RequestError``) on an entry such as ``[fe80::1]``. The
-    entries it cannot parse are dropped for this process with one warning on stderr, and the
-    build is retried. Any other malformed proxy setting raises
-    :class:`ProxyEnvironmentError`, which names the variables.
+    ``httpx.InvalidURL`` (not a ``RequestError``) on a bad value, such as the ``NO_PROXY``
+    entry ``[fe80::1]``. Nothing is skipped: a ``NO_PROXY`` entry is an instruction to reach a
+    host directly, and dropping it would send that host's requests, bearer token included,
+    through the proxy the user excluded. So the command stops, and the error names the
+    variable (and the bad entry's position) without its value.
     """
     try:
         return httpx.Client(timeout=timeout)
-    except (httpx.InvalidURL, ValueError):
-        dropped = _drop_malformed_no_proxy()
-        if dropped:
-            listed = ", ".join(repr(entry) for entry in dropped)
-            sys.stderr.write(
-                f"pepper: warning: ignoring malformed NO_PROXY/no_proxy entries ({listed}).\n"
+    except (httpx.InvalidURL, ValueError) as exc:
+        bad_entries = _malformed_no_proxy_entries()
+        if bad_entries:
+            msg = (
+                "Couldn't set up the HTTP client: "
+                f"{', '.join(bad_entries)} cannot be parsed. Fix or remove that entry (it "
+                "names a host to reach without the proxy, so it is not skipped), or unset "
+                "NO_PROXY/no_proxy."
             )
-        try:
-            return httpx.Client(timeout=timeout)
-        except (httpx.InvalidURL, ValueError) as exc:
+        else:
             msg = (
                 "Couldn't set up the HTTP client: a proxy setting is malformed. Check "
                 "HTTP_PROXY, HTTPS_PROXY, ALL_PROXY and NO_PROXY/no_proxy "
                 "(and unset the bad one)."
             )
-            raise ProxyEnvironmentError(msg) from exc
+        raise ProxyEnvironmentError(msg) from exc
 
 
 class ApiError(Exception):
@@ -2990,7 +2991,11 @@ class ApiClient:
             params={"after_id": after_id, "limit": limit, "wait": wait},
             timeout=DEFAULT_TIMEOUT + wait,
         )
-        body = resp.json()
+        try:
+            body = resp.json()
+        except ValueError:
+            # Not JSON at all: the caller sees a page with no events list and reports it.
+            return {}
         return body if isinstance(body, dict) else {}
 
     def watch_agent_events(

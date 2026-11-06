@@ -167,6 +167,100 @@ def test_a_cursor_file_is_not_moved_backwards(monkeypatch, capsys, tmp_path):
     assert cursor_file.read_text(encoding="utf-8").strip() == "50"
 
 
+def test_an_overlapping_run_does_not_rewind_a_newer_cursor(monkeypatch, capsys, tmp_path):
+    """Run A starts at 10 and is held by --wait; run B, sharing the file, finishes first and
+    writes 20; A then returns next_after_id 11. The file must still read 20 (VR-5a4bf307)."""
+    cursor_file = tmp_path / "cursor"
+    cursor_file.write_text("10\n", encoding="utf-8")
+
+    def during_a(*, after_id, wait):
+        assert after_id == 10
+        # B runs to completion while A is held.
+        _poll(monkeypatch, {"events": [_event(i) for i in range(11, 21)], "next_after_id": 20})
+        assert cli.main(["rooms", "poll", "--cursor-file", str(cursor_file)]) == 0
+        assert cursor_file.read_text(encoding="utf-8").strip() == "20"
+        return {"events": [_event(11)], "next_after_id": 11}
+
+    class FakeApi:
+        def __init__(self, *, server_url, token, **_kw) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return None
+
+        def get_agent_events_page(self, *, after_id=0, limit=100, wait=0):
+            return during_a(after_id=after_id, wait=wait)
+
+    monkeypatch.setattr(api_client, "ApiClient", FakeApi)
+
+    assert cli.main(["rooms", "poll", "--cursor-file", str(cursor_file), "--wait", "25"]) == 0
+
+    assert cursor_file.read_text(encoding="utf-8").strip() == "20"
+    capsys.readouterr()
+
+
+def test_since_below_the_stored_cursor_does_not_rewind_the_file(monkeypatch, capsys, tmp_path):
+    cursor_file = tmp_path / "cursor"
+    cursor_file.write_text("50\n", encoding="utf-8")
+    poll = _poll(monkeypatch, {"events": [_event(i) for i in range(1, 11)], "next_after_id": 10})
+
+    assert cli.main(["rooms", "poll", "--since", "0", "--cursor-file", str(cursor_file)]) == 0
+
+    assert poll.calls[0]["after_id"] == 0
+    assert _lines(capsys)[-1] == "cursor=10"
+    assert cursor_file.read_text(encoding="utf-8").strip() == "50"
+
+
+@pytest.mark.parametrize("page", [{}, {"next_after_id": 5}, {"events": None}, {"events": "x"}])
+def test_an_answer_that_is_not_an_events_page_is_an_error(monkeypatch, capsys, tmp_path, page):
+    cursor_file = tmp_path / "cursor"
+    cursor_file.write_text("3\n", encoding="utf-8")
+    _poll(monkeypatch, page)
+
+    assert cli.main(["rooms", "poll", "--json", "--cursor-file", str(cursor_file)]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err)["error"]["code"] == "server"
+    assert cursor_file.read_text(encoding="utf-8").strip() == "3"
+
+
+@pytest.mark.parametrize("body", [b"[1, 2]", b"null", b"<html>oops</html>"])
+def test_the_client_hands_a_non_object_body_back_as_no_page(body):
+    transport = httpx.MockTransport(lambda _r: httpx.Response(200, content=body))
+    client = httpx.Client(transport=transport, base_url="http://example.com")
+    with api_client.ApiClient(
+        server_url="http://example.com", token=SecretStr("pep_agt_x"), client=client
+    ) as api:
+        assert api.get_agent_events_page() == {}
+
+
+def test_a_scoped_cursor_file_only_moves_forward_for_the_same_watch(tmp_path):
+    path = str(tmp_path / "cursor")
+    here = cli._ScopedCursor(
+        server="http://example.com",
+        agent_person_id=_PERSON,
+        room_id=_GROUP,
+        topic_id=None,
+        cursor=30,
+    )
+    cli._write_cursor_file(path, here)
+
+    cli._advance_cursor_file(path, cli.replace(here, cursor=12))
+    assert cli._read_cursor_state(path) == here
+
+    cli._advance_cursor_file(path, cli.replace(here, cursor=31))
+    assert cli._read_cursor_state(path) == cli.replace(here, cursor=31)
+
+    # Another binding (the room was merged into a survivor) is written as before.
+    moved = cli.replace(here, room_id=_TOPIC, cursor=5)
+    cli._advance_cursor_file(path, moved)
+    assert cli._read_cursor_state(path) == moved
+
+
 def test_a_scoped_watchs_cursor_file_is_refused(monkeypatch, capsys, tmp_path):
     cursor_file = tmp_path / "cursor"
     scoped = cli._ScopedCursor(
@@ -301,8 +395,8 @@ def test_an_unwritable_cursor_file_exits_one(monkeypatch, capsys, tmp_path):
     assert "Couldn't write the cursor file" in capsys.readouterr().err
 
 
-def test_a_page_missing_its_fields_keeps_the_cursor(monkeypatch, capsys):
-    _poll(monkeypatch, {})
+def test_a_page_missing_its_next_after_id_keeps_the_cursor(monkeypatch, capsys):
+    _poll(monkeypatch, {"events": []})
 
     assert cli.main(["rooms", "poll", "--since", "6"]) == 0
 

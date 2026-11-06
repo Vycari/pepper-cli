@@ -107,7 +107,7 @@ import time
 import uuid
 import webbrowser
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, NamedTuple, NoReturn
 from urllib.parse import urlparse
 
@@ -363,16 +363,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print(exc.message, file=sys.stderr)
         return 1
-    except (api_client.ProxyEnvironmentError, httpx.InvalidURL) as exc:
-        # httpx could not build a client from the proxy environment. Neither is a
-        # ``RequestError``, so no per-command handler sees them; one line, no traceback.
-        message = (
-            str(exc)
-            if isinstance(exc, api_client.ProxyEnvironmentError)
-            else "A URL could not be parsed. If it came from the environment, check "
-            "HTTP_PROXY, HTTPS_PROXY, ALL_PROXY and NO_PROXY/no_proxy."
+    except api_client.ProxyEnvironmentError as exc:
+        # httpx could not build a client from the proxy environment. Not a
+        # ``RequestError``, so no per-command handler sees it; one line, no traceback.
+        _emit_error(args if hasattr(args, "json") else None, "usage", str(exc))
+        return 2
+    except httpx.InvalidURL:
+        # Every client is built by ``make_http_client``, which turns a bad proxy
+        # environment into the error above, so what reaches here is a request URL:
+        # ``--server`` or the stored server URL. The value is not echoed (a URL can
+        # carry a password in its userinfo).
+        _emit_error(
+            args if hasattr(args, "json") else None,
+            "usage",
+            "The server URL could not be parsed. Check --server, or run `pepper login "
+            "--server <url>` again to replace the stored one.",
         )
-        _emit_error(args if hasattr(args, "json") else None, "usage", message)
         return 2
     except KeyboardInterrupt:
         # Ctrl-C inside an interactive prompt or a long-running turn.
@@ -2264,12 +2270,28 @@ def cmd_login(args: argparse.Namespace) -> int:
     """Resolve the server URL, then dispatch to the device-login flow
     (the default) or the manual paste-a-PAT flow (``--token`` /
     ``--manual``)."""
-    server_url = args.server or _prompt(f"Server URL [{_DEFAULT_SERVER}]: ") or _DEFAULT_SERVER
+    # JSON mode never prompts (J2) and never opens a browser: a missing --server is the
+    # default server, a missing --token is a usage error, and the device flow prints its
+    # code and URL on stderr for a person to open.
+    as_json = bool(args.json)
+    if as_json:
+        server_url = args.server or _DEFAULT_SERVER
+    else:
+        server_url = args.server or _prompt(f"Server URL [{_DEFAULT_SERVER}]: ") or _DEFAULT_SERVER
     server_url = server_url.rstrip("/")
 
     if args.token or args.manual:
+        if as_json and not args.token:
+            _emit_error(
+                args,
+                "usage",
+                "JSON mode never prompts, so `login --manual` cannot ask for the token. Run it "
+                "in a terminal without --json or PEPPER_JSON=1, or pass --token.",
+                soft_wrap=True,
+            )
+            return 2
         return _login_manual(args, server_url, args.token)
-    return _login_device(args, server_url, open_browser=not args.no_browser)
+    return _login_device(args, server_url, open_browser=not args.no_browser and not as_json)
 
 
 def _login_saved_person(
@@ -6616,6 +6638,37 @@ def _write_cursor_file(path: str, cursor: int | _ScopedCursor) -> None:
         raise
 
 
+def _advance_cursor_file(path: str, cursor: int | _ScopedCursor) -> None:
+    """Write ``cursor`` to ``path`` unless the file already holds this position or a later one.
+
+    Two runs can share one cursor file (overlapping ``rooms poll --wait`` wakes, or a poll
+    beside a watch), and the slower one would otherwise overwrite the faster one's newer
+    position with its older one, re-delivering what was already handled. So the file is
+    re-read just before the write, and a position at or past ``cursor`` for the same watch
+    (a bare number for the unscoped one; the same server, agent, room and topic for a scoped
+    one) is left alone. ``--since`` below the stored position therefore never rewinds the
+    file either. A file that cannot be read, or that belongs to another watch, is written
+    as before: the start-of-run checks are what refuse another watch's file.
+
+    The re-read narrows the race to the instant between the read and the rename; it is not
+    a lock. What is left is a duplicate delivery, which consumers de-duplicate by id.
+    """
+    try:
+        on_disk = _read_cursor_state(path)
+    except (ValueError, OSError):
+        on_disk = None
+    if isinstance(cursor, _ScopedCursor):
+        if (
+            isinstance(on_disk, _ScopedCursor)
+            and replace(on_disk, cursor=cursor.cursor) == cursor
+            and on_disk.cursor >= cursor.cursor
+        ):
+            return
+    elif isinstance(on_disk, int) and on_disk >= cursor:
+        return
+    _write_cursor_file(path, cursor)
+
+
 def _watch_event_line(event: dict[str, Any], *, as_json: bool, cursor: int) -> str:
     """One printed line for one feed event."""
     if as_json:
@@ -6769,7 +6822,7 @@ def cmd_rooms_watch(args: argparse.Namespace) -> int:
                             )
                         cursor = max(cursor, new_cursor)
                         if args.cursor_file:
-                            _write_cursor_file(args.cursor_file, cursor)
+                            _advance_cursor_file(args.cursor_file, cursor)
                 except api_client.ApiError as exc:
                     if exc.status in _WATCH_FATAL_STATUSES:
                         return _report_api_error(exc, args)
@@ -6816,9 +6869,13 @@ def cmd_rooms_poll(args: argparse.Namespace) -> int:
     unscoped watch's (a bare number, written after the output is flushed); a scoped watch's
     file is refused, even with ``--since``.
 
+    The file is only ever moved forward: a position already on disk at or past this run's
+    (another run's, or one ``--since`` started below) is left alone (:func:`_advance_cursor_file`).
+
     Exit codes: 0 on a page, empty or not; 1 on a refused token (401), a token that is not an
-    agent's (403), a server without the route (404) or any other API or network failure; 2 on
-    bad arguments (including a cursor file a scoped watch wrote).
+    agent's (403), a server without the route (404), an answer that is not an events page, or
+    any other API or network failure; 2 on bad arguments (including a cursor file a scoped
+    watch wrote).
     """
     creds = _load_or_error(args)
     if creds is None:
@@ -6832,8 +6889,18 @@ def cmd_rooms_poll(args: argparse.Namespace) -> int:
         with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
             page = api.get_agent_events_page(after_id=cursor, wait=args.wait)
         events = page.get("events")
+        if not isinstance(events, list):
+            # A body that is not an events page (a proxy's error page, a server
+            # regression) is a failure, not a quiet feed.
+            _emit_error(
+                args,
+                "server",
+                "The server's answer was not an events page. Nothing was printed and the "
+                "cursor did not move.",
+            )
+            return 1
         next_id = page.get("next_after_id")
-        for event in events if isinstance(events, list) else []:
+        for event in events:
             event_id = event.get("id") if isinstance(event, dict) else None
             if isinstance(event_id, bool) or not isinstance(event_id, int):
                 continue
@@ -6846,7 +6913,7 @@ def cmd_rooms_poll(args: argparse.Namespace) -> int:
             next_id = cursor
         cursor = max(cursor, next_id)
         if args.cursor_file:
-            _write_cursor_file(args.cursor_file, cursor)
+            _advance_cursor_file(args.cursor_file, cursor)
         _emit_line(
             _watch_cursor_line(cursor) if args.json else f"cursor={cursor}",
         )
@@ -7271,7 +7338,7 @@ def _follow_scoped_watch(
                             )
                     cursor = max(cursor, new_cursor)
                     if args.cursor_file:
-                        _write_cursor_file(
+                        _advance_cursor_file(
                             args.cursor_file,
                             _ScopedCursor(
                                 server=server,

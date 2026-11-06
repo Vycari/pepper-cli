@@ -1,5 +1,5 @@
-"""A malformed proxy environment is a one-line error (or a skipped ``NO_PROXY`` entry), never a
-traceback, and ``login`` answers in JSON when asked.
+"""A malformed proxy environment (a ``NO_PROXY`` entry included, which is never skipped) is a
+one-line error, never a traceback, and ``login`` answers in JSON when asked.
 
 ``httpx`` parses the proxy variables when it builds a client and raises ``httpx.InvalidURL``,
 which is not a ``RequestError``, so the per-command handlers never saw it. The malformed values
@@ -49,44 +49,79 @@ def _require_rejected(monkeypatch, **env: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# NO_PROXY entries that cannot be parsed are skipped, with one warning
+# NO_PROXY entries that cannot be parsed stop the command; they are never skipped
 
 
-def test_a_malformed_no_proxy_entry_is_dropped_with_one_warning(monkeypatch, capsys):
+def _env_names() -> set[str]:
+    """The environment's own key spellings (on Windows, uppercased; ``in os.environ`` there is
+    case-insensitive, so it cannot tell ``no_proxy`` from ``NO_PROXY``)."""
+    return set(os.environ)
+
+
+def test_a_malformed_no_proxy_entry_is_an_error_naming_its_position_not_its_value(monkeypatch):
     _require_rejected(monkeypatch, NO_PROXY=_BAD_ENTRY)
     monkeypatch.setenv("NO_PROXY", f"localhost,{_BAD_ENTRY},example.com")
 
-    client = api_client.make_http_client(timeout=5)
-    client.close()
+    with pytest.raises(api_client.ProxyEnvironmentError) as raised:
+        api_client.make_http_client(timeout=5)
 
-    err = capsys.readouterr().err
-    assert err.count("warning") == 1
-    assert _BAD_ENTRY in err
-    assert "NO_PROXY" in err
-    assert os.environ["NO_PROXY"] == "localhost,example.com"
+    message = str(raised.value)
+    assert "NO_PROXY entry 2" in message
+    assert _BAD_ENTRY not in message
+    # Nothing was rewritten: the user's bypass list is as they set it.
+    assert os.environ["NO_PROXY"] == f"localhost,{_BAD_ENTRY},example.com"
 
 
-def test_every_malformed_entry_is_named_and_the_good_ones_are_kept(monkeypatch, capsys):
+def test_a_dropped_bypass_never_routes_the_host_through_the_proxy(monkeypatch):
+    """The bypass was the user's: with it unparseable no client is built at all, so no request
+    (bearer token included) can go through the proxy the user excluded for that host."""
+    _require_rejected(monkeypatch, NO_PROXY=_BAD_ENTRY)
+    monkeypatch.setenv("NO_PROXY", _BAD_ENTRY)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:9")
+
+    with pytest.raises(api_client.ProxyEnvironmentError):
+        api_client.ApiClient(server_url="http://example.com", token=SecretStr("pep_agt_x"))
+
+
+def test_every_malformed_entry_is_named_by_position(monkeypatch):
     _require_rejected(monkeypatch, NO_PROXY=_BAD_ENTRY)
     _require_rejected(monkeypatch, NO_PROXY=_BAD_PORT)
     monkeypatch.setenv("NO_PROXY", f"{_BAD_ENTRY}, {_BAD_PORT} ,10.0.0.0/8")
 
-    api_client.make_http_client(timeout=5).close()
+    with pytest.raises(api_client.ProxyEnvironmentError) as raised:
+        api_client.make_http_client(timeout=5)
 
-    err = capsys.readouterr().err
-    assert _BAD_ENTRY in err
-    assert _BAD_PORT in err
-    assert os.environ["NO_PROXY"] == "10.0.0.0/8"
+    message = str(raised.value)
+    assert "NO_PROXY entry 1" in message
+    assert "NO_PROXY entry 2" in message
+    assert "entry 3" not in message
+    assert _BAD_ENTRY not in message
+    assert _BAD_PORT not in message
 
 
-def test_the_lowercase_variable_is_cleaned_too(monkeypatch, capsys):
+def test_an_entry_carrying_a_secret_is_never_echoed(monkeypatch, capsys):
+    secret_entry = "proxyuser:s3cret"
+    _require_rejected(monkeypatch, NO_PROXY=secret_entry)
+    monkeypatch.setenv("NO_PROXY", f"{secret_entry},localhost")
+
+    assert cli.main(["rooms", "list"]) == 2
+
+    captured = capsys.readouterr()
+    assert "s3cret" not in captured.out + captured.err
+    assert "NO_PROXY entry 1" in captured.err
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has one case-insensitive variable")
+def test_the_lowercase_variable_is_checked_too(monkeypatch):
     _require_rejected(monkeypatch, no_proxy=_BAD_ENTRY)
-    monkeypatch.setenv("no_proxy", f"{_BAD_ENTRY},localhost")
+    monkeypatch.setenv("no_proxy", f"localhost,{_BAD_ENTRY}")
 
-    api_client.make_http_client(timeout=5).close()
+    with pytest.raises(api_client.ProxyEnvironmentError) as raised:
+        api_client.make_http_client(timeout=5)
 
-    assert os.environ["no_proxy"] == "localhost"
-    assert _BAD_ENTRY in capsys.readouterr().err
+    assert "no_proxy entry 2" in str(raised.value)
+    assert os.environ["no_proxy"] == f"localhost,{_BAD_ENTRY}"
 
 
 def test_a_good_no_proxy_is_left_alone_and_silent(monkeypatch, capsys):
@@ -103,9 +138,10 @@ def test_a_bad_entry_is_not_blamed_on_a_bad_proxy_url(monkeypatch, capsys):
     _require_rejected(monkeypatch, HTTPS_PROXY=_BAD_PROXY)
     monkeypatch.setenv("NO_PROXY", "localhost")
 
-    with pytest.raises(api_client.ProxyEnvironmentError):
+    with pytest.raises(api_client.ProxyEnvironmentError) as raised:
         api_client.make_http_client(timeout=5)
 
+    assert "NO_PROXY entry" not in str(raised.value)
     assert os.environ["NO_PROXY"] == "localhost"
     assert os.environ["HTTPS_PROXY"] == _BAD_PROXY
     assert capsys.readouterr().err == ""
@@ -117,36 +153,27 @@ def test_the_probe_restores_the_proxy_environment(monkeypatch):
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
     monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:8")
 
-    api_client.make_http_client(timeout=5).close()
+    with pytest.raises(api_client.ProxyEnvironmentError):
+        api_client.make_http_client(timeout=5)
 
     assert os.environ["HTTPS_PROXY"] == "http://127.0.0.1:9"
     assert os.environ["ALL_PROXY"] == "http://127.0.0.1:8"
-    assert os.environ["NO_PROXY"] == "localhost"
-    assert "no_proxy" not in os.environ
+    assert os.environ["NO_PROXY"] == f"{_BAD_ENTRY},localhost"
+    # The probe sets both spellings; it must not leave the lowercase one behind. Compared
+    # against the key list, not with ``in os.environ``, which is case-insensitive on Windows.
+    if os.name != "nt":
+        assert "no_proxy" not in _env_names()
 
 
-def test_apiclient_construction_survives_the_issue_repro(monkeypatch, capsys):
-    _require_rejected(monkeypatch, NO_PROXY=_BAD_ENTRY)
-    monkeypatch.setenv("NO_PROXY", _BAD_ENTRY)
-    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
-
-    with api_client.ApiClient(server_url="http://example.com", token=SecretStr("pep_pat_x")):
-        pass
-
-    assert _BAD_ENTRY in capsys.readouterr().err
-
-
-def test_the_device_login_clients_are_sanitised_too(monkeypatch, capsys):
+def test_the_device_login_clients_refuse_too(monkeypatch):
     _require_rejected(monkeypatch, NO_PROXY=_BAD_ENTRY)
     monkeypatch.setenv("NO_PROXY", _BAD_ENTRY)
     monkeypatch.setattr(httpx.Client, "post", lambda self, *a, **k: httpx.Response(500))
 
-    with pytest.raises(api_client.ApiError):
+    with pytest.raises(api_client.ProxyEnvironmentError):
         api_client.device_start("http://example.com", "box")
-    with pytest.raises(api_client.ApiError):
+    with pytest.raises(api_client.ProxyEnvironmentError):
         api_client.device_poll("http://example.com", SecretStr("dev-code"))
-
-    assert _BAD_ENTRY in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +245,7 @@ def test_pepper_json_makes_the_proxy_error_json(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().err)["error"]["code"] == "usage"
 
 
-def test_a_bad_url_that_reaches_main_is_still_a_clean_error(monkeypatch, capsys):
+def test_a_bad_request_url_is_reported_as_the_server_url_not_the_proxy(monkeypatch, capsys):
     def boom(_args):
         raise httpx.InvalidURL("Invalid port: 'x'")
 
@@ -228,7 +255,20 @@ def test_a_bad_url_that_reaches_main_is_still_a_clean_error(monkeypatch, capsys)
     assert cli.main(["whoami"]) == 2
     err = capsys.readouterr().err
     assert "Traceback" not in err
-    assert "NO_PROXY" in err
+    assert "server URL" in err
+    assert "--server" in err
+    assert "PROXY" not in err
+
+
+def test_a_malformed_stored_server_url_is_named_as_such(monkeypatch, capsys):
+    credentials.save(server_url="http://example.com:notaport", token=SecretStr("pep_pat_x"))
+
+    assert cli.main(["whoami", "--json"]) == 2
+
+    error = json.loads(capsys.readouterr().err)["error"]
+    assert error["code"] == "usage"
+    assert "server URL" in error["message"]
+    assert "PROXY" not in error["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -397,13 +437,80 @@ def test_login_json_refuses_an_agent_token_without_a_profile(login_api, capsys):
     assert json.loads(capsys.readouterr().err)["error"]["code"] == "usage"
 
 
-def test_login_json_with_no_token_to_prompt_is_a_usage_error(login_api, monkeypatch, capsys):
-    monkeypatch.setattr(cli, "_prompt_secret", lambda _p: "")
+def _no_prompts(monkeypatch) -> list[str]:
+    """Record any prompt, browser open or getpass call; JSON mode must make none."""
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "_prompt", lambda p: calls.append(f"prompt {p}") or "")
+    monkeypatch.setattr(cli, "_prompt_secret", lambda p: calls.append(f"secret {p}") or "")
+    monkeypatch.setattr(cli.getpass, "getpass", lambda *a, **k: calls.append("getpass") or "")
+    monkeypatch.setattr(cli.webbrowser, "open", lambda *a, **k: calls.append("browser") or True)
+    return calls
 
-    rc = cli.main(["login", "--server", "http://example.com", "--manual", "--json"])
+
+@pytest.mark.parametrize("how", ["flag", "env"])
+def test_login_json_manual_without_a_token_refuses_without_prompting(
+    login_api, monkeypatch, capsys, how
+):
+    calls = _no_prompts(monkeypatch)
+    argv = ["--profile", "agent", "login", "--manual", "--server", "http://example.com"]
+    if how == "flag":
+        argv.append("--json")
+    else:
+        monkeypatch.setenv("PEPPER_JSON", "1")
+
+    rc = cli.main(argv)
 
     assert rc == 2
-    assert json.loads(capsys.readouterr().err)["error"]["code"] == "usage"
+    assert calls == []
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    error = json.loads(captured.err)["error"]
+    assert error["code"] == "usage"
+    assert "--token" in error["message"]
+
+
+def test_login_json_without_a_server_takes_the_default_without_prompting(
+    login_api, monkeypatch, capsys
+):
+    calls = _no_prompts(monkeypatch)
+    monkeypatch.setenv("PEPPER_JSON", "1")
+
+    assert cli.main(["login", "--token", "pep_pat_x"]) == 0
+
+    assert calls == []
+    assert json.loads(capsys.readouterr().out)["server_url"] == cli._DEFAULT_SERVER
+
+
+def test_login_without_json_still_prompts_for_the_server(login_api, monkeypatch, capsys):
+    asked: list[str] = []
+    monkeypatch.setattr(cli, "_prompt", lambda p: asked.append(p) or "http://other.example")
+
+    assert cli.main(["login", "--token", "pep_pat_x"]) == 0
+
+    assert len(asked) == 1
+    assert credentials.load().server_url == "http://other.example"
+
+
+def test_login_json_device_flow_never_opens_a_browser(login_api, monkeypatch, capsys):
+    calls = _no_prompts(monkeypatch)
+    start = api_client.DeviceStart(
+        device_code=SecretStr("dev-code"),
+        user_code="ABCD-1234",
+        verification_url="http://example.com/device",
+        expires_in=600,
+        interval=1,
+    )
+    monkeypatch.setattr(api_client, "device_start", lambda *a, **k: start)
+    monkeypatch.setattr(
+        api_client, "device_poll", lambda *a, **k: api_client.DevicePoll(status="denied")
+    )
+    monkeypatch.setattr(cli.time, "sleep", lambda _s: None)
+
+    # No --no-browser: JSON mode alone keeps the browser shut.
+    assert cli.main(["login", "--server", "http://example.com", "--json"]) == 1
+
+    assert calls == []
+    assert "http://example.com/device" in capsys.readouterr().err
 
 
 def test_login_json_device_flow(login_api, monkeypatch, capsys):

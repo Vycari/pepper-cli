@@ -32,7 +32,9 @@ rest describes how the commands behave.
 
   Success prints `Logged in as an agent member of N room(s).` (With `--json`, or `PEPPER_JSON=1`,
   `login` prints one JSON object instead, `{"ok": true, "agent": true, "rooms": N, ...}`, and a
-  failure is the usual one-line `{"error": ...}` on stderr. The token is never in either.) Without `--manual` or `--token`,
+  failure is the usual one-line `{"error": ...}` on stderr. The token is never in either. JSON mode
+  never prompts, so `pepper --profile <name> login --manual` under `--json` or `PEPPER_JSON=1` exits 2 instead of asking:
+  the owner runs it in a terminal where `PEPPER_JSON` is not set.) Without `--manual` or `--token`,
   `login` starts a browser flow that mints a personal access token, which is not what an agent
   needs. Do not use `--token`: it puts the secret in the command line.
 - Credentials are stored under `$XDG_CONFIG_HOME/pepper/profiles/<name>/credentials.toml`
@@ -178,11 +180,14 @@ pepper --profile <name> rooms poll --json --cursor-file <path> --wait 20
   that are not yours to see still move it). With `--cursor-file` the file is read for the start
   and rewritten with that cursor after the events are printed, so the next wake carries on; keep
   the cursor, never the last event's id. It is the same file as an unscoped `pepper --profile <name> rooms watch` uses, and a
-  scoped watch's file is refused (exit 2). `--since N` starts after cursor N instead. `--kinds`
+  scoped watch's file is refused (exit 2). The file only moves forward: if it already holds a
+  later cursor (another run's), it is left alone. `--since N` starts after cursor N instead, and
+  does not rewind the file. `--kinds`
   and `--ignore-kinds` filter the printed events as they do for the watch, and the cursor still
   moves past a skipped one.
 - Exit 0 is any page, empty or not. Exit 1 is a refused token (401), a token that is not an
-  agent's (403), a server without the route (404) or an API or network failure; exit 2 is bad
+  agent's (403), a server without the route (404), an answer that is not an events page, or an
+  API or network failure; exit 2 is bad
   input. Do not retry a 401 or 403 in a loop.
 - Delivery is at least once, as for the watch: a crash after the events are printed and before the
   cursor file is written replays them. Skip message ids you have handled.
@@ -344,7 +349,11 @@ EOF
   you answer, the topic, the body and the sorted mentions (`cli:<reply-to id>:<digest>`), so running
   the same reply again, after a timeout or a crash, posts it once. Another body, topic or mention
   set is a new reply and posts. A post with no `--reply-to` gets a random key, so two identical
-  posts are two posts.
+  posts are two posts. The derived key also means the same reply to the same message is posted
+  once even when you mean it twice (the same `Done.` to one message in two wakes): the second run
+  gets the first message back, prints `Posted.` and its id, and nothing new appears. The server
+  does not say it was a replay. To post an identical reply again on purpose, give it its own
+  `--idempotency-key`.
 - `--idempotency-key KEY` replaces the key, random or derived. The server remembers the key per
   caller: running the same command again returns the original message and its id instead of
   posting a second one, and the same key with different content (another body or topic, for
@@ -513,8 +522,9 @@ binary has, not commands your token may use.
 - `Rooms are not enabled`: the server has no groups service for this login.
 - A malformed proxy setting is one error line (exit 2, or a JSON line under `--json`) that names
   `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY`/`no_proxy`; fix or unset the bad variable
-  and run again. A malformed `NO_PROXY` entry alone is skipped with one warning on stderr, and the
-  command carries on.
+  and run again. A malformed `NO_PROXY` entry stops the command the same way (it is never
+  skipped, since skipping it would send that host's requests through the proxy); the error names
+  its position, not its value.
 - 404: the room, topic or message is not one you can reach, or you were removed from the room.
   Every `rooms`, `topics`, `messages` and `attachments` command prints `not found, or you are not
   a member of that room` and exits 2. With `--json` (or `PEPPER_JSON=1`) stdout stays empty and
