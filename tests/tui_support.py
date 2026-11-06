@@ -298,6 +298,8 @@ class FakeServer:
     turns: list[ScriptedTurn] = field(default_factory=list)
     #: The JSON body of each ``chat/send`` received.
     turn_bodies: list[dict[str, Any]] = field(default_factory=list)
+    #: Draft ids posted to ``chat/drafts/send``.
+    drafts_sent: list[str] = field(default_factory=list)
     #: The JSON body of each ``chat/tool-result`` received.
     tool_results: list[dict[str, Any]] = field(default_factory=list)
     #: Newest-page size when the request names no ``limit`` (``None``: every row).
@@ -706,6 +708,9 @@ class FakeServer:
             return httpx.Response(200, json=list(self.history))
         if path == "/api/v1/chat/send":
             return self._chat_send(request)
+        if path == "/api/v1/chat/drafts/send":
+            self.drafts_sent.append(json.loads(request.content)["draft_id"])
+            return httpx.Response(200, json={"draft_id": self.drafts_sent[-1], "account_id": ""})
         if path == "/api/v1/chat/tool-result":
             self.tool_results.append(json.loads(request.content))
             return httpx.Response(200, json={"ok": True})

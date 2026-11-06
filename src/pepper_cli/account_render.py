@@ -74,8 +74,9 @@ def artifact_detail(detail: dict[str, Any]) -> None:
 # preferences
 
 
-def preferences(prefs: dict[str, Any]) -> None:
-    """The page's sections, in its order."""
+def preferences(prefs: dict[str, Any], calendars: list[dict[str, Any]] | None = None) -> None:
+    """The page's sections, in its order. ``calendars`` (``id``, ``name``) turns hidden
+    calendar ids into names."""
     from pepper_cli import preferences_view as pv
 
     def yes(value: object) -> str:
@@ -110,6 +111,15 @@ def preferences(prefs: dict[str, Any]) -> None:
         _line("[bold]Workouts[/bold]")
         row("Usually at", workout.get("at"))
         row("Session", f"{workout.get('minutes')} min")
+    _line()
+    _line("[bold]Calendar view[/bold]")
+    hidden = [str(i) for i in prefs.get("hidden_calendar_ids") or []]
+    row("Hidden calendars", ", ".join(pv.calendar_names(hidden, calendars or [])) or None)
+    start = prefs.get("week_start")
+    row("Week starts on", pv.DAYS[start].capitalize() if isinstance(start, int) else "date shown")
+    view = prefs.get("view_days")
+    row("Week shows", "work days only" if view == "work" else f"{view or 7} days")
+    row("Show declined", yes(prefs.get("show_declined")))
     _line()
     _line("[bold]Environment[/bold]")
     labels = {

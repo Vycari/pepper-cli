@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from pepper_cli import api_client, cli, credentials, next_view
+from pepper_cli import api_client, cli, credentials, next_view, render
 from pepper_cli.secret import SecretStr
 
 _PAYLOAD = {
@@ -106,6 +106,19 @@ def test_calendar_range_and_planning_send_the_room_principal() -> None:
     ]
 
 
+def test_calendar_range_sends_the_view() -> None:
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json=_PAYLOAD)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with api_client.ApiClient(server_url="http://x", token=SecretStr("t"), client=client) as api:
+        api.calendar_range(start="2026-10-02", days=7, view="week")
+    assert seen == ["http://x/api/v1/calendars/range?start=2026-10-02&days=7&view=week"]
+
+
 def test_calendar_range_sends_start_and_days() -> None:
     seen = {}
 
@@ -125,7 +138,9 @@ def fake_api(monkeypatch, tmp_path):
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
     calls = []
+    views: list[str | None] = []
     plan: list[dict] = []
+    override: list[dict] = []
 
     class Fake:
         def __init__(self, **_):
@@ -144,11 +159,12 @@ def fake_api(monkeypatch, tmp_path):
             groups = [] if archived else [SimpleNamespace(group_id=_ROOM, display_name="Family")]
             return SimpleNamespace(enabled=True, degraded=False, groups=groups)
 
-        def calendar_range(self, *, start, days, principal=None):
+        def calendar_range(self, *, start, days, principal=None, view=None):
             calls.append((start, days))
+            views.append(view)
             if principal is not None:
                 calls.append(("principal", principal))
-            return copy.deepcopy(_PAYLOAD)
+            return copy.deepcopy(override[0] if override else _PAYLOAD)
 
         def calendar_environment(self, *, dates, focus):
             return {
@@ -174,7 +190,7 @@ def fake_api(monkeypatch, tmp_path):
             return {"cards": [{"kind": "setup", "title": "Add a home address"}], "acted_on": []}
 
     monkeypatch.setattr(api_client, "ApiClient", Fake)
-    return SimpleNamespace(calls=calls, plan=plan)
+    return SimpleNamespace(calls=calls, views=views, plan=plan, override=override)
 
 
 def test_calendar_week_json_dumps_raw_response(fake_api, capsys) -> None:
@@ -311,3 +327,59 @@ def test_calendar_unknown_room_is_a_json_error(fake_api, capsys) -> None:
 def test_calendar_room_rejects_the_schedule_view(fake_api, capsys) -> None:
     assert cli.main(["calendar", "schedule", "--room", "fam", "--json"]) == 2
     assert json.loads(capsys.readouterr().err)["error"]["code"] == "usage"
+
+
+@pytest.mark.parametrize(
+    ("argv", "view"),
+    [
+        (["calendar"], "saved"),
+        (["calendar", "schedule"], "saved"),
+        (["calendar", "week"], "week"),
+        (["calendar", "week", "--start", "2026-10-02"], "saved"),
+        (["calendar", "week", "--days", "5"], "saved"),
+        (["calendar", "week", "--room", "fam"], None),
+    ],
+)
+def test_calendar_asks_the_server_for_the_saved_view(fake_api, argv, view) -> None:
+    assert cli.main([*argv, "--json"]) == 0
+    assert fake_api.views == [view]
+
+
+def test_calendar_week_planning_follows_the_dates_the_server_chose(fake_api) -> None:
+    fake_api.override.append(
+        {"window": [{"date": "2026-10-05"}, {"date": "2026-10-07"}], "days": []}
+    )
+    assert cli.main(["calendar", "week", "--planning", "--json"]) == 0
+    assert ("planning", "2026-10-05", 3, None) in fake_api.calls
+
+
+@pytest.mark.parametrize(("dates", "noted"), [(["2026-10-05"], True), (["2026-10-07"], False)])
+def test_calendar_week_says_when_today_is_not_in_it(
+    fake_api, monkeypatch, capsys, dates, noted
+) -> None:
+    monkeypatch.setattr(next_view, "_clock", datetime(2026, 10, 7, 3, 0, tzinfo=UTC).astimezone)
+    fake_api.override.append({"window": [{"date": d} for d in dates], "days": []})
+    assert cli.main(["calendar", "week"]) == 0
+    assert ("Today isn't in this view" in capsys.readouterr().err) is noted
+
+
+@pytest.mark.parametrize(
+    ("event", "shown"),
+    [
+        ({"event_type": "outOfOffice"}, "Lunch  (out of office)"),
+        ({"event_type": "focusTime"}, "Lunch  (focus time)"),
+        (
+            {"time_zone": {"label": "Tokyo", "range": "9am\u201310am"}},
+            "Lunch  [dim]9am\u201310am (Tokyo time)[/dim]",
+        ),
+    ],
+)
+def test_agenda_line_marks_event_type_and_own_zone_time(event, shown) -> None:
+    line = render._calendar_event_line({"summary": "Lunch", "all_day": True, **event})
+    assert shown in line
+
+
+def test_working_location_is_a_dim_note_not_a_meeting() -> None:
+    day = {"events": [{"event_type": "workingLocation", "summary": "Home", "all_day": True}]}
+    [(_, line)] = render._day_rows(day, "calendar")
+    assert line == "  [dim]working from Home[/dim]"

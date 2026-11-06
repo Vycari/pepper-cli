@@ -496,6 +496,52 @@ class TrajectoryListEntry:
     group_name: str | None
 
 
+# MIRROR: src/pepper/api/router.py::EmailDraftCardEntry
+@dataclass(frozen=True)
+class DraftCard:
+    """One outbound draft Pepper staged in a turn: an email, or a calendar suggestion to an
+    organizer. Nothing leaves until the user sends it (:meth:`ApiClient.send_draft`)."""
+
+    draft_id: str
+    to: str
+    subject: str
+    body: str
+    #: The account it leaves from: the user's own label for it, or its address.
+    account: str = ""
+    account_email: str = ""
+    #: ``[id, label]`` per account the draft could go from.
+    accounts: list[list[str]] = field(default_factory=list)
+    sent: bool = False
+
+    @property
+    def sends_from(self) -> str:
+        """The account a send leaves from, named only when there are several, as the web card."""
+        return (self.account or self.account_email) if len(self.accounts) > 1 else ""
+
+
+def draft_cards_from(raw: object) -> list[DraftCard]:
+    """The ``drafts`` list of a reply or history row; anything malformed is skipped."""
+    cards: list[DraftCard] = []
+    for d in raw if isinstance(raw, list) else []:
+        if isinstance(d, dict) and d.get("draft_id"):
+            accounts = d.get("accounts")
+            cards.append(
+                DraftCard(
+                    draft_id=str(d["draft_id"]),
+                    to=str(d.get("to") or ""),
+                    subject=str(d.get("subject") or ""),
+                    body=str(d.get("body") or ""),
+                    accounts=[list(a) for a in accounts if isinstance(a, list)]
+                    if isinstance(accounts, list)
+                    else [],
+                    account=str(d.get("account") or ""),
+                    account_email=str(d.get("account_email") or ""),
+                    sent=d.get("sent") is True,
+                )
+            )
+    return cards
+
+
 # MIRROR: src/pepper/api/router.py::ChatHistoryEntry
 @dataclass(frozen=True)
 class ChatHistoryEntry:
@@ -503,8 +549,8 @@ class ChatHistoryEntry:
 
     Only the fields the terminal UI reads. ``role`` is ``"user"`` or
     ``"assistant"``; ``created_at`` is raw UTC ISO-8601 (``Z`` suffix), so a
-    client localizes it itself. The mail, brief, draft and schedule-proposal
-    cards the server also sends are not mirrored: the UI shows ``text`` only.
+    client localizes it itself. The mail, brief and schedule-proposal cards the server
+    also sends are not mirrored; ``drafts`` is, since a draft waits for a send.
     """
 
     id: str
@@ -521,6 +567,8 @@ class ChatHistoryEntry:
     #: The ``client_message_id`` the sender gave this message (user rows only; ``None`` on an
     #: assistant row, a row sent without one, or a server that predates the field).
     client_message_id: str | None = None
+    #: Drafts this turn staged (assistant rows), oldest first.
+    drafts: list[DraftCard] = field(default_factory=list)
 
 
 # MIRROR: src/pepper/gateway/channels/client_api/adapter.py::ChatSendResponse
@@ -2102,13 +2150,17 @@ class ApiClient:
         return RoomTodosList(rooms=rooms, degraded=bool(body.get("degraded")))
 
     def calendar_range(
-        self, *, start: str, days: int, principal: str | None = None
+        self, *, start: str, days: int, principal: str | None = None, view: str | None = None
     ) -> dict[str, Any]:
-        """``GET /api/v1/calendars/range?start=YYYY-MM-DD&days=N[&principal=]`` (1-31 days).
+        """``GET /api/v1/calendars/range?start=YYYY-MM-DD&days=N[&principal=][&view=]`` (1-31 days).
 
-        ``principal`` is a room id: the room's calendar view instead of the caller's.
+        ``principal`` is a room id: the room's calendar view instead of the caller's. ``view``
+        asks for the person's saved view: ``saved`` leaves out hidden calendars, and ``week``
+        also takes its dates from their week settings (the week ``start`` is in).
         Returns the server's preformatted agenda payload as-is."""
-        return self._calendar_object("range", start=start, days=days, principal=principal)
+        return self._calendar_object(
+            "range", start=start, days=days, principal=principal, view=view
+        )
 
     def calendar_planning(
         self, *, start: str, days: int, principal: str | None = None
@@ -2119,11 +2171,13 @@ class ApiClient:
         return self._calendar_object("planning", start=start, days=days, principal=principal)
 
     def _calendar_object(
-        self, view: str, *, start: str, days: int, principal: str | None
+        self, route: str, *, start: str, days: int, principal: str | None, view: str | None = None
     ) -> dict[str, Any]:
-        path = f"/api/v1/calendars/{view}?start={start}&days={days}"
+        path = f"/api/v1/calendars/{route}?start={start}&days={days}"
         if principal is not None:
             path += f"&principal={principal}"
+        if view is not None:
+            path += f"&view={view}"
         resp = self._request("GET", path)
         body = resp.json()
         if not isinstance(body, dict):
@@ -2632,6 +2686,7 @@ class ApiClient:
                 reactions=list(r.get("reactions") or []),
                 trajectory_id=str(t) if (t := r.get("trajectory_id")) else None,
                 client_message_id=str(c) if (c := r.get("client_message_id")) else None,
+                drafts=draft_cards_from(r.get("drafts")),
             )
             for r in rows
             if isinstance(r, dict)
@@ -3950,6 +4005,12 @@ class ApiClient:
         if not isinstance(resp, dict) or not resp.get("id"):
             raise ApiError(status=200, body=str(resp), detail="malformed response")
         return resp
+
+    def send_draft(self, draft_id: str) -> None:
+        """``POST /api/v1/chat/drafts/send``: send a draft Pepper staged. 404 is not a draft
+        of yours, 409 is already being sent from another window or changed since, 502 is a
+        send that failed."""
+        self._request("POST", "/api/v1/chat/drafts/send", json={"draft_id": draft_id})
 
     def get_calendar_preferences(self) -> dict[str, Any]:
         """``GET /api/v1/calendars/preferences``: the Calendar > Preferences page's values

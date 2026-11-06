@@ -27,6 +27,7 @@ class ThreadScroll(VerticalScroll):
         Binding("e", "edit", "Edit"),
         Binding("d", "delete", "Delete"),
         Binding("o", "open_link", "Open link"),
+        Binding("s", "send_draft", "Send draft"),
         Binding("escape", "unselect", "Unselect", show=False),
     ]
 
@@ -55,6 +56,9 @@ class ThreadScroll(VerticalScroll):
     class Open(Message):
         """``o``: open the first link, attachment or card of the selected message."""
 
+    class SendDraft(Message):
+        """``s``: send a draft Pepper staged in the thread, after a confirmation."""
+
     def action_select(self, step: int) -> None:
         self.post_message(self.Select(step))
 
@@ -75,6 +79,9 @@ class ThreadScroll(VerticalScroll):
 
     def action_open_link(self) -> None:
         self.post_message(self.Open())
+
+    def action_send_draft(self) -> None:
+        self.post_message(self.SendDraft())
 
 
 class ThreadView(Vertical):

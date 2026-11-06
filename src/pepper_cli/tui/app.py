@@ -83,6 +83,7 @@ if TYPE_CHECKING:
         ArtifactDetail,
         ArtifactListResponse,
         ChatHistoryEntry,
+        DraftCard,
         FeedFrame,
         GroupAppTile,
         GroupList,
@@ -306,6 +307,8 @@ class PepperApp(App[None]):
         self.drafts: dict[state.Conversation, state.Draft] = {}
         #: ``room_id -> roster`` for ``@`` mentions, fetched when a room is first opened.
         self.rosters: dict[str, list[GroupRosterMember]] = {}
+        #: Draft ids sent this session, hidden at once rather than at the next history read.
+        self.sent_drafts: set[str] = set()
         #: The selected thread row (``msg:<id>`` or ``pending:<key>``), the target of ``r``.
         self.selected: str | None = None
         #: Pepper turns, oldest first. At most one is streaming or being checked at a time.
@@ -863,7 +866,10 @@ class PepperApp(App[None]):
     def _render_dm(self, *, new_rows: int, reset: bool) -> None:
         self.thread.show(
             rows.dm_renderable(
-                self.dm.ordered(), hour24=self.hour24, provisional=self._provisional()
+                self.dm.ordered(),
+                hour24=self.hour24,
+                provisional=self._provisional(),
+                sent_drafts=self.sent_drafts,
             ),
             new_rows=new_rows,
             reset=reset,
@@ -1699,6 +1705,69 @@ class PepperApp(App[None]):
             self.notify("No link in this message.", timeout=2)
             return
         self._browse(url)
+
+    # send a draft
+
+    def on_thread_scroll_send_draft(self, _event: ThreadScroll.SendDraft) -> None:
+        """``s``: send a draft Pepper staged; one is confirmed, several are picked from first."""
+        if not self.current.is_pepper:
+            self.notify("Drafts are in your Pepper thread.", timeout=2)
+            return
+        open_drafts = [
+            d
+            for e in self.dm.ordered()
+            for d in e.drafts
+            if not d.sent and d.draft_id not in self.sent_drafts
+        ]
+        if not open_drafts:
+            self.notify("No draft to send.", timeout=2)
+            return
+        if len(open_drafts) == 1:
+            self._confirm_draft(open_drafts[0])
+            return
+        by_id = {d.draft_id: d for d in open_drafts}
+        choices = [(d.draft_id, f"to {d.to}: {d.subject}") for d in open_drafts]
+        self.push_screen(
+            PickerScreen("Send which draft?", choices),
+            lambda draft_id: self._confirm_draft(by_id[draft_id]) if draft_id else None,
+        )
+
+    def _confirm_draft(self, draft: DraftCard) -> None:
+        self.push_screen(
+            ConfirmScreen(
+                f"Send this draft to {draft.to}?",
+                f"From {draft.sends_from}: {draft.subject}" if draft.sends_from else draft.subject,
+            ),
+            lambda yes: self._send_draft(draft.draft_id) if yes else None,
+        )
+
+    def _send_draft(self, draft_id: str) -> None:
+        if self._loops["mutate"].busy:
+            self.notify("Still saving the last change.", timeout=2)
+            return
+        self._start(
+            "mutate",
+            lambda: self._api.send_draft(draft_id),
+            lambda _done: self._draft_sent(draft_id),
+            on_error=self._draft_failed,
+        )
+
+    def _draft_failed(self, exc: Exception) -> bool:
+        if isinstance(exc, ApiError) and exc.status == 409:
+            self.notify(
+                "Not sent: it is being sent from another window, or changed since.",
+                severity="warning",
+                timeout=4,
+            )
+            return False
+        return self._action_failed("send the draft", exc)
+
+    def _draft_sent(self, draft_id: str) -> None:
+        self.sent_drafts.add(draft_id)
+        self.notify("Sent.", timeout=2)
+        if self.current.is_pepper:
+            self._render_dm(new_rows=0, reset=False)
+        self._run("dm")
 
     # load older
 

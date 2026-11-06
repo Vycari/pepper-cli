@@ -374,3 +374,44 @@ def test_chat_send_stream_names_the_app_on_screen_only_when_asked() -> None:
     assert "client_context" not in bodies[1]
     assert bodies[2]["subject"] == "app:notes"
     assert bodies[2]["client_context"] == {"note_id": "n-1"}
+
+
+def test_one_shot_reply_shows_each_unsent_draft_with_its_send_command(capsys) -> None:
+    drafts = [
+        {"draft_id": "d1", "to": "ann@x.com", "subject": "Lunch?", "body": "Noon?\nOK?"},
+        {"draft_id": "d2", "to": "bo@x.com", "subject": "Done", "body": "x", "sent": True},
+    ]
+    body = {"reply": "Press Send.", "trajectory_id": "t", "user_message_id": "u"}
+    body |= {"assistant_message_id": "a", "steps": [], "drafts": drafts}
+    with api_client.ApiClient(
+        server_url="http://example.com",
+        token=SecretStr("pep_pat_abc"),
+        client=_mock(lambda _r: httpx.Response(200, json=body)),
+    ) as api:
+        cli._stream_one_turn(api, "hi", trace=False)
+    out = capsys.readouterr().out
+    assert "to ann@x.com" in out and "Subject: Lunch?" in out and "  OK?" in out
+    assert "pepper drafts send d1" in out and "d2" not in out
+
+
+def test_chat_history_reads_drafts_and_skips_malformed_ones() -> None:
+    row = {"id": "a1", "role": "assistant", "text": "t", "channel": "x", "created_at": "z"}
+    good = {"draft_id": "d1", "to": "a@x.com", "subject": "s", "body": "b", "sent": True}
+    odd = {"draft_id": "d2", "accounts": 5}
+    rows = [{**row, "drafts": [good, odd, {"to": "no id"}, "junk"]}, {**row, "id": "a2"}]
+    with api_client.ApiClient(
+        server_url="http://example.com",
+        token=SecretStr("pep_pat_abc"),
+        client=_mock(lambda _r: httpx.Response(200, json=rows)),
+    ) as api:
+        first, second = api.chat_history()
+    assert [(d.draft_id, d.sent) for d in first.drafts] == [("d1", True), ("d2", False)]
+    assert second.drafts == []
+
+
+@pytest.mark.parametrize(
+    ("accounts", "shown"), [([["1", "Work"]], ""), ([["1", "Work"], ["2", "Home"]], "Work")]
+)
+def test_a_draft_names_its_account_only_when_there_are_several(accounts, shown) -> None:
+    raw = {"draft_id": "d", "account": "Work", "accounts": accounts}
+    assert api_client.draft_cards_from([raw])[0].sends_from == shown

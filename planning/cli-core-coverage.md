@@ -211,11 +211,11 @@ listed under Breaking in the CHANGELOG (§9).
   CLI) to rebuild it. When the CLI needs an order, a filter or a decision the server does not give,
   the answer is a server change (§8), not client code. The table after this list is what `proto`
   loses under this rule.
-- **The CLI never sends email as the person** (Chris, 2026-10-16). Agents drive the CLI with
-  `--yes`, so a confirmation prompt is not a safeguard here; the CLI has to refuse. So:
+- **The CLI sends email as the person only through `drafts send`** (Chris, 2026-10-16; narrowed
+  2026-11-05). `drafts send` sends a draft Pepper staged in chat, and takes no prompt, so an agent
+  driving the CLI can send one. Chris accepted that. Elsewhere the 2026-10-16 refusals stand:
   - `dash do` refuses an option whose draft is an email, and says to send it from the web or iOS
     Dash. A drafted room message is allowed.
-  - There is no `drafts send`.
   - `events rsvp` has no note: a note is an email to the organizer.
   - Accepted: the invitations, updates and cancellations Google sends to guests because of
     `events create/edit --guests` or `events delete`, and the ask that `todos assign` delivers in
@@ -255,7 +255,6 @@ Client-side logic on `proto` removed under the no-business-logic rule:
 | `todos signal` / `todos signals`: local hints an agent could give `next` about a todo ("started", "blocked") | Removed (Chris, 2026-10-16): no usage yet |
 | Fitting todos into time slots in `next` | Rejected: todos are never scheduled (§5). It matches pepper#4820, which stopped planning todos into the day |
 | Dedicated commands for calls (Answering), shopping, meals, recipes, workouts, journal, voice notes and images | Rejected (Chris, 2026-10-16): small features, or `artifacts` covers them. They stay reachable through chat and `pepper apps show/run` |
-| `drafts send` (send an email draft Pepper staged in chat) | Rejected: the CLI never sends email as the person (§6) |
 
 ## 8. Server changes
 
@@ -270,6 +269,7 @@ Client-side logic on `proto` removed under the no-business-logic rule:
 | pepper `todo-pat-writes`, rest | assign, asked and withdraw routes | Superseded by vycari#142 P1a; not opened |
 | vycari#142 P1a | `assignee_person_id` on room todo create, `?assignee=me` / `?requester=me` / `?asked_of_me=true`, decline and withdraw over dismiss, PATCH with `assignee_person_id` | todo assignment (§4.4) |
 | Todos redesign (direction, §5) | A server-ranked "what should I do now" list | `next` printing a ranked list |
+| pepper `cal-range-prefs` | `view=saved` and `view=week` on `GET /api/v1/calendars/range`: the person's hidden calendars, week start, days shown and declined setting, applied on the server | `calendar` showing the saved view |
 | Booking app data | `public_url` on booking pages, and only live pages and bookings in what the list reads | `booking-pages` shows the server's link and list without building or filtering them itself |
 
 ## 9. Phases
@@ -306,7 +306,7 @@ the code stay in step.
 | 5 | `brief` joins the set of views; `--now` runs a fresh one, rather than a `brief run` verb |
 | 6 | The CLI never sends email as the person (§6) |
 | 7 | `next` never fits todos into time slots; `--first` goes (§5). Its client-side ranking is superseded by 13 |
-| 8 | `todos signal/signals` removed; dedicated commands for small features and `drafts send` rejected (§7) |
+| 8 | `todos signal/signals` removed; dedicated commands for small features and `drafts send` rejected (§7). Superseded for `drafts send` by 17 |
 | 9 | Todo assignment follows vycari#142; `todos assign` is a CLI-only handoff, create then dismiss (§4.4) |
 | 10 | One PR per area, cut fresh from `main`, in the order of §9 |
 
@@ -321,14 +321,20 @@ the code stay in step.
 | 15 | The intent map is removed from `pepper --help` and the README (pepper-cli#72): agents prefer the plain command list (Allen's review), and Chris agreed it isn't useful (§3) |
 | 16 | `feed` is a noun with `list` and `show` (pepper-cli#73), for consistency with the other streams; `--open` is a flag on `show`. The view shape came from misreading Allen's intent-map comment (§4.3) |
 
+**2026-11-05, Chris:**
+
+| | Decision |
+|---|---|
+| 17 | `drafts send` ships, reversing 6 and 8 for chat drafts; it names the sending account when there are several (§6) |
+| 18 | Hidden calendars and the week settings are applied by the server (`view` on `GET /api/v1/calendars/range`, §8), not filtered in the CLI |
+
 ## 11. Open questions
 
 **A. `chat --attach` and `chat --history`?** (for Chris) `pepper chat` is a one-shot message to
 Pepper and its reply (Allen's review). Room `messages` already lists, posts with `--attach`, edits,
 deletes and reacts, `attachments download` fetches files, and `pepper tui` reads the Pepper
-conversation. Whether 1:1 chat needs its own attachments or history, and with them whether email
-drafts Pepper staged in chat would show read-only in that history, is not decided. Neither is
-planned until it is.
+conversation, with the drafts Pepper staged (§6). Whether 1:1 chat needs its own attachments or
+history is not decided. Neither is planned until it is.
 
 **B. Fold `notes` into `artifacts`?** `artifacts` lists, reads, fetches, uploads and deletes every
 kind; `notes` lists, searches, shows, creates, edits and deletes text notes. The overlap is

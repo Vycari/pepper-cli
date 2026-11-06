@@ -26,7 +26,14 @@ SWITCHES = {
     "wind": "show_wind",
     "uv": "show_uv",
     "severe": "show_severe",
+    "declined": "show_declined",
 }
+#: ``--week-start`` words for "begin the week on the date shown" (the route's ``null``).
+WEEK_START_SHOWN = "today"
+
+
+#: ``build_changes`` default for ``week_start``: ``None`` is a real value there ("the date shown").
+KEEP = "keep"
 
 
 class PrefsError(ValueError):
@@ -81,6 +88,49 @@ def parse_meal(value: str) -> tuple[str, str | None, str | int | None]:
     return name, start, minutes
 
 
+def parse_week_start(value: str) -> int | None:
+    """``mon`` ... ``sun`` as 0-6, or ``today`` as ``None`` (start from the date shown)."""
+    low = value.strip().lower()
+    if low == WEEK_START_SHOWN:
+        return None
+    if low[:3] not in DAYS:
+        raise PrefsError(f"unknown --week-start {value!r}: use mon ... sun, or {WEEK_START_SHOWN}")
+    return DAYS.index(low[:3])
+
+
+def parse_view_days(value: str) -> int | str:
+    """``2``-``7`` or ``work``, as the route takes it."""
+    low = value.strip().lower()
+    if low == "work":
+        return low
+    if low.isdigit() and 2 <= int(low) <= 7:
+        return int(low)
+    raise PrefsError(f"--view-days is 2 to 7, or work, not {value!r}")
+
+
+def resolve_calendars(names: list[str], known: list[dict[str, Any]]) -> list[str]:
+    """Calendar ids for names typed as a calendar's name (exact, else unique prefix) or its id.
+
+    ``known`` is the ``calendars`` list of the range payload (``id``, ``name``)."""
+    ids: list[str] = []
+    for want in names:
+        low = want.strip().lower()
+        exact = [c for c in known if low in (str(c.get("id")).lower(), str(c.get("name")).lower())]
+        near = [c for c in known if str(c.get("name") or "").lower().startswith(low)]
+        found = exact or near
+        if len(found) != 1:
+            what = "matches more than one calendar" if found else "is not one of your calendars"
+            raise PrefsError(f"{want!r} {what}")
+        ids.append(str(found[0]["id"]))
+    return ids
+
+
+def calendar_names(ids: list[str], known: list[dict[str, Any]]) -> list[str]:
+    """Names for ids, falling back to the id itself where the calendar is not known."""
+    by_id = {str(c.get("id")): c.get("name") for c in known}
+    return [str(by_id.get(i) or i) for i in ids]
+
+
 def day_names(days: list[int]) -> str:
     if days == [0, 1, 2, 3, 4]:
         return "Mon-Fri"
@@ -109,6 +159,9 @@ def build_changes(
     workout_minutes: int | None = None,
     run_minutes: int | None = None,
     break_minutes: int | None = None,
+    hidden_calendars: list[str] | None = None,
+    week_start: int | str | None = KEEP,
+    view_days: int | str | None = None,
 ) -> dict[str, Any]:
     """The POST body: only what was asked. A meal or the workout needs its start *and*
     minutes on the wire, so the missing half comes from ``current``."""
@@ -147,4 +200,10 @@ def build_changes(
         body["run_minutes"] = run_minutes
     if break_minutes is not None:
         body["break_minutes"] = break_minutes
+    if hidden_calendars is not None:
+        body["hidden_calendar_ids"] = hidden_calendars
+    if week_start != KEEP:
+        body["week_start"] = week_start
+    if view_days is not None:
+        body["view_days"] = view_days
     return body
