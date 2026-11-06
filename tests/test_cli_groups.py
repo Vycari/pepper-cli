@@ -1414,27 +1414,7 @@ def test_members_list_json_is_the_envelope(tmp_home, patch_api, capsys) -> None:
         "picture_url": None,
         "is_pepper": False,
         "is_agent": False,
-        "agent_profile": None,
     }
-
-
-def test_members_list_json_prints_an_agents_profile(tmp_home, patch_api, capsys) -> None:
-    _login(tmp_home)
-    patch_api(
-        roster=[
-            api_client.GroupRosterMember(
-                person_id="p-agent",
-                display_name="Watcher",
-                is_agent=True,
-                agent_profile="investigate",
-            ),
-            api_client.GroupRosterMember(person_id="person-sam", display_name="Sam"),
-        ]
-    )
-    assert cli.main(["members", "list", "--room", _GID_TRIP, "--json"]) == 0
-    items = json.loads(capsys.readouterr().out)["items"]
-    assert items[0]["agent_profile"] == "investigate"
-    assert items[1]["agent_profile"] is None
 
 
 def test_members_list_empty(tmp_home, patch_api, capsys) -> None:

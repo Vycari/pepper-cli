@@ -4,6 +4,14 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (while 0.x, a minor bump may change flags or output).
 
+## Unreleased
+
+- `pepper members list --json` no longer prints `agent_profile`, and the TUI no longer lists
+  `member.agent_profile_changed` as a room event: agent profiles are being removed
+  (remove-agent-profiles phase 1c, Vycari/groups#325). A roster row that still carries the key
+  is read as before and the key ignored. The `--profile` credential-profile flag is unrelated and
+  unchanged.
+
 ## 0.7.0 — 2026-10-30
 
 The terminal UI gets Todos and Notes panes, for a room and for you, with writes; `pepper todos`

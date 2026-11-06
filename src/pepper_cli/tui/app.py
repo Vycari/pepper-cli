@@ -115,7 +115,6 @@ _ROOM_EVENT_KINDS = frozenset(
         "member.joined",
         "member.removed",
         "member.role_changed",
-        "member.agent_profile_changed",
         "member.room_deleted",
         "group.renamed",
         "group.archived",

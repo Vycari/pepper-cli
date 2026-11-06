@@ -1544,9 +1544,6 @@ class GroupRosterMember:
     #: An agent member, so ``groups roster``
     #: never presents one as a person.
     is_agent: bool = False
-    #: The harness profile the adder picked for an agent member in this room
-    #: ``None`` for a person and for Pepper.
-    agent_profile: str | None = None
 
 
 # MIRROR: src/pepper/api/groups.py::app_launcher
@@ -3566,7 +3563,6 @@ class ApiClient:
                 picture_url=m.get("picture_url"),
                 is_pepper=m.get("is_pepper", False),
                 is_agent=bool(m.get("is_agent", False)),
-                agent_profile=m.get("agent_profile"),
             )
             for m in body.get("members") or []
         ]

@@ -590,6 +590,8 @@ def test_roster_parses_pepper_first() -> None:
                         "person_id": "p-claude",
                         "display_name": "Claude",
                         "is_agent": True,
+                        # Groups still sends this until remove-agent-profiles phase 2;
+                        # the client ignores it.
                         "agent_profile": "investigate",
                     },
                 ]
@@ -602,7 +604,8 @@ def test_roster_parses_pepper_first() -> None:
     assert [m.display_name for m in roster] == ["Pepper", "Dana", "Claude"]
     assert roster[0].is_pepper is True
     assert roster[1].picture_url == "/img/dana.png"
-    assert [m.agent_profile for m in roster] == [None, None, "investigate"]
+    assert [m.is_agent for m in roster] == [False, False, True]
+    assert not hasattr(roster[2], "agent_profile")
 
 
 def test_activity_joins_topic_ids_with_commas() -> None:
