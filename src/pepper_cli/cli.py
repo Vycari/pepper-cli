@@ -3112,16 +3112,21 @@ def cmd_calendar(args: argparse.Namespace) -> int:
         # "Today" is the account's date, not the host's: the server reads start in user's zone.
         today = next_view.user_now(api).date()
         start, span, weekdays, hidden = args.start or today.isoformat(), days, None, []
+        today_left_out = False
         if principal is None:
             # Your own view settings; a failed read leaves the plain calendar.
             try:
                 prefs = api.get_calendar_preferences()
             except (api_client.ApiError, httpx.RequestError):
                 prefs = {}
+                render.info(
+                    "Could not read your calendar view settings, so this shows every calendar."
+                )
             hidden = [str(i) for i in prefs.get("hidden_calendar_ids") or []]
             if args.window == "week" and args.days is None and not args.start:
                 first, span, weekdays = preferences_view.week_window(prefs, today)
                 start = first.isoformat()
+                today_left_out = not preferences_view.shows_day(first, span, weekdays, today)
         payload = api.calendar_range(start=start, days=span, principal=principal)
         preferences_view.apply_view(payload, hidden, weekdays)
         planning = (
@@ -3134,13 +3139,15 @@ def cmd_calendar(args: argparse.Namespace) -> int:
         mode = (
             "planning" if args.planning else "schedule" if args.window == "schedule" else "calendar"
         )
-        _emit(
-            {"range": payload, "planning": planning} if args.planning else payload,
-            args,
-            lambda: render.render_calendar(
+
+        def show() -> None:
+            render.render_calendar(
                 payload, mode=mode, cards=planning["cards"] if planning else None
-            ),
-        )
+            )
+            if today_left_out:
+                render.info("Today isn't in this view. Run pepper calendar to see it.")
+
+        _emit({"range": payload, "planning": planning} if args.planning else payload, args, show)
         return 0
 
     return _run_personal(args, run)

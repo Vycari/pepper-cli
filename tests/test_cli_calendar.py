@@ -361,6 +361,36 @@ def test_calendar_week_follows_the_view_settings(fake_api, monkeypatch, prefs, s
     assert fake_api.calls == [(start, days)]
 
 
+@pytest.mark.parametrize(
+    ("prefs", "note"),
+    [
+        (RuntimeError, "Could not read your calendar view settings"),
+        ({"week_start": 0, "view_days": 2}, "Today isn't in this view"),
+        ({"week_start": 0, "view_days": "work", "work_days": [0, 1]}, "Today isn't in this view"),
+    ],
+)
+def test_calendar_week_says_what_the_view_leaves_out(
+    fake_api, monkeypatch, capsys, prefs, note
+) -> None:
+    monkeypatch.setattr(next_view, "_clock", datetime(2026, 10, 7, 3, 0, tzinfo=UTC).astimezone)
+    fake_api.prefs[0] = (
+        api_client.ApiError(status=500, body="", detail="") if prefs is RuntimeError else prefs
+    )
+    assert cli.main(["calendar", "week"]) == 0
+    assert note in capsys.readouterr().err
+
+
+def test_calendar_week_with_today_in_view_adds_no_note(fake_api, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(next_view, "_clock", datetime(2026, 10, 7, 3, 0, tzinfo=UTC).astimezone)
+    fake_api.prefs[0] = {"week_start": 0, "view_days": 7}
+    assert cli.main(["calendar", "week"]) == 0
+    assert "Today" not in capsys.readouterr().err
+
+
+def test_work_view_with_no_work_days_keeps_every_day() -> None:
+    assert preferences_view.week_window({"view_days": "work"}, date(2026, 10, 2))[2] is None
+
+
 def test_calendar_week_with_a_start_or_days_ignores_the_view_settings(fake_api) -> None:
     fake_api.prefs[0] = {"week_start": 0, "view_days": 3}
     assert cli.main(["calendar", "week", "--start", "2026-10-02", "--json"]) == 0

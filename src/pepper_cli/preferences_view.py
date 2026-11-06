@@ -143,8 +143,14 @@ def week_window(prefs: dict[str, Any], today: date) -> tuple[date, int, frozense
         start = today - timedelta(days=(today.weekday() - start_day) % 7)
     view = prefs.get("view_days")
     if view == "work":
-        return start, 7, frozenset(prefs.get("work_days") or ())
+        # No work days set: every day, as the page draws it.
+        return start, 7, frozenset(prefs.get("work_days") or ()) or None
     return start, view if isinstance(view, int) and 2 <= view <= 7 else 7, None
+
+
+def shows_day(start: date, days: int, weekdays: frozenset[int] | None, day: date) -> bool:
+    """Whether the week view from :func:`week_window` draws ``day``."""
+    return 0 <= (day - start).days < days and (weekdays is None or day.weekday() in weekdays)
 
 
 def apply_view(payload: dict[str, Any], hidden: list[str], weekdays: frozenset[int] | None) -> None:
