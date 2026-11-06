@@ -211,6 +211,8 @@ def draft_panel(draft: DraftCard) -> RenderableType:
     """A boxed draft Pepper staged: who it goes to, its subject and body, and the key that
     sends it (as :func:`_card_panel` boxes an app card)."""
     body = Text(f"Draft, not sent: to {sanitize_line(draft.to)}", style="bold")
+    if draft.sends_from:
+        body.append(f"\nFrom: {sanitize_line(draft.sends_from)}")
     body.append(f"\n{sanitize_line(draft.subject)}")
     body.append("\n" + sanitize_text(draft.body))
     body.append("\nsend (s)", style="dim")

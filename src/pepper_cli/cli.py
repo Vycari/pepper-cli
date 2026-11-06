@@ -3111,24 +3111,17 @@ def cmd_calendar(args: argparse.Namespace) -> int:
             principal = room
         # "Today" is the account's date, not the host's: the server reads start in user's zone.
         today = next_view.user_now(api).date()
-        start, span, weekdays, hidden = args.start or today.isoformat(), days, None, []
+        start, span = args.start or today.isoformat(), days
+        # Your own calendar under your view settings, which the server applies; a room has none.
+        week = args.window == "week" and args.days is None and not args.start
+        view = None if principal else "week" if week else "saved"
+        payload = api.calendar_range(start=start, days=span, principal=principal, view=view)
         today_left_out = False
-        if principal is None:
-            # Your own view settings; a failed read leaves the plain calendar.
-            try:
-                prefs = api.get_calendar_preferences()
-            except (api_client.ApiError, httpx.RequestError):
-                prefs = {}
-                render.info(
-                    "Could not read your calendar view settings, so this shows every calendar."
-                )
-            hidden = [str(i) for i in prefs.get("hidden_calendar_ids") or []]
-            if args.window == "week" and args.days is None and not args.start:
-                first, span, weekdays = preferences_view.week_window(prefs, today)
-                start = first.isoformat()
-                today_left_out = not preferences_view.shows_day(first, span, weekdays, today)
-        payload = api.calendar_range(start=start, days=span, principal=principal)
-        preferences_view.apply_view(payload, hidden, weekdays)
+        if view == "week" and (dates := [str(w.get("date")) for w in payload.get("window") or []]):
+            # The server chose the dates; the rest of this read follows them.
+            start = dates[0]
+            span = (dt.date.fromisoformat(dates[-1]) - dt.date.fromisoformat(start)).days + 1
+            today_left_out = today.isoformat() not in dates
         planning = (
             api.calendar_planning(start=start, days=span, principal=principal)
             if args.planning

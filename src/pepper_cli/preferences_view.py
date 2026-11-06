@@ -12,7 +12,6 @@ calendars, ``booking`` app ``set_conflicts``) and is not covered here.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
 from typing import Any
 
 #: Mon=0 ... Sun=6, as the route's ``work_days`` counts them.
@@ -130,43 +129,6 @@ def calendar_names(ids: list[str], known: list[dict[str, Any]]) -> list[str]:
     """Names for ids, falling back to the id itself where the calendar is not known."""
     by_id = {str(c.get("id")): c.get("name") for c in known}
     return [str(by_id.get(i) or i) for i in ids]
-
-
-def week_window(prefs: dict[str, Any], today: date) -> tuple[date, int, frozenset[int] | None]:
-    """``(start, days, weekdays)`` for the week view under the view settings.
-
-    ``start`` is the most recent ``week_start`` weekday (``today`` when it is null), ``days``
-    is ``view_days`` (7 for ``work``, which keeps only the ``work_days`` as ``weekdays``)."""
-    start_day = prefs.get("week_start")
-    start = today
-    if isinstance(start_day, int) and 0 <= start_day <= 6:
-        start = today - timedelta(days=(today.weekday() - start_day) % 7)
-    view = prefs.get("view_days")
-    if view == "work":
-        # No work days set: every day, as the page draws it.
-        return start, 7, frozenset(prefs.get("work_days") or ()) or None
-    return start, view if isinstance(view, int) and 2 <= view <= 7 else 7, None
-
-
-def shows_day(start: date, days: int, weekdays: frozenset[int] | None, day: date) -> bool:
-    """Whether the week view from :func:`week_window` draws ``day``."""
-    return 0 <= (day - start).days < days and (weekdays is None or day.weekday() in weekdays)
-
-
-def apply_view(payload: dict[str, Any], hidden: list[str], weekdays: frozenset[int] | None) -> None:
-    """Drop what the view settings hide from a range payload, in place: events of hidden
-    calendars, and days outside ``weekdays``."""
-    gone = set(hidden)
-    for bucket in (payload.get("spanning"), *(d.get("events") for d in payload.get("days") or [])):
-        if bucket:
-            bucket[:] = [e for e in bucket if e.get("calendar_id") not in gone]
-    if weekdays is not None:
-        for key in ("window", "days"):
-            payload[key] = [
-                d
-                for d in payload.get(key) or []
-                if date.fromisoformat(str(d.get("date"))).weekday() in weekdays
-            ]
 
 
 def day_names(days: list[int]) -> str:

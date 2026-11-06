@@ -502,10 +502,17 @@ class DraftCard:
     to: str
     subject: str
     body: str
-    #: ``[id, label]`` per account the draft could go from; more than one means a choice.
+    #: The account it leaves from: the user's own label for it, or its address.
+    account: str = ""
+    account_email: str = ""
+    #: ``[id, label]`` per account the draft could go from.
     accounts: list[list[str]] = field(default_factory=list)
-    account_id: str = ""
     sent: bool = False
+
+    @property
+    def sends_from(self) -> str:
+        """The account a send leaves from, named only when there are several, as the web card."""
+        return (self.account or self.account_email) if len(self.accounts) > 1 else ""
 
 
 def draft_cards_from(raw: object) -> list[DraftCard]:
@@ -523,7 +530,8 @@ def draft_cards_from(raw: object) -> list[DraftCard]:
                     accounts=[list(a) for a in accounts if isinstance(a, list)]
                     if isinstance(accounts, list)
                     else [],
-                    account_id=str(d.get("account_id") or ""),
+                    account=str(d.get("account") or ""),
+                    account_email=str(d.get("account_email") or ""),
                     sent=d.get("sent") is True,
                 )
             )
@@ -2138,13 +2146,17 @@ class ApiClient:
         return RoomTodosList(rooms=rooms, degraded=bool(body.get("degraded")))
 
     def calendar_range(
-        self, *, start: str, days: int, principal: str | None = None
+        self, *, start: str, days: int, principal: str | None = None, view: str | None = None
     ) -> dict[str, Any]:
-        """``GET /api/v1/calendars/range?start=YYYY-MM-DD&days=N[&principal=]`` (1-31 days).
+        """``GET /api/v1/calendars/range?start=YYYY-MM-DD&days=N[&principal=][&view=]`` (1-31 days).
 
-        ``principal`` is a room id: the room's calendar view instead of the caller's.
+        ``principal`` is a room id: the room's calendar view instead of the caller's. ``view``
+        asks for the person's saved view: ``saved`` leaves out hidden calendars, and ``week``
+        also takes its dates from their week settings (the week ``start`` is in).
         Returns the server's preformatted agenda payload as-is."""
-        return self._calendar_object("range", start=start, days=days, principal=principal)
+        return self._calendar_object(
+            "range", start=start, days=days, principal=principal, view=view
+        )
 
     def calendar_planning(
         self, *, start: str, days: int, principal: str | None = None
@@ -2155,11 +2167,13 @@ class ApiClient:
         return self._calendar_object("planning", start=start, days=days, principal=principal)
 
     def _calendar_object(
-        self, view: str, *, start: str, days: int, principal: str | None
+        self, route: str, *, start: str, days: int, principal: str | None, view: str | None = None
     ) -> dict[str, Any]:
-        path = f"/api/v1/calendars/{view}?start={start}&days={days}"
+        path = f"/api/v1/calendars/{route}?start={start}&days={days}"
         if principal is not None:
             path += f"&principal={principal}"
+        if view is not None:
+            path += f"&view={view}"
         resp = self._request("GET", path)
         body = resp.json()
         if not isinstance(body, dict):

@@ -407,3 +407,11 @@ def test_chat_history_reads_drafts_and_skips_malformed_ones() -> None:
         first, second = api.chat_history()
     assert [(d.draft_id, d.sent) for d in first.drafts] == [("d1", True), ("d2", False)]
     assert second.drafts == []
+
+
+@pytest.mark.parametrize(
+    ("accounts", "shown"), [([["1", "Work"]], ""), ([["1", "Work"], ["2", "Home"]], "Work")]
+)
+def test_a_draft_names_its_account_only_when_there_are_several(accounts, shown) -> None:
+    raw = {"draft_id": "d", "account": "Work", "accounts": accounts}
+    assert api_client.draft_cards_from([raw])[0].sends_from == shown

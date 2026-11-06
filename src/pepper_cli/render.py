@@ -186,6 +186,8 @@ def render_drafts(drafts: list[DraftCard]) -> None:
         out = _stdout
         out.print("")
         out.print(f"[bold]Draft, not sent[/bold]  to {_s(d.to)}", soft_wrap=True)
+        if d.sends_from:
+            out.print(f"  From: {_s(d.sends_from)}", soft_wrap=True)
         out.print(f"  Subject: {_s(d.subject)}", soft_wrap=True)
         out.print(
             Text("\n".join("  " + ln for ln in sanitize_text(d.body).split("\n"))), soft_wrap=True

@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import copy
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import httpx
 import pytest
 
-from pepper_cli import api_client, cli, credentials, next_view, preferences_view, render
+from pepper_cli import api_client, cli, credentials, next_view, render
 from pepper_cli.secret import SecretStr
 
 _PAYLOAD = {
@@ -106,6 +106,19 @@ def test_calendar_range_and_planning_send_the_room_principal() -> None:
     ]
 
 
+def test_calendar_range_sends_the_view() -> None:
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json=_PAYLOAD)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with api_client.ApiClient(server_url="http://x", token=SecretStr("t"), client=client) as api:
+        api.calendar_range(start="2026-10-02", days=7, view="week")
+    assert seen == ["http://x/api/v1/calendars/range?start=2026-10-02&days=7&view=week"]
+
+
 def test_calendar_range_sends_start_and_days() -> None:
     seen = {}
 
@@ -125,8 +138,8 @@ def fake_api(monkeypatch, tmp_path):
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
     calls = []
+    views: list[str | None] = []
     plan: list[dict] = []
-    prefs: list[dict | Exception] = [{}]
     override: list[dict] = []
 
     class Fake:
@@ -146,16 +159,12 @@ def fake_api(monkeypatch, tmp_path):
             groups = [] if archived else [SimpleNamespace(group_id=_ROOM, display_name="Family")]
             return SimpleNamespace(enabled=True, degraded=False, groups=groups)
 
-        def calendar_range(self, *, start, days, principal=None):
+        def calendar_range(self, *, start, days, principal=None, view=None):
             calls.append((start, days))
+            views.append(view)
             if principal is not None:
                 calls.append(("principal", principal))
             return copy.deepcopy(override[0] if override else _PAYLOAD)
-
-        def get_calendar_preferences(self):
-            if isinstance(prefs[0], Exception):
-                raise prefs[0]
-            return prefs[0]
 
         def calendar_environment(self, *, dates, focus):
             return {
@@ -181,7 +190,7 @@ def fake_api(monkeypatch, tmp_path):
             return {"cards": [{"kind": "setup", "title": "Add a home address"}], "acted_on": []}
 
     monkeypatch.setattr(api_client, "ApiClient", Fake)
-    return SimpleNamespace(calls=calls, plan=plan, prefs=prefs, override=override)
+    return SimpleNamespace(calls=calls, views=views, plan=plan, override=override)
 
 
 def test_calendar_week_json_dumps_raw_response(fake_api, capsys) -> None:
@@ -320,92 +329,38 @@ def test_calendar_room_rejects_the_schedule_view(fake_api, capsys) -> None:
     assert json.loads(capsys.readouterr().err)["error"]["code"] == "usage"
 
 
-def test_calendar_leaves_out_hidden_calendars(fake_api, capsys) -> None:
-    event = {"start_label": "9am", "end_label": "10am", "start": "2026-10-02T09:00:00-07:00"}
+@pytest.mark.parametrize(
+    ("argv", "view"),
+    [
+        (["calendar"], "saved"),
+        (["calendar", "schedule"], "saved"),
+        (["calendar", "week"], "week"),
+        (["calendar", "week", "--start", "2026-10-02"], "saved"),
+        (["calendar", "week", "--days", "5"], "saved"),
+        (["calendar", "week", "--room", "fam"], None),
+    ],
+)
+def test_calendar_asks_the_server_for_the_saved_view(fake_api, argv, view) -> None:
+    assert cli.main([*argv, "--json"]) == 0
+    assert fake_api.views == [view]
+
+
+def test_calendar_week_planning_follows_the_dates_the_server_chose(fake_api) -> None:
     fake_api.override.append(
-        {
-            "window": [{"date": "2026-10-02", "label": "Today"}],
-            "days": [
-                {
-                    "date": "2026-10-02",
-                    "label": "Today",
-                    "events": [
-                        {**event, "summary": "Mine", "calendar_id": "me"},
-                        {**event, "summary": "Theirs", "calendar_id": "work"},
-                    ],
-                }
-            ],
-        }
+        {"window": [{"date": "2026-10-05"}, {"date": "2026-10-07"}], "days": []}
     )
-    fake_api.prefs[0] = {"hidden_calendar_ids": ["work"]}
-    assert cli.main(["calendar"]) == 0
-    out = capsys.readouterr().out
-    assert "Mine" in out and "Theirs" not in out
+    assert cli.main(["calendar", "week", "--planning", "--json"]) == 0
+    assert ("planning", "2026-10-05", 3, None) in fake_api.calls
 
 
-@pytest.mark.parametrize(
-    ("prefs", "start", "days"),
-    [
-        ({"week_start": 0, "view_days": 7}, "2026-10-05", 7),
-        ({"week_start": None, "view_days": 4}, "2026-10-07", 4),
-        ({"week_start": 5, "view_days": "work", "work_days": [0, 1]}, "2026-10-03", 7),
-        (RuntimeError, "2026-10-07", 7),
-    ],
-)
-def test_calendar_week_follows_the_view_settings(fake_api, monkeypatch, prefs, start, days) -> None:
-    monkeypatch.setattr(next_view, "_clock", datetime(2026, 10, 7, 3, 0, tzinfo=UTC).astimezone)
-    fake_api.prefs[0] = (
-        api_client.ApiError(status=500, body="", detail="") if prefs is RuntimeError else prefs
-    )
-    assert cli.main(["calendar", "week", "--json"]) == 0
-    assert fake_api.calls == [(start, days)]
-
-
-@pytest.mark.parametrize(
-    ("prefs", "note"),
-    [
-        (RuntimeError, "Could not read your calendar view settings"),
-        ({"week_start": 0, "view_days": 2}, "Today isn't in this view"),
-        ({"week_start": 0, "view_days": "work", "work_days": [0, 1]}, "Today isn't in this view"),
-    ],
-)
-def test_calendar_week_says_what_the_view_leaves_out(
-    fake_api, monkeypatch, capsys, prefs, note
+@pytest.mark.parametrize(("dates", "noted"), [(["2026-10-05"], True), (["2026-10-07"], False)])
+def test_calendar_week_says_when_today_is_not_in_it(
+    fake_api, monkeypatch, capsys, dates, noted
 ) -> None:
     monkeypatch.setattr(next_view, "_clock", datetime(2026, 10, 7, 3, 0, tzinfo=UTC).astimezone)
-    fake_api.prefs[0] = (
-        api_client.ApiError(status=500, body="", detail="") if prefs is RuntimeError else prefs
-    )
+    fake_api.override.append({"window": [{"date": d} for d in dates], "days": []})
     assert cli.main(["calendar", "week"]) == 0
-    assert note in capsys.readouterr().err
-
-
-def test_calendar_week_with_today_in_view_adds_no_note(fake_api, monkeypatch, capsys) -> None:
-    monkeypatch.setattr(next_view, "_clock", datetime(2026, 10, 7, 3, 0, tzinfo=UTC).astimezone)
-    fake_api.prefs[0] = {"week_start": 0, "view_days": 7}
-    assert cli.main(["calendar", "week"]) == 0
-    assert "Today" not in capsys.readouterr().err
-
-
-def test_work_view_with_no_work_days_keeps_every_day() -> None:
-    assert preferences_view.week_window({"view_days": "work"}, date(2026, 10, 2))[2] is None
-
-
-def test_calendar_week_with_a_start_or_days_ignores_the_view_settings(fake_api) -> None:
-    fake_api.prefs[0] = {"week_start": 0, "view_days": 3}
-    assert cli.main(["calendar", "week", "--start", "2026-10-02", "--json"]) == 0
-    assert cli.main(["calendar", "week", "--days", "5", "--json"]) == 0
-    assert [c[1] for c in fake_api.calls] == [7, 5] and fake_api.calls[0][0] == "2026-10-02"
-
-
-def test_work_view_keeps_only_work_days() -> None:
-    payload = {"window": [{"date": f"2026-10-0{d}"} for d in (2, 3, 5)], "days": []}
-    start, days, weekdays = preferences_view.week_window(
-        {"view_days": "work", "work_days": [0, 4]}, date(2026, 10, 2)
-    )
-    preferences_view.apply_view(payload, [], weekdays)
-    assert (start, days) == (date(2026, 10, 2), 7)
-    assert [w["date"] for w in payload["window"]] == ["2026-10-02", "2026-10-05"]
+    assert ("Today isn't in this view" in capsys.readouterr().err) is noted
 
 
 @pytest.mark.parametrize(

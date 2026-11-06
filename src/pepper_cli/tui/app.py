@@ -1734,7 +1734,10 @@ class PepperApp(App[None]):
 
     def _confirm_draft(self, draft: DraftCard) -> None:
         self.push_screen(
-            ConfirmScreen(f"Send this draft to {draft.to}?", draft.subject),
+            ConfirmScreen(
+                f"Send this draft to {draft.to}?",
+                f"From {draft.sends_from}: {draft.subject}" if draft.sends_from else draft.subject,
+            ),
             lambda yes: self._send_draft(draft.draft_id) if yes else None,
         )
 
