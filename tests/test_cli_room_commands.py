@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 
+import httpx
 import pytest
 
 from pepper_cli import api_client, cli, credentials
@@ -132,6 +133,44 @@ def test_destructive_commands_need_yes_off_a_terminal(api, argv, expected) -> No
     assert api.calls == []
     assert cli.main([*argv, "--yes"]) == 0
     assert api.calls == [expected]
+
+
+def test_invite_adds_an_agent_with_the_servers_default(api, capsys) -> None:
+    address = "helper@agents.vycari.ai"
+    _Api.canned["invite_to_group"] = {"agent_pick": {"default_profile": "converse"}}
+    assert cli.main(["members", "invite", "--room", "Trip", address]) == 0
+    assert api.calls == [
+        ("invite_to_group", GID, {"handle": address}),
+        ("invite_to_group", GID, {"handle": address, "profile": "converse"}),
+    ]
+    assert "Invited." in capsys.readouterr().err
+
+
+def test_invite_refuses_an_agent_the_server_offers_no_default_for(api, capsys) -> None:
+    address = "helper@agents.vycari.ai"
+    _Api.canned["invite_to_group"] = {"agent_pick": {"default_profile": None}}
+    assert cli.main(["members", "invite", "--room", "Trip", address]) == 1
+    assert len(api.calls) == 1
+    err = capsys.readouterr().err
+    assert "Ask its sponsor" in err
+    assert "Invited" not in err
+
+
+def test_invite_sends_the_profile_only_when_it_has_one() -> None:
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(201, json={"invited": True})
+
+    client = api_client.ApiClient(
+        server_url="http://example.com",
+        token=SecretStr("pep_pat_abc"),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client.invite_to_group(GID, handle="a@b.co")
+    client.invite_to_group(GID, handle="a@b.co", profile="converse")
+    assert seen == [{"handle": "a@b.co"}, {"handle": "a@b.co", "profile": "converse"}]
 
 
 def test_destructive_command_asks_on_a_terminal(api, monkeypatch) -> None:

@@ -3412,13 +3412,15 @@ class ApiClient:
         verb = "archive" if archived else "unarchive"
         return self._request("POST", f"/api/v1/groups/{group_id}/{verb}").json()
 
-    def invite_to_group(self, group_id: str, *, handle: str) -> dict[str, Any]:
-        """``POST /api/v1/groups/{gid}/members`` — an email or a phone number.
-        403 on an email/text thread (service-enforced), 422 on an unparseable
-        handle."""
-        return self._request(
-            "POST", f"/api/v1/groups/{group_id}/members", json={"handle": handle}
-        ).json()
+    def invite_to_group(
+        self, group_id: str, *, handle: str, profile: str | None = None
+    ) -> dict[str, Any]:
+        """``POST /api/v1/groups/{gid}/members`` — an email, a phone number or an
+        agent's address. 403 on an email/text thread (service-enforced), 422 on an
+        unparseable handle. An agent's address with no ``profile`` adds nothing:
+        200 answers ``{"agent_pick": ...}``, and posting again with a profile adds it."""
+        body = {"handle": handle} if profile is None else {"handle": handle, "profile": profile}
+        return self._request("POST", f"/api/v1/groups/{group_id}/members", json=body).json()
 
     def remove_group_member(self, group_id: str, person_id: str) -> dict[str, Any]:
         """``DELETE /api/v1/groups/{gid}/members/{person_id}``."""
