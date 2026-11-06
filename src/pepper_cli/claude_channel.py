@@ -56,6 +56,7 @@ from pepper_cli.cli import (
     _WATCH_QUIET_FAILURES,
     _WATCH_SCOPED_ENDINGS,
     _WATCH_SERVER_RESTARTING,
+    _advance_cursor_file,
     _BadInputError,
     _check_cursor_binding,
     _confirm_scope,
@@ -74,7 +75,6 @@ from pepper_cli.cli import (
     _valid_uuid,
     _watch_frame_shows_health,
     _WatchStopError,
-    _write_cursor_file,
 )
 from pepper_cli.terminal_text import sanitize_line
 
@@ -709,10 +709,12 @@ class ChannelWorker:
         path = self.config.cursor_file
         if path is None or self._notice_pending() or self.cursor == self.persisted:
             return
+        # Through the same locked, forward-only write as poll and watch, so a channel holding
+        # an older in-memory cursor never rewinds a file one of them advanced.
         if self.config.room is None:
-            _write_cursor_file(path, self.cursor)
+            _advance_cursor_file(path, self.cursor)
         elif self.bound is not None:
-            _write_cursor_file(
+            _advance_cursor_file(
                 path,
                 _ScopedCursor(
                     server=self.config.server,

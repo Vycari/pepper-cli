@@ -143,6 +143,11 @@ pepper --profile <name> rooms watch --json --cursor-file <path>
 - `--cursor-file PATH` records the cursor after each line has been printed, atomically, and the
   next start resumes from it. The directory must already exist. A file that does not hold an
   integer exits 2 rather than replaying the whole feed. `--since N` starts after cursor N instead.
+  The file only moves forward, for the watch, the poll and the channel alike: a run that holds an
+  older position, or a `--since` below the file's, never rewinds it. To reset, delete the file or
+  point `--cursor-file` at a new path. Writes take a lock on `<path>.lock`, which stays beside it.
+  A run that finds the file taken over by another scope's watch while it ran stops with exit 1 and
+  leaves the file alone.
 - The command reconnects by itself when the connection drops, waiting 1 second and doubling up
   to 30 seconds, and resumes from the last cursor, so a reconnect loses nothing. A single dropped
   connection, or a server restart that ends the stream with `server_restarting`, is silent. Only
@@ -194,6 +199,8 @@ pepper --profile <name> rooms poll --json --cursor-file <path> --wait 20
 
 To bound a stream instead, `pepper --profile <name> rooms watch --json --cursor-file <path> --for 45s`
 runs as the watch does and exits 0 after the duration (`45s`, `2m`, `1h`) with the cursor saved.
+If the feed could not be reached since its last failure when the window ends, it exits 1 with a
+`Feed unavailable` error instead: that was not a quiet window.
 
 ### Watching one room, or one topic
 

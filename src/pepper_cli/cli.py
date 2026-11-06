@@ -106,7 +106,7 @@ import threading
 import time
 import uuid
 import webbrowser
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Generator, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, NamedTuple, NoReturn
 from urllib.parse import urlparse
@@ -6638,35 +6638,112 @@ def _write_cursor_file(path: str, cursor: int | _ScopedCursor) -> None:
         raise
 
 
+class _CursorFileTakenError(OSError):
+    """The cursor file now holds another kind of watch's position (a scoped watch's under an
+    unscoped run, or the reverse), written after this run checked it at start. It is left as
+    it is; the run stops, through the same ``OSError`` path as an unwritable file."""
+
+
+@contextlib.contextmanager
+def _cursor_file_lock(path: str) -> Generator[None]:
+    """Hold an exclusive lock on ``<path>.lock`` for the read-check-replace of a cursor file.
+
+    The lock is a sidecar, not the cursor file itself, because the cursor file is replaced by
+    a rename, and a lock on the old inode would not stop a writer that opens the new one. The
+    sidecar is never deleted (deleting a lock file lets two writers lock two different files).
+    ``fcntl.flock`` on POSIX; on Windows ``msvcrt.locking`` on its first byte, which retries
+    for about ten seconds and then raises ``OSError`` (a cursor write takes milliseconds).
+    """
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(f"{path}.lock", flags, 0o600)
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def _advance_cursor_file(path: str, cursor: int | _ScopedCursor) -> None:
     """Write ``cursor`` to ``path`` unless the file already holds this position or a later one.
 
-    Two runs can share one cursor file (overlapping ``rooms poll --wait`` wakes, or a poll
-    beside a watch), and the slower one would otherwise overwrite the faster one's newer
-    position with its older one, re-delivering what was already handled. So the file is
-    re-read just before the write, and a position at or past ``cursor`` for the same watch
-    (a bare number for the unscoped one; the same server, agent, room and topic for a scoped
-    one) is left alone. ``--since`` below the stored position therefore never rewinds the
-    file either. A file that cannot be read, or that belongs to another watch, is written
-    as before: the start-of-run checks are what refuse another watch's file.
+    Every writer of a cursor file (``rooms poll``, both watches, ``agents claude-channel``)
+    comes through here. Two of them can share one file (overlapping ``rooms poll --wait``
+    wakes, a poll beside a watch, a channel beside either), and the slower one would otherwise
+    overwrite the faster one's newer position with its older one, re-delivering what was
+    already handled. So, holding :func:`_cursor_file_lock`, the file is re-read and a position
+    at or past ``cursor`` for the same watch (a bare number for the unscoped one; the same
+    server, agent, room and topic for a scoped one) is left alone. The lock spans the read,
+    the check and the rename, so no other writer lands between them. ``--since`` below the
+    stored position therefore never rewinds the file either: the file only moves forward, and
+    a reset is deleting it or pointing ``--cursor-file`` at a new path.
 
-    The re-read narrows the race to the instant between the read and the rename; it is not
-    a lock. What is left is a duplicate delivery, which consumers de-duplicate by id.
+    A file that now holds the other kind of watch's position raises
+    :class:`_CursorFileTakenError` and is not touched. A file that cannot be read is written
+    as before (the start-of-run checks refuse garbage); so is a scoped file bound to another
+    room or topic (a merged room's watch moving its file to the survivor).
     """
-    try:
-        on_disk = _read_cursor_state(path)
-    except (ValueError, OSError):
-        on_disk = None
-    if isinstance(cursor, _ScopedCursor):
-        if (
-            isinstance(on_disk, _ScopedCursor)
-            and replace(on_disk, cursor=cursor.cursor) == cursor
-            and on_disk.cursor >= cursor.cursor
-        ):
+    with _cursor_file_lock(path):
+        try:
+            on_disk = _read_cursor_state(path)
+        except (ValueError, OSError):
+            on_disk = None
+        if isinstance(cursor, _ScopedCursor):
+            if isinstance(on_disk, int):
+                msg = (
+                    f"{path} now holds an unscoped watch's position, written while this "
+                    "scoped run was going; it was not overwritten. Use a separate "
+                    "--cursor-file for each scope."
+                )
+                raise _CursorFileTakenError(msg)
+            if (
+                isinstance(on_disk, _ScopedCursor)
+                and replace(on_disk, cursor=cursor.cursor) == cursor
+                and on_disk.cursor >= cursor.cursor
+            ):
+                return
+        elif isinstance(on_disk, _ScopedCursor):
+            msg = (
+                f"{path} now holds a scoped watch's position (room {on_disk.room_id}, topic "
+                f"{on_disk.topic_id or 'any'}), written while this run was going; it was not "
+                "overwritten. Use a separate --cursor-file for each scope."
+            )
+            raise _CursorFileTakenError(msg)
+        elif isinstance(on_disk, int) and on_disk >= cursor:
             return
-    elif isinstance(on_disk, int) and on_disk >= cursor:
-        return
-    _write_cursor_file(path, cursor)
+        _write_cursor_file(path, cursor)
+
+
+def _for_window_end(args: argparse.Namespace, *, failures: int, problem: str | None) -> int:
+    """The exit code when ``rooms watch --for`` reaches its deadline.
+
+    0 when the stream was working (or no attempt has failed since it last was). Otherwise the
+    window ended with the feed unreachable, which is reported rather than passed off as a
+    quiet feed: one ``network`` error and exit 1. The cursor file holds what was printed.
+    """
+    if failures == 0:
+        return 0
+    _emit_error(
+        args,
+        "network",
+        f"Feed unavailable ({problem or 'error'}) when the --for window ended; it was not "
+        "reached since the last failure. The cursor file holds what was printed.",
+    )
+    return 1
 
 
 def _watch_event_line(event: dict[str, Any], *, as_json: bool, cursor: int) -> str:
@@ -6770,12 +6847,13 @@ def cmd_rooms_watch(args: argparse.Namespace) -> int:
     reconnecting = False
     delay = _WATCH_BACKOFF_START
     failures = 0
+    last_problem: str | None = None
     deadline = _watch_deadline(args)
     try:
         with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
             while True:
                 if _deadline_passed(deadline):
-                    return 0
+                    return _for_window_end(args, failures=failures, problem=last_problem)
                 problem: str | None = None
                 try:
                     frames = api.watch_agent_events(
@@ -6828,12 +6906,17 @@ def cmd_rooms_watch(args: argparse.Namespace) -> int:
                         return _report_api_error(exc, args)
                     problem = f"HTTP {exc.status}"
                 except httpx.RequestError as exc:
-                    problem = type(exc).__name__
-                if _deadline_passed(deadline):
-                    return 0
-                pause = delay
+                    # A read timeout at the deadline is --for's own read budget running
+                    # out on a quiet stream, not a failure.
+                    if not (isinstance(exc, httpx.ReadTimeout) and _deadline_passed(deadline)):
+                        problem = type(exc).__name__
                 if problem is not None:
                     failures += 1
+                    last_problem = problem
+                if _deadline_passed(deadline):
+                    return _for_window_end(args, failures=failures, problem=last_problem)
+                pause = delay
+                if problem is not None:
                     # A server that said it is restarting has a successor up
                     # already: retry at once, once. A second consecutive
                     # failure backs off as usual, so a fleet that is all
@@ -7256,10 +7339,11 @@ def _follow_scoped_watch(
     reconnecting = False
     delay = _WATCH_BACKOFF_START
     failures = 0
+    last_problem: str | None = None
     deadline = _watch_deadline(args)
     while True:
         if _deadline_passed(deadline):
-            return 0
+            return _for_window_end(args, failures=failures, problem=last_problem)
         problem: str | None = None
         try:
             frames = api.watch_scoped_events(
@@ -7353,12 +7437,16 @@ def _follow_scoped_watch(
                 return _report_room_error(exc, args)
             problem = f"HTTP {exc.status}"
         except httpx.RequestError as exc:
-            problem = type(exc).__name__
-        if _deadline_passed(deadline):
-            return 0
-        pause = delay
+            # As in the unscoped loop: a read timeout at the deadline is the read budget.
+            if not (isinstance(exc, httpx.ReadTimeout) and _deadline_passed(deadline)):
+                problem = type(exc).__name__
         if problem is not None:
             failures += 1
+            last_problem = problem
+        if _deadline_passed(deadline):
+            return _for_window_end(args, failures=failures, problem=last_problem)
+        pause = delay
+        if problem is not None:
             immediate = problem == _WATCH_SERVER_RESTARTING and failures == 1
             pause = 0.0 if immediate else delay
             if failures >= _WATCH_QUIET_FAILURES:

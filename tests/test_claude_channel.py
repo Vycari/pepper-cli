@@ -925,7 +925,7 @@ def test_kinds_and_ignore_kinds_narrow_what_is_pushed_and_the_cursor_still_moves
 
 def test_the_cursor_file_moves_after_the_notification_is_handed_over(monkeypatch, tmp_path):
     events: list[str] = []
-    real_write = claude_channel._write_cursor_file
+    real_write = claude_channel._advance_cursor_file
 
     def recording_write(path, cursor):
         events.append(f"cursor:{getattr(cursor, 'cursor', cursor)}")
@@ -935,7 +935,7 @@ def test_the_cursor_file_moves_after_the_notification_is_handed_over(monkeypatch
         def push(self, content, meta):
             events.append(f"push:{meta['kind']}")
 
-    monkeypatch.setattr(claude_channel, "_write_cursor_file", recording_write)
+    monkeypatch.setattr(claude_channel, "_advance_cursor_file", recording_write)
     fake = _Fake(_CONNECTED + _scope() + _event(7) + _cursor(9))
     api = api_client.ApiClient(
         server_url=_SERVER,
@@ -1300,6 +1300,25 @@ def test_an_unscoped_run_resumes_from_a_bare_cursor_file(monkeypatch, tmp_path):
     assert fake.stream_requests()[0].url.path == _UNSCOPED_PATH
     assert fake.stream_requests()[0].url.params["since"] == "12"
     assert cursor_file.read_text().strip() == "13"
+
+
+def test_the_channel_never_rewinds_a_cursor_file_another_reader_advanced(monkeypatch, tmp_path):
+    """The channel holds 13 in memory; a poll beside it moved the file to 50 meanwhile. The
+    channel's persist goes through the forward-only write, so the file keeps 50 (VR-d85ddac2)."""
+    cursor_file = tmp_path / "cursor"
+    cursor_file.write_text("12\n")
+    real_advance = claude_channel._advance_cursor_file
+
+    def poll_lands_first(path, cursor):
+        cli._write_cursor_file(path, 50)
+        real_advance(path, cursor)
+
+    monkeypatch.setattr(claude_channel, "_advance_cursor_file", poll_lands_first)
+    fake = _Fake(_CONNECTED + _event(13, author=_BOB, scoped=False))
+
+    run_channel(monkeypatch, fake, ["--self", _BOB, "--cursor-file", str(cursor_file)])
+
+    assert cursor_file.read_text().strip() == "50"
 
 
 def test_a_scoped_cursor_file_for_another_room_ends_the_channel(monkeypatch, tmp_path):

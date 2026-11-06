@@ -613,7 +613,8 @@ def test_watch_for_does_not_outlast_a_reconnect_backoff(monkeypatch, capsys):
 
     rc = cli.main(["rooms", "watch", "--for", "5s"])
 
-    assert rc == 0
+    # The window ended on a failed connect, so it is reported, not passed off as quiet.
+    assert rc == 1
     assert len(_FeedApi.calls) == 1
     assert clock.sleeps == []
 
@@ -633,7 +634,7 @@ def test_watch_for_caps_the_backoff_sleep_at_the_remaining_time(monkeypatch, cap
     # The first failure backs off 1 s, but only 0.5 s of the run is left.
     rc = cli.main(["rooms", "watch", "--for", "10s"])
 
-    assert rc == 0
+    assert rc == 1
     assert clock.sleeps == [pytest.approx(0.5)]
 
 
@@ -709,3 +710,196 @@ def test_the_client_shortens_but_never_lengthens_the_stream_read_timeout():
         ) as api:
             list(api.watch_agent_events(read_timeout=requested))
         assert read_timeouts[-1] == expected
+
+
+# ---------------------------------------------------------------------------
+# --for reports a window that ended with the feed unreachable (VR-616d41f1)
+
+
+def test_watch_for_reports_a_feed_it_never_reached(monkeypatch, capsys, tmp_path):
+    clock = _Clock(monkeypatch)
+    cursor_file = tmp_path / "cursor"
+    cursor_file.write_text("7\n", encoding="utf-8")
+
+    def script(_index, _kwargs):
+        clock.now += 0.1
+        raise httpx.ConnectError("refused")
+        yield  # pragma: no cover
+
+    _install_feed(monkeypatch, script)
+
+    rc = cli.main(["rooms", "watch", "--json", "--for", "2s", "--cursor-file", str(cursor_file)])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert len(_FeedApi.calls) == 2
+    assert captured.out == ""
+    error = json.loads(captured.err.strip().splitlines()[-1])["error"]
+    assert error["code"] == "network"
+    assert "ConnectError" in error["message"]
+    assert cursor_file.read_text(encoding="utf-8").strip() == "7"
+
+
+def test_watch_for_is_quiet_when_the_stream_recovered_before_the_deadline(monkeypatch, capsys):
+    clock = _Clock(monkeypatch)
+
+    def script(index, _kwargs):
+        if index == 0:
+            raise httpx.ConnectError("refused")
+        yield _frame(3)
+        clock.now += 30.0
+        raise httpx.ReadTimeout("quiet")
+
+    _install_feed(monkeypatch, script)
+
+    assert cli.main(["rooms", "watch", "--for", "10s"]) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_scoped_watch_for_reports_a_feed_it_never_reached(monkeypatch, capsys):
+    clock = _Clock(monkeypatch)
+    monkeypatch.setattr(
+        cli, "_scoped_watch_target", lambda _api, _room, _topic, _args: (_GROUP, None)
+    )
+
+    def script(_index, _kwargs):
+        clock.now += 0.1
+        raise api_client.ApiError(status=503, body="", detail="down")
+        yield  # pragma: no cover
+
+    _install_feed(monkeypatch, script)
+
+    rc = cli.main(["rooms", "watch", "--room", _GROUP, "--for", "2s"])
+
+    assert rc == 1
+    assert "HTTP 503" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# The cursor file only moves forward, under a lock (VR-5a4bf307, VR-084294b6, VR-f532f45f)
+
+
+def test_a_writer_landing_inside_another_writers_read_cannot_rewind_the_file(monkeypatch, tmp_path):
+    """Run A reads 10 and is about to write 11; run B advances to 20 inside A's read. With the
+    lock B waits until A is done, then writes 20; without it B lands first and A writes 11."""
+    import threading
+
+    path = str(tmp_path / "cursor")
+    cli._write_cursor_file(path, 10)
+    real_read = cli._read_cursor_state
+    b_was_blocked: list[bool] = []
+    b_thread: list[threading.Thread] = []
+
+    def read_with_b_inside(target):
+        state = real_read(target)
+        if not b_thread:
+            thread = threading.Thread(target=cli._advance_cursor_file, args=(path, 20))
+            b_thread.append(thread)
+            thread.start()
+            thread.join(timeout=0.3)
+            b_was_blocked.append(thread.is_alive())
+        return state
+
+    monkeypatch.setattr(cli, "_read_cursor_state", read_with_b_inside)
+
+    cli._advance_cursor_file(path, 11)
+    b_thread[0].join(timeout=30)
+
+    assert b_was_blocked == [True]
+    assert real_read(path) == 20
+
+
+def test_an_unscoped_write_never_overwrites_a_scoped_file_found_mid_run(tmp_path):
+    path = str(tmp_path / "cursor")
+    scoped = cli._ScopedCursor(
+        server="http://example.com",
+        agent_person_id=_PERSON,
+        room_id=_GROUP,
+        topic_id=None,
+        cursor=30,
+    )
+    cli._write_cursor_file(path, scoped)
+
+    with pytest.raises(OSError, match="scoped watch"):
+        cli._advance_cursor_file(path, 12)
+
+    assert cli._read_cursor_state(path) == scoped
+
+
+def test_a_scoped_write_never_overwrites_an_unscoped_file_found_mid_run(tmp_path):
+    path = str(tmp_path / "cursor")
+    cli._write_cursor_file(path, 30)
+    scoped = cli._ScopedCursor(
+        server="http://example.com",
+        agent_person_id=_PERSON,
+        room_id=_GROUP,
+        topic_id=None,
+        cursor=40,
+    )
+
+    with pytest.raises(OSError, match="unscoped watch"):
+        cli._advance_cursor_file(path, scoped)
+
+    assert cli._read_cursor_state(path) == 30
+
+
+def test_a_poll_that_finds_a_scoped_file_at_the_end_stops_without_touching_it(
+    monkeypatch, capsys, tmp_path
+):
+    cursor_file = tmp_path / "cursor"
+    scoped = cli._ScopedCursor(
+        server="http://example.com",
+        agent_person_id=_PERSON,
+        room_id=_GROUP,
+        topic_id=None,
+        cursor=30,
+    )
+
+    def page_while_a_scoped_watch_takes_the_file():
+        cli._write_cursor_file(str(cursor_file), scoped)
+        return {"events": [_event(5)], "next_after_id": 5}
+
+    class FakeApi:
+        def __init__(self, *, server_url, token, **_kw) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return None
+
+        def get_agent_events_page(self, *, after_id=0, limit=100, wait=0):
+            return page_while_a_scoped_watch_takes_the_file()
+
+    monkeypatch.setattr(api_client, "ApiClient", FakeApi)
+
+    rc = cli.main(["rooms", "poll", "--json", "--cursor-file", str(cursor_file)])
+
+    assert rc == 1
+    assert "scoped watch" in capsys.readouterr().err
+    assert cli._read_cursor_state(str(cursor_file)) == scoped
+
+
+def test_watch_since_below_the_stored_cursor_does_not_rewind_the_file(
+    monkeypatch, capsys, tmp_path
+):
+    """One rule for poll and watch: the file only moves forward. A reset is deleting the file
+    or pointing --cursor-file at a new path."""
+    cursor_file = tmp_path / "cursor"
+    cursor_file.write_text("50\n", encoding="utf-8")
+
+    def script(index, kwargs):
+        if index == 0:
+            assert kwargs["since"] == 0
+            for event_id in range(1, 11):
+                yield _frame(event_id)
+        raise KeyboardInterrupt
+
+    _install_feed(monkeypatch, script)
+
+    rc = cli.main(["rooms", "watch", "--since", "0", "--cursor-file", str(cursor_file)])
+
+    assert rc == 0
+    assert len(_lines(capsys)) == 10
+    assert cursor_file.read_text(encoding="utf-8").strip() == "50"
