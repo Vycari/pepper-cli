@@ -61,6 +61,95 @@ FEED_STREAM_READ_TIMEOUT = 60.0
 DEFAULT_TAKEOUT_FILENAME = "pepper-takeout.zip"
 
 
+class ProxyEnvironmentError(Exception):
+    """``httpx`` could not build a client from the proxy environment.
+
+    Raised by :func:`make_http_client` when ``HTTP_PROXY``/``HTTPS_PROXY``/``ALL_PROXY`` or a
+    ``NO_PROXY`` entry that cannot be skipped is malformed. The message names the variables
+    and never carries their values (a proxy URL can hold a password).
+    """
+
+
+#: Every spelling of the proxy variables ``httpx`` reads through ``urllib``.
+_PROXY_ENV_NAMES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
+
+
+def _client_builds() -> bool:
+    """Whether ``httpx`` accepts the current proxy environment."""
+    try:
+        httpx.Client().close()
+    except (httpx.InvalidURL, ValueError):
+        return False
+    return True
+
+
+def _no_proxy_entry_builds(entry: str) -> bool:
+    """Whether ``entry`` alone, as the whole ``NO_PROXY``, builds a client.
+
+    Every other proxy variable is hidden meanwhile, so a malformed ``HTTPS_PROXY`` is not
+    blamed on the entry; the environment is restored before returning.
+    """
+    saved = {key: value for key, value in os.environ.items() if key.upper() in _PROXY_ENV_NAMES}
+    for key in saved:
+        del os.environ[key]
+    os.environ["NO_PROXY"] = os.environ["no_proxy"] = entry
+    try:
+        return _client_builds()
+    finally:
+        for key in ("NO_PROXY", "no_proxy"):
+            os.environ.pop(key, None)
+        os.environ.update(saved)
+
+
+def _drop_malformed_no_proxy() -> list[str]:
+    """Remove from ``NO_PROXY``/``no_proxy`` (this process only) the entries ``httpx`` cannot
+    parse, and return them."""
+    dropped: list[str] = []
+    for name in ("NO_PROXY", "no_proxy"):
+        raw = os.environ.get(name)
+        if not raw:
+            continue
+        kept: list[str] = []
+        for part in raw.split(","):
+            entry = part.strip()
+            if entry and not _no_proxy_entry_builds(entry):
+                dropped.append(entry)
+            else:
+                kept.append(part)
+        if len(kept) != len(raw.split(",")):
+            os.environ[name] = ",".join(kept)
+    return dropped
+
+
+def make_http_client(*, timeout: float) -> httpx.Client:
+    """An ``httpx.Client`` that tolerates a malformed ``NO_PROXY``.
+
+    ``httpx`` parses the proxy environment when the client is built and raises
+    ``httpx.InvalidURL`` (not a ``RequestError``) on an entry such as ``[fe80::1]``. The
+    entries it cannot parse are dropped for this process with one warning on stderr, and the
+    build is retried. Any other malformed proxy setting raises
+    :class:`ProxyEnvironmentError`, which names the variables.
+    """
+    try:
+        return httpx.Client(timeout=timeout)
+    except (httpx.InvalidURL, ValueError):
+        dropped = _drop_malformed_no_proxy()
+        if dropped:
+            listed = ", ".join(repr(entry) for entry in dropped)
+            sys.stderr.write(
+                f"pepper: warning: ignoring malformed NO_PROXY/no_proxy entries ({listed}).\n"
+            )
+        try:
+            return httpx.Client(timeout=timeout)
+        except (httpx.InvalidURL, ValueError) as exc:
+            msg = (
+                "Couldn't set up the HTTP client: a proxy setting is malformed. Check "
+                "HTTP_PROXY, HTTPS_PROXY, ALL_PROXY and NO_PROXY/no_proxy "
+                "(and unset the bad one)."
+            )
+            raise ProxyEnvironmentError(msg) from exc
+
+
 class ApiError(Exception):
     """HTTP error response from the server.
 
@@ -1190,7 +1279,7 @@ def device_start(
     """
     server_url = server_url.rstrip("/")
     owns_client = client is None
-    http = client or httpx.Client(timeout=timeout)
+    http = client or make_http_client(timeout=timeout)
     try:
         resp = http.post(
             f"{server_url}/auth/device/start",
@@ -1228,7 +1317,7 @@ def device_poll(
     """
     server_url = server_url.rstrip("/")
     owns_client = client is None
-    http = client or httpx.Client(timeout=timeout)
+    http = client or make_http_client(timeout=timeout)
     try:
         resp = http.post(
             f"{server_url}/auth/device/poll",
@@ -1913,7 +2002,7 @@ class ApiClient:
         # ``client`` is the test seam — pass an ``httpx.Client`` with a
         # ``MockTransport`` to exercise this module without a real
         # server. Production code constructs one for itself.
-        self._client = client or httpx.Client(
+        self._client = client or make_http_client(
             timeout=DEFAULT_TIMEOUT if timeout is None else timeout
         )
         # Keep explicit caller/test timeouts intact. Only the normal CLI
@@ -2882,8 +2971,34 @@ class ApiClient:
                 return
             yield from _iter_sse_events(resp.iter_lines())
 
+    def get_agent_events_page(
+        self, *, after_id: int = 0, limit: int = 100, wait: int = 0
+    ) -> dict[str, Any]:
+        """``GET /api/v1/groups/events`` — one page of an agent member's roster-scoped event
+        feed as JSON, the non-streaming twin of :meth:`watch_agent_events`.
+
+        Returns the body, ``{"events": [...], "next_after_id": N}``: events with an id above
+        ``after_id`` (at most ``limit``, the server's cap is 100), in the shapes the stream
+        yields. A caller resumes from ``next_after_id``, which may be past the last event's id
+        (events the agent's roster does not show still move it), not from the last event.
+        ``wait`` (0 to 25 seconds) holds the request until an in-scope event arrives or the
+        wait ends, with an empty page. Agent-token only: a PAT is a 403, a revoked token a 401.
+        """
+        resp = self._request(
+            "GET",
+            "/api/v1/groups/events",
+            params={"after_id": after_id, "limit": limit, "wait": wait},
+            timeout=DEFAULT_TIMEOUT + wait,
+        )
+        body = resp.json()
+        return body if isinstance(body, dict) else {}
+
     def watch_agent_events(
-        self, *, since: int = 0, last_event_id: int | None = None
+        self,
+        *,
+        since: int = 0,
+        last_event_id: int | None = None,
+        read_timeout: float | None = None,
     ) -> Generator[FeedFrame]:
         """``GET /api/v1/groups/events/stream`` — an agent member's roster-scoped
         event feed, as :class:`FeedFrame`s until the server closes it.
@@ -2897,10 +3012,15 @@ class ApiClient:
         stalled connection raises ``httpx.RequestError`` instead. Either way
         the caller reconnects from the last cursor it saw. Heartbeat comments
         surface as ``kind="comment"`` frames so the caller can tell a quiet
-        healthy connection from a dead one.
+        healthy connection from a dead one. ``read_timeout`` shortens the wait for the next
+        frame (never lengthens it), so a caller with a deadline gets
+        ``httpx.ReadTimeout`` on a quiet stream when the deadline comes.
         """
         yield from self._stream_feed(
-            "/api/v1/groups/events/stream", since=since, last_event_id=last_event_id
+            "/api/v1/groups/events/stream",
+            since=since,
+            last_event_id=last_event_id,
+            read_timeout=read_timeout,
         )
 
     def watch_scoped_events(
@@ -2910,6 +3030,7 @@ class ApiClient:
         topic_id: str | None = None,
         since: int = 0,
         last_event_id: int | None = None,
+        read_timeout: float | None = None,
     ) -> Generator[FeedFrame]:
         """``GET /api/v1/groups/{room_id}/events/stream`` (or, with
         ``topic_id``, ``.../topics/{topic_id}/events/stream``): the agent
@@ -2927,7 +3048,10 @@ class ApiClient:
         if topic_id is not None:
             path += f"/topics/{topic_id}"
         yield from self._stream_feed(
-            f"{path}/events/stream", since=since, last_event_id=last_event_id
+            f"{path}/events/stream",
+            since=since,
+            last_event_id=last_event_id,
+            read_timeout=read_timeout,
         )
 
     def watch_person_events(
@@ -2953,7 +3077,12 @@ class ApiClient:
         )
 
     def _stream_feed(
-        self, path: str, *, since: int | None, last_event_id: int | None
+        self,
+        path: str,
+        *,
+        since: int | None,
+        last_event_id: int | None,
+        read_timeout: float | None = None,
     ) -> Generator[FeedFrame]:
         """Open one SSE feed connection at ``path`` and yield its frames."""
         headers = {
@@ -2971,7 +3100,9 @@ class ApiClient:
             headers=headers,
             timeout=httpx.Timeout(
                 connect=base_timeout.connect,
-                read=FEED_STREAM_READ_TIMEOUT,
+                read=FEED_STREAM_READ_TIMEOUT
+                if read_timeout is None
+                else min(FEED_STREAM_READ_TIMEOUT, read_timeout),
                 write=base_timeout.write,
                 pool=base_timeout.pool,
             ),

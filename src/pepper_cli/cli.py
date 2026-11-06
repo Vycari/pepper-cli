@@ -93,6 +93,7 @@ import contextlib
 import difflib
 import functools
 import getpass
+import hashlib
 import json
 import math
 import mimetypes
@@ -348,7 +349,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if hasattr(args, "json"):
         # Resolve J10 once, here: every leaf that declares ``--json`` reads the
         # result from ``args.json`` below, so ``PEPPER_JSON=1`` reaches all of
-        # them. ``chat`` and ``login`` declare no ``--json``, so they never see it.
+        # them. ``chat`` (its REPL path) declares none, so it never sees it.
         args.json = _json_mode(args)
     handler = args.handler
     try:
@@ -362,6 +363,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print(exc.message, file=sys.stderr)
         return 1
+    except (api_client.ProxyEnvironmentError, httpx.InvalidURL) as exc:
+        # httpx could not build a client from the proxy environment. Neither is a
+        # ``RequestError``, so no per-command handler sees them; one line, no traceback.
+        message = (
+            str(exc)
+            if isinstance(exc, api_client.ProxyEnvironmentError)
+            else "A URL could not be parsed. If it came from the environment, check "
+            "HTTP_PROXY, HTTPS_PROXY, ALL_PROXY and NO_PROXY/no_proxy."
+        )
+        _emit_error(args if hasattr(args, "json") else None, "usage", message)
+        return 2
     except KeyboardInterrupt:
         # Ctrl-C inside an interactive prompt or a long-running turn.
         # Print a newline so the next shell prompt isn't pasted onto
@@ -660,7 +672,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     # ``metavar`` keeps the retired-noun stubs (no ``help=``) out of the usage brace list.
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
-    p_login = sub.add_parser("login", help="Store credentials for a Pepper server.")
+    p_login = sub.add_parser(
+        "login", help="Store credentials for a Pepper server.", parents=[_json_parent]
+    )
     p_login.add_argument(
         "--server",
         help=f"Server base URL (default: {_DEFAULT_SERVER}). Stored in the credentials file.",
@@ -1583,7 +1597,78 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "message.link_cards_updated); the cursor still moves past them. Kinds not "
         "listed, including ones added later, still print. Combines with --kinds.",
     )
+    p_rooms_watch.add_argument(
+        "--for",
+        dest="for_seconds",
+        type=_duration_seconds,
+        default=None,
+        metavar="DURATION",
+        help="Exit 0 after this long (e.g. 45s, 2m, 1h; a bare number is seconds), with the "
+        "cursor saved. Default: run until interrupted.",
+    )
     p_rooms_watch.set_defaults(handler=cmd_rooms_watch)
+
+    p_rooms_poll = sub_rooms.add_parser(
+        "poll",
+        help="Read your rooms' new events once and exit (for a harness that runs one turn "
+        "per wake).",
+        description=(
+            "One read of the event feed of the agent whose token you are signed in with (a "
+            "pep_agt_ token): prints the new events (the lines 'rooms watch' prints), then "
+            "the new cursor, and exits 0. With --wait it holds the request up to that long "
+            "for an event, so a quiet feed costs one call and returns empty. At most 100 "
+            "events a call; call again from the cursor for more. Resumes after the cursor "
+            "the server returns, which can be past the last event's id: save the cursor, "
+            "not the last event. Events carry ids, not message bodies: read a body with "
+            "'messages list'. The cursor file is the unscoped watch's; a scoped watch's is "
+            "refused."
+        ),
+    )
+    p_rooms_poll.add_argument(
+        "--since",
+        type=int,
+        default=None,
+        metavar="CURSOR",
+        help="Read events after this cursor. Default: the cursor file's, else the beginning.",
+    )
+    p_rooms_poll.add_argument(
+        "--cursor-file",
+        default=None,
+        metavar="PATH",
+        help="Read the start from this file and write the new cursor to it (atomically, "
+        "after the events are printed). Shared with 'rooms watch' (unscoped); a scoped "
+        "watch's file is refused (exit 2).",
+    )
+    p_rooms_poll.add_argument(
+        "--wait",
+        type=_poll_wait,
+        default=0,
+        metavar="SECONDS",
+        help="Hold the request up to this long (0 to 25) for an event; 0 (default) returns "
+        "at once.",
+    )
+    p_rooms_poll.add_argument(
+        "--kinds",
+        type=_kind_list,
+        default=None,
+        metavar="KIND[,KIND...]",
+        help="Only print events of these kinds (comma-separated); every other event is "
+        "skipped but the cursor still moves past it. Default: all kinds.",
+    )
+    p_rooms_poll.add_argument(
+        "--ignore-kinds",
+        type=_kind_list,
+        default=None,
+        metavar="KIND[,KIND...]",
+        help="Skip events of these kinds; the cursor still moves past them. Combines with --kinds.",
+    )
+    p_rooms_poll.add_argument(
+        "--json",
+        action="store_true",
+        help='One JSON object per line: each event\'s fields plus "cursor", then '
+        '{"kind": "cursor", "cursor": N}. Also on when PEPPER_JSON=1.',
+    )
+    p_rooms_poll.set_defaults(handler=cmd_rooms_poll)
 
     p_topics = sub.add_parser(
         "topics",
@@ -1695,8 +1780,10 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "--idempotency-key",
         metavar="KEY",
         help=(
-            "Send this Idempotency-Key instead of a fresh one, so re-running the same "
-            "command cannot post twice (e.g. the id of the message being answered)."
+            "Send this Idempotency-Key instead of the default, so re-running the same "
+            "command cannot post twice. The default for a --reply-to post is derived from "
+            "the reply-to id, topic, body and mentions (a retried reply posts once); "
+            "any other post gets a fresh random key."
         ),
     )
     p.set_defaults(handler=cmd_messages_post)
@@ -2013,7 +2100,11 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p.add_argument(
         "--idempotency-key",
         metavar="KEY",
-        help="Send this Idempotency-Key instead of a fresh one, so a re-run cannot post twice.",
+        help=(
+            "Send this Idempotency-Key instead of the default. A --reply-to comment derives "
+            "its key from the reply-to id, note, body and mentions, so a retry posts once; "
+            "any other comment gets a fresh random key."
+        ),
     )
     p.set_defaults(handler=cmd_comments_create)
 
@@ -2038,7 +2129,10 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "agents",
         help="Agent members: ``guide`` prints the usage guide for taking part in rooms.",
     )
-    sub_agents = p_agents.add_subparsers(dest="agents_action", required=True)
+    # An explicit metavar keeps the hidden ``skill`` alias out of the usage brace list.
+    sub_agents = p_agents.add_subparsers(
+        dest="agents_action", required=True, metavar="{guide,claude-channel}"
+    )
     p_agents_guide = sub_agents.add_parser(
         "guide",
         help="Print the agent-usage guide (SKILL.md) for taking part in rooms as an agent member.",
@@ -2059,6 +2153,12 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "--force", action="store_true", help="With --write: overwrite an existing SKILL.md."
     )
     p_agents_guide.set_defaults(handler=cmd_agents_guide)
+    # ``skill`` is the name a person or an agent guesses for the guide. No ``help=``, so it is
+    # listed nowhere; it takes the same flags and runs the same handler.
+    p_agents_skill = sub_agents.add_parser("skill", parents=[_json_parent])
+    p_agents_skill.add_argument("--write", metavar="DIR")
+    p_agents_skill.add_argument("--force", action="store_true")
+    p_agents_skill.set_defaults(handler=cmd_agents_guide)
     p_agents_channel = sub_agents.add_parser(
         "claude-channel",
         help=(
@@ -2168,11 +2268,45 @@ def cmd_login(args: argparse.Namespace) -> int:
     server_url = server_url.rstrip("/")
 
     if args.token or args.manual:
-        return _login_manual(server_url, args.token)
-    return _login_device(server_url, open_browser=not args.no_browser)
+        return _login_manual(args, server_url, args.token)
+    return _login_device(args, server_url, open_browser=not args.no_browser)
 
 
-def _login_manual(server_url: str, raw_token: str | None) -> int:
+def _login_saved_person(
+    args: argparse.Namespace, server_url: str, token: SecretStr, who: api_client.Whoami
+) -> int:
+    """Save a validated personal token and report the login (text on stderr, or one JSON
+    object on stdout under ``--json``). The token itself is never part of either."""
+    path = credentials.save(server_url=server_url, token=token)
+    _forget_listings()
+
+    def human() -> None:
+        render.info(
+            render.styled(
+                "Logged in as ",
+                (sanitize_line(who.display_name), "bold"),
+                f" ({sanitize_line(who.email or 'no email')}).",
+            )
+        )
+        render.info(f"Credentials written to {path}.")
+
+    _emit(
+        {
+            "ok": True,
+            "server_url": server_url,
+            "agent": False,
+            "user_id": who.user_id,
+            "display_name": who.display_name,
+            "email": who.email,
+            "credentials_path": str(path),
+        },
+        args,
+        human,
+    )
+    return 0
+
+
+def _login_manual(args: argparse.Namespace, server_url: str, raw_token: str | None) -> int:
     """Manual paste-a-PAT login: prompt if not given, validate, save.
 
     This is the whole of ``cmd_login`` before the device-login flow
@@ -2182,7 +2316,11 @@ def _login_manual(server_url: str, raw_token: str | None) -> int:
     """
     raw_token = raw_token or _prompt_secret("Token (pep_pat_...): ")
     if not raw_token:
-        render.error("No token provided. Mint one at <server>/settings#tokens and try again.")
+        _emit_error(
+            args,
+            "usage",
+            "No token provided. Mint one at <server>/settings#tokens and try again.",
+        )
         return 2
     # Wrap at the boundary: the raw string lives only inside this
     # local until it's into the SecretStr, after which the unwrap
@@ -2192,13 +2330,15 @@ def _login_manual(server_url: str, raw_token: str | None) -> int:
     del raw_token
     if is_agent and credentials.active_profile() is None:
         # Saving it would overwrite the person's own login in the default file.
-        render.error(
+        _emit_error(
+            args,
+            "usage",
             "Agent tokens (pep_agt_) must not replace your own login. "
-            "Re-run with a profile: pepper --profile <name> login ..."
+            "Re-run with a profile: pepper --profile <name> login ...",
         )
         return 2
     if is_agent:
-        return _login_agent(server_url, token)
+        return _login_agent(args, server_url, token)
 
     # Validate before saving — a typo'd token should fail loudly here,
     # not silently break the next ``chat``. We close the client right
@@ -2209,25 +2349,22 @@ def _login_manual(server_url: str, raw_token: str | None) -> int:
             _declare_capabilities(api)
     except api_client.ApiError as exc:
         if exc.status == 401:
-            render.error("Token rejected (401). Double-check what you pasted.")
+            _emit_error(
+                args, "auth", "Token rejected (401). Double-check what you pasted.", status=401
+            )
         else:
-            render.error(f"Server rejected the token: {exc}")
+            _emit_error(
+                args,
+                _error_code_for_status(exc.status),
+                f"Server rejected the token: {exc}",
+                status=exc.status,
+            )
         return 1
     except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {server_url}: {exc}")
+        _emit_error(args, "network", f"Couldn't reach {server_url}: {exc}")
         return 1
 
-    path = credentials.save(server_url=server_url, token=token)
-    _forget_listings()
-    render.info(
-        render.styled(
-            "Logged in as ",
-            (sanitize_line(who.display_name), "bold"),
-            f" ({sanitize_line(who.email or 'no email')}).",
-        )
-    )
-    render.info(f"Credentials written to {path}.")
-    return 0
+    return _login_saved_person(args, server_url, token, who)
 
 
 #: An agent member's token. It authenticates as the agent, not a Pepper account, so it reaches
@@ -2235,7 +2372,7 @@ def _login_manual(server_url: str, raw_token: str | None) -> int:
 AGENT_TOKEN_PREFIX = api_client.AGENT_TOKEN_PREFIX
 
 
-def _login_agent(server_url: str, token: SecretStr) -> int:
+def _login_agent(args: argparse.Namespace, server_url: str, token: SecretStr) -> int:
     """Validate and save an agent token.
 
     ``whoami`` answers only a Pepper account, so an agent token is checked
@@ -2248,30 +2385,58 @@ def _login_agent(server_url: str, token: SecretStr) -> int:
             rooms = api.list_groups()
     except api_client.ApiError as exc:
         if exc.status == 401:
-            render.error("Agent token rejected (401). It may be revoked or expired.")
+            _emit_error(
+                args,
+                "auth",
+                "Agent token rejected (401). It may be revoked or expired.",
+                status=401,
+            )
         else:
-            render.error(f"Server rejected the token: {exc}")
+            _emit_error(
+                args,
+                _error_code_for_status(exc.status),
+                f"Server rejected the token: {exc}",
+                status=exc.status,
+            )
         return 1
     except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {server_url}: {exc}")
+        _emit_error(args, "network", f"Couldn't reach {server_url}: {exc}")
         return 1
     # A 200 can still say the rooms surface is off or unreadable for this
     # person; saving the token then would report a login that cannot work.
     if not rooms.enabled:
-        render.error("Groups is not enabled on this server for that agent.")
+        _emit_error(args, "forbidden", "Groups is not enabled on this server for that agent.")
         return 1
     if rooms.degraded:
-        render.error("The groups service could not read this agent's rooms. Try again shortly.")
+        _emit_error(
+            args,
+            "server",
+            "The groups service could not read this agent's rooms. Try again shortly.",
+        )
         return 1
 
     path = credentials.save(server_url=server_url, token=token)
     _forget_listings()
-    render.info(f"Logged in as an agent member of {rooms.total} room(s).")
-    render.info(f"Credentials written to {path}.")
+
+    def human() -> None:
+        render.info(f"Logged in as an agent member of {rooms.total} room(s).")
+        render.info(f"Credentials written to {path}.")
+
+    _emit(
+        {
+            "ok": True,
+            "server_url": server_url,
+            "agent": True,
+            "rooms": rooms.total,
+            "credentials_path": str(path),
+        },
+        args,
+        human,
+    )
     return 0
 
 
-def _login_device(server_url: str, *, open_browser: bool) -> int:
+def _login_device(args: argparse.Namespace, server_url: str, *, open_browser: bool) -> int:
     """Browser-based device-authorization login (the default path).
 
     Starts a device-authorization grant, prints the human code and
@@ -2291,10 +2456,15 @@ def _login_device(server_url: str, *, open_browser: bool) -> int:
     try:
         start = api_client.device_start(server_url, device_name)
     except api_client.ApiError as exc:
-        render.error(f"Server rejected the device-login request: {exc}")
+        _emit_error(
+            args,
+            _error_code_for_status(exc.status),
+            f"Server rejected the device-login request: {exc}",
+            status=exc.status,
+        )
         return 1
     except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {server_url}: {exc}")
+        _emit_error(args, "network", f"Couldn't reach {server_url}: {exc}")
         return 1
 
     render.info(
@@ -2315,16 +2485,25 @@ def _login_device(server_url: str, *, open_browser: bool) -> int:
 
     while True:
         if time.monotonic() >= deadline:
-            render.error("Login expired before it was approved. Run 'pepper login' to try again.")
+            _emit_error(
+                args,
+                "timeout",
+                "Login expired before it was approved. Run 'pepper login' to try again.",
+            )
             return 1
         time.sleep(interval)
         try:
             poll = api_client.device_poll(server_url, start.device_code)
         except api_client.ApiError as exc:
-            render.error(f"Server error while polling for login: {exc}")
+            _emit_error(
+                args,
+                _error_code_for_status(exc.status),
+                f"Server error while polling for login: {exc}",
+                status=exc.status,
+            )
             return 1
         except httpx.RequestError as exc:
-            render.error(f"Couldn't reach {server_url}: {exc}")
+            _emit_error(args, "network", f"Couldn't reach {server_url}: {exc}")
             return 1
 
         if poll.status == "pending":
@@ -2337,14 +2516,18 @@ def _login_device(server_url: str, *, open_browser: bool) -> int:
             interval += 5
             continue
         if poll.status == "denied":
-            render.error("Login was denied.")
+            _emit_error(args, "forbidden", "Login was denied.")
             return 1
         if poll.status == "expired":
-            render.error("Login expired before it was approved. Run 'pepper login' to try again.")
+            _emit_error(
+                args,
+                "timeout",
+                "Login expired before it was approved. Run 'pepper login' to try again.",
+            )
             return 1
         if poll.status == "approved":
             break
-        render.error(f"Unexpected response from server (status={poll.status!r}).")
+        _emit_error(args, "server", f"Unexpected response from server (status={poll.status!r}).")
         return 1
 
     assert poll.token is not None  # "approved" always carries a token
@@ -2356,25 +2539,25 @@ def _login_device(server_url: str, *, open_browser: bool) -> int:
             _declare_capabilities(api)
     except api_client.ApiError as exc:
         if exc.status == 401:
-            render.error("Token rejected (401) right after approval — run 'pepper login' again.")
+            _emit_error(
+                args,
+                "auth",
+                "Token rejected (401) right after approval — run 'pepper login' again.",
+                status=401,
+            )
         else:
-            render.error(f"Server rejected the token: {exc}")
+            _emit_error(
+                args,
+                _error_code_for_status(exc.status),
+                f"Server rejected the token: {exc}",
+                status=exc.status,
+            )
         return 1
     except httpx.RequestError as exc:
-        render.error(f"Couldn't reach {server_url}: {exc}")
+        _emit_error(args, "network", f"Couldn't reach {server_url}: {exc}")
         return 1
 
-    path = credentials.save(server_url=server_url, token=token)
-    _forget_listings()
-    render.info(
-        render.styled(
-            "Logged in as ",
-            (sanitize_line(who.display_name), "bold"),
-            f" ({sanitize_line(who.email or 'no email')}).",
-        )
-    )
-    render.info(f"Credentials written to {path}.")
-    return 0
+    return _login_saved_person(args, server_url, token, who)
 
 
 def cmd_whoami(args: argparse.Namespace) -> int:
@@ -4690,7 +4873,7 @@ def _json_mode(args: argparse.Namespace) -> bool:
     ``--json`` on the command line always wins; otherwise ``PEPPER_JSON`` set to
     exactly ``1``. Any other value, or unset, is off — there is no ``--no-json``;
     ``PEPPER_JSON= pepper …`` switches it off for one command. Only leaves that
-    accept ``--json`` call this (the REPL and ``login`` never do, which is the J1
+    accept ``--json`` call this (the REPL never does, which is the J1
     exemption), so a leaf without the flag never reaches the ``getattr`` default.
     """
     return bool(getattr(args, "json", False)) or os.environ.get("PEPPER_JSON") == _PEPPER_JSON_ON
@@ -5583,6 +5766,16 @@ def cmd_messages_list(args: argparse.Namespace) -> int:
         return 2
 
     def run(api: api_client.ApiClient) -> int:
+        if args.topic is None and api.is_agent_token:
+            # The default topic is the room's most recently active one, which can change
+            # between two calls: an agent's post is permanent, so it must name the topic.
+            _emit_error(
+                args,
+                "usage",
+                "An agent token must name the topic: pass --topic TOPIC "
+                "('topics list --room ROOM' shows them).",
+            )
+            return 2
         group_id = _need_group(api, args.room, args=args)
         topic_id = _need_topic(api, group_id, args.topic, args=args)
         page = api.list_group_messages(
@@ -5640,6 +5833,36 @@ def _read_attachment(
     return content, p.name, content_type or "application/octet-stream"
 
 
+def _default_idempotency_key(
+    reply_to: str | None,
+    scope_id: str,
+    text: str,
+    mentions: Sequence[str] | None,
+    **extra: object,
+) -> str:
+    """The ``Idempotency-Key`` a post sends when ``--idempotency-key`` is not given.
+
+    A reply (``reply_to`` set) derives it, ``cli:<reply_to>:<sha256 hex[:32]>``, over a canonical
+    encoding of the topic (or note) id, the body and the sorted mentions, so a retried command
+    posts once and a different reply to the same parent posts as a new message (the same rule
+    as ``claude_channel._reply_key``). ``extra`` joins the digest only when it is set (the
+    requester a post is on behalf of, the content digests of its attachments), because the
+    server would otherwise replay the first post for a retry that sends something else. Without
+    ``reply_to`` there is no parent to anchor the key to, so it stays a fresh random one:
+    two identical top-level posts are two posts.
+    """
+    if reply_to is None:
+        return str(uuid.uuid4())
+    payload: dict[str, object] = {
+        "topic_id": scope_id,
+        "body": text,
+        "mentions": sorted(mentions or []),
+    }
+    payload.update({key: value for key, value in extra.items() if value})
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return f"cli:{reply_to}:{hashlib.sha256(encoded).hexdigest()[:32]}"
+
+
 def cmd_messages_post(args: argparse.Namespace) -> int:
     """``pepper messages post --room R --topic T [MESSAGE | -] [--attach PATH ...]
     [--reply-to MESSAGE_ID] [--mention PERSON_ID ...] [--on-behalf-of PERSON_ID]
@@ -5660,6 +5883,9 @@ def cmd_messages_post(args: argparse.Namespace) -> int:
     ``--idempotency-key`` replaces the fresh key with the caller's own, for a
     script that must not double-post when it re-runs the same command after
     a crash (the agent-member watcher keys it on the message it answers).
+    A reply (``--reply-to``) without the flag derives its key from the topic,
+    body and mentions instead (:func:`_default_idempotency_key`), so re-running
+    it posts once; a post that is not a reply keeps the fresh random key.
 
     ``--reply-to`` and ``--mention`` pass straight through as the post's
     ``parent_message_id`` and ``mentions`` (bare person ids, from
@@ -5730,7 +5956,15 @@ def cmd_messages_post(args: argparse.Namespace) -> int:
             attachment_ids=attachment_ids or None,
             mentions=args.mention or None,
             parent_message_id=args.reply_to,
-            idempotency_key=args.idempotency_key or str(uuid.uuid4()),
+            idempotency_key=args.idempotency_key
+            or _default_idempotency_key(
+                args.reply_to,
+                topic_id,
+                text,
+                args.mention,
+                on_behalf_of=args.on_behalf_of,
+                attachments=[hashlib.sha256(content).hexdigest() for content, _, _ in attachments],
+            ),
             on_behalf_of_person_id=args.on_behalf_of,
         )
 
@@ -6192,6 +6426,58 @@ _WATCH_SERVER_RESTARTING = "server_restarting"
 _WATCH_FATAL_STATUSES = frozenset({400, 401, 403, 404, 405, 410, 422})
 
 
+def _duration_seconds(value: str) -> float:
+    """Parse ``--for``: a positive number with an optional ``s``, ``m`` or ``h`` suffix
+    (``45s``, ``2m``, ``1.5h``); a bare number is seconds."""
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)([smh]?)", value.strip().lower())
+    unit = {"": 1, "s": 1, "m": 60, "h": 3600}
+    seconds = float(match.group(1)) * unit[match.group(2)] if match else 0.0
+    if seconds <= 0:
+        msg = f"expected a duration such as 45s, 2m or 1h, got {value!r}"
+        raise argparse.ArgumentTypeError(msg)
+    return seconds
+
+
+#: The longest hold the events page takes (``wait`` is capped at 25 on the server).
+_POLL_MAX_WAIT = 25
+
+
+def _poll_wait(value: str) -> int:
+    """Parse ``rooms poll --wait``: whole seconds, 0 to 25."""
+    try:
+        seconds = int(value)
+    except ValueError:
+        seconds = -1
+    if not 0 <= seconds <= _POLL_MAX_WAIT:
+        msg = f"expected a whole number of seconds from 0 to {_POLL_MAX_WAIT}, got {value!r}"
+        raise argparse.ArgumentTypeError(msg)
+    return seconds
+
+
+def _watch_deadline(args: argparse.Namespace) -> float | None:
+    """The monotonic time ``rooms watch --for`` ends the run at, or ``None``."""
+    seconds = getattr(args, "for_seconds", None)
+    return None if seconds is None else time.monotonic() + seconds
+
+
+def _deadline_passed(deadline: float | None) -> bool:
+    return deadline is not None and time.monotonic() >= deadline
+
+
+def _remaining(deadline: float) -> float:
+    return max(deadline - time.monotonic(), 0.0)
+
+
+def _stream_budget(deadline: float | None) -> dict[str, float]:
+    """Extra ``watch_*_events`` arguments that stop a quiet stream at ``deadline``.
+
+    Empty without a deadline, so a run with no ``--for`` calls the client exactly as before.
+    """
+    if deadline is None:
+        return {}
+    return {"read_timeout": max(deadline - time.monotonic(), 0.05)}
+
+
 def _kind_list(value: str) -> frozenset[str]:
     """Parse a comma-separated ``--kinds`` / ``--ignore-kinds`` value.
 
@@ -6351,6 +6637,45 @@ def _watch_event_line(event: dict[str, Any], *, as_json: bool, cursor: int) -> s
     return sanitize_line(" ".join(parts))
 
 
+def _unscoped_start_cursor(args: argparse.Namespace, *, action: str) -> tuple[int, int | None]:
+    """Where an unscoped ``rooms watch`` / ``rooms poll`` starts: ``(cursor, None)``, or
+    ``(0, exit_code)`` after the error is reported.
+
+    ``--since`` wins over the cursor file's position, else the file's, else the beginning. A
+    scoped watch's file is refused even with ``--since`` (the run would overwrite another
+    watch's position); an unreadable one only when ``--since`` does not make it moot.
+    ``action`` is the verb the refusal ends on ("Nothing was <action>.").
+    """
+    cursor = args.since
+    if cursor is not None and cursor < 0:
+        _emit_error(args, "usage", "--since must be a non-negative cursor.")
+        return 0, 2
+    if args.cursor_file:
+        try:
+            stored = _read_cursor_state(args.cursor_file)
+        except (ValueError, OSError) as exc:
+            # With --since the file is only being checked, as before.
+            stored = None
+            if cursor is None:
+                _emit_error(args, "usage", str(exc))
+                return 0, 2
+        if isinstance(stored, _ScopedCursor):
+            # Even with --since: the run would overwrite another watch's position.
+            _emit_error(
+                args,
+                "usage",
+                f"The cursor file {args.cursor_file} belongs to a scoped watch (room "
+                f"{stored.room_id}, topic {stored.topic_id or 'any'}), not the "
+                f"unscoped one requested. Nothing was {action}. Use a separate "
+                "--cursor-file for each scope.",
+                soft_wrap=True,
+            )
+            return 0, 2
+        if cursor is None:
+            cursor = stored
+    return cursor or 0, None
+
+
 def cmd_rooms_watch(args: argparse.Namespace) -> int:
     """``pepper rooms watch [--since CURSOR] [--cursor-file PATH] [--json]
     [--kinds K,...] [--ignore-kinds K,...]``.
@@ -6384,48 +6709,31 @@ def cmd_rooms_watch(args: argparse.Namespace) -> int:
     creds = _load_or_error(args)
     if creds is None:
         return 1
-    cursor = args.since
-    if cursor is not None and cursor < 0:
-        _emit_error(args, "usage", "--since must be a non-negative cursor.")
-        return 2
-    if args.cursor_file:
-        try:
-            stored = _read_cursor_state(args.cursor_file)
-        except (ValueError, OSError) as exc:
-            # With --since the file is only being checked, as before.
-            stored = None
-            if cursor is None:
-                _emit_error(args, "usage", str(exc))
-                return 2
-        if isinstance(stored, _ScopedCursor):
-            # Even with --since: the run would overwrite another watch's position.
-            _emit_error(
-                args,
-                "usage",
-                f"The cursor file {args.cursor_file} belongs to a scoped watch (room "
-                f"{stored.room_id}, topic {stored.topic_id or 'any'}), not the "
-                "unscoped one requested. Nothing was streamed. Use a separate "
-                "--cursor-file for each scope.",
-                soft_wrap=True,
-            )
-            return 2
-        if cursor is None:
-            cursor = stored
-    cursor = cursor or 0
+    cursor, refused = _unscoped_start_cursor(args, action="streamed")
+    if refused is not None:
+        return refused
     allowed: frozenset[str] | None = args.kinds
     ignored: frozenset[str] = args.ignore_kinds or frozenset()
     reconnecting = False
     delay = _WATCH_BACKOFF_START
     failures = 0
+    deadline = _watch_deadline(args)
     try:
         with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
             while True:
+                if _deadline_passed(deadline):
+                    return 0
                 problem: str | None = None
                 try:
                     frames = api.watch_agent_events(
-                        since=cursor, last_event_id=cursor if reconnecting else None
+                        since=cursor,
+                        last_event_id=cursor if reconnecting else None,
+                        **_stream_budget(deadline),
                     )
                     for frame in frames:
+                        if _deadline_passed(deadline):
+                            # --for: the frame is not consumed, the cursor did not move.
+                            return 0
                         if _watch_frame_shows_health(frame):
                             delay = _WATCH_BACKOFF_START
                             failures = 0
@@ -6468,6 +6776,8 @@ def cmd_rooms_watch(args: argparse.Namespace) -> int:
                     problem = f"HTTP {exc.status}"
                 except httpx.RequestError as exc:
                     problem = type(exc).__name__
+                if _deadline_passed(deadline):
+                    return 0
                 pause = delay
                 if problem is not None:
                     failures += 1
@@ -6482,7 +6792,7 @@ def cmd_rooms_watch(args: argparse.Namespace) -> int:
                         render.error(f"Feed unavailable ({problem}); retrying in {pause:g}s.")
                 reconnecting = True
                 if pause:
-                    time.sleep(pause)
+                    time.sleep(pause if deadline is None else min(pause, _remaining(deadline)))
                     delay = min(delay * 2, _WATCH_BACKOFF_CAP)
     except KeyboardInterrupt:
         return 0
@@ -6491,6 +6801,66 @@ def cmd_rooms_watch(args: argparse.Namespace) -> int:
     except OSError as exc:
         _emit_error(args, "server", f"Couldn't write the cursor file: {exc}")
         return 1
+
+
+def cmd_rooms_poll(args: argparse.Namespace) -> int:
+    """``pepper rooms poll [--since CURSOR] [--cursor-file PATH] [--wait SECONDS]
+    [--kinds K,...] [--ignore-kinds K,...] [--json]``.
+
+    One ``GET /api/v1/groups/events`` page instead of a stream, for a harness that runs one
+    turn per wake and cannot keep a process beside the agent. The events print as
+    :func:`cmd_rooms_watch` prints them (same lines, same ``--json`` shape, same kind
+    filters), then the cursor to resume from: ``cursor=N``, or ``{"kind":"cursor","cursor":N}``
+    under ``--json``. That is the page's ``next_after_id``, which can be past the last event's
+    id, so the next call resumes from it and never from the last event. The cursor file is the
+    unscoped watch's (a bare number, written after the output is flushed); a scoped watch's
+    file is refused, even with ``--since``.
+
+    Exit codes: 0 on a page, empty or not; 1 on a refused token (401), a token that is not an
+    agent's (403), a server without the route (404) or any other API or network failure; 2 on
+    bad arguments (including a cursor file a scoped watch wrote).
+    """
+    creds = _load_or_error(args)
+    if creds is None:
+        return 1
+    cursor, refused = _unscoped_start_cursor(args, action="read")
+    if refused is not None:
+        return refused
+    allowed: frozenset[str] | None = args.kinds
+    ignored: frozenset[str] = args.ignore_kinds or frozenset()
+    try:
+        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
+            page = api.get_agent_events_page(after_id=cursor, wait=args.wait)
+        events = page.get("events")
+        next_id = page.get("next_after_id")
+        for event in events if isinstance(events, list) else []:
+            event_id = event.get("id") if isinstance(event, dict) else None
+            if isinstance(event_id, bool) or not isinstance(event_id, int):
+                continue
+            kind = str(event.get("kind"))
+            if (allowed is None or kind in allowed) and kind not in ignored:
+                _emit_line(_watch_event_line(event, as_json=args.json, cursor=event_id))
+            # An unusual page (ids not above the cursor) never moves the cursor back.
+            next_id = max(next_id, event_id) if isinstance(next_id, int) else event_id
+        if isinstance(next_id, bool) or not isinstance(next_id, int):
+            next_id = cursor
+        cursor = max(cursor, next_id)
+        if args.cursor_file:
+            _write_cursor_file(args.cursor_file, cursor)
+        _emit_line(
+            _watch_cursor_line(cursor) if args.json else f"cursor={cursor}",
+        )
+    except api_client.ApiError as exc:
+        return _report_api_error(exc, args)
+    except httpx.RequestError as exc:
+        _emit_error(args, "network", f"Couldn't reach {creds.server_url}: {exc}")
+        return 1
+    except BrokenPipeError:
+        return _watch_reader_gone()
+    except OSError as exc:
+        _emit_error(args, "server", f"Couldn't write the cursor file: {exc}")
+        return 1
+    return 0
 
 
 def _watch_reader_gone() -> int:
@@ -6819,7 +7189,10 @@ def _follow_scoped_watch(
     reconnecting = False
     delay = _WATCH_BACKOFF_START
     failures = 0
+    deadline = _watch_deadline(args)
     while True:
+        if _deadline_passed(deadline):
+            return 0
         problem: str | None = None
         try:
             frames = api.watch_scoped_events(
@@ -6827,10 +7200,14 @@ def _follow_scoped_watch(
                 topic_id=topic_id,
                 since=cursor,
                 last_event_id=cursor if reconnecting else None,
+                **_stream_budget(deadline),
             )
             with contextlib.closing(frames):
                 scope: api_client.WatchScope | None = None
                 for frame in frames:
+                    if _deadline_passed(deadline):
+                        # --for: the frame is not consumed, the cursor did not move.
+                        return 0
                     if _watch_frame_shows_health(frame):
                         delay = _WATCH_BACKOFF_START
                         failures = 0
@@ -6910,6 +7287,8 @@ def _follow_scoped_watch(
             problem = f"HTTP {exc.status}"
         except httpx.RequestError as exc:
             problem = type(exc).__name__
+        if _deadline_passed(deadline):
+            return 0
         pause = delay
         if problem is not None:
             failures += 1
@@ -6919,7 +7298,7 @@ def _follow_scoped_watch(
                 render.error(f"Feed unavailable ({problem}); retrying in {pause:g}s.")
         reconnecting = True
         if pause:
-            time.sleep(pause)
+            time.sleep(pause if deadline is None else min(pause, _remaining(deadline)))
             delay = min(delay * 2, _WATCH_BACKOFF_CAP)
 
 
@@ -7244,7 +7623,8 @@ def cmd_comments_create(args: argparse.Namespace) -> int:
             quote=args.quote,
             reply_to=args.reply_to,
             mentions=args.mention or None,
-            idempotency_key=args.idempotency_key or str(uuid.uuid4()),
+            idempotency_key=args.idempotency_key
+            or _default_idempotency_key(args.reply_to, note_id, text, args.mention),
         )
 
         def human() -> None:
