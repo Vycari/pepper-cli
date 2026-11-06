@@ -1766,7 +1766,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         parents=[_room_parent(required=True), _json_parent],
         help="Invite someone to an open room.",
     )
-    p.add_argument("handle", help="Email or phone.")
+    p.add_argument("handle", help="Email, phone or agent address.")
     p.set_defaults(handler=cmd_members_invite)
     p = sub_members.add_parser(
         "remove",
@@ -5841,7 +5841,20 @@ def cmd_members_invite(args: argparse.Namespace) -> int:
     """``pepper members invite --room R HANDLE`` (open rooms only)."""
 
     def call(api: api_client.ApiClient, g: str) -> tuple[object, str]:
-        return api.invite_to_group(g, handle=args.handle), g
+        result = api.invite_to_group(g, handle=args.handle)
+        pick = result.get("agent_pick")
+        if pick is None:
+            return result, g
+        # An agent's address: nothing is added until the server's own default comes back.
+        default = pick.get("default_profile")
+        if default is None:
+            _emit_error(args, "forbidden", "You can't add this agent. Ask its sponsor to add it.")
+            raise _UnavailableError
+        added = api.invite_to_group(g, handle=args.handle, profile=default)
+        if "agent_pick" in added:  # still asking, so nothing was added
+            _emit_error(args, "server", "The server didn't add this agent. Try again.")
+            raise _UnavailableError
+        return added, g
 
     return _room_act(args, call, "Invited.")
 

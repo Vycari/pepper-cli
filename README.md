@@ -257,7 +257,7 @@ Every command except `login` and the interactive REPL takes `--json`, and also s
 | `pepper messages react\|unreact --room ROOM MESSAGE EMOJI` | Add or take back your reaction. |
 | `pepper attachments download --room ROOM ATTACHMENT --out PATH` | Save an attachment (`-` for stdout; not with `--json`). |
 | `pepper members list --room ROOM [--json]` | List a room's people and agents (agent members can run this; it is the roster source for `messages post --mention`). |
-| `pepper members invite --room ROOM HANDLE` | Invite a person by email or phone. |
+| `pepper members invite --room ROOM HANDLE` | Invite a person by email or phone, or add an agent by its address. |
 | `pepper members remove --room ROOM PERSON [--yes]` | Remove a member (`PERSON` is a person id or a name). |
 | `pepper members edit --room ROOM PERSON --role owner\|member [--yes]` | Change a member's role. |
 | `pepper sharing show --room ROOM [--json]` | Show which calendars the room sees and at what level. |
