@@ -28,7 +28,10 @@ import json as _json
 import math
 import os
 import re as _re
+import socket
 import sys
+import threading
+import time
 import uuid
 from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field
@@ -149,6 +152,42 @@ def make_http_client(*, timeout: float) -> httpx.Client:
                 "(and unset the bad one)."
             )
         raise ProxyEnvironmentError(msg) from exc
+
+
+class _DeadlineCut:
+    """Cut a streaming response's connection at a ``time.monotonic()`` deadline.
+
+    A read timeout is per read, so a stream that delivers a frame just before the deadline
+    gets the whole timeout again for the next read. This enforces one absolute end instead: a
+    timer shuts the connection's socket down at the deadline, which wakes a read blocked on it,
+    and :attr:`fired` tells the reader that the error it then sees is the deadline. A response
+    with no socket to reach (a test transport) is left alone; the read timeout still bounds it.
+    """
+
+    def __init__(self, resp: httpx.Response, deadline: float | None) -> None:
+        self.fired = False
+        self._timer: threading.Timer | None = None
+        if deadline is None:
+            return
+        stream = resp.extensions.get("network_stream")
+        sock = None
+        with contextlib.suppress(Exception):
+            sock = stream.get_extra_info("socket") if stream is not None else None
+        if not isinstance(sock, socket.socket):
+            return
+
+        def cut() -> None:
+            self.fired = True
+            with contextlib.suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
+
+        self._timer = threading.Timer(max(deadline - time.monotonic(), 0.0), cut)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def cancel(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
 
 
 class ApiError(Exception):
@@ -3004,6 +3043,7 @@ class ApiClient:
         since: int = 0,
         last_event_id: int | None = None,
         read_timeout: float | None = None,
+        deadline: float | None = None,
     ) -> Generator[FeedFrame]:
         """``GET /api/v1/groups/events/stream`` — an agent member's roster-scoped
         event feed, as :class:`FeedFrame`s until the server closes it.
@@ -3019,13 +3059,17 @@ class ApiClient:
         surface as ``kind="comment"`` frames so the caller can tell a quiet
         healthy connection from a dead one. ``read_timeout`` shortens the wait for the next
         frame (never lengthens it), so a caller with a deadline gets
-        ``httpx.ReadTimeout`` on a quiet stream when the deadline comes.
+        ``httpx.ReadTimeout`` on a quiet stream when the deadline comes. ``deadline`` (a
+        ``time.monotonic()`` instant) is the absolute end: the connection is cut then, and the
+        generator ends, however recently the last frame arrived (a read timeout alone is per
+        read, so it restarts with every frame).
         """
         yield from self._stream_feed(
             "/api/v1/groups/events/stream",
             since=since,
             last_event_id=last_event_id,
             read_timeout=read_timeout,
+            deadline=deadline,
         )
 
     def watch_scoped_events(
@@ -3036,6 +3080,7 @@ class ApiClient:
         since: int = 0,
         last_event_id: int | None = None,
         read_timeout: float | None = None,
+        deadline: float | None = None,
     ) -> Generator[FeedFrame]:
         """``GET /api/v1/groups/{room_id}/events/stream`` (or, with
         ``topic_id``, ``.../topics/{topic_id}/events/stream``): the agent
@@ -3057,6 +3102,7 @@ class ApiClient:
             since=since,
             last_event_id=last_event_id,
             read_timeout=read_timeout,
+            deadline=deadline,
         )
 
     def watch_person_events(
@@ -3088,8 +3134,10 @@ class ApiClient:
         since: int | None,
         last_event_id: int | None,
         read_timeout: float | None = None,
+        deadline: float | None = None,
     ) -> Generator[FeedFrame]:
-        """Open one SSE feed connection at ``path`` and yield its frames."""
+        """Open one SSE feed connection at ``path`` and yield its frames, until ``deadline``
+        (see :class:`_DeadlineCut`) when one is given."""
         headers = {
             "Authorization": f"Bearer {self._token.get_secret_value()}",
             "User-Agent": USER_AGENT,
@@ -3103,8 +3151,12 @@ class ApiClient:
             f"{self._server_url}{path}",
             params={"since": since} if since is not None else None,
             headers=headers,
+            # ``read_timeout`` is a ``--for`` budget: the connect is bounded by it too, so a
+            # host that never answers cannot hold the run past its window.
             timeout=httpx.Timeout(
-                connect=base_timeout.connect,
+                connect=base_timeout.connect
+                if read_timeout is None or base_timeout.connect is None
+                else min(base_timeout.connect, read_timeout),
                 read=FEED_STREAM_READ_TIMEOUT
                 if read_timeout is None
                 else min(FEED_STREAM_READ_TIMEOUT, read_timeout),
@@ -3115,7 +3167,16 @@ class ApiClient:
             if resp.status_code >= 400:
                 resp.read()
                 _raise_for_error(resp)
-            yield from _iter_feed_frames(resp.iter_lines())
+            cut = _DeadlineCut(resp, deadline)
+            try:
+                yield from _iter_feed_frames(resp.iter_lines())
+            except httpx.RequestError:
+                if cut.fired:
+                    # The deadline cut the connection: the stream ends, it did not fail.
+                    return
+                raise
+            finally:
+                cut.cancel()
 
     # ------------------------------------------------------------------
     # Research projects (``/api/v1/research-projects``)

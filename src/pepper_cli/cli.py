@@ -98,6 +98,7 @@ import json
 import math
 import mimetypes
 import os
+import pathlib
 import re
 import shlex
 import socket
@@ -708,7 +709,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
             "in a browser (it's still printed)."
         ),
     )
-    p_login.set_defaults(handler=cmd_login)
+    # J1/J10: login takes --json as a flag but ignores PEPPER_JSON, so an exported
+    # PEPPER_JSON never turns a person's interactive login into a non-prompting one.
+    p_login.set_defaults(handler=cmd_login, ignores_pepper_json=True)
 
     p_whoami = sub.add_parser(
         "whoami", help="Print the user behind the current credentials.", parents=[_json_parent]
@@ -2270,9 +2273,9 @@ def cmd_login(args: argparse.Namespace) -> int:
     """Resolve the server URL, then dispatch to the device-login flow
     (the default) or the manual paste-a-PAT flow (``--token`` /
     ``--manual``)."""
-    # JSON mode never prompts (J2) and never opens a browser: a missing --server is the
-    # default server, a missing --token is a usage error, and the device flow prints its
-    # code and URL on stderr for a person to open.
+    # JSON mode (``--json`` only: login ignores PEPPER_JSON, J10) never prompts (J2) and never
+    # opens a browser: a missing --server is the default server, a missing --token is a usage
+    # error, and the device flow prints its code and URL on stderr for a person to open.
     as_json = bool(args.json)
     if as_json:
         server_url = args.server or _DEFAULT_SERVER
@@ -2285,8 +2288,8 @@ def cmd_login(args: argparse.Namespace) -> int:
             _emit_error(
                 args,
                 "usage",
-                "JSON mode never prompts, so `login --manual` cannot ask for the token. Run it "
-                "in a terminal without --json or PEPPER_JSON=1, or pass --token.",
+                "JSON mode never prompts, so `login --manual --json` cannot ask for the token. "
+                "Run it without --json in a terminal, or pass --token.",
                 soft_wrap=True,
             )
             return 2
@@ -2294,12 +2297,25 @@ def cmd_login(args: argparse.Namespace) -> int:
     return _login_device(args, server_url, open_browser=not args.no_browser and not as_json)
 
 
+def _save_login(args: argparse.Namespace, server_url: str, token: SecretStr) -> pathlib.Path | None:
+    """Save the validated token, or report why it could not be saved (a read-only or full
+    config directory) as the usual error line, JSON under ``--json``, and return ``None``.
+    The message names the file, never the token."""
+    try:
+        return credentials.save(server_url=server_url, token=token)
+    except OSError as exc:
+        _emit_error(args, "server", f"Couldn't save the credentials: {exc}")
+        return None
+
+
 def _login_saved_person(
     args: argparse.Namespace, server_url: str, token: SecretStr, who: api_client.Whoami
 ) -> int:
     """Save a validated personal token and report the login (text on stderr, or one JSON
     object on stdout under ``--json``). The token itself is never part of either."""
-    path = credentials.save(server_url=server_url, token=token)
+    path = _save_login(args, server_url, token)
+    if path is None:
+        return 1
     _forget_listings()
 
     def human() -> None:
@@ -2437,7 +2453,9 @@ def _login_agent(args: argparse.Namespace, server_url: str, token: SecretStr) ->
         )
         return 1
 
-    path = credentials.save(server_url=server_url, token=token)
+    path = _save_login(args, server_url, token)
+    if path is None:
+        return 1
     _forget_listings()
 
     def human() -> None:
@@ -4898,6 +4916,9 @@ def _json_mode(args: argparse.Namespace) -> bool:
     accept ``--json`` call this (the REPL never does, which is the J1
     exemption), so a leaf without the flag never reaches the ``getattr`` default.
     """
+    if getattr(args, "ignores_pepper_json", False):
+        # ``login`` (J1/J10): only the explicit flag counts.
+        return bool(getattr(args, "json", False))
     return bool(getattr(args, "json", False)) or os.environ.get("PEPPER_JSON") == _PEPPER_JSON_ON
 
 
@@ -6494,10 +6515,12 @@ def _stream_budget(deadline: float | None) -> dict[str, float]:
     """Extra ``watch_*_events`` arguments that stop a quiet stream at ``deadline``.
 
     Empty without a deadline, so a run with no ``--for`` calls the client exactly as before.
+    ``read_timeout`` bounds the connect and each read; ``deadline`` is the absolute end the
+    client cuts the connection at, since a per-read timeout restarts with every frame.
     """
     if deadline is None:
         return {}
-    return {"read_timeout": max(deadline - time.monotonic(), 0.05)}
+    return {"read_timeout": max(deadline - time.monotonic(), 0.05), "deadline": deadline}
 
 
 def _kind_list(value: str) -> frozenset[str]:
@@ -6678,8 +6701,16 @@ def _cursor_file_lock(path: str) -> Generator[None]:
         os.close(fd)
 
 
-def _advance_cursor_file(path: str, cursor: int | _ScopedCursor) -> None:
-    """Write ``cursor`` to ``path`` unless the file already holds this position or a later one.
+def _same_binding(a: _ScopedCursor, b: _ScopedCursor) -> bool:
+    """Whether two scoped positions belong to one watch (server, agent, room and topic)."""
+    return replace(a, cursor=b.cursor) == b
+
+
+def _advance_cursor_file(
+    path: str, cursor: int | _ScopedCursor, *, started_from: _ScopedCursor | None = None
+) -> int:
+    """Write ``cursor`` to ``path`` unless the file already holds this position or a later one,
+    and return the position the file holds afterwards (``cursor``'s, or the later one found).
 
     Every writer of a cursor file (``rooms poll``, both watches, ``agents claude-channel``)
     comes through here. Two of them can share one file (overlapping ``rooms poll --wait``
@@ -6692,11 +6723,14 @@ def _advance_cursor_file(path: str, cursor: int | _ScopedCursor) -> None:
     stored position therefore never rewinds the file either: the file only moves forward, and
     a reset is deleting it or pointing ``--cursor-file`` at a new path.
 
-    A file that now holds the other kind of watch's position raises
-    :class:`_CursorFileTakenError` and is not touched. A file that cannot be read is written
-    as before (the start-of-run checks refuse garbage); so is a scoped file bound to another
-    room or topic (a merged room's watch moving its file to the survivor).
+    A file that now belongs to another watch raises :class:`_CursorFileTakenError` and is not
+    touched: a scoped watch's under an unscoped write, a bare number under a scoped write, or
+    a scoped file for another scope. A scoped write may replace only its own scope's file or
+    ``started_from``, the scoped file this run read at start (a merged room's watch moving
+    its file to the survivor). A file that cannot be read is written as before (the
+    start-of-run checks refuse garbage).
     """
+    position = cursor.cursor if isinstance(cursor, _ScopedCursor) else cursor
     with _cursor_file_lock(path):
         try:
             on_disk = _read_cursor_state(path)
@@ -6710,12 +6744,18 @@ def _advance_cursor_file(path: str, cursor: int | _ScopedCursor) -> None:
                     "--cursor-file for each scope."
                 )
                 raise _CursorFileTakenError(msg)
-            if (
-                isinstance(on_disk, _ScopedCursor)
-                and replace(on_disk, cursor=cursor.cursor) == cursor
-                and on_disk.cursor >= cursor.cursor
-            ):
-                return
+            if isinstance(on_disk, _ScopedCursor):
+                if _same_binding(on_disk, cursor):
+                    if on_disk.cursor >= cursor.cursor:
+                        return on_disk.cursor
+                elif started_from is None or not _same_binding(on_disk, started_from):
+                    msg = (
+                        f"{path} now holds another scope's position (room {on_disk.room_id}, "
+                        f"topic {on_disk.topic_id or 'any'}), written while this run was "
+                        "going; it was not overwritten. Use a separate --cursor-file for "
+                        "each scope."
+                    )
+                    raise _CursorFileTakenError(msg)
         elif isinstance(on_disk, _ScopedCursor):
             msg = (
                 f"{path} now holds a scoped watch's position (room {on_disk.room_id}, topic "
@@ -6724,24 +6764,30 @@ def _advance_cursor_file(path: str, cursor: int | _ScopedCursor) -> None:
             )
             raise _CursorFileTakenError(msg)
         elif isinstance(on_disk, int) and on_disk >= cursor:
-            return
+            return on_disk
         _write_cursor_file(path, cursor)
+    return position
 
 
-def _for_window_end(args: argparse.Namespace, *, failures: int, problem: str | None) -> int:
+def _for_window_end(
+    args: argparse.Namespace, *, reached: bool, attempted: bool, problem: str | None
+) -> int:
     """The exit code when ``rooms watch --for`` reaches its deadline.
 
-    0 when the stream was working (or no attempt has failed since it last was). Otherwise the
-    window ended with the feed unreachable, which is reported rather than passed off as a
+    ``reached`` is whether a connection was accepted (a ``: connected`` comment or any other
+    frame) since the last failed attempt. 0 when it was, or when no attempt was made: the feed
+    was up, and quiet is quiet. Otherwise the window ended with the feed unreachable since the
+    last failure (or never reached at all), which is reported rather than passed off as a
     quiet feed: one ``network`` error and exit 1. The cursor file holds what was printed.
     """
-    if failures == 0:
+    if reached or not attempted:
         return 0
     _emit_error(
         args,
         "network",
-        f"Feed unavailable ({problem or 'error'}) when the --for window ended; it was not "
-        "reached since the last failure. The cursor file holds what was printed.",
+        f"Feed unavailable ({problem or 'no answer'}) when the --for window ended; no "
+        "connection was accepted since the last failure. The cursor file holds what was "
+        "printed.",
     )
     return 1
 
@@ -6848,13 +6894,20 @@ def cmd_rooms_watch(args: argparse.Namespace) -> int:
     delay = _WATCH_BACKOFF_START
     failures = 0
     last_problem: str | None = None
+    # --for: whether a connection was accepted since the last failed attempt.
+    reached = False
+    attempted = False
     deadline = _watch_deadline(args)
     try:
         with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
             while True:
                 if _deadline_passed(deadline):
-                    return _for_window_end(args, failures=failures, problem=last_problem)
+                    return _for_window_end(
+                        args, reached=reached, attempted=attempted, problem=last_problem
+                    )
                 problem: str | None = None
+                attempted = True
+                got_frame = False
                 try:
                     frames = api.watch_agent_events(
                         since=cursor,
@@ -6862,6 +6915,7 @@ def cmd_rooms_watch(args: argparse.Namespace) -> int:
                         **_stream_budget(deadline),
                     )
                     for frame in frames:
+                        got_frame = reached = True
                         if _deadline_passed(deadline):
                             # --for: the frame is not consumed, the cursor did not move.
                             return 0
@@ -6906,15 +6960,23 @@ def cmd_rooms_watch(args: argparse.Namespace) -> int:
                         return _report_api_error(exc, args)
                     problem = f"HTTP {exc.status}"
                 except httpx.RequestError as exc:
-                    # A read timeout at the deadline is --for's own read budget running
-                    # out on a quiet stream, not a failure.
-                    if not (isinstance(exc, httpx.ReadTimeout) and _deadline_passed(deadline)):
+                    # A read timeout at the deadline on a stream that answered is --for's own
+                    # read budget running out on a quiet feed, not a failure. One that never
+                    # answered at all is.
+                    if not (
+                        isinstance(exc, httpx.ReadTimeout)
+                        and got_frame
+                        and _deadline_passed(deadline)
+                    ):
                         problem = type(exc).__name__
                 if problem is not None:
                     failures += 1
                     last_problem = problem
+                    reached = False
                 if _deadline_passed(deadline):
-                    return _for_window_end(args, failures=failures, problem=last_problem)
+                    return _for_window_end(
+                        args, reached=reached, attempted=attempted, problem=last_problem
+                    )
                 pause = delay
                 if problem is not None:
                     # A server that said it is restarting has a successor up
@@ -7286,8 +7348,17 @@ def _cmd_rooms_watch_scoped(args: argparse.Namespace) -> int:
     cursor = stored.cursor if stored is not None else 0
     if args.since is not None:
         cursor = args.since
+    # --for: the window starts before the room and topic lookup, so the lookup counts against
+    # it, and each lookup request is bounded by the window's length.
+    deadline = _watch_deadline(args)
+    for_seconds = getattr(args, "for_seconds", None)
+    timeout = (
+        None if for_seconds is None else max(min(api_client.DEFAULT_TIMEOUT, for_seconds), 0.05)
+    )
     try:
-        with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
+        with api_client.ApiClient(
+            server_url=creds.server_url, token=creds.token, timeout=timeout
+        ) as api:
             room_id, topic_id = _scoped_watch_target(api, args.room, args.topic, args)
             return _follow_scoped_watch(
                 api,
@@ -7297,6 +7368,7 @@ def _cmd_rooms_watch_scoped(args: argparse.Namespace) -> int:
                 topic_id=topic_id,
                 stored=stored,
                 cursor=cursor,
+                deadline=deadline,
             )
     except _WatchStopError as stop:
         return stop.code
@@ -7328,6 +7400,7 @@ def _follow_scoped_watch(
     topic_id: str | None,
     stored: _ScopedCursor | None,
     cursor: int,
+    deadline: float | None = None,
 ) -> int:
     """The scoped watch's connect / read / reconnect loop. Same output, cursor
     and backoff rules as the unscoped loop in :func:`cmd_rooms_watch`; it
@@ -7340,11 +7413,15 @@ def _follow_scoped_watch(
     delay = _WATCH_BACKOFF_START
     failures = 0
     last_problem: str | None = None
-    deadline = _watch_deadline(args)
+    # --for: whether a connection was accepted since the last failed attempt.
+    reached = False
+    attempted = False
     while True:
         if _deadline_passed(deadline):
-            return _for_window_end(args, failures=failures, problem=last_problem)
+            return _for_window_end(args, reached=reached, attempted=attempted, problem=last_problem)
         problem: str | None = None
+        attempted = True
+        got_frame = False
         try:
             frames = api.watch_scoped_events(
                 room_id,
@@ -7356,6 +7433,7 @@ def _follow_scoped_watch(
             with contextlib.closing(frames):
                 scope: api_client.WatchScope | None = None
                 for frame in frames:
+                    got_frame = reached = True
                     if _deadline_passed(deadline):
                         # --for: the frame is not consumed, the cursor did not move.
                         return 0
@@ -7431,20 +7509,25 @@ def _follow_scoped_watch(
                                 topic_id=scope.topic_id,
                                 cursor=cursor,
                             ),
+                            started_from=stored,
                         )
         except api_client.ApiError as exc:
             if exc.status in _WATCH_FATAL_STATUSES:
                 return _report_room_error(exc, args)
             problem = f"HTTP {exc.status}"
         except httpx.RequestError as exc:
-            # As in the unscoped loop: a read timeout at the deadline is the read budget.
-            if not (isinstance(exc, httpx.ReadTimeout) and _deadline_passed(deadline)):
+            # As in the unscoped loop: a read timeout at the deadline on a stream that
+            # answered is the read budget; one that never answered is a failure.
+            if not (
+                isinstance(exc, httpx.ReadTimeout) and got_frame and _deadline_passed(deadline)
+            ):
                 problem = type(exc).__name__
         if problem is not None:
             failures += 1
             last_problem = problem
+            reached = False
         if _deadline_passed(deadline):
-            return _for_window_end(args, failures=failures, problem=last_problem)
+            return _for_window_end(args, reached=reached, attempted=attempted, problem=last_problem)
         pause = delay
         if problem is not None:
             immediate = problem == _WATCH_SERVER_RESTARTING and failures == 1

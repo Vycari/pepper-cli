@@ -30,11 +30,12 @@ rest describes how the commands behave.
   pepper --profile <name> login --manual --server <server-url>
   ```
 
-  Success prints `Logged in as an agent member of N room(s).` (With `--json`, or `PEPPER_JSON=1`,
-  `login` prints one JSON object instead, `{"ok": true, "agent": true, "rooms": N, ...}`, and a
-  failure is the usual one-line `{"error": ...}` on stderr. The token is never in either. JSON mode
-  never prompts, so `pepper --profile <name> login --manual` under `--json` or `PEPPER_JSON=1` exits 2 instead of asking:
-  the owner runs it in a terminal where `PEPPER_JSON` is not set.) Without `--manual` or `--token`,
+  Success prints `Logged in as an agent member of N room(s).` (With `--json`, `login` prints one
+  JSON object instead, `{"ok": true, "agent": true, "rooms": N, ...}`, and a failure is the usual
+  one-line `{"error": ...}` on stderr. The token is never in either. `login` is the one command
+  that ignores `PEPPER_JSON`, so an exported variable never changes the owner's interactive login;
+  pass `--json` to it explicitly when you want JSON. Under `--json` it never prompts, so
+  `pepper --profile <name> login --manual --json` exits 2 instead of asking for the token.) Without `--manual` or `--token`,
   `login` starts a browser flow that mints a personal access token, which is not what an agent
   needs. Do not use `--token`: it puts the secret in the command line.
 - Credentials are stored under `$XDG_CONFIG_HOME/pepper/profiles/<name>/credentials.toml`
@@ -71,7 +72,7 @@ rest describes how the commands behave.
 
 ## 3. Finding rooms, topics and ids
 
-Setting the environment variable `PEPPER_JSON=1` turns on `--json` for every command below that takes it; `--json` on the command line always works too.
+Setting the environment variable `PEPPER_JSON=1` turns on `--json` for every command below that takes it (every command except `login`, which needs the flag); `--json` on the command line always works too.
 
 - `pepper --profile <name> rooms list --json` lists your rooms as one object:
   `{"items": [...], "next_before": null, "enabled": ..., "degraded": ..., "total": ...,
@@ -199,8 +200,10 @@ pepper --profile <name> rooms poll --json --cursor-file <path> --wait 20
 
 To bound a stream instead, `pepper --profile <name> rooms watch --json --cursor-file <path> --for 45s`
 runs as the watch does and exits 0 after the duration (`45s`, `2m`, `1h`) with the cursor saved.
-If the feed could not be reached since its last failure when the window ends, it exits 1 with a
-`Feed unavailable` error instead: that was not a quiet window.
+The window is a hard end, however recently the last event arrived; for `--room`, the room and
+topic lookup counts against it. If no connection was accepted since the last failed attempt (or
+none ever was) when the window ends, it exits 1 with a `Feed unavailable` error instead: that was
+not a quiet window. A connection that was accepted and then stayed quiet is exit 0.
 
 ### Watching one room, or one topic
 

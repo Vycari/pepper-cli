@@ -712,9 +712,9 @@ class ChannelWorker:
         # Through the same locked, forward-only write as poll and watch, so a channel holding
         # an older in-memory cursor never rewinds a file one of them advanced.
         if self.config.room is None:
-            _advance_cursor_file(path, self.cursor)
+            on_disk = _advance_cursor_file(path, self.cursor)
         elif self.bound is not None:
-            _advance_cursor_file(
+            on_disk = _advance_cursor_file(
                 path,
                 _ScopedCursor(
                     server=self.config.server,
@@ -723,9 +723,13 @@ class ChannelWorker:
                     topic_id=self.bound.topic_id,
                     cursor=self.cursor,
                 ),
+                started_from=self.stored,
             )
         else:
             return
+        # Another reader on this file (a poll or watch) moved it further: what it handled is
+        # handled, so an in-process reconnect resumes from the file, not from this older cursor.
+        self.cursor = max(self.cursor, on_disk)
         self.persisted = self.cursor
 
     def _accept_scope(self, frame: api_client.FeedFrame) -> None:

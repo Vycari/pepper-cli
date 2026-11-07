@@ -338,12 +338,43 @@ def test_login_json_success_is_one_object_without_the_token(login_api, capsys):
     assert credentials.load().token.get_secret_value() == "pep_pat_secret"
 
 
-def test_login_pepper_json_is_the_same_as_the_flag(login_api, monkeypatch, capsys):
+def test_login_ignores_pepper_json(login_api, monkeypatch, capsys):
+    """J10: an exported PEPPER_JSON never changes an interactive login; only --json does."""
     monkeypatch.setenv("PEPPER_JSON", "1")
 
     assert cli.main(["login", "--server", "http://example.com", "--token", "pep_pat_new"]) == 0
 
-    assert json.loads(capsys.readouterr().out)["ok"] is True
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Logged in as Alice" in captured.err
+
+
+def test_login_manual_still_prompts_with_pepper_json_exported(login_api, monkeypatch, capsys):
+    asked: list[str] = []
+    monkeypatch.setattr(cli, "_prompt_secret", lambda p: asked.append(p) or "pep_pat_typed")
+    monkeypatch.setenv("PEPPER_JSON", "1")
+
+    assert cli.main(["login", "--server", "http://example.com", "--manual"]) == 0
+
+    assert len(asked) == 1
+    assert credentials.load().token.get_secret_value() == "pep_pat_typed"
+
+
+def test_login_device_flow_opens_the_browser_with_pepper_json_exported(
+    login_api, monkeypatch, capsys
+):
+    opened: list[bool] = []
+
+    def device(args, server_url, *, open_browser):
+        opened.append(open_browser)
+        return 0
+
+    monkeypatch.setattr(cli, "_login_device", device)
+    monkeypatch.setenv("PEPPER_JSON", "1")
+
+    assert cli.main(["login", "--server", "http://example.com"]) == 0
+
+    assert opened == [True]
 
 
 def test_login_without_json_keeps_the_text_chrome_on_stderr(login_api, capsys):
@@ -447,16 +478,11 @@ def _no_prompts(monkeypatch) -> list[str]:
     return calls
 
 
-@pytest.mark.parametrize("how", ["flag", "env"])
 def test_login_json_manual_without_a_token_refuses_without_prompting(
-    login_api, monkeypatch, capsys, how
+    login_api, monkeypatch, capsys
 ):
     calls = _no_prompts(monkeypatch)
-    argv = ["--profile", "agent", "login", "--manual", "--server", "http://example.com"]
-    if how == "flag":
-        argv.append("--json")
-    else:
-        monkeypatch.setenv("PEPPER_JSON", "1")
+    argv = ["--profile", "agent", "login", "--manual", "--server", "http://example.com", "--json"]
 
     rc = cli.main(argv)
 
@@ -473,9 +499,8 @@ def test_login_json_without_a_server_takes_the_default_without_prompting(
     login_api, monkeypatch, capsys
 ):
     calls = _no_prompts(monkeypatch)
-    monkeypatch.setenv("PEPPER_JSON", "1")
 
-    assert cli.main(["login", "--token", "pep_pat_x"]) == 0
+    assert cli.main(["login", "--token", "pep_pat_x", "--json"]) == 0
 
     assert calls == []
     assert json.loads(capsys.readouterr().out)["server_url"] == cli._DEFAULT_SERVER
@@ -607,3 +632,38 @@ def test_login_json_device_start_errors(login_api, monkeypatch, capsys):
 def test_login_help_lists_json():
     with pytest.raises(SystemExit):
         cli.main(["login", "--help"])
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["login", "--server", "http://example.com", "--token", "pep_pat_secret", "--json"],
+        [
+            "--profile",
+            "agent",
+            "login",
+            "--server",
+            "http://example.com",
+            "--token",
+            "pep_agt_secret",
+            "--json",
+        ],
+    ],
+    ids=["person", "agent"],
+)
+def test_login_json_reports_a_credentials_file_it_cannot_write(
+    login_api, monkeypatch, capsys, argv
+):
+    def read_only(**_kw):
+        raise PermissionError(13, "Permission denied", "/ro/credentials.toml")
+
+    monkeypatch.setattr(credentials, "save", read_only)
+
+    assert cli.main(argv) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    error = json.loads(captured.err)["error"]
+    assert error["code"] == "server"
+    assert "Couldn't save the credentials" in error["message"]
+    assert "secret" not in captured.err

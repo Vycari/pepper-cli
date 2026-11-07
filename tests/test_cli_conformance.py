@@ -152,6 +152,9 @@ DESTRUCTIVE = frozenset({"delete", "remove", "revoke", "uninstall", "leave"})
 #: ``agents claude-channel`` serves JSON-RPC on stdout, so a ``--json`` switch would mean nothing
 #: (planning/claude-code-channel.md §4).
 JSON_EXEMPT = frozenset({"tui", "agents claude-channel"})
+#: Leaves that take ``--json`` as a flag but ignore ``PEPPER_JSON`` (J1/J10): ``login`` stays
+#: interactive for a person whose shell exports the variable; an agent passes ``--json``.
+PEPPER_JSON_EXEMPT = frozenset({"login"})
 
 #: §5.4 fill list and every leaf that has no ``--json`` today (empty since phase 2d).
 JSON_PENDING: frozenset[str] = frozenset()
@@ -1448,11 +1451,11 @@ def test_pepper_json_switches_json_mode(leaf, _env, monkeypatch, capsys) -> None
         assert (out + err).strip(), (leaf, value)
         assert not _is_json(out), (leaf, value, out)
 
-    # PEPPER_JSON=1 with no flag: JSON.
+    # PEPPER_JSON=1 with no flag: JSON, except for a leaf that ignores the variable.
     monkeypatch.setenv("PEPPER_JSON", "1")
     rc, out, err = _run_fresh(argv, capsys)
     assert rc == 0, (leaf, err)
-    assert _is_json(out), (leaf, out)
+    assert _is_json(out) is (leaf not in PEPPER_JSON_EXEMPT), (leaf, out)
 
     # --json wins over any value of the variable.
     for value in ("0", "", "1"):
@@ -1463,11 +1466,13 @@ def test_pepper_json_switches_json_mode(leaf, _env, monkeypatch, capsys) -> None
     assert not _env.unrouted, _env.unrouted
 
 
-def test_login_honors_pepper_json(monkeypatch, capsys) -> None:
+def test_login_ignores_pepper_json_and_honors_the_flag(monkeypatch, capsys) -> None:
     monkeypatch.setenv("PEPPER_JSON", "1")
-    rc, out, _err = _run(
-        ["login", "--server", "http://example.com", "--token", "pep_pat_new"], capsys
-    )
+    argv = ["login", "--server", "http://example.com", "--token", "pep_pat_new"]
+    rc, out, _err = _run(argv, capsys)
+    assert rc == 0
+    assert not _is_json(out)
+    rc, out, _err = _run([*argv, "--json"], capsys)
     assert rc == 0
     assert _is_json(out)
     assert "pep_pat_new" not in out

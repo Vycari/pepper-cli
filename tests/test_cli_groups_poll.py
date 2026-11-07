@@ -255,10 +255,39 @@ def test_a_scoped_cursor_file_only_moves_forward_for_the_same_watch(tmp_path):
     cli._advance_cursor_file(path, cli.replace(here, cursor=31))
     assert cli._read_cursor_state(path) == cli.replace(here, cursor=31)
 
-    # Another binding (the room was merged into a survivor) is written as before.
+    # The scope this run started from may be replaced (a merged room's survivor takes it).
     moved = cli.replace(here, room_id=_TOPIC, cursor=5)
-    cli._advance_cursor_file(path, moved)
+    started = cli._read_cursor_state(path)
+    cli._advance_cursor_file(path, moved, started_from=started)
     assert cli._read_cursor_state(path) == moved
+
+
+def test_a_scoped_write_never_overwrites_another_scopes_file_found_mid_run(tmp_path):
+    """VR-084294b6 (round 3): a different room's scoped file, written while this run went, is
+    refused like the other directions, unless it is the file this run started from."""
+    path = str(tmp_path / "cursor")
+    theirs = cli._ScopedCursor(
+        server="http://example.com",
+        agent_person_id=_PERSON,
+        room_id=_TOPIC,
+        topic_id=None,
+        cursor=30,
+    )
+    cli._write_cursor_file(path, theirs)
+    mine = cli._ScopedCursor(
+        server="http://example.com",
+        agent_person_id=_PERSON,
+        room_id=_GROUP,
+        topic_id=None,
+        cursor=40,
+    )
+
+    with pytest.raises(OSError, match="another scope"):
+        cli._advance_cursor_file(path, mine)
+    with pytest.raises(OSError, match="another scope"):
+        cli._advance_cursor_file(path, mine, started_from=cli.replace(mine, cursor=1))
+
+    assert cli._read_cursor_state(path) == theirs
 
 
 def test_a_scoped_watchs_cursor_file_is_refused(monkeypatch, capsys, tmp_path):
@@ -551,6 +580,10 @@ def _frame(event_id: int) -> FeedFrame:
     return FeedFrame(kind="message.created", id=event_id, payload=_event(event_id))
 
 
+def _comment(text: str) -> FeedFrame:
+    return FeedFrame(kind="comment", id=None, payload={"comment": text})
+
+
 def _install_feed(monkeypatch, script) -> None:
     _FeedApi.calls = []
     _FeedApi.script = staticmethod(script)
@@ -660,9 +693,11 @@ def test_scoped_watch_for_exits_zero_at_the_deadline(monkeypatch, capsys):
     def script(_index, kwargs):
         assert kwargs["room_id"] == _GROUP
         assert kwargs["read_timeout"] == pytest.approx(20.0)
+        assert kwargs["deadline"] == pytest.approx(1020.0)
+        # Accepted, then quiet until the read budget runs out.
+        yield _comment("connected")
         clock.now += 20.0
         raise httpx.ReadTimeout("quiet")
-        yield  # pragma: no cover
 
     _install_feed(monkeypatch, script)
 
@@ -903,3 +938,142 @@ def test_watch_since_below_the_stored_cursor_does_not_rewind_the_file(
     assert rc == 0
     assert len(_lines(capsys)) == 10
     assert cursor_file.read_text(encoding="utf-8").strip() == "50"
+
+
+# ---------------------------------------------------------------------------
+# --for: one rule for the window's end (VR-616d41f1, VR-c32fd86b), its bounds (VR-ecbc036e)
+
+
+def test_watch_for_reports_a_first_attempt_that_never_got_headers(monkeypatch, capsys):
+    """Accepted at the TCP level, no response before the deadline: the read times out with no
+    frame at all, which is not a quiet feed."""
+    clock = _Clock(monkeypatch)
+
+    def script(_index, _kwargs):
+        clock.now += 10.0
+        raise httpx.ReadTimeout("no headers")
+        yield  # pragma: no cover
+
+    _install_feed(monkeypatch, script)
+
+    assert cli.main(["rooms", "watch", "--for", "10s"]) == 1
+    assert "Feed unavailable (ReadTimeout)" in capsys.readouterr().err
+
+
+def test_watch_for_is_quiet_when_a_reconnect_was_accepted_and_stayed_quiet(monkeypatch, capsys):
+    clock = _Clock(monkeypatch)
+
+    def script(index, _kwargs):
+        if index == 0:
+            raise api_client.ApiError(status=503, body="", detail="down")
+        yield _comment("connected")
+        clock.now += 30.0
+        raise httpx.ReadTimeout("quiet")
+
+    _install_feed(monkeypatch, script)
+
+    assert cli.main(["rooms", "watch", "--for", "10s"]) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_scoped_watch_for_is_quiet_when_a_reconnect_was_accepted(monkeypatch, capsys):
+    clock = _Clock(monkeypatch)
+    monkeypatch.setattr(
+        cli, "_scoped_watch_target", lambda _api, _room, _topic, _args: (_GROUP, None)
+    )
+
+    def script(index, _kwargs):
+        if index == 0:
+            raise httpx.ConnectError("refused")
+        yield _comment("connected")
+        clock.now += 30.0
+        raise httpx.ReadTimeout("quiet")
+
+    _install_feed(monkeypatch, script)
+
+    assert cli.main(["rooms", "watch", "--room", _GROUP, "--for", "10s"]) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_the_stream_connect_is_bounded_by_the_for_budget():
+    timeouts: list[dict[str, float | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        timeouts.append(request.extensions["timeout"])
+        return httpx.Response(
+            200, text=": connected\n\n", headers={"content-type": "text/event-stream"}
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), timeout=60.0)
+    with api_client.ApiClient(
+        server_url="http://example.com", token=SecretStr("pep_agt_abc"), client=client
+    ) as api:
+        list(api.watch_agent_events(read_timeout=2.0))
+        list(api.watch_agent_events())
+    assert timeouts[0]["connect"] == 2.0
+    assert timeouts[1]["connect"] == 60.0
+
+
+def test_the_scoped_lookup_is_bounded_by_the_for_window(monkeypatch, capsys):
+    _Clock(monkeypatch)
+    seen: list[float | None] = []
+
+    class Api(_FeedApi):
+        def __init__(self, *, server_url, token, timeout=None, **_kw) -> None:
+            seen.append(timeout)
+
+    def target(_api, _room, _topic, _args):
+        raise cli._WatchStopError(0)
+
+    monkeypatch.setattr(api_client, "ApiClient", Api)
+    monkeypatch.setattr(cli, "_scoped_watch_target", target)
+
+    assert cli.main(["rooms", "watch", "--room", _GROUP, "--for", "5s"]) == 0
+    assert seen == [5.0]
+
+
+def test_a_real_stream_ends_at_the_deadline_however_recent_its_last_frame(monkeypatch):
+    """Greptile P1: a read timeout restarts with each frame, so a frame just before the end
+    would buy the stream a whole new timeout. The deadline cuts the connection instead."""
+    import socket
+    import threading
+    import time
+
+    for name in list(__import__("os").environ):
+        if name.lower() in {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}:
+            monkeypatch.delenv(name)
+    server = socket.create_server(("127.0.0.1", 0))
+    port = server.getsockname()[1]
+    release = threading.Event()
+
+    def serve() -> None:
+        conn, _ = server.accept()
+        with conn:
+            conn.recv(65536)
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\n"
+            )
+            body = b": connected\n\n"
+            conn.sendall(f"{len(body):x}\r\n".encode() + body + b"\r\n")
+            time.sleep(0.4)
+            body = b": ping\n\n"
+            conn.sendall(f"{len(body):x}\r\n".encode() + body + b"\r\n")
+            release.wait(10)
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        with api_client.ApiClient(
+            server_url=f"http://127.0.0.1:{port}", token=SecretStr("pep_agt_abc")
+        ) as api:
+            started = time.monotonic()
+            frames = list(api.watch_agent_events(read_timeout=8.0, deadline=started + 1.0))
+            elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        server.close()
+
+    assert [f.payload.get("comment") for f in frames] == ["connected", "ping"]
+    # The ping at 0.4 s would have bought a fresh 8 s read; the cut ends it at 1 s.
+    assert elapsed < 4.0
