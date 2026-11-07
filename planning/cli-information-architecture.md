@@ -168,6 +168,10 @@ The two J8 codes and exit 4 are `planning/research-projects.md` decision B, take
 rejected alternative added no codes). If the server answers a start request by naming work already
 in flight, `--wait` waits on that work instead (`planning/research-projects.md` §6.2).
 
+One flag shares the name and not the rule: `rooms poll --wait SECONDS` (pepper-cli#206) is the
+server's long-poll hold on a single page request (`GET /api/v1/groups/events?wait=`, 0 to 25). It
+takes no `--timeout`, never exits 4, and is not built from `_wait_parent`.
+
 ## 4. Old → new
 
 Every left-hand spelling stops working in 0.2.0; there are no aliases (§7). `#17`/`#18` = the open
@@ -282,6 +286,7 @@ route takes; help says so.
 | `scheduled-tasks runs/thread` | server `before`/`before_id` | yes | no |
 | `research-projects runs`, `research-items list` | server opaque cursor (`runs` = iterations) / `seq` cursor (items), pepper#5028 §4.3 | yes | no |
 | `rooms watch` | event cursor | no | yes (+ `--cursor-file`) |
+| `rooms poll` | event cursor (`next_after_id`) | no | yes (+ `--cursor-file`) |
 | `rooms activity` | time | no | yes (time) |
 
 ### 5.4 Fill list (`--json` missing in 0.1.0; all client-only)
