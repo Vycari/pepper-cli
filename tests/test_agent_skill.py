@@ -81,6 +81,7 @@ _AGENT_COMMANDS = frozenset(
         "topics list",
         "messages list",
         "rooms watch",
+        "rooms poll",
         "messages post",
         "messages react",
         "messages unreact",
@@ -379,6 +380,7 @@ def test_document_exercises_the_invocations_the_guard_is_meant_to_cover() -> Non
     joined = [" ".join(a) for a in _extract_invocations(agent_skill.raw_text())]
     for needle in (
         "rooms watch",
+        "rooms poll",
         "messages list",
         "messages post",
         "messages react",
@@ -678,3 +680,31 @@ def test_agent_skill_noun_is_a_stub(no_credentials, capsys) -> None:
     assert captured.err.strip() == (
         "pepper: 'agent-skill' was renamed in 0.2.0 — see 'pepper agents guide'"
     )
+
+
+def test_agents_skill_is_a_hidden_alias_for_guide(no_credentials, capsys) -> None:
+    import json
+
+    assert cli.main(["agents", "guide"]) == 0
+    guide = capsys.readouterr().out
+    assert cli.main(["agents", "skill"]) == 0
+    assert capsys.readouterr().out == guide
+
+    assert cli.main(["agents", "skill", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["markdown"] == agent_skill.render()
+
+
+def test_agents_skill_takes_the_guides_flags(no_credentials, tmp_path) -> None:
+    target = tmp_path / "out"
+    assert cli.main(["agents", "skill", "--write", str(target)]) == 0
+    assert (target / "SKILL.md").read_text(encoding="utf-8")
+    assert cli.main(["agents", "skill", "--write", str(target)]) != 0
+    assert cli.main(["agents", "skill", "--write", str(target), "--force"]) == 0
+
+
+def test_agents_skill_is_listed_nowhere(capsys) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["agents", "--help"])
+    listing = capsys.readouterr().out
+    assert "{guide,claude-channel}" in listing
+    assert not re.search(r"^\s+skill\b", listing, re.MULTILINE)

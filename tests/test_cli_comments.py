@@ -305,6 +305,35 @@ def test_create_reply_with_explicit_key(tmp_home, patch_api) -> None:
     assert kwargs["quote"] is None and kwargs["mentions"] is None
 
 
+def test_a_reply_derives_its_idempotency_key_and_a_new_comment_stays_random(
+    tmp_home, patch_api
+) -> None:
+    import hashlib
+    import json
+
+    _login(tmp_home)
+    patch_api(created=_CREATED)
+    reply = ["comments", "create", "--note", _NID, "--reply-to", "m1", "--mention", "p2"]
+    assert cli.main([*reply, "--mention", "p1", "ok"]) == 0
+    assert cli.main([*reply, "--mention", "p1", "ok"]) == 0
+    first, second = (_FakeApi.instances[i].calls[0][2]["idempotency_key"] for i in (0, 1))
+    assert first == second
+    payload = {"topic_id": _NID, "body": "ok", "mentions": ["p1", "p2"]}
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:32]
+    assert first == f"cli:m1:{digest}"
+
+    assert cli.main([*reply, "something else"]) == 0
+    assert _FakeApi.instances[2].calls[0][2]["idempotency_key"] != first
+
+    for _ in range(2):
+        assert cli.main(["comments", "create", "--note", _NID, "--quote", "q", "ok"]) == 0
+    keys = [_FakeApi.instances[i].calls[0][2]["idempotency_key"] for i in (3, 4)]
+    assert keys[0] != keys[1]
+    assert not keys[0].startswith("cli:")
+
+
 def test_create_reads_the_body_from_stdin(tmp_home, patch_api, monkeypatch) -> None:
     _login(tmp_home)
     patch_api(created=_CREATED)

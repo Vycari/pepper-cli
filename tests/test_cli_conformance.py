@@ -93,6 +93,8 @@ VERBS = frozenset(
         "show",
         "search",
         "watch",
+        # `poll` is `watch` as one bounded read (`rooms poll`): the page, the cursor, exit.
+        "poll",
         "activity",
         "create",
         "edit",
@@ -149,7 +151,10 @@ DESTRUCTIVE = frozenset({"delete", "remove", "revoke", "uninstall", "leave"})
 #: ``tui`` is a full-screen interactive app with no data output to put in JSON.
 #: ``agents claude-channel`` serves JSON-RPC on stdout, so a ``--json`` switch would mean nothing
 #: (planning/claude-code-channel.md §4).
-JSON_EXEMPT = frozenset({"login", "tui", "agents claude-channel"})
+JSON_EXEMPT = frozenset({"tui", "agents claude-channel"})
+#: Leaves that take ``--json`` as a flag but ignore ``PEPPER_JSON`` (J1/J10): ``login`` stays
+#: interactive for a person whose shell exports the variable; an agent passes ``--json``.
+PEPPER_JSON_EXEMPT = frozenset({"login"})
 
 #: §5.4 fill list and every leaf that has no ``--json`` today (empty since phase 2d).
 JSON_PENDING: frozenset[str] = frozenset()
@@ -163,6 +168,8 @@ ROOM_NA = {
     "rooms archive": "a room is the object, not a scope",
     "rooms unarchive": "a room is the object, not a scope",
     "rooms leave": "a room is the object, not a scope",
+    "rooms poll": "reads the agent's whole feed (the server's page route has no scope); "
+    "`rooms watch --room` narrows a stream",
     "rooms mute": "a room is the object, not a scope",
     "rooms unmute": "a room is the object, not a scope",
     "following list": "your follows are account-wide; a room's follows live on its own page",
@@ -435,10 +442,13 @@ WAITS = frozenset({"research-projects run"})
 
 def test_only_the_asynchronous_verbs_take_wait() -> None:
     have = {leaf for leaf, text in LEAVES.items() if "--wait" in _flags(text)}
-    assert have == WAITS
+    # `rooms poll --wait SECONDS` is the server's long-poll hold on one page request (0 to 25),
+    # not the run-wait of IA §3.5: it takes no `--timeout` and never exits 4.
+    assert have - {"rooms poll"} == WAITS
     for leaf in WAITS:
         assert "--timeout" in _flags(LEAVES[leaf]), leaf
     assert not {leaf for leaf, text in LEAVES.items() if "--timeout" in _flags(text)} - WAITS
+    assert "--timeout" not in _flags(LEAVES["rooms poll"])
 
 
 def test_wait_codes_are_in_the_error_vocabulary() -> None:
@@ -660,6 +670,8 @@ _COMMENT_THREAD = {
 
 ROUTES: dict[str, object] = {
     "/api/v1/whoami": {"user_id": "u", "display_name": "U", "timezone": "UTC"},
+    # `rooms poll`: an empty page, so JSON mode is a single cursor line like `rooms watch`'s.
+    "/api/v1/groups/events": {"events": [], "next_after_id": 7},
     f"/api/v1/trajectories/{_TRAJ}": {
         "trajectory": {
             "id": _TRAJ,
@@ -879,6 +891,7 @@ ROUTES: dict[str, object] = {
 
 #: Non-GET routes (POST, DELETE): the room post answers ``{"message": {...}}``.
 POST_ROUTES: dict[str, object] = {
+    "/api/v1/client/capabilities": {},
     "/api/v1/research-projects": _RESEARCH_DETAIL,
     f"/api/v1/research-projects/{_RP}": _RESEARCH_DETAIL,
     f"/api/v1/research-projects/{_RP}/filters": _RESEARCH_DETAIL,
@@ -1101,6 +1114,7 @@ JSON_CASES: dict[str, list[str]] = {
     "rooms unmute": ["rooms", "unmute", _G],
     "rooms activity": ["rooms", "activity"],
     "rooms watch": ["rooms", "watch"],
+    "rooms poll": ["rooms", "poll"],
     "topics list": ["topics", "list", "--room", _G],
     "topics create": ["topics", "create", "--room", _G, "Plans"],
     "topics edit": ["topics", "edit", "--room", _G, _T, "--name", "Renamed"],
@@ -1201,6 +1215,7 @@ JSON_CASES: dict[str, list[str]] = {
     "apps run": ["apps", "run", "notes", "archive"],
     "chat": ["chat", "hello"],
     "whoami": ["whoami"],
+    "login": ["login", "--server", "http://example.com", "--token", "pep_pat_new"],
     "logout": ["logout"],
     "takeout": ["takeout", "--out", "t.zip"],
 }
@@ -1436,11 +1451,11 @@ def test_pepper_json_switches_json_mode(leaf, _env, monkeypatch, capsys) -> None
         assert (out + err).strip(), (leaf, value)
         assert not _is_json(out), (leaf, value, out)
 
-    # PEPPER_JSON=1 with no flag: JSON.
+    # PEPPER_JSON=1 with no flag: JSON, except for a leaf that ignores the variable.
     monkeypatch.setenv("PEPPER_JSON", "1")
     rc, out, err = _run_fresh(argv, capsys)
     assert rc == 0, (leaf, err)
-    assert _is_json(out), (leaf, out)
+    assert _is_json(out) is (leaf not in PEPPER_JSON_EXEMPT), (leaf, out)
 
     # --json wins over any value of the variable.
     for value in ("0", "", "1"):
@@ -1451,13 +1466,15 @@ def test_pepper_json_switches_json_mode(leaf, _env, monkeypatch, capsys) -> None
     assert not _env.unrouted, _env.unrouted
 
 
-def test_login_ignores_pepper_json(monkeypatch, capsys) -> None:
+def test_login_ignores_pepper_json_and_honors_the_flag(monkeypatch, capsys) -> None:
     monkeypatch.setenv("PEPPER_JSON", "1")
-    rc, out, _err = _run(
-        ["login", "--server", "http://example.com", "--token", "pep_pat_new"], capsys
-    )
+    argv = ["login", "--server", "http://example.com", "--token", "pep_pat_new"]
+    rc, out, _err = _run(argv, capsys)
     assert rc == 0
     assert not _is_json(out)
+    rc, out, _err = _run([*argv, "--json"], capsys)
+    assert rc == 0
+    assert _is_json(out)
     assert "pep_pat_new" not in out
 
 

@@ -236,7 +236,7 @@ deliberate break, made once, in 0.2.0, alongside the renames (§10 D).
 
 | # | Rule |
 |---|---|
-| J1 | Every leaf except `chat` with no message (the REPL) and `login` accepts `--json` and honours `PEPPER_JSON` (J10). `logout` emits `{"ok": true}`; `agents guide` without `--write` emits `{"markdown": "..."}`. |
+| J1 | Every leaf except `chat` with no message (the REPL) accepts `--json`, and every one of those except `login` honours `PEPPER_JSON` (J10). `login` takes `--json` as an explicit flag only (#216). `logout` emits `{"ok": true}`; `agents guide` without `--write` emits `{"markdown": "..."}`. |
 | J2 | In JSON mode (`--json` or `PEPPER_JSON=1`), stdout carries exactly one JSON document (or JSON lines for a stream, J6) and nothing else: no colour, no prose, no progress. Prompts never happen (destructive verbs need `--yes`, else exit 2). |
 | J3 | **One list envelope, everywhere.** Every `list`, `search` and `activity` leaf, plus `scheduled-tasks runs/thread` and `research-projects runs`, emits `{"items": [...], "next_before": str\|null}`. `next_before` is always present: `null` on the last page and on unpaged lists. List-level metadata the server returns sits beside them as extra top-level keys, never instead of them: `rooms list` adds `enabled`, `degraded`, `total`, `archived_total`; `notes list/search` add `truncated`. This replaces every 0.1.0 list shape: `groups list` (`groups` key), `groups read` (`messages` key), and the bare arrays of `todos list`, `groups topics/roster/apps/activity/search`. |
 | J4 | Views are not lists: `next` and `calendar` emit objects shaped as in 0.1.0 (`calendar --planning` keeps `{"range", "planning"}`). |
@@ -245,7 +245,7 @@ deliberate break, made once, in 0.2.0, alongside the renames (§10 D).
 | J7 | Field names are the server's, passed through. Unknown server fields are kept, not dropped (the CLI already tolerates them). |
 | J8 | **Errors** in JSON mode write one line to **stderr**: `{"error": {"code": "...", "status": <http int or null>, "message": "..."}}`. `code` ∈ `auth`, `forbidden`, `not_found`, `conflict`, `validation`, `ambiguous`, `usage`, `upgrade_required`, `server`, `network`, `gap`, `timeout`, `run_failed`. stdout stays empty, except under `--wait` (§3.5), where the final receipt is the result and goes to stdout beside the stderr line. `timeout` and `run_failed` are `--wait` only. Outside JSON mode, errors stay `pepper: …` text. |
 | J9 | Exit codes (unchanged from 0.1.0 except 4, added 2026-10-20): 0 ok, 1 auth/API/network (incl. 426), 2 usage/resolution/refused-without-`--yes`/renamed noun (§7), 3 watch replay gap, 4 `--wait` timed out with the work still going (§3.5), 130 interrupt. |
-| J10 | **`PEPPER_JSON=1`** turns JSON mode on for every leaf that accepts `--json`. Precedence: `--json` on the command line → on; else `PEPPER_JSON` exactly `1` → on; any other value, or unset → off. There is no `--no-json`; `PEPPER_JSON= pepper …` switches it off for one command. The J1 exemptions ignore it (the REPL and `login` stay interactive). There is no root `pepper --json` (§10 F). |
+| J10 | **`PEPPER_JSON=1`** turns JSON mode on for every leaf that accepts `--json`. Precedence: `--json` on the command line → on; else `PEPPER_JSON` exactly `1` → on; any other value, or unset → off. There is no `--no-json`; `PEPPER_JSON= pepper …` switches it off for one command. The J1 exemptions ignore it (the REPL and `login` stay interactive; `login` is JSON only under an explicit `--json`). There is no root `pepper --json` (§10 F). |
 
 ### 5.2 Mechanism
 
@@ -375,7 +375,7 @@ argparse private attributes.
 | Noun | top-level name ∈ §2 nouns ∪ views/session set ∪ `RENAMED` (the three §7 stubs) |
 | Verb | leaf name ∈ §3.1 verbs |
 | `--json` | present, unless in `JSON_EXEMPT` (`chat` REPL path, `login`) |
-| `PEPPER_JSON` | for every non-exempt leaf, stdout is JSON with `PEPPER_JSON=1` and no flag, human text with `PEPPER_JSON=0` or unset, JSON with `--json` regardless of the variable; exempt leaves are unaffected by it |
+| `PEPPER_JSON` | for every non-exempt leaf (`login` takes `--json` but is exempt here, `PEPPER_JSON_EXEMPT`), stdout is JSON with `PEPPER_JSON=1` and no flag, human text with `PEPPER_JSON=0` or unset, JSON with `--json` regardless of the variable; exempt leaves are unaffected by it |
 | Envelope | for every list leaf (J3), stdout under a faked client parses to an object with `items` (array) and `next_before` keys |
 | `--room` | present, unless in `ROOM_NA` (reason string) or `ROOM_PENDING` (server issue link) |
 | `--yes` | present on every destructive verb, and on each leaf that prompts only in some cases (§3.1). For those leaves the refusal without `--yes` is tested only in the prompting cases, and the other cases are tested to succeed without it (`planning/research-projects.md` §11) |

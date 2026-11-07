@@ -200,8 +200,8 @@ def test_the_cursor_file_follows_each_event_and_each_cursor_frame(monkeypatch, t
 
     assert seen_at_print == ["", "3"]
     assert cursor_file.read_text() == "9\n"
-    # No temp file left behind.
-    assert [p.name for p in state.iterdir()] == ["cursor"]
+    # No temp file left behind; the sidecar lock file stays by design (never deleted).
+    assert sorted(p.name for p in state.iterdir()) == ["cursor", "cursor.lock"]
 
 
 def test_the_cursor_file_is_replaced_not_truncated(monkeypatch, tmp_path):
