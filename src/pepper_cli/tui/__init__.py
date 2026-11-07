@@ -36,8 +36,8 @@ def detect_install_method() -> str:
     return "pip"
 
 
-def upgrade_command() -> list[str]:
-    """The uv command that actually moves this install to the latest release.
+def upgrade_command(target_version: str | None = None) -> list[str]:
+    """The uv command that actually moves this install to the release it needs.
 
     A pinned uv tool install (``uv tool install vycari-pepper==0.3.0``) keeps its pin on
     ``uv tool upgrade``, so it gets re-installed unpinned instead (#127). ``--force`` is what
@@ -45,29 +45,35 @@ def upgrade_command() -> list[str]:
     leaves 0.3.0 in place, because it already satisfies the requirement it just wrote.
     ``--force`` re-installs the package too, which the receipt alone would not show, so the
     real-uv test asserts the version in the environment's metadata, not just the receipt.
+
+    ``target_version`` is the required release when the prompt names one: an exclusion that
+    covers it (``!=0.4`` against 0.4) keeps ``uv tool upgrade`` below it, so it is a pin too.
     """
     from pepper_cli import _version
 
     requirement = _version.uv_tool_requirement()
-    if requirement is not None and _version.is_pinned(requirement):
+    if requirement is not None and _version.is_pinned(requirement, target_version):
         return ["uv", "tool", "install", "--force", _version.DISTRIBUTION]
     return ["uv", "tool", "upgrade", _version.DISTRIBUTION]
 
 
-def upgrade_prompt(message: str, *, offer: bool = True) -> tuple[str, str]:
+def upgrade_prompt(
+    message: str, *, offer: bool = True, target_version: str | None = None
+) -> tuple[str, str]:
     """The ``F10`` question and detail for this install.
 
     ``offer`` is the background offer, which names the target release in ``message``; the
     server's upgrade-required text is not a version, so the question leaves it out. Either
     way a pinned install is told its constraint goes: the command it runs drops the pin, and
-    that must not happen silently (#127).
+    that must not happen silently (#127). ``target_version`` is the release the server named
+    on a 426, so an exclusion that covers it is called a pin, as ``upgrade_command`` does.
     """
     import sys
 
     from pepper_cli import _version
 
     requirement = _version.uv_tool_requirement()
-    pinned = requirement is not None and _version.is_pinned(requirement)
+    pinned = requirement is not None and _version.is_pinned(requirement, target_version)
     subject = f"v{message}" if offer else "the latest release"
     if pinned:
         question = f"Upgrade to {subject}, removing the pin {requirement}?"
@@ -76,10 +82,10 @@ def upgrade_prompt(message: str, *, offer: bool = True) -> tuple[str, str]:
 
     method = detect_install_method()
     if method == "uv-tool" and sys.platform == "win32":
-        manual = " ".join(upgrade_command())
+        manual = " ".join(upgrade_command(target_version))
         detail = f"Pepper will exit. Run '{manual}' in your terminal."
     elif method == "uv-tool" and pinned:
-        manual = " ".join(upgrade_command())
+        manual = " ".join(upgrade_command(target_version))
         detail = f"Pepper will exit and run '{manual}' in your terminal."
     elif method == "uv-tool":
         detail = "Pepper will exit and run 'uv tool upgrade vycari-pepper' in your terminal."

@@ -386,6 +386,50 @@ def test_the_command_really_moves_a_real_pinned_uv_tool(tmp_path) -> None:
     assert _installed(tool_env) == "0.4.0"
 
 
+@pytest.mark.skipif(shutil.which("uv") is None, reason="needs a real uv to keep the exclusion")
+def test_a_426_removes_a_real_exclusion_on_the_required_release(tmp_path) -> None:
+    """``uv tool install vycari-pepper!=0.4.0`` answers ``uv tool upgrade`` "Nothing to
+    upgrade" with exit 0 (VR-33db9e57), so the 426 path must re-install without it."""
+    from pepper_cli import _version
+    from pepper_cli.tui.app import required_release
+
+    index = tmp_path / "index"
+    for release in ("0.3.0", "0.4.0"):
+        _publish_stub(index, _version.DISTRIBUTION, release)
+    env = {
+        **os.environ,
+        "UV_TOOL_DIR": str(tmp_path / "tools"),
+        "UV_TOOL_BIN_DIR": str(tmp_path / "bin"),
+        "UV_INDEX_URL": index.as_uri(),
+        "UV_NO_CACHE": "1",
+    }
+
+    def uv(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["uv", *args], env=env, capture_output=True, text=True, timeout=120, check=False
+        )
+
+    installed = uv("tool", "install", f"{_version.DISTRIBUTION}!=0.4.0")
+    assert installed.returncode == 0, installed.stderr
+    tool_env = tmp_path / "tools" / _version.DISTRIBUTION
+    assert _installed(tool_env) == "0.3.0"
+
+    target = required_release("Pepper 0.4.0 or newer is required.")
+    assert target == "0.4.0"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("sys.prefix", str(tool_env))
+        mp.setattr("sys.platform", "linux")
+        assert _version.is_pinned("vycari-pepper!=0.4.0", None) is False
+        assert _version.is_pinned("vycari-pepper!=0.4.0", target) is True
+        command = tui.upgrade_command(target)
+    assert command == ["uv", "tool", "install", "--force", _version.DISTRIBUTION]
+
+    moved = uv(*command[1:])
+    assert moved.returncode == 0, moved.stderr
+    assert "specifier" not in (tool_env / "uv-receipt.toml").read_text(encoding="utf-8")
+    assert _installed(tool_env) == "0.4.0"
+
+
 def _publish_stub(index, name: str, release: str) -> None:
     """Publish ``name`` ``release`` to a PEP 503 index as a wheel uv accepts unmodified.
 
@@ -533,9 +577,53 @@ def test_an_exclusion_is_not_a_pin_so_the_upgrade_keeps_it(monkeypatch, tmp_path
     monkeypatch.setattr("sys.platform", "linux")
     _uv_receipt(monkeypatch, tmp_path, "!=0.2.0")
     assert tui.upgrade_command() == ["uv", "tool", "upgrade", "vycari-pepper"]
+    assert tui.upgrade_command("0.7.0") == ["uv", "tool", "upgrade", "vycari-pepper"]
     question, _ = tui.upgrade_prompt("0.7.0")
     assert question == "Upgrade Pepper to v0.7.0?"
     assert "removing the pin" not in question
+
+
+@pytest.mark.parametrize(
+    ("requirement", "target", "expect_pinned"),
+    [
+        # The exclusion covers the release the server demands: kept, the upgrade stays below.
+        ("!=0.7.0", "0.7.0", True),
+        (">=0.3,!=0.7.0", "0.7.0", True),
+        ("!=0.7.0,!=0.6.0", "0.7.0", True),
+        # It covers another release, or no target is known: ``uv tool upgrade`` moves up.
+        ("!=0.7.0", "0.8.0", False),
+        ("!=0.2.0", "0.7.0", False),
+        ("!=0.7.0", None, False),
+        (">=0.3", "0.7.0", False),
+    ],
+)
+def test_an_exclusion_fitting_the_target_is_treated_as_a_pin(
+    requirement, target, expect_pinned
+) -> None:
+    from pepper_cli import _version
+
+    assert _version.is_pinned(f"vycari-pepper{requirement}", target) is expect_pinned
+
+
+def test_an_exclusion_on_the_required_release_is_removed_for_a_426(monkeypatch) -> None:
+    """Real uv, after ``uv tool install vycari-pepper!=0.4.0`` on 0.3.0, answers
+    ``uv tool upgrade`` with "Nothing to upgrade" and exit 0: kept, the exclusion would report
+    a success that never happened (VR-33db9e57)."""
+    from pepper_cli.tui.app import required_release
+
+    assert required_release("Pepper 0.4.0 or newer is required.") == "0.4.0"
+    assert required_release("Upgrade to v0.4.0 to continue.") == "0.4.0"
+    assert required_release("Pepper is too old, upgrade it.") is None
+
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr(tui, "detect_install_method", lambda: "uv-tool")
+    monkeypatch.setattr("pepper_cli._version.uv_tool_requirement", lambda: "vycari-pepper!=0.4.0")
+    assert tui.upgrade_command("0.4.0") == ["uv", "tool", "install", "--force", "vycari-pepper"]
+    question, detail = tui.upgrade_prompt(
+        "Pepper 0.4.0 or newer is required.", offer=False, target_version="0.4.0"
+    )
+    assert question == "Upgrade to the latest release, removing the pin vycari-pepper!=0.4.0?"
+    assert "uv tool install --force vycari-pepper" in detail
 
 
 def test_a_426_exits_to_upgrade_without_printing_the_error_as_a_version(

@@ -33,6 +33,7 @@ from __future__ import annotations
 import concurrent.futures
 import contextlib
 import os
+import re
 import threading
 import time
 import uuid
@@ -184,6 +185,24 @@ class _Loop:
 
 #: ``update_version`` after a 426: the flow is open, but the server named no release to print.
 UNKNOWN_RELEASE = "unknown"
+
+
+def required_release(message: str) -> str | None:
+    """The release a 426 sentence names ("Pepper 0.7.0 or newer is required."), if any.
+
+    Only used to fit the upgrade to the server's demand: an exclusion that covers 0.7.0 has
+    to go, and an unpinned upgrade can still land on the latest release.
+    """
+    found = re.search(r"(?<![\w.])v?(\d+(?:\.\d+)+(?:[-+][A-Za-z0-9.]+)?)(?![\w.])", message)
+    if found is None:
+        return None
+    from packaging.version import InvalidVersion, Version
+
+    try:
+        Version(found.group(1))
+    except InvalidVersion:
+        return None
+    return found.group(1)
 
 
 class PepperApp(App[None]):
@@ -502,7 +521,8 @@ class PepperApp(App[None]):
         """
         from pepper_cli.tui import upgrade_prompt
 
-        self._upgrade_prompt = upgrade_prompt(exc.message, offer=False)
+        target = required_release(exc.message)
+        self._upgrade_prompt = upgrade_prompt(exc.message, offer=False, target_version=target)
         # ``update_version`` is what F10 is gated on, but it is also printed as a release
         # number on exit, and this message is a sentence; mark the flow open without one.
         self.update_version = UNKNOWN_RELEASE
