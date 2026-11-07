@@ -359,7 +359,13 @@ def _installed(tool_env) -> str:
 
     from pepper_cli import _version
 
-    site_packages = next((tool_env / "lib").glob("python*/site-packages"))
+    # POSIX nests it under lib/python3.x, Windows keeps it at Lib: find it rather than assume.
+    candidates = [
+        *(tool_env / "lib").glob("python*/site-packages"),
+        *(tool_env / "Lib").glob("site-packages"),
+    ]
+    assert candidates, f"no site-packages under {tool_env}"
+    site_packages = candidates[0]
     matches = {
         dist.version
         for dist in map(PathDistribution, Path(site_packages).glob("*.dist-info"))
@@ -374,8 +380,13 @@ def _latest_release() -> str:
 
     from pepper_cli import _version
 
-    response = httpx.get(f"https://pypi.org/pypi/{_version.DISTRIBUTION}/json", timeout=30)
-    return str(response.json()["info"]["version"])
+    # uv may resolve through a mirror while this host has no route to PyPI: skip, don't fail.
+    try:
+        response = httpx.get(f"https://pypi.org/pypi/{_version.DISTRIBUTION}/json", timeout=30)
+        response.raise_for_status()
+        return str(response.json()["info"]["version"])
+    except (httpx.HTTPError, KeyError, ValueError) as exc:
+        pytest.skip(f"cannot ask PyPI for the latest release: {exc}")
 
 
 def _uv_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path, requirement: str) -> None:
@@ -397,8 +408,10 @@ def _uv_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path, requirement: str) -> 
         ("==0.3.0", "vycari-pepper==0.3.0"),
         ("<0.4", "vycari-pepper<0.4"),
         (">=0.3", None),
+        ("!=0.2.0", None),
         (">=0.3.0,<0.8", None),
         (">=0.3.0,<0.7", "vycari-pepper>=0.3.0,<0.7"),
+        ("!=0.2.0,<0.7", "vycari-pepper!=0.2.0,<0.7"),
     ],
 )
 def test_a_pin_that_excludes_the_latest_release_suppresses_the_offer(
@@ -426,6 +439,17 @@ def test_the_upgrade_command_drops_a_pin_instead_of_keeping_it(monkeypatch, tmp_
 
     _uv_receipt(monkeypatch, tmp_path / "unpinned", ">=0.3")
     assert tui.upgrade_command() == ["uv", "tool", "upgrade", "vycari-pepper"]
+
+
+def test_an_exclusion_is_not_a_pin_so_the_upgrade_keeps_it(monkeypatch, tmp_path) -> None:
+    """``!=0.2.0`` excludes a release, not the upgrade: ``uv tool upgrade`` keeps it and still
+    moves up, so dropping it would take away a constraint the user never had to lose."""
+    monkeypatch.setattr("sys.platform", "linux")
+    _uv_receipt(monkeypatch, tmp_path, "!=0.2.0")
+    assert tui.upgrade_command() == ["uv", "tool", "upgrade", "vycari-pepper"]
+    question, _ = tui.upgrade_prompt("0.7.0")
+    assert question == "Upgrade Pepper to v0.7.0?"
+    assert "removing the pin" not in question
 
 
 def test_a_426_exits_to_upgrade_without_printing_the_error_as_a_version(

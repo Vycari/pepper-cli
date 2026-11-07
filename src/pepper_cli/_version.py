@@ -105,11 +105,15 @@ def uv_tool_requirement() -> str | None:
 
 
 def is_pinned(requirement: str) -> bool:
-    """Whether ``uv tool upgrade`` would stay where it is: a floor (``>=0.3``) still moves up."""
+    """Whether ``uv tool upgrade`` would stay where it is.
+
+    A floor (``>=0.3``) and an exclusion (``!=0.2``) both still let it move up, so neither is
+    a pin; anything that names a version to stay at, or a range to stay in, is.
+    """
     from packaging.requirements import InvalidRequirement, Requirement
 
     try:
-        return any(spec.operator != ">=" for spec in Requirement(requirement).specifier)
+        return any(spec.operator not in (">=", "!=") for spec in Requirement(requirement).specifier)
     except InvalidRequirement:
         return False
 
