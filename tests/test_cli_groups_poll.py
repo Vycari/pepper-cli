@@ -1012,7 +1012,7 @@ def test_the_stream_connect_is_bounded_by_the_for_budget():
     ) as api:
         list(api.watch_agent_events(read_timeout=2.0))
         list(api.watch_agent_events())
-    assert timeouts[0]["connect"] == 2.0
+    assert timeouts[0] == {"connect": 2.0, "read": 2.0, "write": 2.0, "pool": 2.0}
     assert timeouts[1]["connect"] == 60.0
 
 

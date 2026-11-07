@@ -154,6 +154,13 @@ def make_http_client(*, timeout: float) -> httpx.Client:
         raise ProxyEnvironmentError(msg) from exc
 
 
+def _within(limit: float | None, budget: float | None) -> float | None:
+    """``limit``, shortened to ``budget`` when one is given (``None`` is no limit)."""
+    if budget is None:
+        return limit
+    return budget if limit is None else min(limit, budget)
+
+
 class _DeadlineCut:
     """Cut a streaming response's connection at a ``time.monotonic()`` deadline.
 
@@ -3157,17 +3164,15 @@ class ApiClient:
             f"{self._server_url}{path}",
             params={"since": since} if since is not None else None,
             headers=headers,
-            # ``read_timeout`` is a ``--for`` budget: the connect is bounded by it too, so a
-            # host that never answers cannot hold the run past its window.
+            # ``read_timeout`` is a ``--for`` budget: connect, write and pool waits are bounded
+            # by it too, so a host that never answers cannot hold the run past its window. The
+            # read timeout restarts with every read, so ``deadline`` (``_DeadlineCut``) is what
+            # holds the window's end once the stream is open.
             timeout=httpx.Timeout(
-                connect=base_timeout.connect
-                if read_timeout is None or base_timeout.connect is None
-                else min(base_timeout.connect, read_timeout),
-                read=FEED_STREAM_READ_TIMEOUT
-                if read_timeout is None
-                else min(FEED_STREAM_READ_TIMEOUT, read_timeout),
-                write=base_timeout.write,
-                pool=base_timeout.pool,
+                connect=_within(base_timeout.connect, read_timeout),
+                read=_within(FEED_STREAM_READ_TIMEOUT, read_timeout),
+                write=_within(base_timeout.write, read_timeout),
+                pool=_within(base_timeout.pool, read_timeout),
             ),
         ) as resp:
             if resp.status_code >= 400:
