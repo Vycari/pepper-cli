@@ -175,7 +175,7 @@ def test_perform_upgrade_non_windows_success(monkeypatch, capsys) -> None:
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    rc = tui._perform_upgrade("0.4.0")
+    rc = tui._perform_upgrade("0.4.0", required="0.4.0")
     assert rc == 0
     assert ran == [["/usr/bin/uv", "tool", "upgrade", "vycari-pepper"]]
     captured = capsys.readouterr()
@@ -278,14 +278,14 @@ def test_perform_upgrade_reinstalls_a_pinned_tool(monkeypatch, tmp_path, capsys)
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert tui._perform_upgrade("0.7.0") == 0
+    assert tui._perform_upgrade("0.7.0", required="0.7.0") == 0
     assert ran == [["/usr/bin/uv", "tool", "install", "--force", "vycari-pepper"]]
 
 
 def test_perform_upgrade_windows(monkeypatch, capsys) -> None:
     monkeypatch.setattr("sys.platform", "win32")
     monkeypatch.setattr(tui, "detect_install_method", lambda: "uv-tool")
-    rc = tui._perform_upgrade("0.4.0")
+    rc = tui._perform_upgrade("0.4.0", required="0.4.0")
     assert rc == 0
     captured = capsys.readouterr()
     assert "To upgrade to v0.4.0, run:\n  uv tool upgrade vycari-pepper" in captured.err
@@ -300,7 +300,7 @@ def test_perform_upgrade_failure(monkeypatch, capsys) -> None:
         return subprocess.CompletedProcess(cmd, 1)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    rc = tui._perform_upgrade("0.4.0")
+    rc = tui._perform_upgrade("0.4.0", required="0.4.0")
     assert rc == 1
     captured = capsys.readouterr()
     assert "Upgrade failed" in captured.err
@@ -310,7 +310,7 @@ def test_perform_upgrade_missing_uv(monkeypatch, capsys) -> None:
     monkeypatch.setattr("sys.platform", "linux")
     monkeypatch.setattr(tui, "detect_install_method", lambda: "uv-tool")
     monkeypatch.setattr("shutil.which", lambda _name: None)
-    rc = tui._perform_upgrade("0.4.0")
+    rc = tui._perform_upgrade("0.4.0", required="0.4.0")
     assert rc == 1
     captured = capsys.readouterr()
     assert "'uv' executable not found" in captured.err
@@ -318,7 +318,7 @@ def test_perform_upgrade_missing_uv(monkeypatch, capsys) -> None:
 
 def test_perform_upgrade_pipx(monkeypatch, capsys) -> None:
     monkeypatch.setattr(tui, "detect_install_method", lambda: "pipx")
-    rc = tui._perform_upgrade("0.4.0")
+    rc = tui._perform_upgrade("0.4.0", required="0.4.0")
     assert rc == 0
     captured = capsys.readouterr()
     assert "To upgrade to v0.4.0, run:\n  pipx upgrade vycari-pepper" in captured.err
@@ -326,7 +326,7 @@ def test_perform_upgrade_pipx(monkeypatch, capsys) -> None:
 
 def test_perform_upgrade_pip(monkeypatch, capsys) -> None:
     monkeypatch.setattr(tui, "detect_install_method", lambda: "pip")
-    rc = tui._perform_upgrade("0.4.0")
+    rc = tui._perform_upgrade("0.4.0", required="0.4.0")
     assert rc == 0
     captured = capsys.readouterr()
     assert "To upgrade to v0.4.0, run:\n  pip install --upgrade vycari-pepper" in captured.err
@@ -613,6 +613,10 @@ def test_an_exclusion_on_the_required_release_is_removed_for_a_426(monkeypatch) 
 
     assert required_release("Pepper 0.4.0 or newer is required.") == "0.4.0"
     assert required_release("Upgrade to v0.4.0 to continue.") == "0.4.0"
+    # Sentence punctuation after the version is a full stop, not a third component.
+    assert required_release("Upgrade to v0.4.0.") == "0.4.0"
+    assert required_release("Please upgrade to 0.2.") == "0.2"
+    assert required_release("Upgrade to 0.4.0rc1.") == "0.4.0rc1"
     assert required_release("Pepper is too old, upgrade it.") is None
 
     monkeypatch.setattr("sys.platform", "linux")
@@ -624,6 +628,23 @@ def test_an_exclusion_on_the_required_release_is_removed_for_a_426(monkeypatch) 
     )
     assert question == "Upgrade to the latest release, removing the pin vycari-pepper!=0.4.0?"
     assert "uv tool install --force vycari-pepper" in detail
+
+
+def test_perform_upgrade_fits_its_command_to_the_required_release(monkeypatch, capsys) -> None:
+    """The command is built for the release the server named, not just the exit message."""
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr(tui, "detect_install_method", lambda: "uv-tool")
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr("pepper_cli._version.uv_tool_requirement", lambda: "vycari-pepper!=0.4.0")
+    ran = []
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, check=False: ran.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+    )
+    assert tui._perform_upgrade(tui_app.UNKNOWN_RELEASE, "0.4.0") == 0
+    assert ran == [["/usr/bin/uv", "tool", "install", "--force", "vycari-pepper"]]
+    assert "Upgrading vycari-pepper to v0.4.0..." in capsys.readouterr().err
 
 
 def test_a_426_exits_to_upgrade_without_printing_the_error_as_a_version(
@@ -694,11 +715,59 @@ def test_tui_run_performs_upgrade_when_requested(monkeypatch) -> None:
             pass
 
     monkeypatch.setattr("pepper_cli.tui.app.PepperApp", FakeApp)
-    monkeypatch.setattr(tui, "_perform_upgrade", lambda ver: called.append(ver) or 0)
+    monkeypatch.setattr(
+        tui, "_perform_upgrade", lambda ver, required=None: called.append((ver, required)) or 0
+    )
 
     rc = tui.run(server_url=creds.server_url, token=creds.token)
     assert rc == 0
-    assert called == ["0.4.0"]
+    assert called == [("0.4.0", None)]
+
+
+def test_a_426_keeps_its_release_for_the_command_it_runs(monkeypatch, tmp_path, capsys) -> None:
+    """The prompt names the release; the command run afterwards must be built for it, not for
+    an unknown target, or an exclusion covering it survives (Greptile on #218)."""
+    _uv_receipt(monkeypatch, tmp_path, "!=0.4.0")
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr(tui, "detect_install_method", lambda: "uv-tool")
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/uv")
+    ran = []
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, check=False: ran.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+    )
+
+    app = tui_app.PepperApp.__new__(tui_app.PepperApp)
+    app.update_version = None
+    app._upgrade_prompt = None
+    app._upgrade_target = None
+    app.fail_fatal = lambda message: None
+    app._upgrade_required(UpgradeRequiredError("Please upgrade to 0.4.0."))
+    assert app.update_version == tui_app.UNKNOWN_RELEASE
+    assert app._upgrade_target == "0.4.0"
+    assert app._upgrade_prompt[0] == (
+        "Upgrade to the latest release, removing the pin vycari-pepper!=0.4.0?"
+    )
+
+    assert tui._perform_upgrade(app.update_version, app._upgrade_target) == 0
+    assert ran == [["/usr/bin/uv", "tool", "install", "--force", "vycari-pepper"]]
+    assert "Upgrading vycari-pepper to v0.4.0..." in capsys.readouterr().err
+
+
+def test_a_background_offer_carries_no_target(monkeypatch, tmp_path) -> None:
+    _uv_receipt(monkeypatch, tmp_path, "!=0.4.0")
+    app = tui_app.PepperApp.__new__(tui_app.PepperApp)
+    app.update_version = None
+    app._upgrade_target = "0.4.0"
+    app._upgrade_prompt = None
+    app._quitting = False
+    app._mounted = lambda: True
+    for name in ("refresh_bindings", "refresh_chrome"):
+        setattr(app, name, lambda: None)
+    app._on_update_available("0.4.0")
+    assert app._upgrade_target is None
+    assert app.update_version == "0.4.0"
 
 
 def test_quitting_does_not_wait_for_a_blocked_update_check() -> None:

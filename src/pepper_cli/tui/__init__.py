@@ -98,20 +98,20 @@ def upgrade_prompt(
     return question, detail
 
 
-def _perform_upgrade(target_version: str) -> int:
+def _perform_upgrade(target_version: str, required: str | None = None) -> int:
     """Run upgrade command or print instructions based on the install method.
 
-    After a 426 ``target_version`` is only a marker, no reachable release version: the
-    commands and the prompt are the same, but there is no ``v{version}`` to print.
+    After a 426 ``target_version`` is the ``UNKNOWN_RELEASE`` marker unless the server named
+    a release, which arrives in ``required``: the command must fit that release, and only a
+    real one is printed as ``v{version}``.
     """
     import shutil
     import subprocess
     import sys
 
     from pepper_cli import render
-    from pepper_cli.tui.app import UNKNOWN_RELEASE
 
-    to = f"v{target_version}" if target_version != UNKNOWN_RELEASE else "the latest release"
+    to = f"v{required}" if required is not None else "the latest release"
     method = detect_install_method()
     if method == "pipx":
         render.info(f"To upgrade to {to}, run:\n  pipx upgrade vycari-pepper")
@@ -120,7 +120,7 @@ def _perform_upgrade(target_version: str) -> int:
         render.info(f"To upgrade to {to}, run:\n  pip install --upgrade vycari-pepper")
         return 0
 
-    command = upgrade_command()
+    command = upgrade_command(required)
     manual = " ".join(command)
     if sys.platform == "win32":
         render.info(f"To upgrade to {to}, run:\n  {manual}")
@@ -158,8 +158,9 @@ def run(
         app.run()
         update_version = getattr(app, "update_version", None)
         upgrade_requested = getattr(app, "upgrade_requested", False)
+        upgrade_target = getattr(app, "_upgrade_target", None)
         ret_code = app.return_code or 0
 
     if upgrade_requested and update_version is not None:
-        return _perform_upgrade(update_version)
+        return _perform_upgrade(update_version, upgrade_target)
     return ret_code

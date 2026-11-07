@@ -193,7 +193,11 @@ def required_release(message: str) -> str | None:
     Only used to fit the upgrade to the server's demand: an exclusion that covers 0.7.0 has
     to go, and an unpinned upgrade can still land on the latest release.
     """
-    found = re.search(r"(?<![\w.])v?(\d+(?:\.\d+)+(?:[-+][A-Za-z0-9.]+)?)(?![\w.])", message)
+    # A second dot after the version is a sentence's full stop, not part of it.
+    found = re.search(
+        r"(?<![\w.])v?(\d+(?:\.\d+)+(?:\.[A-Za-z0-9]+)*?(?:[-+][A-Za-z0-9.]+)*)(?![\w]|\.\w)",
+        message,
+    )
     if found is None:
         return None
     from packaging.version import InvalidVersion, Version
@@ -344,6 +348,8 @@ class PepperApp(App[None]):
         self.update_version: str | None = None
         #: The F10 question and detail; set when the server says this client is too old.
         self._upgrade_prompt: tuple[str, str] | None = None
+        #: The release a 426 named, so confirmation runs the reinstall that reaches it.
+        self._upgrade_target: str | None = None
         self.upgrade_requested: bool = False
         self._update_checker = update_checker
         #: Set once quitting starts; workers and the turn thread then post nothing back.
@@ -521,8 +527,10 @@ class PepperApp(App[None]):
         """
         from pepper_cli.tui import upgrade_prompt
 
-        target = required_release(exc.message)
-        self._upgrade_prompt = upgrade_prompt(exc.message, offer=False, target_version=target)
+        self._upgrade_target = required_release(exc.message)
+        self._upgrade_prompt = upgrade_prompt(
+            exc.message, offer=False, target_version=self._upgrade_target
+        )
         # ``update_version`` is what F10 is gated on, but it is also printed as a release
         # number on exit, and this message is a sentence; mark the flow open without one.
         self.update_version = UNKNOWN_RELEASE
@@ -1182,6 +1190,7 @@ class PepperApp(App[None]):
         from pepper_cli.tui import upgrade_prompt
 
         self._upgrade_prompt = upgrade_prompt(version)
+        self._upgrade_target = None
         self.update_version = version
         self.refresh_bindings()
         self.refresh_chrome()
