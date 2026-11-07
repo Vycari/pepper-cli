@@ -216,6 +216,33 @@ async def test_the_polls_run_at_their_normal_rate_when_the_stream_is_down() -> N
         await until(pilot, lambda: app._person_stream is not None and app._person_stream.gave_up)
 
 
+async def test_a_worker_that_delivers_as_the_app_closes_arms_no_timer() -> None:
+    """Teardown stops the timers it can see, then closes the queue; a worker delivering in
+    between used to arm a poll timer that nothing went on to stop, and its task outlived the
+    event loop (#204)."""
+    server = ts.standard_server()
+    hold = threading.Event()
+    server.streams = [ts.StreamScript(frames=[ts.CURSOR_HEAD], hold=hold)]
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2 and app._stream_healthy)
+        await _settled(pilot, server)
+        hold.set()
+        await until(pilot, lambda: not app._stream_healthy)
+        await app._close_messages()
+        armed: list[float] = []
+        original = app.set_timer
+
+        def recording(delay: float, *args, **kwargs):
+            armed.append(delay)
+            return original(delay, *args, **kwargs)
+
+        app.set_timer = recording
+        # What a worker's _post does when its request lands.
+        app._delivered("rail", lambda _rooms: None, None, app._loops["rail"].generation)
+        assert armed == []
+
+
 async def test_cursor_ahead_catches_up_and_reopens_at_the_servers_position() -> None:
     server = ts.standard_server()
     hold = threading.Event()
