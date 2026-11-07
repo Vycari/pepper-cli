@@ -6,6 +6,12 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 
 ## Unreleased
 
+- `pepper calendar feed [show] | on | off | rotate | set`: manage the calendar subscribe feed
+  (`GET/POST/PATCH /api/v1/calendars/feed`). `on` and `rotate` print the link and the webcal link
+  once and write them nowhere else; `rotate` confirms (`--yes` without a terminal); `set` takes
+  calendars and follows by label or id, `--detail busy|full`, and `--meals/--workouts/--todos` with
+  their `--no-` forms. Adding a first Google calendar needs the person's consent: a terminal shows
+  the server's disclosure and asks, anything else must pass `--consent`.
 - `pepper members list --json` no longer prints `agent_profile`, and the TUI no longer lists
   `member.agent_profile_changed` as a room event: agent profiles are being removed
   (remove-agent-profiles phase 1c, Vycari/groups#325). A roster row that still carries the key

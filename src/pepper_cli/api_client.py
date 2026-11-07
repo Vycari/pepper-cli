@@ -2195,6 +2195,40 @@ class ApiClient:
         """``GET /api/v1/calendars/schedule-plan``: today's schedule plan, read-only."""
         return self._get_object("/api/v1/calendars/schedule-plan")
 
+    def calendar_feed(self) -> dict[str, Any]:
+        """``GET /api/v1/calendars/feed``: the subscribe feed's status and sources. Never carries
+        the link (only its hash is stored)."""
+        return self._feed_object("GET", "")
+
+    def calendar_feed_enable(self) -> dict[str, Any]:
+        """``POST /api/v1/calendars/feed/enable``: status plus ``url`` and ``webcal_url``, shown
+        once (409 when already on). The URL is a credential: callers print it, never keep it."""
+        return self._feed_object("POST", "/enable")
+
+    def calendar_feed_rotate(self) -> dict[str, Any]:
+        """``POST /api/v1/calendars/feed/rotate``: a new link, same shape as enable (409 when
+        the feed is off). The old link stops working."""
+        return self._feed_object("POST", "/rotate")
+
+    def calendar_feed_disable(self) -> dict[str, Any]:
+        """``POST /api/v1/calendars/feed/disable``: turn the feed off (idempotent)."""
+        return self._feed_object("POST", "/disable")
+
+    def calendar_feed_sources(self, changes: dict[str, Any]) -> dict[str, Any]:
+        """``PATCH /api/v1/calendars/feed/sources``: only the keys in ``changes`` are sent
+        (``calendars``, ``follows_off``, ``detail``, ``meals``, ``workouts``, ``todos``,
+        ``consent``); the server leaves the rest alone."""
+        return self._feed_object("PATCH", "/sources", json=changes)
+
+    def _feed_object(
+        self, method: str, suffix: str, *, json: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        resp = self._request(method, f"/api/v1/calendars/feed{suffix}", json=json)
+        body = resp.json()
+        if not isinstance(body, dict):
+            raise ApiError(status=resp.status_code, body="", detail="malformed response")
+        return body
+
     def _get_object(self, path: str) -> dict[str, Any]:
         resp = self._request("GET", path)
         body = resp.json()

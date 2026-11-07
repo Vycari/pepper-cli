@@ -19,6 +19,8 @@ Subcommands:
 - ``pepper trajectories show <id> | list`` — inspect saved turns; ``--room`` scopes
   to one room's.
 - ``pepper calendar [today|week|schedule] [--planning]`` — read-only agenda.
+- ``pepper calendar feed [show] | on | off | rotate | set`` — the calendar subscribe link
+  (``GET/POST/PATCH /api/v1/calendars/feed``).
 - ``pepper next [--room R] [--source PREFIX] [--all] [--json]`` — Now / today's calendar /
   todos, prioritized.
 - ``pepper todos list | create | edit | done | dismiss | reopen`` — manage tracked
@@ -120,6 +122,7 @@ from pepper_cli import (
     article_reader,
     artifacts_view,
     brief_view,
+    calendar_feed_view,
     credentials,
     feed,
     feed_detail_render,
@@ -344,6 +347,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     # flags) flows straight to the top-level argparse so flag-style
     # errors and help text stay sensible.
 
+    if argv[:2] == ["calendar", "feed"]:
+        # ``calendar`` takes an optional window word, which argparse cannot also split into
+        # subcommands, so the feed's verbs have a parser of their own.
+        parser = _build_calendar_feed_parser()
+        argv = argv[2:]
     args = parser.parse_args(argv)
     if hasattr(args, "json"):
         # Resolve J10 once, here: every leaf that declares ``--json`` reads the
@@ -827,7 +835,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         description=(
             "Show your calendar as a per-day agenda with weather, daylight and commute. "
             "today (the default), week and schedule are shortcuts; --start/--days pick any "
-            "window (1-31 days). --room reads a room's calendar instead."
+            "window (1-31 days). --room reads a room's calendar instead. "
+            "`pepper calendar feed --help` covers the subscribe link (show, on, off, rotate, set)."
         ),
         parents=[_room_parent(omitted="Omit for your own calendar."), _json_parent],
     )
@@ -8451,6 +8460,254 @@ def cmd_drafts_send(args: argparse.Namespace) -> int:
         return 0
 
     return _run_personal(args, run, _report_draft_error)
+
+
+def _build_calendar_feed_parser() -> argparse.ArgumentParser:
+    """``pepper calendar feed [show|on|off|rotate|set]``; bare is ``show``."""
+    parser = argparse.ArgumentParser(
+        prog="pepper calendar feed",
+        description=(
+            "The calendar subscribe feed: a private link another calendar app polls. The link "
+            "is a secret and is shown only when it is made (on, rotate); it cannot be shown "
+            "again. The server decides what the feed carries. Bare `pepper calendar feed` is "
+            "`show`."
+        ),
+    )
+    parser.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="JSON out.")
+    parser.set_defaults(handler=cmd_calendar_feed_show)
+    sub = parser.add_subparsers(dest="feed_action", metavar="{show,on,off,rotate,set}")
+    p = sub.add_parser(
+        "show",
+        help="Whether the feed is on, its detail level and sources (never the link).",
+        parents=[_json_parent],
+    )
+    p.set_defaults(handler=cmd_calendar_feed_show)
+    p = sub.add_parser(
+        "on",
+        help="Turn the feed on and print its link and webcal link once.",
+        parents=[_json_parent],
+    )
+    p.set_defaults(handler=cmd_calendar_feed_on)
+    p = sub.add_parser(
+        "off",
+        help="Turn the feed off; the link stops answering.",
+        parents=[_json_parent],
+    )
+    p.set_defaults(handler=cmd_calendar_feed_off)
+    p = sub.add_parser(
+        "rotate",
+        help="Make a new link. Every subscription to the old one stops working.",
+        parents=[_json_parent, _yes_parent],
+    )
+    p.set_defaults(handler=cmd_calendar_feed_rotate)
+    p = sub.add_parser(
+        "set",
+        help="Change what the feed carries: calendars, follows, detail, meals, workouts, todos.",
+        description=(
+            "Change only what you name. Calendars and follows are given by label or id (a "
+            "unique label prefix works); the rest of your list is sent back unchanged. Adding "
+            "your first Google calendar publishes its events at the link, so the server asks "
+            "for consent: a terminal shows its disclosure and asks, anything else must pass "
+            "--consent after showing the person the disclosure."
+        ),
+        parents=[_json_parent],
+    )
+    p.add_argument("--add-calendar", action="append", default=[], metavar="CALENDAR")
+    p.add_argument("--remove-calendar", action="append", default=[], metavar="CALENDAR")
+    p.add_argument("--add-follow", action="append", default=[], metavar="FOLLOW")
+    p.add_argument("--remove-follow", action="append", default=[], metavar="FOLLOW")
+    p.add_argument("--detail", choices=["busy", "full"], help="Busy blocks only, or full events.")
+    for name in ("meals", "workouts", "todos"):
+        p.add_argument(
+            f"--{name}",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help=f"Put {name} in the feed (--no-{name} takes them out).",
+        )
+    p.add_argument(
+        "--consent",
+        action="store_true",
+        help="The person has agreed to publish their Google calendars at the link. Never "
+        "assume this; without it a terminal is asked and anything else is refused.",
+    )
+    p.set_defaults(handler=cmd_calendar_feed_set)
+    return parser
+
+
+def _report_feed_error(args: argparse.Namespace, exc: api_client.ApiError) -> int:
+    """:func:`_fail_api`, but an unknown-source 422 names the sources the server refused."""
+    body = _feed_error_body(exc)
+    if exc.status == 422 and body.get("code") == "unknown_sources":
+        names = [*(body.get("calendars") or []), *(body.get("follows") or [])]
+        _emit_error(
+            args,
+            "validation",
+            f"the server does not know these sources: {', '.join(map(str, names))}",
+            status=422,
+        )
+        return 1
+    return _fail_api(args, exc)
+
+
+def _feed_error_body(exc: api_client.ApiError) -> dict[str, Any]:
+    """The structured ``detail`` of a feed error (``consent_required``, ``unknown_sources``),
+    or ``{}`` when the server sent a string or nothing."""
+    try:
+        detail = json.loads(exc.body).get("detail")
+    except (ValueError, AttributeError):
+        return {}
+    return detail if isinstance(detail, dict) else {}
+
+
+def cmd_calendar_feed_show(args: argparse.Namespace) -> int:
+    """``pepper calendar feed [show] [--json]``: ``GET /api/v1/calendars/feed``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.calendar_feed()
+        _emit(body, args, lambda: calendar_feed_view.status(body))
+        return 0
+
+    return _run_personal(args, run, _report_feed_error)
+
+
+def _emit_link(body: dict[str, Any], args: argparse.Namespace, *, rotated: bool) -> None:
+    """Print the one-time link. It is a credential: stdout only, never a log or a cache."""
+    _emit(body, args, lambda: calendar_feed_view.link(body, rotated=rotated))
+    if not _json_mode(args):
+        render.info("Copy it now: the link can't be shown again. 'pepper calendar feed rotate'")
+        render.info("makes a new one, and the old one stops working.")
+
+
+def cmd_calendar_feed_on(args: argparse.Namespace) -> int:
+    """``pepper calendar feed on [--json]``: ``POST /api/v1/calendars/feed/enable``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        _emit_link(api.calendar_feed_enable(), args, rotated=False)
+        return 0
+
+    return _run_personal(args, run, _report_feed_error)
+
+
+def cmd_calendar_feed_off(args: argparse.Namespace) -> int:
+    """``pepper calendar feed off [--json]``: ``POST /api/v1/calendars/feed/disable``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.calendar_feed_disable()
+        _emit(body, args, lambda: render.info("Calendar feed is off."))
+        return 0
+
+    return _run_personal(args, run, _report_feed_error)
+
+
+def cmd_calendar_feed_rotate(args: argparse.Namespace) -> int:
+    """``pepper calendar feed rotate [--yes] [--json]``: ``POST /api/v1/calendars/feed/rotate``.
+
+    Confirms first (``--yes`` without a terminal): every calendar app subscribed to the old
+    link stops getting updates."""
+    if (
+        code := _confirm_destructive(
+            args,
+            "Rotating makes a new link; every subscription to the old one stops working. Go on?",
+            yes=args.yes,
+            refusal="rotating breaks every existing subscription; pass --yes to run it without "
+            "a prompt",
+        )
+    ) is not None:
+        return code
+
+    def run(api: api_client.ApiClient) -> int:
+        _emit_link(api.calendar_feed_rotate(), args, rotated=True)
+        return 0
+
+    return _run_personal(args, run, _report_feed_error)
+
+
+def _feed_changes(args: argparse.Namespace, current: dict[str, Any]) -> dict[str, Any]:
+    """The PATCH body for ``set``: the flags given, with the full replacement lists worked out
+    from the status ``current`` (label -> id is a lookup; the lists are whole)."""
+    view = calendar_feed_view
+    cals, follows = list(current.get("calendars") or []), list(current.get("follows") or [])
+    changes: dict[str, Any] = {}
+    if args.add_calendar or args.remove_calendar:
+        chosen = [str(c["id"]) for c in cals if c.get("included")]
+        for name in args.remove_calendar:
+            cid = view.resolve(name, cals, "calendar")
+            chosen = [i for i in chosen if i != cid]
+        for name in args.add_calendar:
+            cid = view.resolve(name, cals, "calendar")
+            if cid not in chosen:
+                chosen.append(cid)
+        changes["calendars"] = chosen
+    if args.add_follow or args.remove_follow:
+        off = [str(f["id"]) for f in follows if not f.get("included")]
+        for name in args.add_follow:
+            fid = view.resolve(name, follows, "follow")
+            off = [i for i in off if i != fid]
+        for name in args.remove_follow:
+            fid = view.resolve(name, follows, "follow")
+            if fid not in off:
+                off.append(fid)
+        changes["follows_off"] = off
+    for key in ("detail", "meals", "workouts", "todos"):
+        if getattr(args, key) is not None:
+            changes[key] = getattr(args, key)
+    return changes
+
+
+def cmd_calendar_feed_set(args: argparse.Namespace) -> int:
+    """``pepper calendar feed set [--add-calendar C]… [--remove-calendar C]… [--add-follow F]…
+    [--remove-follow F]… [--detail busy|full] [--meals|--no-meals] [--workouts|--no-workouts]
+    [--todos|--no-todos] [--consent] [--json]``: ``PATCH /api/v1/calendars/feed/sources``.
+
+    Reads the status once to turn labels into ids and to send whole replacement lists, then
+    sends only what changed. On ``consent_required`` a terminal sees the server's disclosure and
+    is asked; otherwise the command refuses unless ``--consent`` was given. Consent is never
+    assumed."""
+    given = (
+        args.add_calendar
+        or args.remove_calendar
+        or args.add_follow
+        or args.remove_follow
+        or any(getattr(args, k) is not None for k in ("detail", "meals", "workouts", "todos"))
+    )
+    if not given:
+        _emit_error(args, "usage", "nothing to change: give at least one flag (see --help)")
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        try:
+            changes = _feed_changes(args, api.calendar_feed())
+        except calendar_feed_view.SourceError as exc:
+            _emit_error(args, "usage", str(exc))
+            return 2
+        if args.consent:
+            changes["consent"] = True
+        try:
+            body = api.calendar_feed_sources(changes)
+        except api_client.ApiError as exc:
+            detail = _feed_error_body(exc)
+            if exc.status != 409 or detail.get("code") != "consent_required":
+                raise
+            disclosure = str(detail.get("disclosure") or detail.get("message") or "")
+            if _json_mode(args) or not _stdin_is_tty():
+                _emit_error(
+                    args,
+                    "usage",
+                    f"consent is needed: {disclosure} Show this to the person, and only if they "
+                    "agree run the command again with --consent.",
+                    status=409,
+                )
+                return 2
+            render.info(disclosure)
+            question = "Publish your Google calendar events at the feed link? [y/N] "
+            if _prompt(question).lower() not in ("y", "yes"):
+                render.info("Aborted. Nothing changed.")
+                return 0
+            body = api.calendar_feed_sources({**changes, "consent": True})
+        _emit(body, args, lambda: calendar_feed_view.status(body))
+        return 0
+
+    return _run_personal(args, run, _report_feed_error)
 
 
 def cmd_preferences_show(args: argparse.Namespace) -> int:
