@@ -149,6 +149,9 @@ pepper --profile <name> rooms watch --json --cursor-file <path>
   point `--cursor-file` at a new path. Writes take a lock on `<path>.lock`, which stays beside it.
   A run that finds the file taken over by another scope's watch while it ran stops with exit 1 and
   leaves the file alone.
+- Give each reader (`pepper --profile <name> rooms watch`, `pepper --profile <name> rooms poll`,
+  `pepper --profile <name> agents claude-channel`) its own cursor file: readers sharing one split
+  the events between them.
 - The command reconnects by itself when the connection drops, waiting 1 second and doubling up
   to 30 seconds, and resumes from the last cursor, so a reconnect loses nothing. A single dropped
   connection, or a server restart that ends the stream with `server_restarting`, is silent. Only
