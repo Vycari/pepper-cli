@@ -7058,7 +7058,9 @@ def cmd_rooms_poll(args: argparse.Namespace) -> int:
             next_id = cursor
         cursor = max(cursor, next_id)
         if args.cursor_file:
-            _advance_cursor_file(args.cursor_file, cursor)
+            # An overlapping run may have moved the file further; print where it now stands,
+            # so the printed cursor never sits behind the file.
+            cursor = _advance_cursor_file(args.cursor_file, cursor)
         _emit_line(
             _watch_cursor_line(cursor) if args.json else f"cursor={cursor}",
         )

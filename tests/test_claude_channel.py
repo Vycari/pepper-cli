@@ -1321,28 +1321,35 @@ def test_the_channel_never_rewinds_a_cursor_file_another_reader_advanced(monkeyp
     assert cursor_file.read_text().strip() == "50"
 
 
-def test_a_reconnect_resumes_from_the_file_another_reader_advanced(monkeypatch, tmp_path):
-    """VR-ba861d68: the channel found the file at 50 when it persisted 13, so it takes 50 as
-    its own cursor and the reconnect after a drop resumes from there, not from 13."""
+def test_a_reconnect_resumes_from_the_channels_own_cursor_not_the_file(monkeypatch, tmp_path):
+    """VR-ba861d68: at-least-once delivery to Claude. The channel pushed 13; another reader moved
+    the shared file to 50; the stream drops before 14..49 arrive. The reconnect resumes from 13,
+    the channel's own cursor, so 14..49 are pushed (a duplicate of what the other reader saw is
+    acceptable, a loss is not), and the file is never written back below 50."""
     cursor_file = tmp_path / "cursor"
     cursor_file.write_text("12\n")
     real_advance = claude_channel._advance_cursor_file
     landed: list[bool] = []
 
-    def poll_lands_first(path, cursor, **kwargs):
+    def another_reader_lands_first(path, cursor, **kwargs):
         if not landed:
             landed.append(True)
             cli._write_cursor_file(path, 50)
         return real_advance(path, cursor, **kwargs)
 
-    monkeypatch.setattr(claude_channel, "_advance_cursor_file", poll_lands_first)
-    fake = _Fake(_CONNECTED + _event(13, author=_BOB, scoped=False), 503, _CONNECTED)
+    monkeypatch.setattr(claude_channel, "_advance_cursor_file", another_reader_lands_first)
+    ids = {n: f"00000000-0000-0000-0000-0000000001{n:02d}" for n in (14, 30, 49)}
+    later = "".join(_event(n, message=m, scoped=False) for n, m in ids.items())
+    fake = _Fake(_CONNECTED + _event(13, scoped=False), 503, _CONNECTED + later)
+    for m in ids.values():
+        fake.messages[m] = _message_json(m)
 
-    run_channel(monkeypatch, fake, ["--self", _BOB, "--cursor-file", str(cursor_file)])
+    result = run_channel(monkeypatch, fake, ["--cursor-file", str(cursor_file)])
 
     resumes = [r.headers.get("last-event-id") for r in fake.stream_requests()[:3]]
     assert resumes[0] is None
-    assert resumes[1:] == ["50", "50"]
+    assert resumes[1:] == ["13", "13"]
+    assert result.kinds() == ["message"] * 4
     assert cursor_file.read_text().strip() == "50"
 
 

@@ -187,7 +187,7 @@ pepper --profile <name> rooms poll --json --cursor-file <path> --wait 20
   and rewritten with that cursor after the events are printed, so the next wake carries on; keep
   the cursor, never the last event's id. It is the same file as an unscoped `pepper --profile <name> rooms watch` uses, and a
   scoped watch's file is refused (exit 2). The file only moves forward: if it already holds a
-  later cursor (another run's), it is left alone. `--since N` starts after cursor N instead, and
+  later cursor (another run's), it is left alone, and that later cursor is the one printed. `--since N` starts after cursor N instead, and
   does not rewind the file. `--kinds`
   and `--ignore-kinds` filter the printed events as they do for the watch, and the cursor still
   moves past a skipped one.

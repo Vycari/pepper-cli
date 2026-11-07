@@ -710,11 +710,15 @@ class ChannelWorker:
         if path is None or self._notice_pending() or self.cursor == self.persisted:
             return
         # Through the same locked, forward-only write as poll and watch, so a channel holding
-        # an older in-memory cursor never rewinds a file one of them advanced.
+        # an older in-memory cursor never rewinds a file one of them advanced. The channel's own
+        # cursor is left alone: it is what was pushed to Claude, and an in-process reconnect
+        # resumes from it. Delivery to Claude is at least once: after another reader moved the
+        # shared file ahead, a reconnect may push events that reader also saw (a duplicate),
+        # but never skips one this channel has not pushed (a loss).
         if self.config.room is None:
-            on_disk = _advance_cursor_file(path, self.cursor)
+            _advance_cursor_file(path, self.cursor)
         elif self.bound is not None:
-            on_disk = _advance_cursor_file(
+            _advance_cursor_file(
                 path,
                 _ScopedCursor(
                     server=self.config.server,
@@ -727,9 +731,6 @@ class ChannelWorker:
             )
         else:
             return
-        # Another reader on this file (a poll or watch) moved it further: what it handled is
-        # handled, so an in-process reconnect resumes from the file, not from this older cursor.
-        self.cursor = max(self.cursor, on_disk)
         self.persisted = self.cursor
 
     def _accept_scope(self, frame: api_client.FeedFrame) -> None:

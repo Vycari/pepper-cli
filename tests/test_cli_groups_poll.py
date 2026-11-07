@@ -199,7 +199,8 @@ def test_an_overlapping_run_does_not_rewind_a_newer_cursor(monkeypatch, capsys, 
     assert cli.main(["rooms", "poll", "--cursor-file", str(cursor_file), "--wait", "25"]) == 0
 
     assert cursor_file.read_text(encoding="utf-8").strip() == "20"
-    capsys.readouterr()
+    # VR-b0e01ac5: the printed cursor is the file's, never one behind it.
+    assert _lines(capsys)[-1] == "cursor=20"
 
 
 def test_since_below_the_stored_cursor_does_not_rewind_the_file(monkeypatch, capsys, tmp_path):
@@ -210,7 +211,8 @@ def test_since_below_the_stored_cursor_does_not_rewind_the_file(monkeypatch, cap
     assert cli.main(["rooms", "poll", "--since", "0", "--cursor-file", str(cursor_file)]) == 0
 
     assert poll.calls[0]["after_id"] == 0
-    assert _lines(capsys)[-1] == "cursor=10"
+    # The file stays at 50, and the cursor printed to resume from is the file's.
+    assert _lines(capsys)[-1] == "cursor=50"
     assert cursor_file.read_text(encoding="utf-8").strip() == "50"
 
 

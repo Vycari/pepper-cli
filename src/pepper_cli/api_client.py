@@ -159,8 +159,9 @@ class _DeadlineCut:
 
     A read timeout is per read, so a stream that delivers a frame just before the deadline
     gets the whole timeout again for the next read. This enforces one absolute end instead: a
-    timer shuts the connection's socket down at the deadline, which wakes a read blocked on it,
-    and :attr:`fired` tells the reader that the error it then sees is the deadline. A response
+    timer shuts down and closes the connection's socket at the deadline, which wakes a read
+    blocked on it (on Windows only the close does), and :attr:`fired` tells the reader that the
+    error it then sees is the deadline. A response
     with no socket to reach (a test transport) is left alone; the read timeout still bounds it.
     """
 
@@ -178,8 +179,13 @@ class _DeadlineCut:
 
         def cut() -> None:
             self.fired = True
+            # shutdown wakes a read blocked on the socket on POSIX; Windows does not end a
+            # pending recv on shutdown, only on closesocket, so the socket is closed too.
+            # The reader then sees an OSError, which httpx raises as ReadError.
             with contextlib.suppress(OSError):
                 sock.shutdown(socket.SHUT_RDWR)
+            with contextlib.suppress(OSError):
+                sock.close()
 
         self._timer = threading.Timer(max(deadline - time.monotonic(), 0.0), cut)
         self._timer.daemon = True
