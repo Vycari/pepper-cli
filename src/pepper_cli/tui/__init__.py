@@ -40,13 +40,15 @@ def upgrade_command() -> list[str]:
     """The uv command that actually moves this install to the latest release.
 
     A pinned uv tool install (``uv tool install vycari-pepper==0.3.0``) keeps its pin on
-    ``uv tool upgrade``, so it gets re-installed unpinned instead (#127).
+    ``uv tool upgrade``, so it gets re-installed unpinned instead (#127). ``--force`` is what
+    makes that a re-install: installed at 0.3.0, plain ``install`` writes the new receipt and
+    leaves 0.3.0 in place, because it already satisfies the requirement it just wrote.
     """
     from pepper_cli import _version
 
     requirement = _version.uv_tool_requirement()
     if requirement is not None and _version.is_pinned(requirement):
-        return ["uv", "tool", "install", _version.DISTRIBUTION]
+        return ["uv", "tool", "install", "--force", _version.DISTRIBUTION]
     return ["uv", "tool", "upgrade", _version.DISTRIBUTION]
 
 
@@ -86,25 +88,31 @@ def upgrade_prompt(message: str, *, offer: bool = True) -> tuple[str, str]:
 
 
 def _perform_upgrade(target_version: str) -> int:
-    """Run upgrade command or print instructions based on the install method."""
+    """Run upgrade command or print instructions based on the install method.
+
+    After a 426 ``target_version`` is only a marker, no reachable release version: the
+    commands and the prompt are the same, but there is no ``v{version}`` to print.
+    """
     import shutil
     import subprocess
     import sys
 
     from pepper_cli import render
+    from pepper_cli.tui.app import UNKNOWN_RELEASE
 
+    to = f"v{target_version}" if target_version != UNKNOWN_RELEASE else "the latest release"
     method = detect_install_method()
     if method == "pipx":
-        render.info(f"To upgrade to v{target_version}, run:\n  pipx upgrade vycari-pepper")
+        render.info(f"To upgrade to {to}, run:\n  pipx upgrade vycari-pepper")
         return 0
     if method == "pip":
-        render.info(f"To upgrade to v{target_version}, run:\n  pip install --upgrade vycari-pepper")
+        render.info(f"To upgrade to {to}, run:\n  pip install --upgrade vycari-pepper")
         return 0
 
     command = upgrade_command()
     manual = " ".join(command)
     if sys.platform == "win32":
-        render.info(f"To upgrade to v{target_version}, run:\n  {manual}")
+        render.info(f"To upgrade to {to}, run:\n  {manual}")
         return 0
 
     uv_bin = shutil.which("uv")
@@ -112,7 +120,7 @@ def _perform_upgrade(target_version: str) -> int:
         render.error(f"Error: 'uv' executable not found in PATH.\nPlease run manually: {manual}")
         return 1
 
-    render.info(f"Upgrading vycari-pepper to v{target_version}...")
+    render.info(f"Upgrading vycari-pepper to {to}...")
     proc = subprocess.run([uv_bin, *command[1:]], check=False)  # noqa: S603
     if proc.returncode == 0:
         render.info("Upgrade command completed. Run 'pepper' to start.")
@@ -137,10 +145,10 @@ def run(
     with ApiClient(server_url=server_url, token=token) as api:
         app = PepperApp(api, provider=provider, bell=bell_enabled(), update_checker=update_checker)
         app.run()
-        target_version = getattr(app, "update_version", None)
+        update_version = getattr(app, "update_version", None)
         upgrade_requested = getattr(app, "upgrade_requested", False)
         ret_code = app.return_code or 0
 
-    if upgrade_requested and target_version is not None:
-        return _perform_upgrade(target_version)
+    if upgrade_requested and update_version is not None:
+        return _perform_upgrade(update_version)
     return ret_code

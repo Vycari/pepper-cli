@@ -191,7 +191,7 @@ def test_a_pinned_prompt_says_the_pin_is_removed(monkeypatch, tmp_path, platform
     assert tui.upgrade_prompt("server text", offer=False)[0] == (
         "Upgrade to the latest release, removing the pin vycari-pepper==0.3.0?"
     )
-    assert "uv tool install vycari-pepper" in detail
+    assert "uv tool install --force vycari-pepper" in detail
     assert "pin is removed" in detail
 
 
@@ -219,7 +219,8 @@ async def test_a_426_opens_f10_and_a_pinned_reinstall(monkeypatch, tmp_path) -> 
         monkeypatch.setattr(app._rail, "step", refused)
         app._run("rail")
         await until(pilot, lambda: app.fatal is not None)
-        assert app.update_version == "Pepper 0.7.0 or newer is required."
+        # Open, but the server's sentence is not a release: F10 must not print it as one.
+        assert app.update_version == tui_app.UNKNOWN_RELEASE
         assert app.upgrade_requested is False
 
         await pilot.press("f10")
@@ -229,7 +230,7 @@ async def test_a_426_opens_f10_and_a_pinned_reinstall(monkeypatch, tmp_path) -> 
             for widget in pilot.app.screen.query(".dialog-title, .dialog-detail")
         )
         assert "Upgrade to the latest release, removing the pin vycari-pepper==0.3.0?" in shown
-        assert "uv tool install vycari-pepper" in shown
+        assert "uv tool install --force vycari-pepper" in shown
         assert app.upgrade_requested is False  # opened is not accepted
 
         await pilot.press("y")
@@ -248,7 +249,7 @@ def test_perform_upgrade_reinstalls_a_pinned_tool(monkeypatch, tmp_path, capsys)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     assert tui._perform_upgrade("0.7.0") == 0
-    assert ran == [["/usr/bin/uv", "tool", "install", "vycari-pepper"]]
+    assert ran == [["/usr/bin/uv", "tool", "install", "--force", "vycari-pepper"]]
 
 
 def test_perform_upgrade_windows(monkeypatch, capsys) -> None:
@@ -301,12 +302,54 @@ def test_perform_upgrade_pip(monkeypatch, capsys) -> None:
     assert "To upgrade to v0.4.0, run:\n  pip install --upgrade vycari-pepper" in captured.err
 
 
+@pytest.mark.skipif(shutil.which("uv") is None, reason="needs a real uv to write its receipt")
+def test_the_command_really_moves_a_real_pinned_uv_tool(tmp_path) -> None:
+    """The fixture above is our idea of uv's receipt; this pins the idea to uv's output.
+
+    uv keeps the pin on ``uv tool upgrade`` and, on a plain re-install, rewrites the receipt
+    unpinned while leaving the old version installed, so a working fix needs ``--force``.
+    """
+    import os
+
+    from pepper_cli import _version
+
+    env = {
+        **os.environ,
+        "UV_TOOL_DIR": str(tmp_path / "tools"),
+        "UV_TOOL_BIN_DIR": str(tmp_path / "bin"),
+    }
+
+    def uv(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["uv", *args], env=env, capture_output=True, text=True, timeout=120, check=False
+        )
+
+    installed = uv("tool", "install", f"{_version.DISTRIBUTION}==0.3.0")
+    if installed.returncode != 0:
+        pytest.skip(f"cannot reach an index for {_version.DISTRIBUTION}: {installed.stderr[-200:]}")
+
+    receipt = tmp_path / "tools" / _version.DISTRIBUTION / "uv-receipt.toml"
+    assert 'specifier = "==0.3.0"' in receipt.read_text(encoding="utf-8")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("sys.prefix", str(receipt.parent))
+        assert _version.uv_tool_requirement() == f"{_version.DISTRIBUTION}==0.3.0"
+        assert _version.is_pinned(f"{_version.DISTRIBUTION}==0.3.0")
+        command = tui.upgrade_command()
+    assert command[:3] == ["uv", "tool", "install"]
+
+    moved = uv(*command[1:])
+    assert moved.returncode == 0, moved.stderr
+    assert "specifier" not in receipt.read_text(encoding="utf-8")
+
+
 def _uv_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path, requirement: str) -> None:
     prefix = tmp_path / "uv-tool-env"
     shutil.rmtree(prefix, ignore_errors=True)
     prefix.mkdir(parents=True)
+    # The key is uv's own (`uv-tool/src/tool.rs`), as a real install writes it.
     (prefix / "uv-receipt.toml").write_text(
-        f'[tool]\nrequirements = [{{ name = "vycari-pepper", specifiers = "{requirement}" }}]\n',
+        f'[tool]\nrequirements = [{{ name = "vycari-pepper", specifier = "{requirement}" }}]\n',
         encoding="utf-8",
     )
     monkeypatch.setattr("sys.prefix", str(prefix))
@@ -344,10 +387,32 @@ def test_reading_the_receipt_without_one_is_not_an_error(monkeypatch, tmp_path) 
 
 def test_the_upgrade_command_drops_a_pin_instead_of_keeping_it(monkeypatch, tmp_path) -> None:
     _uv_receipt(monkeypatch, tmp_path, "==0.3.0")
-    assert tui.upgrade_command() == ["uv", "tool", "install", "vycari-pepper"]
+    assert tui.upgrade_command() == ["uv", "tool", "install", "--force", "vycari-pepper"]
 
     _uv_receipt(monkeypatch, tmp_path / "unpinned", ">=0.3")
     assert tui.upgrade_command() == ["uv", "tool", "upgrade", "vycari-pepper"]
+
+
+def test_a_426_exits_to_upgrade_without_printing_the_error_as_a_version(
+    monkeypatch, capsys
+) -> None:
+    """#127: the 426 sentence opens the flow but is not a release, so the upgrade runs and
+    says what it does without inventing a version to print."""
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr(tui, "detect_install_method", lambda: "uv-tool")
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/uv")
+    ran = []
+
+    def fake_run(cmd, check=False):
+        ran.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert tui._perform_upgrade(tui_app.UNKNOWN_RELEASE) == 0
+    assert ran == [["/usr/bin/uv", "tool", "upgrade", "vycari-pepper"]]
+    shown = capsys.readouterr().err
+    assert "Upgrading vycari-pepper to the latest release..." in shown
+    assert "vPepper" not in shown
 
 
 async def test_a_pinned_install_is_not_offered_the_release_it_cannot_take(

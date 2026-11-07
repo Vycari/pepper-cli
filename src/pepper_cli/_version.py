@@ -99,8 +99,8 @@ def uv_tool_requirement() -> str | None:
             continue
         if canonicalize_name(entry["name"].split("[")[0]) != canonicalize_name(DISTRIBUTION):
             continue
-        specifiers = entry.get("specifiers")
-        return entry["name"] + (specifiers if isinstance(specifiers, str) else "")
+        specifier = entry.get("specifier")  # singular: uv's receipt and lock serialization
+        return entry["name"] + (specifier if isinstance(specifier, str) else "")
     return None
 
 

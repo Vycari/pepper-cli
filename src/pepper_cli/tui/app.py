@@ -182,6 +182,10 @@ class _Loop:
             self.timer = None
 
 
+#: ``update_version`` after a 426: the flow is open, but the server named no release to print.
+UNKNOWN_RELEASE = "unknown"
+
+
 class PepperApp(App[None]):
     """Terminal client for Pepper's messages: rooms, topics and the Pepper DM."""
 
@@ -499,7 +503,9 @@ class PepperApp(App[None]):
         from pepper_cli.tui import upgrade_prompt
 
         self._upgrade_prompt = upgrade_prompt(exc.message, offer=False)
-        self.update_version = exc.message
+        # ``update_version`` is what F10 is gated on, but it is also printed as a release
+        # number on exit, and this message is a sentence; mark the flow open without one.
+        self.update_version = UNKNOWN_RELEASE
         self.fail_fatal(str(exc))
 
     def on_key(self, event: events.Key) -> None:
