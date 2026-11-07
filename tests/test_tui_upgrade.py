@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import os
 import shutil
 import subprocess
 
@@ -195,6 +196,35 @@ def test_a_pinned_prompt_says_the_pin_is_removed(monkeypatch, tmp_path, platform
     assert "pin is removed" in detail
 
 
+@pytest.mark.parametrize(
+    ("platform", "expect"),
+    [
+        # Windows exits and prints the command: there it is the user who must run it.
+        (
+            "win32",
+            "Pepper will exit. Run 'uv tool install --force vycari-pepper' in your terminal.",
+        ),
+        # Everywhere else ``_perform_upgrade`` runs the reinstall itself, so the prompt must
+        # not send the user to run it again (#127 review).
+        (
+            "linux",
+            "Pepper will exit and run 'uv tool install --force vycari-pepper' in your terminal.",
+        ),
+        (
+            "darwin",
+            "Pepper will exit and run 'uv tool install --force vycari-pepper' in your terminal.",
+        ),
+    ],
+)
+def test_a_pinned_prompt_says_who_runs_the_reinstall(
+    monkeypatch, tmp_path, platform, expect
+) -> None:
+    _uv_receipt(monkeypatch, tmp_path, "==0.3.0")
+    monkeypatch.setattr("sys.platform", platform)
+    _, detail = tui.upgrade_prompt("0.7.0")
+    assert expect in detail
+
+
 def test_an_unpinned_prompt_keeps_its_wording(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("sys.platform", "linux")
     monkeypatch.setattr("sys.prefix", str(tmp_path / "plain"))
@@ -308,15 +338,24 @@ def test_the_command_really_moves_a_real_pinned_uv_tool(tmp_path) -> None:
 
     uv keeps the pin on ``uv tool upgrade`` and, on a plain re-install, rewrites the receipt
     unpinned while leaving the old version installed, so a working fix needs ``--force``.
-    """
-    import os
 
+    Both versions come from a local index holding a stub distribution under the real name,
+    so nothing here asks PyPI or a mirror what ``latest`` is: the test says 0.4.0, and a
+    release landing upstream mid-run cannot change the answer.
+    """
     from pepper_cli import _version
+
+    index = tmp_path / "index"
+    for release in ("0.3.0", "0.4.0"):
+        _publish_stub(index, _version.DISTRIBUTION, release)
 
     env = {
         **os.environ,
         "UV_TOOL_DIR": str(tmp_path / "tools"),
         "UV_TOOL_BIN_DIR": str(tmp_path / "bin"),
+        "UV_INDEX_URL": index.as_uri(),
+        # A resolver cache from the host would answer from PyPI instead of the stub.
+        "UV_NO_CACHE": "1",
     }
 
     def uv(*args: str) -> subprocess.CompletedProcess[str]:
@@ -325,8 +364,7 @@ def test_the_command_really_moves_a_real_pinned_uv_tool(tmp_path) -> None:
         )
 
     installed = uv("tool", "install", f"{_version.DISTRIBUTION}==0.3.0")
-    if installed.returncode != 0:
-        pytest.skip(f"cannot reach an index for {_version.DISTRIBUTION}: {installed.stderr[-200:]}")
+    assert installed.returncode == 0, installed.stderr
 
     tool_env = tmp_path / "tools" / _version.DISTRIBUTION
     receipt = tool_env / "uv-receipt.toml"
@@ -344,10 +382,55 @@ def test_the_command_really_moves_a_real_pinned_uv_tool(tmp_path) -> None:
     moved = uv(*command[1:])
     assert moved.returncode == 0, moved.stderr
     assert "specifier" not in receipt.read_text(encoding="utf-8")
-    # Not just the receipt: the package the user runs is now the latest release.
-    latest = _latest_release()
-    assert _installed(tool_env) == latest
-    assert latest != "0.3.0"
+    # Not just the receipt: the package the user runs is now the newer 0.4.0, not 0.3.0.
+    assert _installed(tool_env) == "0.4.0"
+
+
+def _publish_stub(index, name: str, release: str) -> None:
+    """Publish ``name`` ``release`` to a PEP 503 index as a wheel uv accepts unmodified.
+
+    A wheel without ``RECORD`` or a module for its entry point is repacked or rejected, so
+    the stub carries both and a console script that imports.
+    """
+    import hashlib
+    import zipfile
+    from io import BytesIO
+
+    from packaging.utils import canonicalize_name
+
+    canonical = canonicalize_name(name)
+    module = canonical.replace("-", "_")
+    project = index / canonical
+    project.mkdir(parents=True, exist_ok=True)
+    wheel_name = f"{module}-{release}-py3-none-any.whl"
+    dist_info = f"{module}-{release}.dist-info"
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as wheel:
+        wheel.writestr(
+            f"{dist_info}/METADATA",
+            f"Metadata-Version: 2.1\nName: {name}\nVersion: {release}\n",
+        )
+        wheel.writestr(
+            f"{dist_info}/WHEEL",
+            "Wheel-Version: 1.0\nGenerator: stub\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        )
+        wheel.writestr(
+            f"{dist_info}/entry_points.txt", f"[console_scripts]\n{canonical} = {module}:main\n"
+        )
+        wheel.writestr(f"{dist_info}/top_level.txt", f"{module}\n")
+        wheel.writestr(f"{dist_info}/RECORD", "")
+        wheel.writestr(f"{module}/__init__.py", "")
+        wheel.writestr(f"{module}/__main__.py", "def main():\n    return 0\n")
+    wheel_bytes = buffer.getvalue()
+    (project / wheel_name).write_bytes(wheel_bytes)
+    links = "".join(
+        f'<a href="{other.name}#sha256={hashlib.sha256(other.read_bytes()).hexdigest()}">'
+        f"{other.name}</a><br/>"
+        for other in sorted(project.glob("*.whl"))
+    )
+    (project / "index.html").write_text(
+        f"<!DOCTYPE html><html><body>{links}</body></html>", encoding="utf-8"
+    )
 
 
 def _installed(tool_env) -> str:
@@ -373,20 +456,6 @@ def _installed(tool_env) -> str:
     }
     assert len(matches) == 1, f"expected one {_version.DISTRIBUTION}, found {sorted(matches)}"
     return matches.pop()
-
-
-def _latest_release() -> str:
-    import httpx
-
-    from pepper_cli import _version
-
-    # uv may resolve through a mirror while this host has no route to PyPI: skip, don't fail.
-    try:
-        response = httpx.get(f"https://pypi.org/pypi/{_version.DISTRIBUTION}/json", timeout=30)
-        response.raise_for_status()
-        return str(response.json()["info"]["version"])
-    except (httpx.HTTPError, KeyError, ValueError) as exc:
-        pytest.skip(f"cannot ask PyPI for the latest release: {exc}")
 
 
 def _uv_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path, requirement: str) -> None:
@@ -431,6 +500,23 @@ def test_reading_the_receipt_without_one_is_not_an_error(monkeypatch, tmp_path) 
     monkeypatch.setattr("sys.prefix", str(tmp_path / "no-such-env"))
     assert _version.uv_tool_requirement() is None
     assert _version.pinned_below("0.7.0") is None
+
+
+def test_a_receipt_that_is_not_utf8_reads_as_no_receipt(monkeypatch, tmp_path) -> None:
+    """``tomllib`` decodes the file, and ``UnicodeDecodeError`` is neither an ``OSError``
+    nor a ``TOMLDecodeError``: a damaged receipt must fall back, not break the check."""
+    from pepper_cli import _version
+
+    prefix = tmp_path / "damaged-env"
+    prefix.mkdir()
+    (prefix / "uv-receipt.toml").write_bytes(b"[tool]\nrequirements = [{ name = '\xff\xfe' }]\n")
+    monkeypatch.setattr("sys.prefix", str(prefix))
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr(tui, "detect_install_method", lambda: "uv-tool")
+    assert _version.uv_tool_requirement() is None
+    assert _version.pinned_below("0.7.0") is None
+    assert tui.upgrade_command() == ["uv", "tool", "upgrade", "vycari-pepper"]
+    assert tui.upgrade_prompt("0.7.0")[0] == "Upgrade Pepper to v0.7.0?"
 
 
 def test_the_upgrade_command_drops_a_pin_instead_of_keeping_it(monkeypatch, tmp_path) -> None:

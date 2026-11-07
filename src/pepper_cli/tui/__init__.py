@@ -75,9 +75,12 @@ def upgrade_prompt(message: str, *, offer: bool = True) -> tuple[str, str]:
         question = f"Upgrade Pepper to {subject}?"
 
     method = detect_install_method()
-    if method == "uv-tool" and (sys.platform == "win32" or pinned):
+    if method == "uv-tool" and sys.platform == "win32":
         manual = " ".join(upgrade_command())
         detail = f"Pepper will exit. Run '{manual}' in your terminal."
+    elif method == "uv-tool" and pinned:
+        manual = " ".join(upgrade_command())
+        detail = f"Pepper will exit and run '{manual}' in your terminal."
     elif method == "uv-tool":
         detail = "Pepper will exit and run 'uv tool upgrade vycari-pepper' in your terminal."
     elif method == "pipx":

@@ -88,7 +88,7 @@ def uv_tool_requirement() -> str | None:
     try:
         with receipt.open("rb") as fh:
             data = tomllib.load(fh)
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         return None
     tool = data.get("tool")
     requirements = tool.get("requirements") if isinstance(tool, dict) else None
