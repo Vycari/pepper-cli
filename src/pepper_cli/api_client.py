@@ -169,7 +169,9 @@ class _DeadlineCut:
     timer shuts down and closes the connection's socket at the deadline, which wakes a read
     blocked on it (on Windows only the close does), and :attr:`fired` tells the reader that the
     error it then sees is the deadline. A response
-    with no socket to reach (a test transport) is left alone; the read timeout still bounds it.
+    with no socket to reach (a test transport, an unusual network stream) cannot be cut, so
+    :meth:`ApiClient._stream_feed` also ends the stream at the first frame past the deadline,
+    and the read timeout (already capped at the window's length) bounds a silent one.
     """
 
     def __init__(self, resp: httpx.Response, deadline: float | None) -> None:
@@ -3180,7 +3182,12 @@ class ApiClient:
                 _raise_for_error(resp)
             cut = _DeadlineCut(resp, deadline)
             try:
-                yield from _iter_feed_frames(resp.iter_lines())
+                for frame in _iter_feed_frames(resp.iter_lines()):
+                    yield frame
+                    # Whether or not the cut could be armed, a stream never outlasts its
+                    # window by more than the frame in hand.
+                    if deadline is not None and time.monotonic() >= deadline:
+                        return
             except httpx.RequestError:
                 if cut.fired:
                     # The deadline cut the connection: the stream ends, it did not fail.

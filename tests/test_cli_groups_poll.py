@@ -1079,3 +1079,32 @@ def test_a_real_stream_ends_at_the_deadline_however_recent_its_last_frame(monkey
     assert [f.payload.get("comment") for f in frames] == ["connected", "ping"]
     # The ping at 0.4 s would have bought a fresh 8 s read; the cut ends it at 1 s.
     assert elapsed < 4.0
+
+
+def test_a_stream_with_no_socket_to_cut_still_ends_at_the_first_frame_past_the_deadline():
+    """Greptile P1, the fallback: a network stream the cut cannot reach (no socket) still
+    stops at the deadline, rather than reading for as long as frames keep coming."""
+    import time
+
+    def body():
+        yield b": connected\n\n"
+        for _ in range(200):
+            time.sleep(0.02)
+            yield b": ping\n\n"
+
+    transport = httpx.MockTransport(
+        lambda _r: httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=body()
+        )
+    )
+    client = httpx.Client(transport=transport)
+    with api_client.ApiClient(
+        server_url="http://example.com", token=SecretStr("pep_agt_abc"), client=client
+    ) as api:
+        started = time.monotonic()
+        frames = list(api.watch_agent_events(read_timeout=8.0, deadline=started + 0.3))
+        elapsed = time.monotonic() - started
+
+    # 200 pings would take ~4 s; the stream ends at the first frame after 0.3 s.
+    assert elapsed < 1.5
+    assert 2 <= len(frames) < 100
