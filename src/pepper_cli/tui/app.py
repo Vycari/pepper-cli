@@ -1185,7 +1185,9 @@ class PepperApp(App[None]):
 
     def _on_update_available(self, version: str) -> None:
         """Surface available update in footer."""
-        if self._quitting or not self._mounted():
+        # A 426 owns the upgrade flow once it is fatal: an offer still in flight must not
+        # replace the release it requires with one the exclusion may not reach (#127).
+        if self._quitting or self.fatal or not self._mounted():
             return
         from pepper_cli.tui import upgrade_prompt
 

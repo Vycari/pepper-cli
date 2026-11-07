@@ -755,6 +755,29 @@ def test_a_426_keeps_its_release_for_the_command_it_runs(monkeypatch, tmp_path, 
     assert "Upgrading vycari-pepper to v0.4.0..." in capsys.readouterr().err
 
 
+async def test_an_offer_that_lands_after_a_426_does_not_replace_it(monkeypatch, tmp_path) -> None:
+    """The background check can deliver after the 426 has gone fatal; that offer must not
+    clear the required release F10 is about to run (Greptile on #218)."""
+    _uv_receipt(monkeypatch, tmp_path, "!=0.3.5")
+    server = ts.standard_server()
+    app = tui_app.PepperApp(server.client(), update_checker=lambda: None)
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: not app._loops["rail"].busy)
+
+        def refused() -> None:
+            raise UpgradeRequiredError("Pepper 0.4.0 or newer is required.")
+
+        monkeypatch.setattr(app._rail, "step", refused)
+        app._run("rail")
+        await until(pilot, lambda: app.fatal is not None)
+        assert app._upgrade_target == "0.4.0"
+
+        app._on_update_available("0.3.5")
+        await pilot.pause()
+        assert app.update_version == tui_app.UNKNOWN_RELEASE
+        assert app._upgrade_target == "0.4.0"
+
+
 def test_a_background_offer_carries_no_target(monkeypatch, tmp_path) -> None:
     _uv_receipt(monkeypatch, tmp_path, "!=0.4.0")
     app = tui_app.PepperApp.__new__(tui_app.PepperApp)
@@ -762,6 +785,7 @@ def test_a_background_offer_carries_no_target(monkeypatch, tmp_path) -> None:
     app._upgrade_target = "0.4.0"
     app._upgrade_prompt = None
     app._quitting = False
+    app.fatal = None
     app._mounted = lambda: True
     for name in ("refresh_bindings", "refresh_chrome"):
         setattr(app, name, lambda: None)
