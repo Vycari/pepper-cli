@@ -6,11 +6,77 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 
 ## Unreleased
 
-- `pepper members list --json` no longer prints `agent_profile`, and the TUI no longer lists
-  `member.agent_profile_changed` as a room event: agent profiles are being removed
-  (remove-agent-profiles phase 1c, Vycari/groups#325). A roster row that still carries the key
-  is read as before and the key ignored. The `--profile` credential-profile flag is unrelated and
-  unchanged.
+## 0.8.0 — 2026-11-07
+
+Agent harnesses get `pepper rooms poll` and `rooms watch --for`, chat turns show the drafts Pepper
+stages, `pepper calendar` follows your saved calendar view, and adding an agent to a room is one
+step with no profile (remove-agent-profiles, Vycari/groups#325). Every PR merged since 0.7.0 is
+listed below.
+
+Upgrade notes:
+
+- Agent profiles are gone from the client: `pepper members list --json` no longer prints
+  `agent_profile`, and `pepper members invite` adds an agent by its address in one request on a
+  server that has dropped the profile picker. An older server that still answers with a picker is
+  handled as in 0.7.0.
+- A `--reply-to` post (`messages post`, `comments create`) without `--idempotency-key` now derives
+  one from the reply target, topic, body and mentions, so posting the identical reply twice
+  posts it once.
+- `messages list` with an agent token and no `--topic` exits 2.
+- An unusable proxy setting is a one-line error naming the variable (exit 2), not a traceback.
+
+### Added
+
+- `pepper rooms poll` (#216, fixes #206): one `GET /api/v1/groups/events` page instead of a
+  stream, for harnesses that run one turn per wake. Prints the events as `rooms watch` does, then
+  the cursor, and exits 0. It resumes from the saved cursor (the same forward-only, locked cursor
+  file as `rooms watch`) and takes `--since`, `--wait` (0-25), `--kinds`, `--ignore-kinds` and
+  `--json`.
+- `pepper rooms watch --for DURATION` (#216) exits 0 after the duration with the cursor saved, and
+  exits 1 if the window ends with no working stream.
+- Chat drafts (#205): a chat turn shows the drafts Pepper stages; `pepper drafts send` sends one,
+  and so does `s` in the terminal UI. A draft names its account when you have several.
+- Calendar view preferences (#205): the four calendar view settings are in
+  `pepper preferences`, and `pepper calendar` asks the server for your saved view. Agenda lines
+  mark out of office, focus time, working location and times in your own zone.
+- Loading phrases (#203): the TUI status line and `pepper chat` show the server's
+  `status_phrase` frames while a turn runs, starting at `Thinking...`. A server that sends none
+  works as before, and a phrase never replaces a refusal or failure notice.
+- `ChatReply` and `ChatHistoryEntry` mirror the optional `client_message_id` and `replayed`
+  fields (#200). The CLI does not send `client_message_id` yet.
+- A hidden `pepper agents skill` alias for `pepper agents guide` (#216, fixes #207).
+
+### Changed
+
+- `pepper members invite` adds an agent by its address (#212, then #215): against a server with
+  the profile picker it posts again with the server's default profile and fails clearly when there
+  is none; against a server without it the first answer is the add.
+- `pepper login` honours `--json` / `PEPPER_JSON` for its success and errors, and under JSON it
+  never prompts or opens a browser (#216, fixes #208).
+- The README installs from PyPI (`uv tool install vycari-pepper`) and keeps installing from `main`
+  as a short note (#219).
+
+### Fixed
+
+- The TUI drops a topic poll that lands while its thread is being removed, which fixes an
+  intermittent `NoMatches` on Windows (#192, fixes #177).
+- The TUI keeps the row-refresh backoff when a stream edit arrives or the app regains focus, and
+  clears it when you switch conversations, so a retry armed for one conversation cannot strand
+  rows in another (#190, #201; thanks Niladri Das).
+- Switching conversations discards a held topic rerun that belonged to the old conversation
+  (#201).
+
+### Removed
+
+- `agent_profile` on roster rows and the `member.agent_profile_changed` room event kind
+  (remove-agent-profiles phase 1c, #215). A roster row that still carries the key is read as
+  before and the key ignored. The `--profile` credential-profile flag is unrelated and unchanged.
+
+### Maintenance
+
+- Vycari Review first-line review (#189), deps-drain enrollment (#213), a refreshed vendored
+  `/api/v1` snapshot (#193), two TUI test deflakes (#194, #195), and dependency bumps (#197,
+  #198, #199).
 
 ## 0.7.0 — 2026-10-30
 
