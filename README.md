@@ -6,8 +6,9 @@ REPL, and read-only trajectory inspection.
 It authenticates with a **personal access token (PAT)** scoped to your own
 user — it never sees your Google credentials and never acts as anyone else.
 
-It depends only on `httpx`, `rich`, `prompt_toolkit`, and `textual` (no dependency on
-the Pepper server package).
+Its dependency list is deliberately short: `httpx`, `rich`, `prompt_toolkit`, `textual`,
+`pyyaml`, `packaging` and `mcp`, plus `tzdata` on Windows and the optional `setproctitle`
+where it ships a wheel. It has no dependency on the Pepper server package.
 
 The package is published as `vycari-pepper`; the command it installs is `pepper`.
 It is licensed under Apache-2.0 (see `LICENSE`).
@@ -41,18 +42,28 @@ There are two ways to get a `pepper` command, depending on what you're doing.
 ### Daily use — install it on your `PATH`
 
 ```bash
-uv tool install --from git+https://github.com/Vycari/pepper-cli vycari-pepper
+uv tool install vycari-pepper
 ```
 
-This puts a `pepper` executable on your `PATH` (typically `~/.local/bin/pepper`).
-Installing from PyPI will replace the git URL once the package is published there.
+This installs the latest release from [PyPI](https://pypi.org/project/vycari-pepper/) and puts
+a `pepper` executable on your `PATH` (typically `~/.local/bin/pepper`).
+
+**Install from `main` (unreleased changes).** To try changes that have merged but not yet
+been released, install from the repository instead:
+
+```bash
+uv tool install --force --from git+https://github.com/Vycari/pepper-cli vycari-pepper
+```
+
+Run `uv tool install --force vycari-pepper` to go back to the PyPI release.
 
 > [!NOTE]
 > **Upgrading from the old `pepper-cli` install.** Earlier versions were installed
 > from a subdirectory of the main Pepper repository under the name `pepper-cli`.
-> Remove that install once, then install as above:
+> Remove that install once, then install from PyPI:
 > ```bash
 > uv tool uninstall pepper-cli
+> uv tool install vycari-pepper
 > ```
 > Your credentials file (`~/.config/pepper/credentials.toml`) is unchanged and is
 > shared by the new install.
@@ -60,9 +71,9 @@ Installing from PyPI will replace the git URL once the package is published ther
 Keep in mind:
 
 > [!IMPORTANT]
-> **This is a *snapshot* pinned to the commit it was built from — it does not
-> auto-update.** After the CLI changes upstream (e.g. a new subcommand lands),
-> refresh it:
+> **An install is pinned to the release it came from — it does not
+> auto-update.** When a new release ships (e.g. one that adds a subcommand),
+> upgrade it:
 > ```bash
 > uv tool upgrade vycari-pepper
 > ```
