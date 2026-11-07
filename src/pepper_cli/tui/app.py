@@ -319,6 +319,8 @@ class PepperApp(App[None]):
         #: The DM status line when no turn is running (an error, "no reply yet").
         self.dm_note = ""
         self.update_version: str | None = None
+        #: The F10 question and detail; set when the server says this client is too old.
+        self._upgrade_prompt: tuple[str, str] | None = None
         self.upgrade_requested: bool = False
         self._update_checker = update_checker
         #: Set once quitting starts; workers and the turn thread then post nothing back.
@@ -465,7 +467,7 @@ class PepperApp(App[None]):
             self.fail_fatal(LOGIN_HINT)
             return
         if isinstance(exc, UpgradeRequiredError):
-            self.fail_fatal(str(exc))
+            self._upgrade_required(exc)
             return
         if on_error is not None and on_error(exc):
             # The server answered, so the connection is fine: no backoff, no offline banner.
@@ -487,6 +489,18 @@ class PepperApp(App[None]):
         for loop in self._loops.values():
             loop.stop_timer()
         self.refresh_chrome()
+
+    def _upgrade_required(self, exc: UpgradeRequiredError) -> None:
+        """A 426: this client must upgrade, so F10 opens the upgrade flow even pinned.
+
+        Unlike the background offer this skips the pin check: the server will refuse every
+        request until the client moves, and a pinned install has to be told how (#127).
+        """
+        from pepper_cli.tui import upgrade_prompt
+
+        self._upgrade_prompt = upgrade_prompt(exc.message, offer=False)
+        self.update_version = exc.message
+        self.fail_fatal(str(exc))
 
     def on_key(self, event: events.Key) -> None:
         self._last_input = time.monotonic()
@@ -1104,29 +1118,8 @@ class PepperApp(App[None]):
         """``F10``: show confirmation to exit and upgrade Pepper."""
         if not self.update_version or isinstance(self.screen, ModalScreen):
             return
-        import sys
-
-        from pepper_cli.tui import detect_install_method
-
-        method = detect_install_method()
-        if method == "uv-tool":
-            detail = (
-                "Pepper will exit. Run 'uv tool upgrade vycari-pepper' in your terminal."
-                if sys.platform == "win32"
-                else "Pepper will exit and run 'uv tool upgrade vycari-pepper' in your terminal."
-            )
-        elif method == "pipx":
-            detail = "Pepper will exit. Run 'pipx upgrade vycari-pepper' in your terminal."
-        else:
-            detail = "Pepper will exit. Run 'pip install --upgrade vycari-pepper' in your terminal."
-
-        self.push_screen(
-            ConfirmScreen(
-                f"Upgrade Pepper to v{self.update_version}?",
-                detail,
-            ),
-            self._on_confirm_upgrade,
-        )
+        assert self._upgrade_prompt is not None  # set with update_version, never apart
+        self.push_screen(ConfirmScreen(*self._upgrade_prompt), self._on_confirm_upgrade)
 
     def _on_confirm_upgrade(self, confirmed: bool | None) -> None:
         if confirmed:
@@ -1136,8 +1129,9 @@ class PepperApp(App[None]):
     def _start_update_check(self) -> None:
         """Query for new releases in the background."""
         checker = self._update_checker
+        from pepper_cli import _version
+
         if checker is None:
-            from pepper_cli import _version
 
             def checker() -> str | None:
                 return _version.check_latest_version(should_stop=lambda: self._quitting)
@@ -1149,7 +1143,8 @@ class PepperApp(App[None]):
                 latest = checker()
             except Exception:
                 return
-            if latest:
+            # An offer this install cannot take would only return on the next check (#127).
+            if latest and not _version.pinned_below(latest):
                 self._post(self._on_update_available, latest)
 
         threading.Thread(target=run, name="pepper-update-check", daemon=True).start()
@@ -1158,6 +1153,9 @@ class PepperApp(App[None]):
         """Surface available update in footer."""
         if self._quitting or not self._mounted():
             return
+        from pepper_cli.tui import upgrade_prompt
+
+        self._upgrade_prompt = upgrade_prompt(version)
         self.update_version = version
         self.refresh_bindings()
         self.refresh_chrome()
@@ -2847,7 +2845,7 @@ class PepperApp(App[None]):
             self.fail_fatal(LOGIN_HINT)
             return
         if isinstance(error, UpgradeRequiredError):
-            self.fail_fatal(str(error))
+            self._upgrade_required(error)
             return
         if outcome == "reply" and error is None:
             turn.phase, turn.status = "done", ""

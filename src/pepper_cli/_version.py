@@ -72,6 +72,70 @@ def is_git_install() -> bool:
         return False
 
 
+def uv_tool_requirement() -> str | None:
+    """The requirement ``uv tool install`` recorded for this package, pin included.
+
+    ``None`` when this is not a uv tool install, the receipt cannot be read, or it lists no
+    requirement for this distribution.
+    """
+    import sys
+    import tomllib
+    from pathlib import Path
+
+    from packaging.utils import canonicalize_name
+
+    receipt = Path(sys.prefix) / "uv-receipt.toml"
+    try:
+        with receipt.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    tool = data.get("tool")
+    requirements = tool.get("requirements") if isinstance(tool, dict) else None
+    if not isinstance(requirements, list):
+        return None
+    for entry in requirements:
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+            continue
+        if canonicalize_name(entry["name"].split("[")[0]) != canonicalize_name(DISTRIBUTION):
+            continue
+        specifiers = entry.get("specifiers")
+        return entry["name"] + (specifiers if isinstance(specifiers, str) else "")
+    return None
+
+
+def is_pinned(requirement: str) -> bool:
+    """Whether ``uv tool upgrade`` would stay where it is: a floor (``>=0.3``) still moves up."""
+    from packaging.requirements import InvalidRequirement, Requirement
+
+    try:
+        return any(spec.operator != ">=" for spec in Requirement(requirement).specifier)
+    except InvalidRequirement:
+        return False
+
+
+def pinned_below(latest: str) -> str | None:
+    """The recorded requirement that keeps this install off ``latest``, or ``None``.
+
+    A specifier that admits ``latest`` can take it with ``uv tool upgrade``; one that excludes
+    it makes the offer a loop, because the upgrade keeps the pin from the receipt (#127).
+    """
+    from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.version import InvalidVersion
+
+    requirement = uv_tool_requirement()
+    if requirement is None:
+        return None
+    try:
+        return (
+            None
+            if Requirement(requirement).specifier.contains(latest, prereleases=True)
+            else requirement
+        )
+    except (InvalidRequirement, InvalidVersion):
+        return None
+
+
 def _cache_path() -> Path:
     import os
     from pathlib import Path

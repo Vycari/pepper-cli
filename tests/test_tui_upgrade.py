@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
+import shutil
 import subprocess
 
 import pytest
 
 from pepper_cli import credentials, tui
+from pepper_cli.api_client import UpgradeRequiredError
 from pepper_cli.secret import SecretStr
 from pepper_cli.tui import app as tui_app
 from pepper_cli.tui.screens import ConfirmScreen
@@ -178,6 +181,76 @@ def test_perform_upgrade_non_windows_success(monkeypatch, capsys) -> None:
     assert "Upgrade command completed. Run 'pepper' to start." in captured.err
 
 
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_a_pinned_prompt_says_the_pin_is_removed(monkeypatch, tmp_path, platform) -> None:
+    _uv_receipt(monkeypatch, tmp_path, "==0.3.0")
+    monkeypatch.setattr("sys.platform", platform)
+    question, detail = tui.upgrade_prompt("0.7.0")
+    assert question == "Upgrade to v0.7.0, removing the pin vycari-pepper==0.3.0?"
+    # A 426 names no version but must still reach a pinned install.
+    assert tui.upgrade_prompt("server text", offer=False)[0] == (
+        "Upgrade to the latest release, removing the pin vycari-pepper==0.3.0?"
+    )
+    assert "uv tool install vycari-pepper" in detail
+    assert "pin is removed" in detail
+
+
+def test_an_unpinned_prompt_keeps_its_wording(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("sys.prefix", str(tmp_path / "plain"))
+    assert tui.upgrade_prompt("0.7.0") == (
+        "Upgrade Pepper to v0.7.0?",
+        "Pepper will exit. Run 'pip install --upgrade vycari-pepper' in your terminal.",
+    )
+
+
+async def test_a_426_opens_f10_and_a_pinned_reinstall(monkeypatch, tmp_path) -> None:
+    """A pinned install gets no background offer, but the server refusing every request is
+    not an offer: it must still reach F10, say the pin goes, and only after ``y`` (#127)."""
+    server = ts.standard_server()
+    _uv_receipt(monkeypatch, tmp_path, "==0.3.0")
+    app = tui_app.PepperApp(server.client(), update_checker=lambda: None)
+
+    def refused() -> None:
+        raise UpgradeRequiredError("Pepper 0.7.0 or newer is required.")
+
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: not app._loops["rail"].busy)
+        monkeypatch.setattr(app._rail, "step", refused)
+        app._run("rail")
+        await until(pilot, lambda: app.fatal is not None)
+        assert app.update_version == "Pepper 0.7.0 or newer is required."
+        assert app.upgrade_requested is False
+
+        await pilot.press("f10")
+        await until(pilot, lambda: isinstance(pilot.app.screen, ConfirmScreen))
+        shown = " ".join(
+            str(widget.render())
+            for widget in pilot.app.screen.query(".dialog-title, .dialog-detail")
+        )
+        assert "Upgrade to the latest release, removing the pin vycari-pepper==0.3.0?" in shown
+        assert "uv tool install vycari-pepper" in shown
+        assert app.upgrade_requested is False  # opened is not accepted
+
+        await pilot.press("y")
+        await until(pilot, lambda: app.upgrade_requested)
+
+
+def test_perform_upgrade_reinstalls_a_pinned_tool(monkeypatch, tmp_path, capsys) -> None:
+    _uv_receipt(monkeypatch, tmp_path, "==0.3.0")
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/uv")
+    ran = []
+
+    def fake_run(cmd, check=False):
+        ran.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert tui._perform_upgrade("0.7.0") == 0
+    assert ran == [["/usr/bin/uv", "tool", "install", "vycari-pepper"]]
+
+
 def test_perform_upgrade_windows(monkeypatch, capsys) -> None:
     monkeypatch.setattr("sys.platform", "win32")
     monkeypatch.setattr(tui, "detect_install_method", lambda: "uv-tool")
@@ -226,6 +299,73 @@ def test_perform_upgrade_pip(monkeypatch, capsys) -> None:
     assert rc == 0
     captured = capsys.readouterr()
     assert "To upgrade to v0.4.0, run:\n  pip install --upgrade vycari-pepper" in captured.err
+
+
+def _uv_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path, requirement: str) -> None:
+    prefix = tmp_path / "uv-tool-env"
+    shutil.rmtree(prefix, ignore_errors=True)
+    prefix.mkdir(parents=True)
+    (prefix / "uv-receipt.toml").write_text(
+        f'[tool]\nrequirements = [{{ name = "vycari-pepper", specifiers = "{requirement}" }}]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("sys.prefix", str(prefix))
+
+
+@pytest.mark.parametrize(
+    ("requirement", "expected"),
+    [
+        ("", None),
+        ("==0.3.0", "vycari-pepper==0.3.0"),
+        ("<0.4", "vycari-pepper<0.4"),
+        (">=0.3", None),
+        (">=0.3.0,<0.8", None),
+        (">=0.3.0,<0.7", "vycari-pepper>=0.3.0,<0.7"),
+    ],
+)
+def test_a_pin_that_excludes_the_latest_release_suppresses_the_offer(
+    monkeypatch, tmp_path, requirement, expected
+) -> None:
+    """A pinned uv tool install keeps its pin on ``uv tool upgrade``, so offering the release
+    the pin excludes only shows again on the next check (#127)."""
+    from pepper_cli import _version
+
+    _uv_receipt(monkeypatch, tmp_path, requirement)
+    assert _version.pinned_below("0.7.0") == expected
+
+
+def test_reading_the_receipt_without_one_is_not_an_error(monkeypatch, tmp_path) -> None:
+    from pepper_cli import _version
+
+    monkeypatch.setattr("sys.prefix", str(tmp_path / "no-such-env"))
+    assert _version.uv_tool_requirement() is None
+    assert _version.pinned_below("0.7.0") is None
+
+
+def test_the_upgrade_command_drops_a_pin_instead_of_keeping_it(monkeypatch, tmp_path) -> None:
+    _uv_receipt(monkeypatch, tmp_path, "==0.3.0")
+    assert tui.upgrade_command() == ["uv", "tool", "install", "vycari-pepper"]
+
+    _uv_receipt(monkeypatch, tmp_path / "unpinned", ">=0.3")
+    assert tui.upgrade_command() == ["uv", "tool", "upgrade", "vycari-pepper"]
+
+
+async def test_a_pinned_install_is_not_offered_the_release_it_cannot_take(
+    monkeypatch, tmp_path
+) -> None:
+    import threading
+
+    server = ts.standard_server()
+    _uv_receipt(monkeypatch, tmp_path, "==0.3.0")
+    checked = threading.Event()
+    app = tui_app.PepperApp(
+        server.client(), live=False, update_checker=lambda: checked.set() or "0.7.0"
+    )
+    async with app.run_test(size=SIZE) as pilot:
+        assert await asyncio.to_thread(checked.wait, 2)
+        await pilot.pause()
+        assert app.update_version is None
+        assert pilot.app.screen.active_bindings.get("f10") is None
 
 
 def test_detect_install_method_variants(monkeypatch, tmp_path) -> None:
