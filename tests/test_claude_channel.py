@@ -1022,6 +1022,102 @@ def test_a_first_run_says_so_and_gives_no_count(monkeypatch):
     assert f"room_id {_ROOM}" in note["content"]
 
 
+def test_a_head_start_sends_start_head_and_tells_the_session_once(monkeypatch, tmp_path, capsys):
+    cursor_file = tmp_path / "cursor"
+    fake = _Fake(
+        _CONNECTED + _scope() + _cursor(30) + _PING,
+        _CONNECTED + _scope() + _event(31),
+    )
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM, "--cursor-file", str(cursor_file)])
+
+    live, message = result.notifications
+    assert live["meta"] == {"kind": "backlog", "first_run": "true", "live_edge": "true"}
+    assert "live edge" in live["content"]
+    assert message["meta"]["kind"] == "message"
+    first, second = fake.stream_requests()[:2]
+    assert first.url.params["start"] == "head"
+    assert "since" not in first.url.params
+    assert "last-event-id" not in first.headers
+    # The reconnect resumes from the head it learned, and never asks for the head again.
+    assert "start" not in second.url.params
+    assert second.headers["last-event-id"] == "30"
+    assert json.loads(cursor_file.read_text())["cursor"] == 31
+    assert "Starting at the live edge" in " ".join(capsys.readouterr().err.split())
+
+
+def test_a_head_start_is_saved_even_when_no_event_follows(monkeypatch, tmp_path):
+    cursor_file = tmp_path / "cursor"
+    fake = _Fake(_CONNECTED + _scope() + _cursor(30))
+
+    run_channel(monkeypatch, fake, ["--room", _ROOM, "--cursor-file", str(cursor_file)])
+
+    assert json.loads(cursor_file.read_text())["cursor"] == 30
+
+
+def test_the_unscoped_channel_also_starts_at_the_head(monkeypatch):
+    fake = _Fake(_CONNECTED + _cursor(12))
+
+    result = run_channel(monkeypatch, fake, [])
+
+    (live,) = result.notifications
+    assert live["meta"]["live_edge"] == "true"
+    request = fake.stream_requests()[0]
+    assert request.url.path == "/api/v1/groups/events/stream"
+    assert request.url.params["start"] == "head"
+    assert "since" not in request.url.params
+
+
+def test_start_beginning_replays_as_before_and_says_nothing_of_the_edge(monkeypatch, capsys):
+    fake = _Fake(_CONNECTED + _scope() + _PING)
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM, "--start", "beginning"])
+
+    assert result.notifications == []
+    params = fake.stream_requests()[0].url.params
+    assert params["since"] == "0"
+    assert "start" not in params
+    assert "live edge" not in capsys.readouterr().err
+
+
+def test_a_saved_position_wins_over_start_head(monkeypatch, tmp_path):
+    cursor_file = tmp_path / "cursor"
+    cursor_file.write_text(
+        json.dumps(
+            {
+                "v": 1,
+                "server": _SERVER,
+                "agent_person_id": _AGENT,
+                "room_id": _ROOM,
+                "topic_id": None,
+                "cursor": 3,
+            }
+        )
+    )
+    fake = _Fake(_CONNECTED + _scope() + _PING)
+
+    result = run_channel(
+        monkeypatch, fake, ["--room", _ROOM, "--start", "head", "--cursor-file", str(cursor_file)]
+    )
+
+    assert result.notifications == []
+    params = fake.stream_requests()[0].url.params
+    assert params["since"] == "3"
+    assert "start" not in params
+
+
+def test_a_server_that_ignores_start_still_gets_the_first_run_summary(monkeypatch):
+    """An older server replays its window and sends no cursor frame first: nothing is pushed as
+    messages, and the first-run summary still says what was skipped."""
+    old = _now() - timedelta(days=1)
+    fake = _Fake(_CONNECTED + _scope() + _event(4, created=old) + _PING)
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    (note,) = result.notifications
+    assert note["meta"] == {"kind": "backlog", "first_run": "true"}
+
+
 def test_nothing_is_pushed_for_a_quiet_restart(monkeypatch):
     fake = _Fake(_CONNECTED + _scope() + _PING)
 

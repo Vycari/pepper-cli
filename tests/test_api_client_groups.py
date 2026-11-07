@@ -11,6 +11,7 @@ server behaviour — the server's own behaviour is covered in
 from __future__ import annotations
 
 import httpx
+import pytest
 
 from pepper_cli import api_client
 from pepper_cli.secret import SecretStr
@@ -859,3 +860,112 @@ def test_get_groups_unread_tolerates_a_missing_or_malformed_total() -> None:
     for body in ({"topics": []}, {"topics": [], "unread_total": True}):
         state = _client(lambda request, b=body: httpx.Response(200, json=b)).get_groups_unread()
         assert state.unread == [] and state.unread_total is None
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/groups/self, and the ``start`` of the event feeds.
+
+
+def _agent_client(handler) -> api_client.ApiClient:
+    return api_client.ApiClient(
+        server_url="http://example.com",
+        token=SecretStr("pep_agt_abc"),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+
+def test_get_agent_self_parses_the_agent_and_tolerates_nulls() -> None:
+    person = "00000000-0000-0000-0000-0000000000d1"
+    bodies = iter(
+        [
+            {
+                "person_id": person,
+                "display_name": "Scout",
+                "sponsor_display_name": "Ada",
+                "room_count": 3,
+                "expires_at": "2027-01-01T00:00:00Z",
+            },
+            {
+                "person_id": person,
+                "display_name": "Scout",
+                "sponsor_display_name": None,
+                "room_count": 0,
+                "expires_at": None,
+            },
+        ]
+    )
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=next(bodies))
+
+    with _agent_client(handler) as api:
+        full = api.get_agent_self()
+        bare = api.get_agent_self()
+
+    assert seen[0].url.path == "/api/v1/groups/self"
+    assert seen[0].headers["authorization"] == "Bearer pep_agt_abc"
+    assert full == api_client.AgentSelf(
+        person_id=person,
+        display_name="Scout",
+        room_count=3,
+        sponsor_display_name="Ada",
+        expires_at="2027-01-01T00:00:00Z",
+    )
+    assert bare.sponsor_display_name is None
+    assert bare.expires_at is None
+
+
+def test_get_agent_self_is_none_on_an_older_server_and_raises_on_other_errors() -> None:
+    def old(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+    def pat(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"detail": "agent tokens only"})
+
+    with _agent_client(old) as api:
+        assert api.get_agent_self() is None
+    with _agent_client(pat) as api, pytest.raises(api_client.ApiError) as exc:
+        api.get_agent_self()
+    assert exc.value.status == 403
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ('{"detail": "x", "after_id": 12}', 12),
+        ('{"detail": "x"}', None),
+        ('{"after_id": "12"}', None),
+        ('{"after_id": true}', None),
+        ("[1]", None),
+        ("<html>", None),
+    ],
+)
+def test_api_error_after_id_reads_only_an_integer_from_a_json_object(body, expected) -> None:
+    assert api_client.ApiError(503, body).after_id == expected
+
+
+def test_the_streams_send_start_only_when_asked_and_never_with_a_position() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, text=": ok\n\n", headers={"content-type": "text/event-stream"})
+
+    with _agent_client(handler) as api:
+        list(api.watch_agent_events(since=None, start="head"))
+        list(api.watch_scoped_events("r1", since=None, start="head"))
+        list(api.watch_scoped_events("r1", topic_id="t1", since=None, start="head"))
+        list(api.watch_agent_events(since=4, last_event_id=4))
+
+    assert [dict(r.url.params) for r in seen] == [
+        {"start": "head"},
+        {"start": "head"},
+        {"start": "head"},
+        {"since": "4"},
+    ]
+    assert seen[1].url.path == "/api/v1/groups/r1/events/stream"
+    assert seen[2].url.path == "/api/v1/groups/r1/topics/t1/events/stream"
+    assert all("last-event-id" not in r.headers for r in seen[:3])
+    assert seen[3].headers["last-event-id"] == "4"

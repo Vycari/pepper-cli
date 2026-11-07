@@ -285,9 +285,23 @@ route takes; help says so.
 | `trajectories list` | offset, as cursor | yes | no |
 | `scheduled-tasks runs/thread` | server `before`/`before_id` | yes | no |
 | `research-projects runs`, `research-items list` | server opaque cursor (`runs` = iterations) / `seq` cursor (items), pepper#5028 §4.3 | yes | no |
-| `rooms watch` | event cursor | no | yes (+ `--cursor-file`) |
-| `rooms poll` | event cursor (`next_after_id`) | no | yes (+ `--cursor-file`) |
+| `rooms watch` | event cursor | no | yes (+ `--cursor-file`, `--start`) |
+| `rooms poll` | event cursor (`next_after_id`) | no | yes (+ `--cursor-file`, `--start`) |
 | `rooms activity` | time | no | yes (time) |
+
+**First run (pepper-cli#210).** The event feeds (`rooms watch`, scoped or not, `rooms poll`,
+`agents claude-channel`) start at the live edge when there is neither `--since` nor a position in
+`--cursor-file`: the CLI sends `start=head` and no position, prints one stderr line saying earlier
+events were skipped, and persists the head (the stream's opening `cursor` frame, or the page's
+`next_after_id`) so the next run resumes from it. `--start head|beginning` picks the first-run
+behaviour; `head` is the default and `beginning` restores the full replay (`since=0` /
+`after_id=0`). Precedence: a saved position, then `--since`, then `--start`. `--start beginning`
+with `--since` is a usage error (exit 2); `--start head` with `--since` is not, since `--since`
+wins. A reconnect never sends `start=head` once a position is known; until the head is learned (no
+cursor frame yet) it asks for the head again. A poll that fails with a 503 after reading the head
+gets that head back as `after_id` and saves it (forward-only) before exiting 1. The channel says
+it once, as a `backlog` event with `live_edge="true"`. A server older than the parameter ignores
+`start` and replays from 0.
 
 ### 5.4 Fill list (`--json` missing in 0.1.0; all client-only)
 
@@ -348,7 +362,7 @@ today); **S** needs a server change (or verification first); **N** a room is not
 | 7 | Skill-backed room task | pepper#4557 |
 | 8 | Join links (would land as `rooms links …`, spelled when the route exists) | pepper#4311 |
 | 9 | Typed response models for groups routes — lets the J3 `items` be checked against the contract | pepper#4673 |
-| 10 | `whoami` returns 401 for agent tokens, so `whoami --json` cannot be the agent login check | note only |
+| 10 | `whoami` returns 401 for agent tokens, so `whoami --json` cannot be the agent login check | resolved: `GET /api/v1/groups/self` (pepper#6031); `whoami` and `login` use it for an agent token and keep the old output on a 404 (pepper-cli#209) |
 | 11 | Research project routes, personal and room, with receipts, iterations, report and flag-off codes. Still open: the schedule-detach route path, an iteration id on report changelog entries, the pressing member on iterations, and the `web-research` default skill (`planning/research-projects.md` §10) | pepper `planning/research-projects-api.md` (pepper#5028) |
 
 Order per `CLAUDE.md`: server lands → weekly snapshot refresh of `contracts/api-v1.openapi.json`

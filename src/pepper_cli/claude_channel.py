@@ -56,6 +56,7 @@ from pepper_cli.cli import (
     _WATCH_QUIET_FAILURES,
     _WATCH_SCOPED_ENDINGS,
     _WATCH_SERVER_RESTARTING,
+    LIVE_EDGE_NOTICE,
     _advance_cursor_file,
     _BadInputError,
     _check_cursor_binding,
@@ -72,6 +73,7 @@ from pepper_cli.cli import (
     _same_id,
     _scoped_watch_target,
     _ScopedCursor,
+    _starts_at_head,
     _valid_uuid,
     _watch_frame_shows_health,
     _WatchStopError,
@@ -156,7 +158,9 @@ INSTRUCTIONS = (
     "to its `message_id`. Pass `on_behalf_of` (the asker's person id) only when your rules say "
     "to; it needs `reply_to`. Never put a token, key or password in a post: the tool refuses "
     "one.\n\n"
-    "Control events mean: `backlog`, messages from before this session were not delivered; "
+    "Control events mean: `backlog`, messages from before this session were not delivered "
+    '(`live_edge="true"`: this channel had no saved position, so it started at the live edge; '
+    "nothing was replayed, and it is said once); "
     "`resync`, the stream sent something this channel does not recognise; `gap`, events could "
     "not be replayed. For all three, run your catch-up with messages_list for each topic, from "
     "your checkpoints. `ended` means this channel has stopped for the reason given and its "
@@ -385,6 +389,7 @@ class ChannelWorker:
         cursor: int,
         allowed_rooms: set[str],
         stop: threading.Event,
+        at_head: bool = False,
     ) -> None:
         self.api = api
         self.config = config
@@ -398,6 +403,11 @@ class ChannelWorker:
         self.persisted = cursor
         self.allowed_rooms = allowed_rooms
         self.stop = stop
+        # ``at_head``: no saved position, so the stream is asked for ``start=head`` (and no
+        # position) until the cursor frame names the head. ``first_run`` stays true until then,
+        # so a server that ignored ``start`` and replayed its window is still told apart from a
+        # resume and gets the first-run summary, never a push of every old message.
+        self.head_pending = at_head
         self.first_run = stored is None and cursor == 0
         self.cutoff = config.started_at - BACKLOG_SLACK
         self.self_id = config.self_id
@@ -472,6 +482,21 @@ class ChannelWorker:
         self.skipped.clear()
         self.skipped_times.clear()
         self.first_run = False
+
+    def _live_edge(self) -> None:
+        """Tell Claude, once, that the channel started at the live edge: there is no backlog to
+        push, and the messages already in the rooms were not delivered."""
+        self.first_run = False
+        render.info(LIVE_EDGE_NOTICE, soft_wrap=True)
+        content, meta = control_event(
+            "backlog",
+            "This channel had no saved position, so it started at the live edge: messages sent "
+            "before it connected were not pushed. Nothing is owed for them as a backlog, but if "
+            "you keep checkpoints, run your catch-up with messages_list for each topic.",
+            first_run="true",
+            live_edge="true",
+        )
+        self._push(content, meta)
 
     def _flush_resync(self) -> None:
         if not self.resync_pending:
@@ -681,6 +706,8 @@ class ChannelWorker:
         )
         self._push(content, meta)
         if isinstance(floor, int):
+            # A position is known now: the reconnect resumes from the floor, not the head.
+            self.head_pending = False
             self._advance(floor)
 
     def _frame_problem(self, frame: api_client.FeedFrame) -> str | None:
@@ -795,6 +822,9 @@ class ChannelWorker:
             if scoped and self.scope is not None and not _event_in_scope(frame.payload, self.scope):
                 raise self._ended("the server sent an event from outside the requested scope", 1)
             self._handle_event(frame.kind, frame.payload)
+        elif self.head_pending:
+            self._live_edge()
+        self.head_pending = False
         self._advance(new_cursor)
         return None
 
@@ -815,12 +845,21 @@ class ChannelWorker:
             return 1
 
     def _open(self, reconnecting: bool) -> contextlib.AbstractContextManager[Any]:
-        last = self.cursor if reconnecting else None
+        # While the head is unknown (a head start, no cursor frame yet) ask for it again, on a
+        # reconnect too; once known, a reconnect resumes from the cursor.
+        head = self.head_pending
+        since = None if head else self.cursor
+        last = None if head or not reconnecting else self.cursor
+        start = "head" if head else None
         if self.room_id is None:
-            frames = self.api.watch_agent_events(since=self.cursor, last_event_id=last)
+            frames = self.api.watch_agent_events(since=since, last_event_id=last, start=start)
         else:
             frames = self.api.watch_scoped_events(
-                self.room_id, topic_id=self.topic_id, since=self.cursor, last_event_id=last
+                self.room_id,
+                topic_id=self.topic_id,
+                since=since,
+                last_event_id=last,
+                start=start,
             )
         return contextlib.closing(frames)
 
@@ -1277,18 +1316,18 @@ def _exit_now(code: int) -> None:
 
 def _start_cursor(
     config_cursor_file: str | None, server: str, *, scoped: bool, args: argparse.Namespace
-) -> tuple[_ScopedCursor | None, int] | None:
-    """The stored position, as ``(scoped state, cursor)``; ``None`` after reporting a cursor file
-    this run cannot use (the same refusals ``rooms watch`` makes, exit 2)."""
+) -> tuple[_ScopedCursor | None, int, bool] | None:
+    """The stored position, as ``(scoped state, cursor, has_position)``; ``None`` after reporting
+    a cursor file this run cannot use (the same refusals ``rooms watch`` makes, exit 2)."""
     if config_cursor_file is None:
-        return None, 0
+        return None, 0, False
     try:
         state = _read_cursor_state(config_cursor_file)
     except (ValueError, OSError) as exc:
         _emit_error(args, "usage", str(exc))
         return None
     if state is None:
-        return None, 0
+        return None, 0, False
     if isinstance(state, int):
         if scoped:
             _emit_error(
@@ -1299,7 +1338,7 @@ def _start_cursor(
                 soft_wrap=True,
             )
             return None
-        return None, state
+        return None, state, True
     if not scoped:
         _emit_error(
             args,
@@ -1319,7 +1358,7 @@ def _start_cursor(
             soft_wrap=True,
         )
         return None
-    return state, state.cursor
+    return state, state.cursor, True
 
 
 def run(args: argparse.Namespace) -> int:
@@ -1345,7 +1384,8 @@ def run(args: argparse.Namespace) -> int:
     )
     if start is None:
         return 2
-    stored, cursor = start
+    stored, cursor, has_position = start
+    at_head = _starts_at_head(args, has_position=has_position)
     try:
         with (
             api_client.ApiClient(server_url=creds.server_url, token=creds.token) as stream_api,
@@ -1375,6 +1415,7 @@ def run(args: argparse.Namespace) -> int:
                     cursor=cursor,
                     allowed_rooms=allowed if allowed is not None else set(),
                     stop=stop,
+                    at_head=at_head,
                 ).run()
 
             server = build_server(ChannelTools(tool_api, allowed))
