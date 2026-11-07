@@ -566,7 +566,9 @@ class PepperApp(App[None]):
         restarted by focus); the rail and DM keep their slow cadence."""
         loop = self._loops[kind]
         loop.stop_timer()
-        if self.fatal:
+        # Teardown stops the timers it can see, then closes the queue; a worker that delivers
+        # in between would arm a timer nothing stops, left pending after the loop is gone (#204).
+        if self.fatal or self._closing or self._closed:
             return
         if kind == "topic" and self.current.is_pepper:
             return
