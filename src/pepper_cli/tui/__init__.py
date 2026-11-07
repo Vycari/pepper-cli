@@ -43,6 +43,8 @@ def upgrade_command() -> list[str]:
     ``uv tool upgrade``, so it gets re-installed unpinned instead (#127). ``--force`` is what
     makes that a re-install: installed at 0.3.0, plain ``install`` writes the new receipt and
     leaves 0.3.0 in place, because it already satisfies the requirement it just wrote.
+    ``--force`` re-installs the package too, which the receipt alone would not show, so the
+    real-uv test asserts the version in the environment's metadata, not just the receipt.
     """
     from pepper_cli import _version
 

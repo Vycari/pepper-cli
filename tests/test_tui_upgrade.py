@@ -328,11 +328,14 @@ def test_the_command_really_moves_a_real_pinned_uv_tool(tmp_path) -> None:
     if installed.returncode != 0:
         pytest.skip(f"cannot reach an index for {_version.DISTRIBUTION}: {installed.stderr[-200:]}")
 
-    receipt = tmp_path / "tools" / _version.DISTRIBUTION / "uv-receipt.toml"
+    tool_env = tmp_path / "tools" / _version.DISTRIBUTION
+    receipt = tool_env / "uv-receipt.toml"
     assert 'specifier = "==0.3.0"' in receipt.read_text(encoding="utf-8")
+    # The version really installed, from the environment's own metadata rather than the receipt.
+    assert _installed(tool_env) == "0.3.0"
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr("sys.prefix", str(receipt.parent))
+        mp.setattr("sys.prefix", str(tool_env))
         assert _version.uv_tool_requirement() == f"{_version.DISTRIBUTION}==0.3.0"
         assert _version.is_pinned(f"{_version.DISTRIBUTION}==0.3.0")
         command = tui.upgrade_command()
@@ -341,6 +344,38 @@ def test_the_command_really_moves_a_real_pinned_uv_tool(tmp_path) -> None:
     moved = uv(*command[1:])
     assert moved.returncode == 0, moved.stderr
     assert "specifier" not in receipt.read_text(encoding="utf-8")
+    # Not just the receipt: the package the user runs is now the latest release.
+    latest = _latest_release()
+    assert _installed(tool_env) == latest
+    assert latest != "0.3.0"
+
+
+def _installed(tool_env) -> str:
+    """The package's version in a uv tool environment, read from its own metadata."""
+    from importlib.metadata import PathDistribution
+    from pathlib import Path
+
+    from packaging.utils import canonicalize_name
+
+    from pepper_cli import _version
+
+    site_packages = next((tool_env / "lib").glob("python*/site-packages"))
+    matches = {
+        dist.version
+        for dist in map(PathDistribution, Path(site_packages).glob("*.dist-info"))
+        if canonicalize_name(dist.metadata["Name"] or "") == _version.DISTRIBUTION
+    }
+    assert len(matches) == 1, f"expected one {_version.DISTRIBUTION}, found {sorted(matches)}"
+    return matches.pop()
+
+
+def _latest_release() -> str:
+    import httpx
+
+    from pepper_cli import _version
+
+    response = httpx.get(f"https://pypi.org/pypi/{_version.DISTRIBUTION}/json", timeout=30)
+    return str(response.json()["info"]["version"])
 
 
 def _uv_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path, requirement: str) -> None:

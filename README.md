@@ -66,9 +66,10 @@ Keep in mind:
 > ```bash
 > uv tool upgrade vycari-pepper
 > ```
-> If you installed a pinned version (`uv tool install vycari-pepper==0.3.0`), upgrade
-> keeps that pin; `uv tool install vycari-pepper` re-installs the latest. The
-> `F10` update prompt makes that choice for you.
+> If you installed a pinned version (`uv tool install vycari-pepper==0.3.0`), `uv tool
+> upgrade` keeps that pin. `uv tool install vycari-pepper` drops the pin but leaves the
+> old version in place; `uv tool install --force vycari-pepper` installs the latest. The
+> `F10` update prompt runs that for you, after saying the pin will be removed.
 > If you skip this, the old binary won't have the new subcommand — and because
 > bare `pepper <args>` is shorthand for `pepper chat`, an unrecognized command
 > like `pepper trajectories show <id>` is silently sent to your agent **as a chat
