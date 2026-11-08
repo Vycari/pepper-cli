@@ -7185,10 +7185,13 @@ def cmd_rooms_poll(args: argparse.Namespace) -> int:
                 _emit_line(_watch_event_line(event, as_json=args.json, cursor=event_id))
             # An unusual page (ids not above the cursor) never moves the cursor back.
             next_id = max(next_id, event_id) if isinstance(next_id, int) else event_id
-        if isinstance(next_id, bool) or not isinstance(next_id, int):
+        learned = not isinstance(next_id, bool) and isinstance(next_id, int)
+        if not learned:
             next_id = cursor
         cursor = max(cursor, next_id)
-        if args.cursor_file:
+        # A head read that learned no position saves nothing: a stored 0 would read as a
+        # saved position next run and replay the whole feed instead of starting at the head.
+        if args.cursor_file and (learned or not at_head):
             # An overlapping run may have moved the file further; print where it now stands,
             # so the printed cursor never sits behind the file.
             cursor = _advance_cursor_file(args.cursor_file, cursor)
