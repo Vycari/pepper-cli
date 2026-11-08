@@ -242,6 +242,18 @@ class ApiError(Exception):
             msg += f": {detail}"
         super().__init__(msg)
 
+    @property
+    def after_id(self) -> int | None:
+        """The ``after_id`` a 503 from the agent events page carries after a ``start=head``
+        read (``{"detail": ..., "after_id": N}``): the head that read found, which a retry must
+        resume from. ``None`` for any other body."""
+        try:
+            body = _json.loads(self.body)
+        except ValueError:
+            return None
+        value = body.get("after_id") if isinstance(body, dict) else None
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
 
 class UpgradeRequiredError(Exception):
     """A 426 from the server: this client version is no longer supported.
@@ -285,6 +297,20 @@ class ArtifactConflictError(ApiError):
         self.current_body = current_body
         self.current_etag = current_etag
         self.current_updated_at = current_updated_at
+
+
+# MIRROR: src/pepper/api/groups/_bodies.py::AgentSelf
+@dataclass(frozen=True)
+class AgentSelf:
+    """Response shape of ``GET /api/v1/groups/self`` (an agent token only)."""
+
+    person_id: str
+    display_name: str
+    room_count: int
+    #: The sponsoring person's display name; ``None`` when the agent has none.
+    sponsor_display_name: str | None = None
+    #: When the agent's token expires (ISO-8601 as the server wrote it); ``None`` if never.
+    expires_at: str | None = None
 
 
 # MIRROR: src/pepper/api/router.py::WhoamiResponse
@@ -2114,6 +2140,44 @@ class ApiClient:
             person_id=body.get("person_id"),
         )
 
+    def get_agent_self(self) -> AgentSelf | None:
+        """``GET /api/v1/groups/self``: who this agent token is. Agent tokens only (a PAT is a
+        403). ``None`` when the server has no such route (a 404, an older server), so the caller
+        keeps its earlier behaviour without an error."""
+        try:
+            resp = self._request("GET", "/api/v1/groups/self")
+        except ApiError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        # A body this can't read (a proxy's HTML page, a missing field) is no answer, the same
+        # as an older server's: the caller keeps its earlier output rather than crashing.
+        try:
+            body = resp.json()
+        except ValueError:
+            return None
+        if not isinstance(body, dict):
+            return None
+        person_id = body.get("person_id")
+        display_name = body.get("display_name")
+        room_count = body.get("room_count")
+        if (
+            not isinstance(person_id, str)
+            or not isinstance(display_name, str)
+            or not isinstance(room_count, int)
+            or isinstance(room_count, bool)
+        ):
+            return None
+        sponsor = body.get("sponsor_display_name")
+        expires = body.get("expires_at")
+        return AgentSelf(
+            person_id=person_id,
+            display_name=display_name,
+            room_count=room_count,
+            sponsor_display_name=sponsor if isinstance(sponsor, str) else None,
+            expires_at=expires if isinstance(expires, str) else None,
+        )
+
     def list_skills(self) -> list[SkillSummary]:
         """``GET /api/v1/skills``. Returns the calling user's skills
         (name, description, and whether each is a shared built-in).
@@ -3024,7 +3088,12 @@ class ApiClient:
             yield from _iter_sse_events(resp.iter_lines())
 
     def get_agent_events_page(
-        self, *, after_id: int = 0, limit: int = 100, wait: int = 0
+        self,
+        *,
+        after_id: int | None = 0,
+        limit: int = 100,
+        wait: int = 0,
+        start: str | None = None,
     ) -> dict[str, Any]:
         """``GET /api/v1/groups/events`` — one page of an agent member's roster-scoped event
         feed as JSON, the non-streaming twin of :meth:`watch_agent_events`.
@@ -3035,11 +3104,22 @@ class ApiClient:
         (events the agent's roster does not show still move it), not from the last event.
         ``wait`` (0 to 25 seconds) holds the request until an in-scope event arrives or the
         wait ends, with an empty page. Agent-token only: a PAT is a 403, a revoked token a 401.
+
+        ``start="head"`` with ``after_id=None`` reads from the feed's current head (the server
+        takes ``start`` only when ``after_id`` is absent, so none is sent). A 503 after such a
+        read carries the head as :attr:`ApiError.after_id`; the retry resumes from that, never
+        from ``start="head"`` again. A server older than the parameter ignores it and reads
+        from the beginning.
         """
+        params: dict[str, Any] = {"limit": limit, "wait": wait}
+        if after_id is not None:
+            params["after_id"] = after_id
+        if start is not None:
+            params["start"] = start
         resp = self._request(
             "GET",
             "/api/v1/groups/events",
-            params={"after_id": after_id, "limit": limit, "wait": wait},
+            params=params,
             timeout=DEFAULT_TIMEOUT + wait,
         )
         try:
@@ -3052,8 +3132,9 @@ class ApiClient:
     def watch_agent_events(
         self,
         *,
-        since: int = 0,
+        since: int | None = 0,
         last_event_id: int | None = None,
+        start: str | None = None,
         read_timeout: float | None = None,
         deadline: float | None = None,
     ) -> Generator[FeedFrame]:
@@ -3061,7 +3142,9 @@ class ApiClient:
         event feed, as :class:`FeedFrame`s until the server closes it.
 
         Resumes after ``last_event_id`` (sent as ``Last-Event-ID``, what a
-        reconnect uses) when given, else after ``since`` (a first connect).
+        reconnect uses) when given, else after ``since`` (a first connect). With neither and
+        ``start="head"`` the stream begins at the feed's current head and opens with a
+        ``cursor`` frame naming it; a server that does not know ``start`` begins at 0 instead.
         Agent-token only: a PAT is a 403 and a revoked token a 401, both
         raised as :class:`ApiError` before any frame is yielded.
 
@@ -3080,6 +3163,7 @@ class ApiClient:
             "/api/v1/groups/events/stream",
             since=since,
             last_event_id=last_event_id,
+            start=start,
             read_timeout=read_timeout,
             deadline=deadline,
         )
@@ -3089,8 +3173,9 @@ class ApiClient:
         room_id: str,
         *,
         topic_id: str | None = None,
-        since: int = 0,
+        since: int | None = 0,
         last_event_id: int | None = None,
+        start: str | None = None,
         read_timeout: float | None = None,
         deadline: float | None = None,
     ) -> Generator[FeedFrame]:
@@ -3113,6 +3198,7 @@ class ApiClient:
             f"{path}/events/stream",
             since=since,
             last_event_id=last_event_id,
+            start=start,
             read_timeout=read_timeout,
             deadline=deadline,
         )
@@ -3145,6 +3231,7 @@ class ApiClient:
         *,
         since: int | None,
         last_event_id: int | None,
+        start: str | None = None,
         read_timeout: float | None = None,
         deadline: float | None = None,
     ) -> Generator[FeedFrame]:
@@ -3158,10 +3245,15 @@ class ApiClient:
         if last_event_id is not None:
             headers["Last-Event-ID"] = str(last_event_id)
         base_timeout = self._client.timeout
+        params: dict[str, Any] = {}
+        if since is not None:
+            params["since"] = since
+        if start is not None:
+            params["start"] = start
         with self._client.stream(
             "GET",
             f"{self._server_url}{path}",
-            params={"since": since} if since is not None else None,
+            params=params or None,
             headers=headers,
             # ``read_timeout`` is a ``--for`` budget: connect, write and pool waits are bounded
             # by it too, so a host that never answers cannot hold the run past its window. The

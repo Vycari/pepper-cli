@@ -47,6 +47,8 @@ class _Poll:
     def __init__(self, *pages: dict[str, Any] | Exception) -> None:
         self.pages = list(pages)
         self.calls: list[dict[str, int]] = []
+        #: The ``start`` argument of each call (``"head"`` or ``None``).
+        self.starts: list[str | None] = []
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> _Poll:
         outer = self
@@ -61,8 +63,9 @@ class _Poll:
             def __exit__(self, *exc_info):
                 return None
 
-            def get_agent_events_page(self, *, after_id=0, limit=100, wait=0):
+            def get_agent_events_page(self, *, after_id=0, limit=100, wait=0, start=None):
                 outer.calls.append({"after_id": after_id, "wait": wait})
+                outer.starts.append(start)
                 item = outer.pages.pop(0)
                 if isinstance(item, Exception):
                     raise item
@@ -83,7 +86,7 @@ def _lines(capsys) -> list[str]:
 def test_prints_the_events_then_the_cursor_and_exits_zero(monkeypatch, capsys):
     poll = _poll(monkeypatch, {"events": [_event(7), _event(9)], "next_after_id": 12})
 
-    assert cli.main(["rooms", "poll"]) == 0
+    assert cli.main(["rooms", "poll", "--start", "beginning"]) == 0
 
     first, second, cursor = _lines(capsys)
     assert first == (
@@ -191,7 +194,7 @@ def test_an_overlapping_run_does_not_rewind_a_newer_cursor(monkeypatch, capsys, 
         def __exit__(self, *exc_info):
             return None
 
-        def get_agent_events_page(self, *, after_id=0, limit=100, wait=0):
+        def get_agent_events_page(self, *, after_id=0, limit=100, wait=0, start=None):
             return during_a(after_id=after_id, wait=wait)
 
     monkeypatch.setattr(api_client, "ApiClient", FakeApi)
@@ -396,7 +399,7 @@ def test_a_refused_token_or_missing_route_exits_one(monkeypatch, capsys, status,
 def test_errors_are_json_lines_under_json(monkeypatch, capsys):
     _poll(monkeypatch, api_client.ApiError(status=403, body="", detail="agent tokens only"))
 
-    assert cli.main(["rooms", "poll", "--json"]) == 1
+    assert cli.main(["rooms", "poll", "--start", "beginning", "--json"]) == 1
 
     err = json.loads(capsys.readouterr().err)
     assert err["error"]["code"] == "forbidden"
@@ -478,6 +481,120 @@ def test_the_client_sends_after_id_limit_and_wait_with_the_bearer(monkeypatch):
     assert request.url.path == "/api/v1/groups/events"
     assert dict(request.url.params) == {"after_id": "1", "limit": "50", "wait": "10"}
     assert request.headers["authorization"] == "Bearer pep_agt_abc"
+
+
+def test_the_client_sends_start_head_and_no_after_id_for_a_head_read():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"events": [], "next_after_id": 9})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with api_client.ApiClient(
+        server_url="http://example.com", token=SecretStr("pep_agt_abc"), client=client
+    ) as api:
+        api.get_agent_events_page(after_id=None, start="head")
+
+    (request,) = seen
+    assert dict(request.url.params) == {"start": "head", "limit": "100", "wait": "0"}
+
+
+def test_a_first_poll_starts_at_the_head_and_says_so(monkeypatch, capsys):
+    poll = _poll(monkeypatch, {"events": [], "next_after_id": 88})
+
+    assert cli.main(["rooms", "poll"]) == 0
+
+    assert poll.calls == [{"after_id": None, "wait": 0}]
+    assert poll.starts == ["head"]
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == ["cursor=88"]
+    assert "Starting at the live edge" in " ".join(captured.err.split())
+
+
+def test_a_head_page_that_names_no_position_is_a_failure(monkeypatch, capsys, tmp_path):
+    cursor_file = tmp_path / "cursor"
+    _poll(monkeypatch, {"events": [{"id": 5, "kind": "message"}]})
+
+    assert cli.main(["rooms", "poll", "--cursor-file", str(cursor_file)]) == 1
+
+    assert not cursor_file.exists()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "named no position" in " ".join(captured.err.split())
+    assert "Starting at the live edge" not in captured.err
+
+
+def test_start_beginning_polls_after_id_zero_and_a_saved_position_wins(
+    monkeypatch, capsys, tmp_path
+):
+    cursor_file = tmp_path / "cursor"
+    poll = _poll(
+        monkeypatch,
+        {"events": [], "next_after_id": 3},
+        {"events": [], "next_after_id": 3},
+    )
+
+    assert cli.main(["rooms", "poll", "--start", "beginning"]) == 0
+    cursor_file.write_text("31\n", encoding="utf-8")
+    assert cli.main(["rooms", "poll", "--start", "head", "--cursor-file", str(cursor_file)]) == 0
+
+    assert [c["after_id"] for c in poll.calls] == [0, 31]
+    assert poll.starts == [None, None]
+    assert capsys.readouterr().err == ""
+
+
+def test_start_beginning_with_since_is_a_usage_error(monkeypatch, capsys):
+    poll = _poll(monkeypatch)
+
+    assert cli.main(["rooms", "poll", "--start", "beginning", "--since", "4"]) == 2
+
+    assert poll.calls == []
+    assert "cannot be combined with --since" in capsys.readouterr().err
+
+
+def test_a_head_poll_that_fails_with_503_saves_the_head_it_read(monkeypatch, capsys, tmp_path):
+    cursor_file = tmp_path / "cursor"
+    body = json.dumps({"detail": "groups unavailable", "after_id": 77})
+    _poll(
+        monkeypatch,
+        api_client.ApiError(status=503, body=body, detail="groups unavailable"),
+    )
+
+    assert cli.main(["rooms", "poll", "--cursor-file", str(cursor_file)]) == 1
+
+    assert cursor_file.read_text(encoding="utf-8").strip() == "77"
+    assert "503" in capsys.readouterr().err
+
+
+def test_the_saved_head_never_moves_a_newer_cursor_back(monkeypatch, tmp_path):
+    cursor_file = tmp_path / "cursor"
+    body = json.dumps({"detail": "x", "after_id": 5})
+    _poll(monkeypatch, api_client.ApiError(status=503, body=body, detail="x"))
+    # Another run saved a position meanwhile (the file did not exist at the start of this one).
+    real = cli._advance_cursor_file
+
+    def late_writer(path, cursor, **kw):
+        cursor_file.write_text("40\n", encoding="utf-8")
+        return real(path, cursor, **kw)
+
+    monkeypatch.setattr(cli, "_advance_cursor_file", late_writer)
+
+    assert cli.main(["rooms", "poll", "--cursor-file", str(cursor_file)]) == 1
+
+    assert cursor_file.read_text(encoding="utf-8").strip() == "40"
+
+
+def test_a_503_without_a_head_or_without_a_head_start_saves_nothing(monkeypatch, tmp_path):
+    cursor_file = tmp_path / "cursor"
+    _poll(monkeypatch, api_client.ApiError(status=503, body="not json", detail="x"))
+    assert cli.main(["rooms", "poll", "--cursor-file", str(cursor_file)]) == 1
+    assert not cursor_file.exists()
+
+    body = json.dumps({"detail": "x", "after_id": 9})
+    _poll(monkeypatch, api_client.ApiError(status=503, body=body, detail="x"))
+    assert cli.main(["rooms", "poll", "--since", "2", "--cursor-file", str(cursor_file)]) == 1
+    assert not cursor_file.exists()
 
 
 def test_the_client_holds_the_request_longer_than_the_wait():
@@ -789,7 +906,7 @@ def test_watch_for_is_quiet_when_the_stream_recovered_before_the_deadline(monkey
 
     _install_feed(monkeypatch, script)
 
-    assert cli.main(["rooms", "watch", "--for", "10s"]) == 0
+    assert cli.main(["rooms", "watch", "--start", "beginning", "--for", "10s"]) == 0
     assert capsys.readouterr().err == ""
 
 
@@ -906,7 +1023,7 @@ def test_a_poll_that_finds_a_scoped_file_at_the_end_stops_without_touching_it(
         def __exit__(self, *exc_info):
             return None
 
-        def get_agent_events_page(self, *, after_id=0, limit=100, wait=0):
+        def get_agent_events_page(self, *, after_id=0, limit=100, wait=0, start=None):
             return page_while_a_scoped_watch_takes_the_file()
 
     monkeypatch.setattr(api_client, "ApiClient", FakeApi)
@@ -974,7 +1091,7 @@ def test_watch_for_is_quiet_when_a_reconnect_was_accepted_and_stayed_quiet(monke
 
     _install_feed(monkeypatch, script)
 
-    assert cli.main(["rooms", "watch", "--for", "10s"]) == 0
+    assert cli.main(["rooms", "watch", "--start", "beginning", "--for", "10s"]) == 0
     assert capsys.readouterr().err == ""
 
 
@@ -993,7 +1110,9 @@ def test_scoped_watch_for_is_quiet_when_a_reconnect_was_accepted(monkeypatch, ca
 
     _install_feed(monkeypatch, script)
 
-    assert cli.main(["rooms", "watch", "--room", _GROUP, "--for", "10s"]) == 0
+    assert (
+        cli.main(["rooms", "watch", "--start", "beginning", "--room", _GROUP, "--for", "10s"]) == 0
+    )
     assert capsys.readouterr().err == ""
 
 

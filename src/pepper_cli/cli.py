@@ -109,7 +109,7 @@ import uuid
 import webbrowser
 from collections.abc import Callable, Generator, Iterable, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, NamedTuple, NoReturn
+from typing import Any, NamedTuple, NoReturn, TypeIs
 from urllib.parse import urlparse
 
 import httpx
@@ -1571,8 +1571,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         default=None,
         metavar="CURSOR",
         help="Resume after this cursor (an event id, or a cursor frame's value). "
-        "Default: the cursor file's, else the beginning.",
+        "Default: the cursor file's, else the live edge (see --start).",
     )
+    _add_start_arg(p_rooms_watch)
     p_rooms_watch.add_argument(
         "--cursor-file",
         default=None,
@@ -1638,8 +1639,10 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         type=int,
         default=None,
         metavar="CURSOR",
-        help="Read events after this cursor. Default: the cursor file's, else the beginning.",
+        help="Read events after this cursor. Default: the cursor file's, else the live edge "
+        "(see --start).",
     )
+    _add_start_arg(p_rooms_poll)
     p_rooms_poll.add_argument(
         "--cursor-file",
         default=None,
@@ -2180,7 +2183,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
             "pep_agt_ token) and pushes each new message from someone else, with its body, "
             "into the session, and serves messages_post, messages_list and messages_react as "
             "tools. The flags are rooms watch's, with the same meaning. stdout carries the "
-            "protocol and nothing else, so there is no --json and no --since. Run it by "
+            "protocol and nothing else, so there is no --json and no --since; a first run "
+            "starts at the live edge (see --start). Run it by "
             "naming it in the session: claude --dangerously-load-development-channels "
             "server:<name>."
         ),
@@ -2205,6 +2209,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         help="Persist the cursor here (atomically, after each event is pushed) and resume from "
         "it. Use one file per scope, and not one a rooms watch wrote.",
     )
+    _add_start_arg(p_agents_channel)
     p_agents_channel.add_argument(
         "--kinds",
         type=_kind_list,
@@ -2406,7 +2411,7 @@ def _login_manual(args: argparse.Namespace, server_url: str, raw_token: str | No
 
 
 #: An agent member's token. It authenticates as the agent, not a Pepper account, so it reaches
-#: only the room routes — ``whoami`` refuses it by design.
+#: only the room routes; ``whoami`` answers for it from ``/api/v1/groups/self``.
 AGENT_TOKEN_PREFIX = api_client.AGENT_TOKEN_PREFIX
 
 
@@ -2418,9 +2423,22 @@ def _login_agent(args: argparse.Namespace, server_url: str, token: SecretStr) ->
     make — and saved the same way a PAT is. ``groups`` commands then work
     as the agent; everything else answers 401.
     """
+    me: api_client.AgentSelf | None = None
     try:
         with api_client.ApiClient(server_url=server_url, token=token) as api:
             rooms = api.list_groups()
+            if rooms.enabled and not rooms.degraded:
+                try:
+                    me = api.get_agent_self()
+                except api_client.ApiError as exc:
+                    # Who the agent is, as a courtesy: only a refused token ends the login. A
+                    # server without the route (None above) or a hiccup keeps today's output.
+                    if exc.status == 401:
+                        raise
+                except httpx.RequestError:
+                    # The token was already accepted by list_groups: a timeout or a dropped
+                    # connection on this optional read must not fail the login.
+                    me = None
     except api_client.ApiError as exc:
         if exc.status == 401:
             _emit_error(
@@ -2459,20 +2477,36 @@ def _login_agent(args: argparse.Namespace, server_url: str, token: SecretStr) ->
     _forget_listings()
 
     def human() -> None:
-        render.info(f"Logged in as an agent member of {rooms.total} room(s).")
+        if me is None:
+            render.info(f"Logged in as an agent member of {rooms.total} room(s).")
+        else:
+            sponsor = (
+                f", sponsored by {sanitize_line(me.sponsor_display_name)}"
+                if me.sponsor_display_name
+                else ""
+            )
+            render.info(
+                f"Logged in as {sanitize_line(me.display_name)} ({sanitize_line(me.person_id)})"
+                f"{sponsor}, in {me.room_count} room(s).",
+                soft_wrap=True,
+            )
         render.info(f"Credentials written to {path}.")
 
-    _emit(
-        {
-            "ok": True,
-            "server_url": server_url,
-            "agent": True,
-            "rooms": rooms.total,
-            "credentials_path": str(path),
-        },
-        args,
-        human,
-    )
+    result: dict[str, object] = {
+        "ok": True,
+        "server_url": server_url,
+        "agent": True,
+        "rooms": me.room_count if me is not None else rooms.total,
+        "credentials_path": str(path),
+    }
+    if me is not None:
+        result.update(
+            person_id=me.person_id,
+            display_name=me.display_name,
+            sponsor_display_name=me.sponsor_display_name,
+            expires_at=me.expires_at,
+        )
+    _emit(result, args, human)
     return 0
 
 
@@ -2604,6 +2638,13 @@ def cmd_whoami(args: argparse.Namespace) -> int:
     """``pepper whoami [--json]``."""
 
     def run(api: api_client.ApiClient) -> int:
+        if api.is_agent_token:
+            # An agent token is not a Pepper account, so /whoami refuses it. The groups route
+            # says who it is; a server without that route (None) keeps the earlier answer.
+            me = api.get_agent_self()
+            if me is not None:
+                _emit(me, args, lambda: _print_agent_self(me))
+                return 0
         who = api.whoami()
 
         def human() -> None:
@@ -2618,6 +2659,15 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         return 0
 
     return _run_personal(args, run)
+
+
+def _print_agent_self(me: api_client.AgentSelf) -> None:
+    """The plain ``whoami`` lines for an agent token (server text, cleaned to one line each)."""
+    print(f"person_id: {sanitize_line(me.person_id)}")
+    print(f"display_name: {sanitize_line(me.display_name)}")
+    print(f"sponsor: {sanitize_line(me.sponsor_display_name or '')}")
+    print(f"rooms: {me.room_count}")
+    print(f"expires_at: {sanitize_line(me.expires_at or '')}")
 
 
 def cmd_tui(args: argparse.Namespace) -> int:
@@ -5537,6 +5587,25 @@ def _confirm(prompt: str, *, yes: bool, args: argparse.Namespace | None = None) 
 
 
 #: Help for a leaf whose positional is the room it acts on (``rooms show ROOM``).
+_START_CHOICES = ("head", "beginning")
+
+
+def _add_start_arg(parser: argparse.ArgumentParser) -> None:
+    """``--start head|beginning``: where a first run (no cursor file position, no ``--since``)
+    begins. The default, ``head``, is the live edge."""
+    parser.add_argument(
+        "--start",
+        choices=_START_CHOICES,
+        default=None,
+        metavar="{head,beginning}",
+        help="Where a first run begins, when there is no --since and no position in the "
+        "cursor file. head (default): the live edge, skipping what is already there. "
+        "beginning: replay the feed from its start. A saved position or --since always "
+        "wins; --start beginning with --since is an error (exit 2). A server older than "
+        "'head' replays from the beginning either way.",
+    )
+
+
 _ROOM_ARG_HELP = "Room: its UUID, or a case-insensitive unique name prefix."
 
 
@@ -6802,6 +6871,9 @@ def _watch_event_line(event: dict[str, Any], *, as_json: bool, cursor: int) -> s
     parts = [f"#{event.get('id')}", str(event.get("kind"))]
     if event.get("group_id"):
         parts.append(f"group={event['group_id']}")
+    if event.get("room_id"):
+        # Unscoped events carry pepper's room id beside the groups service's group id.
+        parts.append(f"room={event['room_id']}")
     if event.get("person_id"):
         parts.append(f"person={event['person_id']}")
     payload = event.get("payload")
@@ -6814,19 +6886,60 @@ def _watch_event_line(event: dict[str, Any], *, as_json: bool, cursor: int) -> s
     return sanitize_line(" ".join(parts))
 
 
-def _unscoped_start_cursor(args: argparse.Namespace, *, action: str) -> tuple[int, int | None]:
-    """Where an unscoped ``rooms watch`` / ``rooms poll`` starts: ``(cursor, None)``, or
-    ``(0, exit_code)`` after the error is reported.
+#: The stderr line a run prints when it starts at the live edge, so an agent that expected a
+#: replay learns it did not get one, and how to read or replay what was skipped.
+LIVE_EDGE_NOTICE = (
+    "Starting at the live edge; earlier events were skipped (pepper messages list --room ROOM "
+    "to read them, or --start beginning to replay)."
+)
 
-    ``--since`` wins over the cursor file's position, else the file's, else the beginning. A
+
+def _start_conflict(args: argparse.Namespace) -> bool:
+    """Report ``--start beginning`` combined with ``--since`` (exit 2 for the caller) and return
+    whether it was: the two name different starting points, and guessing which one the caller
+    meant could replay a feed they meant to resume, or skip one they meant to read. ``--start
+    head`` with ``--since`` is not a conflict: head is the default, and ``--since`` wins."""
+    if getattr(args, "start", None) == "beginning" and getattr(args, "since", None) is not None:
+        _emit_error(
+            args,
+            "usage",
+            "--start beginning cannot be combined with --since: --since already names the "
+            "position to resume from. Drop one.",
+        )
+        return True
+    return False
+
+
+def _starts_at_head(args: argparse.Namespace, *, has_position: bool) -> bool:
+    """Whether a run with no ``--since`` and (``has_position`` False) no saved position starts at
+    the feed's live edge: always, unless ``--start beginning`` asked for a replay."""
+    return (
+        not has_position
+        and getattr(args, "since", None) is None
+        and getattr(args, "start", None) != "beginning"
+    )
+
+
+def _unscoped_start_cursor(
+    args: argparse.Namespace, *, action: str
+) -> tuple[int, bool, int | None]:
+    """Where an unscoped ``rooms watch`` / ``rooms poll`` starts: ``(cursor, at_head, None)``, or
+    ``(0, False, exit_code)`` after the error is reported.
+
+    ``--since`` wins over the cursor file's position, else the file's, else the live edge
+    (``at_head``, with ``cursor`` 0 and nothing to send as a position) unless ``--start
+    beginning`` asked for a replay from 0. A
     scoped watch's file is refused even with ``--since`` (the run would overwrite another
     watch's position); an unreadable one only when ``--since`` does not make it moot.
     ``action`` is the verb the refusal ends on ("Nothing was <action>.").
     """
+    if _start_conflict(args):
+        return 0, False, 2
     cursor = args.since
     if cursor is not None and cursor < 0:
         _emit_error(args, "usage", "--since must be a non-negative cursor.")
-        return 0, 2
+        return 0, False, 2
+    stored: int | _ScopedCursor | None = None
     if args.cursor_file:
         try:
             stored = _read_cursor_state(args.cursor_file)
@@ -6835,7 +6948,7 @@ def _unscoped_start_cursor(args: argparse.Namespace, *, action: str) -> tuple[in
             stored = None
             if cursor is None:
                 _emit_error(args, "usage", str(exc))
-                return 0, 2
+                return 0, False, 2
         if isinstance(stored, _ScopedCursor):
             # Even with --since: the run would overwrite another watch's position.
             _emit_error(
@@ -6847,10 +6960,11 @@ def _unscoped_start_cursor(args: argparse.Namespace, *, action: str) -> tuple[in
                 "--cursor-file for each scope.",
                 soft_wrap=True,
             )
-            return 0, 2
+            return 0, False, 2
         if cursor is None:
             cursor = stored
-    return cursor or 0, None
+    at_head = _starts_at_head(args, has_position=stored is not None)
+    return cursor or 0, at_head, None
 
 
 def cmd_rooms_watch(args: argparse.Namespace) -> int:
@@ -6886,7 +7000,7 @@ def cmd_rooms_watch(args: argparse.Namespace) -> int:
     creds = _load_or_error(args)
     if creds is None:
         return 1
-    cursor, refused = _unscoped_start_cursor(args, action="streamed")
+    cursor, head_pending, refused = _unscoped_start_cursor(args, action="streamed")
     if refused is not None:
         return refused
     allowed: frozenset[str] | None = args.kinds
@@ -6910,9 +7024,13 @@ def cmd_rooms_watch(args: argparse.Namespace) -> int:
                 attempted = True
                 got_frame = False
                 try:
+                    # A head start sends ``start=head`` and no position, on a reconnect too
+                    # while the head has not been learned (no cursor frame yet); after that
+                    # a reconnect resumes from the cursor like any other.
                     frames = api.watch_agent_events(
-                        since=cursor,
-                        last_event_id=cursor if reconnecting else None,
+                        since=None if head_pending else cursor,
+                        last_event_id=None if head_pending or not reconnecting else cursor,
+                        start="head" if head_pending else None,
                         **_stream_budget(deadline),
                     )
                     for frame in frames:
@@ -6954,6 +7072,11 @@ def cmd_rooms_watch(args: argparse.Namespace) -> int:
                                 )
                             )
                         cursor = max(cursor, new_cursor)
+                        if head_pending and frame.kind == "cursor":
+                            # The server confirmed the head; one that ignored ``start`` sent
+                            # no cursor frame first and replays, so it is not announced.
+                            render.info(LIVE_EDGE_NOTICE, soft_wrap=True)
+                        head_pending = False
                         if args.cursor_file:
                             _advance_cursor_file(args.cursor_file, cursor)
                 except api_client.ApiError as exc:
@@ -7002,6 +7125,11 @@ def cmd_rooms_watch(args: argparse.Namespace) -> int:
         return 1
 
 
+def _is_position(value: object) -> TypeIs[int]:
+    """Whether ``value`` is a feed position (an int, never a bool)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def cmd_rooms_poll(args: argparse.Namespace) -> int:
     """``pepper rooms poll [--since CURSOR] [--cursor-file PATH] [--wait SECONDS]
     [--kinds K,...] [--ignore-kinds K,...] [--json]``.
@@ -7026,14 +7154,20 @@ def cmd_rooms_poll(args: argparse.Namespace) -> int:
     creds = _load_or_error(args)
     if creds is None:
         return 1
-    cursor, refused = _unscoped_start_cursor(args, action="read")
+    cursor, at_head, refused = _unscoped_start_cursor(args, action="read")
     if refused is not None:
         return refused
     allowed: frozenset[str] | None = args.kinds
     ignored: frozenset[str] = args.ignore_kinds or frozenset()
     try:
         with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
-            page = api.get_agent_events_page(after_id=cursor, wait=args.wait)
+            # A head start sends ``start=head`` and no ``after_id`` (the server reads the head
+            # only when none is given).
+            page = api.get_agent_events_page(
+                after_id=None if at_head else cursor,
+                wait=args.wait,
+                start="head" if at_head else None,
+            )
         events = page.get("events")
         if not isinstance(events, list):
             # A body that is not an events page (a proxy's error page, a server
@@ -7046,6 +7180,19 @@ def cmd_rooms_poll(args: argparse.Namespace) -> int:
             )
             return 1
         next_id = page.get("next_after_id")
+        if at_head and not _is_position(next_id):
+            # A head read is how a first poll learns where it stands. A page that names no
+            # position can neither be saved (a stored 0 would replay the feed) nor skipped (the
+            # next head read would pass over what arrives meanwhile), so it is a failure.
+            _emit_error(
+                args,
+                "server",
+                "The server's answer named no position to start from. Nothing was printed and "
+                "no cursor was saved.",
+            )
+            return 1
+        if at_head:
+            render.info(LIVE_EDGE_NOTICE, soft_wrap=True)
         for event in events:
             event_id = event.get("id") if isinstance(event, dict) else None
             if isinstance(event_id, bool) or not isinstance(event_id, int):
@@ -7055,7 +7202,7 @@ def cmd_rooms_poll(args: argparse.Namespace) -> int:
                 _emit_line(_watch_event_line(event, as_json=args.json, cursor=event_id))
             # An unusual page (ids not above the cursor) never moves the cursor back.
             next_id = max(next_id, event_id) if isinstance(next_id, int) else event_id
-        if isinstance(next_id, bool) or not isinstance(next_id, int):
+        if not _is_position(next_id):
             next_id = cursor
         cursor = max(cursor, next_id)
         if args.cursor_file:
@@ -7066,6 +7213,8 @@ def cmd_rooms_poll(args: argparse.Namespace) -> int:
             _watch_cursor_line(cursor) if args.json else f"cursor={cursor}",
         )
     except api_client.ApiError as exc:
+        if at_head and args.cursor_file:
+            _save_unavailable_head(exc, args)
         return _report_api_error(exc, args)
     except httpx.RequestError as exc:
         _emit_error(args, "network", f"Couldn't reach {creds.server_url}: {exc}")
@@ -7076,6 +7225,18 @@ def cmd_rooms_poll(args: argparse.Namespace) -> int:
         _emit_error(args, "server", f"Couldn't write the cursor file: {exc}")
         return 1
     return 0
+
+
+def _save_unavailable_head(exc: api_client.ApiError, args: argparse.Namespace) -> None:
+    """A page that failed after reading the head names it (``after_id`` on the 503): save it, so
+    the next poll resumes there and does not read a newer head and skip what happened between.
+    Forward-only, through :func:`_advance_cursor_file`. A file that cannot be written leaves the
+    error the caller reports as it was."""
+    head = exc.after_id
+    if head is None:
+        return
+    with contextlib.suppress(OSError):
+        _advance_cursor_file(args.cursor_file, head)
 
 
 def _watch_reader_gone() -> int:
@@ -7316,6 +7477,8 @@ def _cmd_rooms_watch_scoped(args: argparse.Namespace) -> int:
     creds = _load_or_error(args)
     if creds is None:
         return 1
+    if _start_conflict(args):
+        return 2
     if args.since is not None and args.since < 0:
         _emit_error(args, "usage", "--since must be a non-negative cursor.")
         return 2
@@ -7351,6 +7514,7 @@ def _cmd_rooms_watch_scoped(args: argparse.Namespace) -> int:
     cursor = stored.cursor if stored is not None else 0
     if args.since is not None:
         cursor = args.since
+    at_head = _starts_at_head(args, has_position=stored is not None)
     # --for: the window starts before the room and topic lookup, so the lookup counts against
     # it, and each lookup request is bounded by the window's length.
     deadline = _watch_deadline(args)
@@ -7371,6 +7535,7 @@ def _cmd_rooms_watch_scoped(args: argparse.Namespace) -> int:
                 topic_id=topic_id,
                 stored=stored,
                 cursor=cursor,
+                at_head=at_head,
                 deadline=deadline,
             )
     except _WatchStopError as stop:
@@ -7403,6 +7568,7 @@ def _follow_scoped_watch(
     topic_id: str | None,
     stored: _ScopedCursor | None,
     cursor: int,
+    at_head: bool = False,
     deadline: float | None = None,
 ) -> int:
     """The scoped watch's connect / read / reconnect loop. Same output, cursor
@@ -7412,6 +7578,9 @@ def _follow_scoped_watch(
     allowed: frozenset[str] | None = args.kinds
     ignored: frozenset[str] = args.ignore_kinds or frozenset()
     bound: api_client.WatchScope | None = None
+    # A head start sends ``start=head`` and no position until the head is learned (the cursor
+    # frame), reconnects included; after that a reconnect resumes from the cursor.
+    head_pending = at_head
     reconnecting = False
     delay = _WATCH_BACKOFF_START
     failures = 0
@@ -7429,8 +7598,9 @@ def _follow_scoped_watch(
             frames = api.watch_scoped_events(
                 room_id,
                 topic_id=topic_id,
-                since=cursor,
-                last_event_id=cursor if reconnecting else None,
+                since=None if head_pending else cursor,
+                last_event_id=None if head_pending or not reconnecting else cursor,
+                start="head" if head_pending else None,
                 **_stream_budget(deadline),
             )
             with contextlib.closing(frames):
@@ -7502,6 +7672,9 @@ def _follow_scoped_watch(
                                 )
                             )
                     cursor = max(cursor, new_cursor)
+                    if head_pending and frame.kind == "cursor":
+                        render.info(LIVE_EDGE_NOTICE, soft_wrap=True)
+                    head_pending = False
                     if args.cursor_file:
                         _advance_cursor_file(
                             args.cursor_file,

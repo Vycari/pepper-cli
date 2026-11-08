@@ -547,6 +547,8 @@ class _FakeApi:
     def __exit__(self, *exc: object) -> None:
         return None
 
+    is_agent_token = False
+
     def whoami(self) -> api_client.Whoami:
         return api_client.Whoami(user_id=H, email=H, display_name=H, timezone=H)
 
@@ -579,6 +581,15 @@ def _assert_plain_lines_clean(out: str) -> None:
 @pytest.mark.parametrize("argv", [["whoami"], ["skills", "list"]])
 def test_plain_stdout_lines_are_cleaned(argv: list[str], capsys) -> None:
     assert cli.main(argv) == 0
+    _assert_plain_lines_clean(capsys.readouterr().out)
+
+
+def test_agent_whoami_lines_are_cleaned(capsys) -> None:
+    cli._print_agent_self(
+        api_client.AgentSelf(
+            person_id=H, display_name=H, room_count=1, sponsor_display_name=H, expires_at=H
+        )
+    )
     _assert_plain_lines_clean(capsys.readouterr().out)
 
 
