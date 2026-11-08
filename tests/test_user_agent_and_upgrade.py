@@ -141,6 +141,56 @@ def test_426_plain_text_body_is_the_message() -> None:
     assert ei.value.message == "Please upgrade to 0.2."
 
 
+_REAL_426 = {
+    "detail": (
+        "pepper-cli 0.3.0 is no longer supported (minimum 0.4.0). "
+        "Upgrade with: uv tool upgrade vycari-pepper"
+    ),
+    "code": "cli_upgrade_required",
+    "minimum_version": "0.4.0",
+    "client_version": "0.3.0",
+    "upgrade_command": "uv tool upgrade vycari-pepper",
+}
+
+
+def _minimum_for(resp: httpx.Response) -> str | None:
+    with _api(lambda _: resp) as api, pytest.raises(api_client.UpgradeRequiredError) as ei:
+        api.whoami()
+    return ei.value.minimum_version
+
+
+def test_426_carries_the_structured_minimum_version() -> None:
+    assert _minimum_for(httpx.Response(426, json=_REAL_426)) == "0.4.0"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {k: v for k, v in _REAL_426.items() if k != "minimum_version"},
+        {**_REAL_426, "minimum_version": 4},
+        {**_REAL_426, "minimum_version": "soon"},
+        {**_REAL_426, "minimum_version": None},
+        ["not", "an", "object"],
+    ],
+)
+def test_426_ignores_a_missing_or_unusable_minimum_version(body) -> None:
+    assert _minimum_for(httpx.Response(426, json=body)) is None
+
+
+def test_426_sanitizes_the_minimum_version() -> None:
+    def body(value: str) -> httpx.Response:
+        return httpx.Response(426, json={**_REAL_426, "minimum_version": value})
+
+    # Escape sequences are stripped before the value is checked, so none reaches the terminal.
+    assert _minimum_for(body("0.4.0\x1b[2J")) == "0.4.0"
+    assert _minimum_for(body(" 0.4.0 ")) == "0.4.0"
+    assert _minimum_for(body("\x1b[2J")) is None
+
+
+def test_426_non_json_body_has_no_minimum_version() -> None:
+    assert _minimum_for(httpx.Response(426, text="Upgrade now")) is None
+
+
 def _upgrade_message_for(resp: httpx.Response) -> str:
     with _api(lambda _: resp) as api, pytest.raises(api_client.UpgradeRequiredError) as ei:
         api.whoami()

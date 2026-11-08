@@ -72,63 +72,88 @@ def is_git_install() -> bool:
         return False
 
 
-def uv_tool_requirement() -> str | None:
-    """The requirement ``uv tool install`` recorded for this package, pin included.
-
-    ``None`` when this is not a uv tool install, the receipt cannot be read, or it lists no
-    requirement for this distribution.
-    """
+def _receipt_requirements() -> list[dict]:
+    """The ``requirements`` entries of this uv tool install's receipt (``[]`` when unreadable)."""
     import sys
     import tomllib
     from pathlib import Path
-
-    from packaging.utils import canonicalize_name
 
     receipt = Path(sys.prefix) / "uv-receipt.toml"
     try:
         with receipt.open("rb") as fh:
             data = tomllib.load(fh)
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
-        return None
+        return []
     tool = data.get("tool")
     requirements = tool.get("requirements") if isinstance(tool, dict) else None
     if not isinstance(requirements, list):
-        return None
-    for entry in requirements:
-        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
-            continue
-        if canonicalize_name(entry["name"].split("[")[0]) != canonicalize_name(DISTRIBUTION):
-            continue
-        specifier = entry.get("specifier")  # singular: uv's receipt and lock serialization
-        return entry["name"] + (specifier if isinstance(specifier, str) else "")
+        return []
+    return [e for e in requirements if isinstance(e, dict) and isinstance(e.get("name"), str)]
+
+
+def _is_this_package(entry: dict) -> bool:
+    from packaging.utils import canonicalize_name
+
+    return canonicalize_name(entry["name"].split("[")[0]) == canonicalize_name(DISTRIBUTION)
+
+
+def uv_tool_requirement() -> str | None:
+    """The requirement ``uv tool install`` recorded for this package, pin included.
+
+    ``None`` when this is not a uv tool install, the receipt cannot be read, or it lists no
+    requirement for this distribution.
+    """
+    for entry in _receipt_requirements():
+        if _is_this_package(entry):
+            specifier = entry.get("specifier")  # singular: uv's receipt and lock serialization
+            return entry["name"] + (specifier if isinstance(specifier, str) else "")
     return None
 
 
-def is_pinned(requirement: str, target: str | None = None) -> bool:
+def uv_tool_with_requirements() -> list[str]:
+    """The ``--with`` packages the receipt records beside this one, as requirement strings.
+
+    A re-install with ``--force`` rewrites the receipt, so these have to be passed again or
+    they are dropped. Entries that are not a plain name plus specifier (a path or git source)
+    cannot be rebuilt from the receipt and are left out.
+    """
+    out: list[str] = []
+    for entry in _receipt_requirements():
+        if _is_this_package(entry) or {"path", "directory", "git", "url"} & entry.keys():
+            continue
+        specifier = entry.get("specifier")
+        out.append(entry["name"] + (specifier if isinstance(specifier, str) else ""))
+    return out
+
+
+def is_pinned(
+    requirement: str, target: str | None = None, *, upgrade_required: bool = False
+) -> bool:
     """Whether ``uv tool upgrade`` would stay where it is, for ``target`` when given.
 
     A floor (``>=0.3``) and an exclusion (``!=0.2``) both still let it move up, so neither is
-    a pin; anything that names a version to stay at, or a range to stay in, is. An exclusion
-    is only harmless while it leaves the target reachable: ``!=0.4`` against 0.4 keeps
-    ``uv tool upgrade`` below it, so with ``target`` known it counts as a pin.
+    a pin on its own; anything that names a version to stay at, or a range to stay in, is.
+    With ``target`` known the question is whether the requirement still admits it, so an
+    exclusion that covers it (``!=0.4``, ``!=0.4.*``) is a pin.
+
+    ``upgrade_required`` is a 426: the server refuses this client, so a no-op upgrade is the
+    worst outcome. With no ``target`` to test against, any recorded specifier counts as a pin.
     """
     from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.version import InvalidVersion
 
     try:
-        for spec in Requirement(requirement).specifier:
-            if spec.operator not in (">=", "!="):
-                return True
-            if spec.operator == "!=" and target is not None:
-                from packaging.version import InvalidVersion, Version
-
-                try:
-                    if Version(spec.version) == Version(target):
-                        return True
-                except InvalidVersion:
-                    continue
-        return False
+        specifier = Requirement(requirement).specifier
     except InvalidRequirement:
         return False
+    if any(spec.operator not in (">=", "!=") for spec in specifier):
+        return True
+    if target is None:
+        return upgrade_required and len(specifier) > 0
+    try:
+        return not specifier.contains(target, prereleases=True)
+    except InvalidVersion:
+        return upgrade_required and len(specifier) > 0
 
 
 def pinned_below(latest: str) -> str | None:

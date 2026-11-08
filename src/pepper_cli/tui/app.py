@@ -33,7 +33,6 @@ from __future__ import annotations
 import concurrent.futures
 import contextlib
 import os
-import re
 import threading
 import time
 import uuid
@@ -187,28 +186,6 @@ class _Loop:
 UNKNOWN_RELEASE = "unknown"
 
 
-def required_release(message: str) -> str | None:
-    """The release a 426 sentence names ("Pepper 0.7.0 or newer is required."), if any.
-
-    Only used to fit the upgrade to the server's demand: an exclusion that covers 0.7.0 has
-    to go, and an unpinned upgrade can still land on the latest release.
-    """
-    # A second dot after the version is a sentence's full stop, not part of it.
-    found = re.search(
-        r"(?<![\w.])v?(\d+(?:\.\d+)+(?:\.[A-Za-z0-9]+)*?(?:[-+][A-Za-z0-9.]+)*)(?![\w]|\.\w)",
-        message,
-    )
-    if found is None:
-        return None
-    from packaging.version import InvalidVersion, Version
-
-    try:
-        Version(found.group(1))
-    except InvalidVersion:
-        return None
-    return found.group(1)
-
-
 class PepperApp(App[None]):
     """Terminal client for Pepper's messages: rooms, topics and the Pepper DM."""
 
@@ -350,6 +327,7 @@ class PepperApp(App[None]):
         self._upgrade_prompt: tuple[str, str] | None = None
         #: The release a 426 named, so confirmation runs the reinstall that reaches it.
         self._upgrade_target: str | None = None
+        self._upgrade_is_426 = False
         self.upgrade_requested: bool = False
         self._update_checker = update_checker
         #: Set once quitting starts; workers and the turn thread then post nothing back.
@@ -527,7 +505,10 @@ class PepperApp(App[None]):
         """
         from pepper_cli.tui import upgrade_prompt
 
-        self._upgrade_target = required_release(exc.message)
+        if self.fatal:
+            return  # an earlier fatal state (the 401 login hint) is the more useful message
+        self._upgrade_target = exc.minimum_version
+        self._upgrade_is_426 = True
         self._upgrade_prompt = upgrade_prompt(
             exc.message, offer=False, target_version=self._upgrade_target
         )
@@ -1195,6 +1176,7 @@ class PepperApp(App[None]):
 
         self._upgrade_prompt = upgrade_prompt(version)
         self._upgrade_target = None
+        self._upgrade_is_426 = False
         self.update_version = version
         self.refresh_bindings()
         self.refresh_chrome()

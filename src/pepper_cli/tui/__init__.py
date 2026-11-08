@@ -36,7 +36,9 @@ def detect_install_method() -> str:
     return "pip"
 
 
-def upgrade_command(target_version: str | None = None) -> list[str]:
+def upgrade_command(
+    target_version: str | None = None, *, upgrade_required: bool = False
+) -> list[str]:
     """The uv command that actually moves this install to the release it needs.
 
     A pinned uv tool install (``uv tool install vycari-pepper==0.3.0``) keeps its pin on
@@ -48,12 +50,17 @@ def upgrade_command(target_version: str | None = None) -> list[str]:
 
     ``target_version`` is the required release when the prompt names one: an exclusion that
     covers it (``!=0.4`` against 0.4) keeps ``uv tool upgrade`` below it, so it is a pin too.
+    ``upgrade_required`` (a 426) treats any recorded specifier as a pin when no target is known.
+    The receipt's ``--with`` packages are passed again, since ``--force`` rewrites the receipt.
     """
     from pepper_cli import _version
 
     requirement = _version.uv_tool_requirement()
-    if requirement is not None and _version.is_pinned(requirement, target_version):
-        return ["uv", "tool", "install", "--force", _version.DISTRIBUTION]
+    if requirement is not None and _version.is_pinned(
+        requirement, target_version, upgrade_required=upgrade_required
+    ):
+        withs = [arg for w in _version.uv_tool_with_requirements() for arg in ("--with", w)]
+        return ["uv", "tool", "install", "--force", *withs, _version.DISTRIBUTION]
     return ["uv", "tool", "upgrade", _version.DISTRIBUTION]
 
 
@@ -73,8 +80,14 @@ def upgrade_prompt(
     from pepper_cli import _version
 
     requirement = _version.uv_tool_requirement()
-    pinned = requirement is not None and _version.is_pinned(requirement, target_version)
-    subject = f"v{message}" if offer else "the latest release"
+    pinned = requirement is not None and _version.is_pinned(
+        requirement, target_version, upgrade_required=not offer
+    )
+    subject = (
+        f"v{message}"
+        if offer
+        else (f"v{target_version}" if target_version else "the latest release")
+    )
     if pinned:
         question = f"Upgrade to {subject}, removing the pin {requirement}?"
     else:
@@ -82,10 +95,10 @@ def upgrade_prompt(
 
     method = detect_install_method()
     if method == "uv-tool" and sys.platform == "win32":
-        manual = " ".join(upgrade_command(target_version))
+        manual = " ".join(upgrade_command(target_version, upgrade_required=not offer))
         detail = f"Pepper will exit. Run '{manual}' in your terminal."
     elif method == "uv-tool" and pinned:
-        manual = " ".join(upgrade_command(target_version))
+        manual = " ".join(upgrade_command(target_version, upgrade_required=not offer))
         detail = f"Pepper will exit and run '{manual}' in your terminal."
     elif method == "uv-tool":
         detail = "Pepper will exit and run 'uv tool upgrade vycari-pepper' in your terminal."
@@ -98,7 +111,9 @@ def upgrade_prompt(
     return question, detail
 
 
-def _perform_upgrade(target_version: str, required: str | None = None) -> int:
+def _perform_upgrade(
+    target_version: str, required: str | None = None, *, upgrade_required: bool = False
+) -> int:
     """Run upgrade command or print instructions based on the install method.
 
     After a 426 ``target_version`` is the ``UNKNOWN_RELEASE`` marker unless the server named
@@ -120,7 +135,7 @@ def _perform_upgrade(target_version: str, required: str | None = None) -> int:
         render.info(f"To upgrade to {to}, run:\n  pip install --upgrade vycari-pepper")
         return 0
 
-    command = upgrade_command(required)
+    command = upgrade_command(required, upgrade_required=upgrade_required)
     manual = " ".join(command)
     if sys.platform == "win32":
         render.info(f"To upgrade to {to}, run:\n  {manual}")
@@ -159,8 +174,9 @@ def run(
         update_version = getattr(app, "update_version", None)
         upgrade_requested = getattr(app, "upgrade_requested", False)
         upgrade_target = getattr(app, "_upgrade_target", None)
+        upgrade_required = getattr(app, "_upgrade_is_426", False)
         ret_code = app.return_code or 0
 
     if upgrade_requested and update_version is not None:
-        return _perform_upgrade(update_version, upgrade_target)
+        return _perform_upgrade(update_version, upgrade_target, upgrade_required=upgrade_required)
     return ret_code
