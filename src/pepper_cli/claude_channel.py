@@ -390,6 +390,7 @@ class ChannelWorker:
         allowed_rooms: set[str],
         stop: threading.Event,
         at_head: bool = False,
+        resumed: bool = False,
     ) -> None:
         self.api = api
         self.config = config
@@ -410,7 +411,9 @@ class ChannelWorker:
         # so a server that ignored ``start`` and replayed its window is still told apart from a
         # resume and gets the first-run summary, never a push of every old message.
         self.head_pending = at_head
-        self.first_run = stored is None and cursor == 0
+        # ``resumed``: the cursor file held a position. A saved head of 0 is a resume, not a
+        # first run, or the messages posted while the channel was down would be summarised away.
+        self.first_run = not resumed and stored is None and cursor == 0
         self.cutoff = config.started_at - BACKLOG_SLACK
         self.self_id = config.self_id
         self.bound: api_client.WatchScope | None = None
@@ -1423,6 +1426,7 @@ def run(args: argparse.Namespace) -> int:
                     allowed_rooms=allowed if allowed is not None else set(),
                     stop=stop,
                     at_head=at_head,
+                    resumed=has_position,
                 ).run()
 
             server = build_server(ChannelTools(tool_api, allowed))
