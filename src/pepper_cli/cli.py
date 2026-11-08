@@ -9319,10 +9319,13 @@ def _build_calendar_publish_parser() -> argparse.ArgumentParser:
     p.set_defaults(handler=cmd_calendar_publish_rotate)
     p = sub.add_parser(
         "set",
-        help="Change what is published: calendars, follows, detail, meals, workouts, todos.",
+        help="Change what is published: calendars, follows, titles, detail, meals, workouts, "
+        "todos.",
         description=(
             "Change only what you name. Calendars and follows are given by label or id (a "
-            "unique label prefix works); the rest of your list is sent back unchanged. Adding "
+            "unique label prefix works); the rest of your list is sent back unchanged. "
+            "--titles-off / --titles-on hide or show the titles of a calendar someone shared "
+            "with you in Full details (only those that offer the switch). Adding "
             "your first Google calendar publishes its events at the address, so the server asks "
             "for consent: a terminal shows its disclosure and asks, anything else must pass "
             "--consent after showing the person the disclosure."
@@ -9333,6 +9336,20 @@ def _build_calendar_publish_parser() -> argparse.ArgumentParser:
     p.add_argument("--remove-calendar", action="append", default=[], metavar="CALENDAR")
     p.add_argument("--add-follow", action="append", default=[], metavar="FOLLOW")
     p.add_argument("--remove-follow", action="append", default=[], metavar="FOLLOW")
+    p.add_argument(
+        "--titles-off",
+        action="append",
+        default=[],
+        metavar="CALENDAR",
+        help="Hide this shared calendar's titles in Full details (busy blocks instead).",
+    )
+    p.add_argument(
+        "--titles-on",
+        action="append",
+        default=[],
+        metavar="CALENDAR",
+        help="Show this shared calendar's titles in Full details again.",
+    )
     p.add_argument("--detail", choices=["busy", "full"], help="Busy blocks only, or full events.")
     for name in ("meals", "workouts", "todos"):
         p.add_argument(
@@ -9355,7 +9372,18 @@ def _report_feed_error(args: argparse.Namespace, exc: api_client.ApiError) -> in
     """:func:`_fail_api`, but an unknown-source 422 names the sources the server refused."""
     body = _feed_error_body(exc)
     if exc.status == 422 and body.get("code") == "unknown_sources":
+        titles = [str(t) for t in body.get("titles_off") or []]
         names = [*(body.get("calendars") or []), *(body.get("follows") or [])]
+        if titles and not names:
+            _emit_error(
+                args,
+                "validation",
+                "these calendars have no titles switch (it is offered only for calendars "
+                f"shared with you that are not busy-only): {', '.join(titles)}",
+                status=422,
+            )
+            return 1
+        names += [f"{t} (no titles switch)" for t in titles]
         _emit_error(
             args,
             "validation",
@@ -9479,6 +9507,16 @@ def _feed_changes(args: argparse.Namespace, current: dict[str, Any]) -> dict[str
             if fid not in off:
                 off.append(fid)
         changes["follows_off"] = off
+    if args.titles_off or args.titles_on:
+        hidden = [str(c["id"]) for c in cals if c.get("titles_switch") and not c.get("titles")]
+        for name in args.titles_on:
+            cid = view.resolve(name, cals, "calendar")
+            hidden = [i for i in hidden if i != cid]
+        for name in args.titles_off:
+            cid = view.resolve(name, cals, "calendar")
+            if cid not in hidden:
+                hidden.append(cid)
+        changes["titles_off"] = hidden
     for key in ("detail", "meals", "workouts", "todos"):
         if getattr(args, key) is not None:
             changes[key] = getattr(args, key)
@@ -9487,8 +9525,8 @@ def _feed_changes(args: argparse.Namespace, current: dict[str, Any]) -> dict[str
 
 def cmd_calendar_publish_set(args: argparse.Namespace) -> int:
     """``pepper calendar publish set [--add-calendar C]… [--remove-calendar C]… [--add-follow F]…
-    [--remove-follow F]… [--detail busy|full] [--meals|--no-meals] [--workouts|--no-workouts]
-    [--todos|--no-todos] [--consent] [--json]``: ``PATCH /api/v1/calendars/feed/sources``.
+    [--remove-follow F]… [--titles-off C]… [--titles-on C]… [--detail busy|full]
+    [--meals|--no-meals] [--workouts|--no-workouts] [--todos|--no-todos] [--consent] [--json]``: ``PATCH /api/v1/calendars/feed/sources``.
 
     Reads the status once to turn labels into ids and to send whole replacement lists, then
     sends only what changed. On ``consent_required`` a terminal sees the server's disclosure and
@@ -9499,6 +9537,8 @@ def cmd_calendar_publish_set(args: argparse.Namespace) -> int:
         or args.remove_calendar
         or args.add_follow
         or args.remove_follow
+        or args.titles_off
+        or args.titles_on
         or any(getattr(args, k) is not None for k in ("detail", "meals", "workouts", "todos"))
     )
     if not given:

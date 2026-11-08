@@ -384,3 +384,87 @@ def test_client_methods_hit_the_documented_routes() -> None:
         ("PATCH", "/api/v1/calendars/feed/sources"),
     ]
     assert json.loads(seen[-1][2]) == {"todos": True}
+
+
+_SHARED = {
+    **_STATUS,
+    "calendars": [
+        {"id": "work@x", "label": "Work", "included": True, "shared": False},
+        {
+            "id": "pal@x",
+            "label": "Pal",
+            "included": True,
+            "shared": True,
+            "busy_only": False,
+            "titles": True,
+            "titles_switch": True,
+        },
+        {
+            "id": "boss@x",
+            "label": "Boss",
+            "included": True,
+            "shared": True,
+            "busy_only": False,
+            "titles": False,
+            "titles_switch": True,
+        },
+        {
+            "id": "busy@x",
+            "label": "Busy",
+            "included": True,
+            "shared": True,
+            "busy_only": True,
+            "titles": False,
+            "titles_switch": False,
+        },
+    ],
+}
+
+
+def test_show_marks_titles_only_where_the_switch_is_offered(server, capsys) -> None:
+    server.reply("GET", "/api/v1/calendars/feed", body=_SHARED)
+    assert cli.main(["calendar", "publish"]) == 0
+    lines = {ln.split()[1]: ln for ln in capsys.readouterr().out.splitlines() if "[x]" in ln}
+    assert "shared with you · titles shown" in lines["Pal"]
+    assert "shared with you · titles hidden" in lines["Boss"]
+    assert "titles" not in lines["Work"] and "titles" not in lines["Busy"]
+
+
+def test_set_titles_off_sends_whole_list_including_already_hidden(server) -> None:
+    assert _set(server, "--titles-off", "pal", status_body=_SHARED) == 0
+    assert server.seen[-1] == (
+        "PATCH",
+        "/api/v1/calendars/feed/sources",
+        {"titles_off": ["boss@x", "pal@x"]},
+    )
+
+
+def test_set_titles_on_removes_from_the_list(server) -> None:
+    assert _set(server, "--titles-on", "Boss", status_body=_SHARED) == 0
+    assert server.seen[-1][2] == {"titles_off": []}
+
+
+def test_set_titles_unknown_label_is_a_usage_error(server, capsys) -> None:
+    assert _set(server, "--titles-off", "nobody", status_body=_SHARED, patched=False) == 2
+    assert "no calendar named 'nobody'" in capsys.readouterr().err
+    assert all(m == "GET" for m, _, _ in server.seen)
+
+
+def test_set_titles_422_names_the_calendars_without_a_switch(server, capsys) -> None:
+    server.reply("GET", "/api/v1/calendars/feed", body=_SHARED)
+    server.reply(
+        "PATCH",
+        "/api/v1/calendars/feed/sources",
+        422,
+        {
+            "detail": {
+                "code": "unknown_sources",
+                "calendars": [],
+                "follows": [],
+                "titles_off": ["busy@x"],
+            }
+        },
+    )
+    assert cli.main(["calendar", "publish", "set", "--titles-off", "busy"]) == 1
+    err = capsys.readouterr().err
+    assert "busy@x" in err and "no titles switch" in err

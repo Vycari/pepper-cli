@@ -45,7 +45,11 @@ def _rows(title: str, rows: list[dict[str, Any]]) -> None:
         _line("  [dim](none)[/dim]")
     for row in rows:
         mark = "\\[x]" if row.get("included") else "\\[ ]"
-        _line(f"  {mark} {_s(row.get('label'))}  [dim]{_s(row.get('id'))}[/dim]")
+        note = ""
+        if row.get("titles_switch"):
+            shown = "shown" if row.get("titles") else "hidden"
+            note = f"  [dim]shared with you · titles {shown}[/dim]"
+        _line(f"  {mark} {_s(row.get('label'))}  [dim]{_s(row.get('id'))}[/dim]{note}")
 
 
 def status(body: dict[str, Any]) -> None:

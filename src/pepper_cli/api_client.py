@@ -2426,8 +2426,8 @@ class ApiClient:
 
     def calendar_feed_sources(self, changes: dict[str, Any]) -> dict[str, Any]:
         """``PATCH /api/v1/calendars/feed/sources``: only the keys in ``changes`` are sent
-        (``calendars``, ``follows_off``, ``detail``, ``meals``, ``workouts``, ``todos``,
-        ``consent``); the server leaves the rest alone."""
+        (``calendars``, ``follows_off``, ``titles_off``, ``detail``, ``meals``, ``workouts``,
+        ``todos``, ``consent``); the server leaves the rest alone."""
         return self._feed_object("PATCH", "/sources", json=changes)
 
     def _feed_object(
