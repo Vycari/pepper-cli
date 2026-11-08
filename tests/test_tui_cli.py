@@ -9,7 +9,7 @@ import textwrap
 import httpx
 import pytest
 
-from pepper_cli import cli, credentials, tui
+from pepper_cli import cli, credentials, tui, window_title
 from pepper_cli.provider.fs import FilesystemProvider
 from pepper_cli.secret import SecretStr
 
@@ -57,6 +57,20 @@ def test_it_starts_the_app_with_the_stored_credentials(monkeypatch) -> None:
     assert seen == {"server_url": "http://example.com", "token": creds.token, "provider": None}
     monkeypatch.setattr(tui, "run", lambda **kw: 1)
     assert cli.main(["tui"]) == 1
+
+
+def test_it_sets_the_window_title_around_the_app(monkeypatch, capsys) -> None:
+    """The title is pushed before the app starts and popped after it returns, so a
+    terminal or multiplexer tab reads ``🌶️ Pepper (host)`` while the TUI runs."""
+    _tty(monkeypatch, stdin=True, stdout=True)
+    monkeypatch.setattr(window_title, "_stdout_is_tty", lambda: True)
+    creds = credentials.Credentials(server_url="http://example.com", token=SecretStr("pep_pat_x"))
+    monkeypatch.setattr(credentials, "load", lambda: creds)
+    monkeypatch.setattr(tui, "run", lambda **kw: sys.stdout.write("APP RAN") and 0)
+    assert cli.main(["tui"]) == 0
+    out = capsys.readouterr().out
+    set_at = out.index(f"\x1b]0;{window_title.APP_TITLE} (example.com)\x07")
+    assert out.index("\x1b[22;0t") < set_at < out.index("APP RAN") < out.index("\x1b[23;0t")
 
 
 @pytest.mark.parametrize("flag", ["--root", "--tools-root"])
