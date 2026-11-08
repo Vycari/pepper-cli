@@ -1055,6 +1055,31 @@ def test_a_head_start_is_saved_even_when_no_event_follows(monkeypatch, tmp_path)
     assert json.loads(cursor_file.read_text())["cursor"] == 30
 
 
+def test_a_head_of_zero_is_saved_and_the_restart_resumes_from_it(monkeypatch, tmp_path):
+    cursor_file = tmp_path / "cursor"
+    run_channel(
+        monkeypatch,
+        _Fake(_CONNECTED + _scope() + _cursor(0)),
+        ["--room", _ROOM, "--cursor-file", str(cursor_file)],
+    )
+    assert json.loads(cursor_file.read_text())["cursor"] == 0
+
+    fake = _Fake(_CONNECTED + _scope() + _PING)
+    run_channel(monkeypatch, fake, ["--room", _ROOM, "--cursor-file", str(cursor_file)])
+
+    (request,) = fake.stream_requests()[:1]
+    assert "start" not in request.url.params
+
+
+def test_nothing_is_saved_before_the_head_is_known(monkeypatch, tmp_path):
+    cursor_file = tmp_path / "cursor"
+    fake = _Fake(_CONNECTED + _scope() + _PING)
+
+    run_channel(monkeypatch, fake, ["--room", _ROOM, "--cursor-file", str(cursor_file)])
+
+    assert not cursor_file.exists()
+
+
 def test_the_unscoped_channel_also_starts_at_the_head(monkeypatch):
     fake = _Fake(_CONNECTED + _cursor(12))
 

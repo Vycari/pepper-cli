@@ -400,7 +400,9 @@ class ChannelWorker:
         self.topics = topics
         self.stored = stored
         self.cursor = cursor
-        self.persisted = cursor
+        # A head start has saved nothing yet: ``None`` makes the first confirmed head write the
+        # file even when that head is 0, the cursor's starting value.
+        self.persisted: int | None = None if at_head else cursor
         self.allowed_rooms = allowed_rooms
         self.stop = stop
         # ``at_head``: no saved position, so the stream is asked for ``start=head`` (and no
@@ -734,7 +736,12 @@ class ChannelWorker:
         cursor still moves, for in-process reconnects, which keep the pending notice.
         """
         path = self.config.cursor_file
-        if path is None or self._notice_pending() or self.cursor == self.persisted:
+        if (
+            path is None
+            or self.head_pending
+            or self._notice_pending()
+            or self.cursor == self.persisted
+        ):
             return
         # Through the same locked, forward-only write as poll and watch, so a channel holding
         # an older in-memory cursor never rewinds a file one of them advanced. The channel's own
