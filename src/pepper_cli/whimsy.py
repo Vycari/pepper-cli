@@ -70,6 +70,24 @@ _PEPPER_ART_LINES: tuple[str, ...] = (
 )
 PEPPER_ART: str = "\n".join(_PEPPER_ART_LINES)
 
+#: The big pepper the TUI shows full screen on a rare start. Plain ASCII, 13 rows by 32.
+_SPLASH_ART_LINES: tuple[str, ...] = (
+    "              ,--.",
+    "             /  /",
+    "       _.---'  '---._",
+    "    .-'              '-.",
+    "   /                    \\",
+    "  /                      \\",
+    " |                        |",
+    " |                        |",
+    " |                        |",
+    "  \\                      /",
+    "   \\        /\\          /",
+    "    '.     /  \\       .'",
+    "      '-.-'    '-.-.-'",
+)
+SPLASH_ART: str = "\n".join(_SPLASH_ART_LINES)
+
 #: How often the startup pepper appears: about one REPL start in fifty.
 STARTUP_PEPPER_CHANCE: float = 1 / 50
 
@@ -96,3 +114,17 @@ def startup_pepper(*, is_tty: bool, rng: random.Random | None = None) -> str | N
     if gen.random() >= STARTUP_PEPPER_CHANCE:
         return None
     return f"{PEPPER_ART}\n  {pick_fortune(rng)}"
+
+
+def splash_fortune(*, rng: random.Random | None = None) -> str | None:
+    """A fortune for the TUI's rare full-screen pepper, or ``None`` on almost every start.
+
+    The same odds and the same ``PEPPER_NO_WHIMSY`` switch as :func:`startup_pepper`. The
+    TUI only ever runs on a terminal, so there is no terminal check here.
+    """
+    if whimsy_disabled():
+        return None
+    gen = rng or random
+    if gen.random() >= STARTUP_PEPPER_CHANCE:
+        return None
+    return pick_fortune(rng)

@@ -155,3 +155,20 @@ ModalScreen {
 #reply-body {
     height: auto;
 }
+
+#splash {
+    background: $background;
+}
+
+#splash-body {
+    width: 100%;
+    height: auto;
+}
+
+#splash-art,
+#splash-fortune,
+#splash-hint {
+    width: 100%;
+    content-align: center top;
+    margin: 0 0 1 0;
+}

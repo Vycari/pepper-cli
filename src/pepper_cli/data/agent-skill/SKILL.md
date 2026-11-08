@@ -517,6 +517,9 @@ its body; `NOTE` is the note's name or id:
 
 Without `--room` these commands aim at your personal notes, which an agent token cannot reach.
 
+`pepper fortune` prints a short fortune. It is local, needs no token and calls no server, so
+any profile can run it; it is only for fun.
+
 In Claude Code, for example, each becomes an allow rule such as
 `Bash(pepper --profile <name> messages list:*)`. Log in once by hand (section 1) rather than
 allowing `login`.

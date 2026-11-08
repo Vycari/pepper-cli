@@ -66,6 +66,7 @@ from pepper_cli.tui.screens import (
     JumpScreen,
     PickerScreen,
     PromptScreen,
+    SplashScreen,
     room_info_text,
 )
 from pepper_cli.tui.sidebar import Sidebar
@@ -262,8 +263,12 @@ class PepperApp(App[None]):
         bell: bool = False,
         live: bool = True,
         update_checker: Callable[[], str | None] | None = None,
+        splash: str | None = None,
     ) -> None:
         super().__init__()
+        #: The fortune for the rare full-screen pepper at start (``whimsy.splash_fortune``);
+        #: ``None``, almost always, shows none.
+        self._splash = splash
         self._api = api
         #: Ring the terminal bell when the server first reports an unread mention in another
         #: topic (§15 C, opt-in only).
@@ -391,6 +396,8 @@ class PepperApp(App[None]):
         self.sidebar.focus()
         self._run("startup")
         self._start_update_check()
+        if self._splash is not None:
+            self.push_screen(SplashScreen(self._splash))
 
     # ------------------------------------------------------------------ workers
 

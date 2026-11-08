@@ -84,3 +84,23 @@ def test_startup_pepper_turns_off(monkeypatch, value: str) -> None:
 def test_startup_pepper_stays_on_for_falsey_values(monkeypatch, value: str) -> None:
     monkeypatch.setenv("PEPPER_NO_WHIMSY", value)
     assert whimsy.startup_pepper(is_tty=True, rng=_Rolls(0.0)) is not None
+
+
+def test_splash_fortune_on_a_winning_roll() -> None:
+    assert whimsy.splash_fortune(rng=_Rolls(0.0)) in whimsy.FORTUNES
+
+
+def test_splash_fortune_is_rare() -> None:
+    assert whimsy.splash_fortune(rng=_Rolls(whimsy.STARTUP_PEPPER_CHANCE)) is None
+
+
+def test_splash_fortune_turns_off(monkeypatch) -> None:
+    monkeypatch.setenv("PEPPER_NO_WHIMSY", "1")
+    assert whimsy.splash_fortune(rng=_Rolls(0.0)) is None
+
+
+def test_splash_art_is_plain_ascii_that_fits_a_small_terminal() -> None:
+    lines = whimsy.SPLASH_ART.splitlines()
+    assert whimsy.SPLASH_ART.isascii()
+    assert len(lines) <= 18
+    assert max(len(line) for line in lines) <= 60
