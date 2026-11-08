@@ -14,6 +14,7 @@ all of them for the ambiguous/none/unique cases.
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import httpx
@@ -117,6 +118,10 @@ class _FakeGroupsApi:
 
     def __exit__(self, *exc_info):
         return None
+
+    @property
+    def is_agent_token(self) -> bool:
+        return self.token.get_secret_value().startswith(api_client.AGENT_TOKEN_PREFIX)
 
     def _result(self, key):
         value = self._canned.get(key)
@@ -1012,8 +1017,141 @@ def test_messages_list_404_renders_clean_error(tmp_home, patch_api, capsys) -> N
     assert "not found" in capsys.readouterr().err
 
 
+def _login_agent(tmp_home) -> None:
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_agt_abc"))
+
+
+def test_messages_list_with_an_agent_token_requires_a_topic(tmp_home, patch_api, capsys) -> None:
+    _login_agent(tmp_home)
+    patch_api(messages_page=_page(_message()))
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP])
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "--topic" in captured.err
+    assert "agent token" in captured.err
+    # Refused before any request: not even the room was resolved.
+    assert _FakeGroupsApi.instances[-1].calls == []
+
+
+def test_messages_list_agent_token_refusal_is_a_json_line_under_json(
+    tmp_home, patch_api, capsys
+) -> None:
+    _login_agent(tmp_home)
+    patch_api()
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP, "--json"])
+    assert rc == 2
+    error = json.loads(capsys.readouterr().err)["error"]
+    assert error["code"] == "usage"
+    assert "--topic" in error["message"]
+
+
+def test_messages_list_with_an_agent_token_and_a_topic_reads(tmp_home, patch_api, capsys) -> None:
+    _login_agent(tmp_home)
+    patch_api(messages_page=_page(_message()))
+    rc = cli.main(["messages", "list", "--room", _GID_TRIP, "--topic", _TID_FLIGHTS])
+    assert rc == 0
+    assert "hello there" in capsys.readouterr().out
+
+
 # ---------------------------------------------------------------------------
 # post
+
+
+def _expected_reply_key(reply_to, topic_id, body, mentions, **extra) -> str:
+    """The documented key: ``cli:<reply_to>:<sha256 hex[:32] of the canonical encoding>``."""
+    payload = {"topic_id": topic_id, "body": body, "mentions": sorted(mentions), **extra}
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return f"cli:{reply_to}:{hashlib.sha256(encoded).hexdigest()[:32]}"
+
+
+def _post_key(*argv: str) -> str:
+    cli.main(["messages", "post", "--room", _GID_TRIP, "--topic", _TID_GENERAL, *argv])
+    return _FakeGroupsApi.instances[-1].calls[-1][5]
+
+
+def test_a_reply_without_a_key_derives_one_from_topic_body_and_mentions(
+    tmp_home, patch_api
+) -> None:
+    _login(tmp_home)
+    patch_api(posted={"id": _MID})
+    key = _post_key("thanks", "--reply-to", "msg-parent", "--mention", "p2", "--mention", "p1")
+    assert key == _expected_reply_key("msg-parent", _TID_GENERAL, "thanks", ["p1", "p2"])
+
+
+def test_a_retried_reply_carries_the_same_key(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(posted={"id": _MID})
+    first = _post_key("thanks", "--reply-to", "msg-parent", "--mention", "p1", "--mention", "p2")
+    # A new process, mentions in another order: the server compares them as a set.
+    second = _post_key("thanks", "--reply-to", "msg-parent", "--mention", "p2", "--mention", "p1")
+    assert first == second
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        ["different words", "--reply-to", "msg-parent"],
+        ["thanks", "--reply-to", "msg-other"],
+        ["thanks", "--reply-to", "msg-parent", "--mention", "p1"],
+    ],
+)
+def test_a_different_reply_gets_a_different_key(tmp_home, patch_api, other) -> None:
+    _login(tmp_home)
+    patch_api(posted={"id": _MID})
+    base = _post_key("thanks", "--reply-to", "msg-parent")
+    assert _post_key(*other) != base
+
+
+def test_the_same_reply_in_another_topic_gets_a_different_key(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(posted={"id": _MID})
+    here = _post_key("thanks", "--reply-to", "msg-parent")
+    cli.main(
+        [
+            *["messages", "post", "--room", _GID_TRIP, "--topic", _TID_FLIGHTS],
+            *["thanks", "--reply-to", "msg-parent"],
+        ]
+    )
+    there = _FakeGroupsApi.instances[-1].calls[-1][5]
+    assert here != there
+    assert there == _expected_reply_key("msg-parent", _TID_FLIGHTS, "thanks", [])
+
+
+def test_on_behalf_of_and_attachments_join_the_reply_key(tmp_home, patch_api, tmp_path) -> None:
+    _login(tmp_home)
+    patch_api(posted={"id": _MID}, uploaded={"id": "att-1"})
+    plain = _post_key("thanks", "--reply-to", "msg-parent")
+    behalf = _post_key("thanks", "--reply-to", "msg-parent", "--on-behalf-of", "person-sam")
+    assert behalf != plain
+    assert behalf == _expected_reply_key(
+        "msg-parent", _TID_GENERAL, "thanks", [], on_behalf_of="person-sam"
+    )
+
+    one = tmp_path / "one.txt"
+    one.write_text("first", encoding="utf-8")
+    two = tmp_path / "two.txt"
+    two.write_text("second", encoding="utf-8")
+    with_one = _post_key("thanks", "--reply-to", "msg-parent", "--attach", str(one))
+    again = _post_key("thanks", "--reply-to", "msg-parent", "--attach", str(one))
+    with_two = _post_key("thanks", "--reply-to", "msg-parent", "--attach", str(two))
+    assert with_one == again
+    assert len({plain, with_one, with_two}) == 3
+
+
+def test_an_explicit_key_beats_the_derived_one(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(posted={"id": _MID})
+    assert _post_key("thanks", "--reply-to", "msg-parent", "--idempotency-key", "mine") == "mine"
+
+
+def test_a_post_without_reply_to_keeps_a_random_key(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(posted={"id": _MID})
+    first = _post_key("same words")
+    second = _post_key("same words")
+    assert first != second
+    assert not first.startswith("cli:")
 
 
 def test_messages_post_joins_message_words(tmp_home, patch_api, capsys) -> None:

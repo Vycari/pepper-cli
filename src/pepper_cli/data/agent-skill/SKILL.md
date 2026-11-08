@@ -17,10 +17,12 @@ rest describes how the commands behave.
 
 - An agent member authenticates with its own token, which starts `pep_agt_`. It is not a Pepper
   user account. It can reach the rooms it has been added to and nothing else, and only through
-  the seventeen commands listed in section 8. Apart from `login`, every other command that talks to
+  the nineteen commands listed in section 8. Apart from `login`, every other command that talks to
   the server answers an agent token with a 401 (section 9).
-- Because of that, `pepper --profile <name> whoami` fails with a 401 for an agent token. That is
-  by design, not a broken login. Check a login with `pepper --profile <name> rooms list` instead.
+- `pepper --profile <name> whoami` is the one exception that tells you who you are: with an agent
+  token it prints your `person_id`, display name, sponsor, room count and token expiry (add
+  `--json` for the same fields as an object). A server that predates that answer gives the old
+  401 instead; then check a login with `pepper --profile <name> rooms list`.
 - The CLI keeps one login per profile. Give the agent its own profile name; `login` refuses an
   agent token when no `--profile` is given, so it cannot overwrite a person's own login.
 - The person who owns the token logs in, so the token never passes through your transcript. They
@@ -30,7 +32,15 @@ rest describes how the commands behave.
   pepper --profile <name> login --manual --server <server-url>
   ```
 
-  Success prints `Logged in as an agent member of N room(s).` Without `--manual` or `--token`,
+  Success prints `Logged in as <display name> (<person_id>), sponsored by <sponsor>, in N room(s).`
+  (the sponsor clause is left out when the agent has none; a server that predates the identity
+  answer prints `Logged in as an agent member of N room(s).` instead). With `--json`, `login`
+  prints one JSON object instead, `{"ok": true, "agent": true, "rooms": N, "person_id": ...,
+  "display_name": ..., "sponsor_display_name": ..., "expires_at": ..., ...}`, and a failure is the usual
+  one-line `{"error": ...}` on stderr. The token is never in either. `login` is the one command
+  that ignores `PEPPER_JSON`, so an exported variable never changes the owner's interactive login;
+  pass `--json` to it explicitly when you want JSON. Under `--json` it never prompts, so
+  `pepper --profile <name> login --manual --json` exits 2 instead of asking for the token.) Without `--manual` or `--token`,
   `login` starts a browser flow that mints a personal access token, which is not what an agent
   needs. Do not use `--token`: it puts the secret in the command line.
 - Credentials are stored under `$XDG_CONFIG_HOME/pepper/profiles/<name>/credentials.toml`
@@ -67,7 +77,7 @@ rest describes how the commands behave.
 
 ## 3. Finding rooms, topics and ids
 
-Setting the environment variable `PEPPER_JSON=1` turns on `--json` for every command below that takes it; `--json` on the command line always works too.
+Setting the environment variable `PEPPER_JSON=1` turns on `--json` for every command below that takes it (every command except `login`, which needs the flag); `--json` on the command line always works too.
 
 - `pepper --profile <name> rooms list --json` lists your rooms as one object:
   `{"items": [...], "next_before": null, "enabled": ..., "degraded": ..., "total": ...,
@@ -88,14 +98,14 @@ Setting the environment variable `PEPPER_JSON=1` turns on `--json` for every com
 - `<room>` and `<topic>` accept a UUID or a name (case-insensitive, a unique prefix is enough).
   A name costs extra requests and exits 2 if it is ambiguous or unknown. Prefer the UUIDs from
   the two listing commands above.
-- `pepper --profile <name> messages list --room <room>` with no topic reads the room's most recently
-  active unarchived topic (or the most recent topic if all are archived). That is not necessarily
-  the one marked `is_default`, and it can change between two calls, so name the topic. Posting
-  always needs one.
-- You do not have a `whoami`. To learn your own `person_id`, read a topic you have posted in and
-  take the `author_person_id` of a message whose `is_you` is true. If you have never posted, ask
-  the person who runs you for your `person_id`. Compare people by `person_id`, never by
-  display name.
+- `pepper --profile <name> messages list --room <room>` with no topic would read the room's most
+  recently active unarchived topic, which can change between two calls, so with an agent token it
+  refuses: it exits 2 and asks you to name the topic (`--topic <topic>`), before any request is
+  made. A reply is permanent, so read and answer in a topic you named. Posting always needs one.
+- To learn your own `person_id`, run `pepper --profile <name> whoami --json`. Compare people by
+  `person_id`, never by display name. (On a server that predates `whoami` for agents it answers
+  401; then take the `author_person_id` of a message you posted, whose `is_you` is true, or ask the
+  person who runs you.)
 
 ## 4. The event stream
 
@@ -105,6 +115,15 @@ pepper --profile <name> rooms watch --json --cursor-file <path>
 
 - Run it as a long-lived process and read its stdout line by line. It follows your agent's
   event feed, which covers the rooms whose roster includes you, across all their topics.
+- A first run starts at the live edge. With no saved position in `--cursor-file` and no `--since`,
+  `pepper --profile <name> rooms watch`, `pepper --profile <name> rooms poll` and
+  `pepper --profile <name> agents claude-channel` begin at the feed's current head: events
+  that were already there are skipped, and one line on stderr says so (it names
+  `pepper --profile <name> messages list --room <room>` to read them). The head position is saved
+  to `--cursor-file` at once, even before any event arrives, so the next start resumes from it.
+  `--start beginning` replays the feed from its start instead; `--start head` is the default. A
+  saved position or `--since` always wins over `--start`, and `--start beginning` with `--since`
+  exits 2. A server that predates `--start` ignores it and replays from the beginning either way.
 - With `--json` each line is one JSON object: the event's fields (`id`, `kind`, `group_id`,
   `person_id`, `payload`, `created_at`) plus `cursor`. The two kinds you act on are
   `message.created` and `mention.created` (one per mentioned person, with `person_id` set to
@@ -139,6 +158,16 @@ pepper --profile <name> rooms watch --json --cursor-file <path>
 - `--cursor-file PATH` records the cursor after each line has been printed, atomically, and the
   next start resumes from it. The directory must already exist. A file that does not hold an
   integer exits 2 rather than replaying the whole feed. `--since N` starts after cursor N instead.
+  Events on the unscoped feed also carry `room_id` (the `group_id` the room list prints), which a
+  plain line shows as `room=...`.
+  The file only moves forward, for the watch, the poll and the channel alike: a run that holds an
+  older position, or a `--since` below the file's, never rewinds it. To reset, delete the file or
+  point `--cursor-file` at a new path. Writes take a lock on `<path>.lock`, which stays beside it.
+  A run that finds the file taken over by another scope's watch while it ran stops with exit 1 and
+  leaves the file alone.
+- Give each reader (`pepper --profile <name> rooms watch`, `pepper --profile <name> rooms poll`,
+  `pepper --profile <name> agents claude-channel`) its own cursor file: readers sharing one split
+  the events between them.
 - The command reconnects by itself when the connection drops, waiting 1 second and doubling up
   to 30 seconds, and resumes from the last cursor, so a reconnect loses nothing. A single dropped
   connection, or a server restart that ends the stream with `server_restarting`, is silent. Only
@@ -155,6 +184,50 @@ pepper --profile <name> rooms watch --json --cursor-file <path>
   any of these; report it to your operator.
 - The cursor file records what was delivered, not what you finished. After a restart or a gap,
   catch up with reads (section 5) as well as resuming the stream.
+
+### One read per wake, with poll
+
+For a harness that runs one agent turn per wake and cannot keep a process beside the agent (a
+scheduled or unattended run), read the feed once instead of streaming it:
+
+```
+pepper --profile <name> rooms poll --json --cursor-file <path> --wait 20
+```
+
+- It makes one request, prints the new events, then the cursor, and exits 0. With `--json` the
+  events are the lines `pepper --profile <name> rooms watch --json` prints (the event's fields plus `cursor`), followed by
+  one `{"kind":"cursor","cursor":N}` line; without it they are the plain event lines followed by
+  `cursor=N`. Events carry ids, not bodies: read them as in section 5.
+- `--wait SECONDS` (0 to 25, default 0) holds the request until an event arrives or the wait ends,
+  so a quiet feed costs one call and prints only the cursor. One call returns at most 100 events;
+  when it returns that many, call again.
+- The cursor it prints is the one to resume from, and it can be past the last event's id (events
+  that are not yours to see still move it). With `--cursor-file` the file is read for the start
+  and rewritten with that cursor after the events are printed, so the next wake carries on; keep
+  the cursor, never the last event's id. It is the same file as an unscoped `pepper --profile <name> rooms watch` uses, and a
+  scoped watch's file is refused (exit 2). The file only moves forward: if it already holds a
+  later cursor (another run's), it is left alone, and that later cursor is the one printed. `--since N` starts after cursor N instead, and
+  does not rewind the file. `--kinds`
+  and `--ignore-kinds` filter the printed events as they do for the watch, and the cursor still
+  moves past a skipped one.
+- A first poll (no position in `--cursor-file`, no `--since`) starts at the live edge, as the
+  watch does: it prints no old events, only the head as the cursor, and saves it. If that page
+  fails with a 503 after the head was read and `--cursor-file` is given, the head is saved before
+  the exit 1, so the next poll resumes from it and skips nothing in between. `--start beginning`
+  polls from cursor 0.
+- Exit 0 is any page, empty or not. Exit 1 is a refused token (401), a token that is not an
+  agent's (403), a server without the route (404), an answer that is not an events page, or an
+  API or network failure; exit 2 is bad
+  input. Do not retry a 401 or 403 in a loop.
+- Delivery is at least once, as for the watch: a crash after the events are printed and before the
+  cursor file is written replays them. Skip message ids you have handled.
+
+To bound a stream instead, `pepper --profile <name> rooms watch --json --cursor-file <path> --for 45s`
+runs as the watch does and exits 0 after the duration (`45s`, `2m`, `1h`) with the cursor saved.
+The window is a hard end, however recently the last event arrived; for `--room`, the room and
+topic lookup counts against it. If no connection was accepted since the last failed attempt (or
+none ever was) when the window ends, it exits 1 with a `Feed unavailable` error instead: that was
+not a quiet window. A connection that was accepted and then stayed quiet is exit 0.
 
 ### Watching one room, or one topic
 
@@ -201,7 +274,7 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
   person starts Claude Code with its development-channels option naming that server (see Claude
   Code's channels documentation). A server that is in `.mcp.json` but not named that way connects
   and its tools work, but no event ever arrives.
-- It takes the `--room`, `--topic`, `--cursor-file`, `--kinds` and `--ignore-kinds` of
+- It takes the `--room`, `--topic`, `--cursor-file`, `--start`, `--kinds` and `--ignore-kinds` of
   `pepper --profile <name> rooms watch`, with the same meaning, plus `--self PERSON_ID` (your own person id, so your posts are dropped
   before they are read). `--room` is optional but zero or one: without it the channel covers
   every room you belong to, and the tools can act in any of them. Use one cursor file per scope
@@ -220,7 +293,9 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
 - Four other `kind` values are control events, and each means "run your catch-up with
   `messages_list` for each topic, from your checkpoints" (section 5): `backlog` (messages from
   before this session were not pushed; the tag says how many and from when, or that this is a
-  first run with no earlier position), `resync` (the stream sent something the channel does not
+  first run with no earlier position; with `live_edge="true"` the channel had no saved position
+  and started at the live edge, so nothing was replayed. It is said once, when the head is
+  learned), `resync` (the stream sent something the channel does not
   recognise; the notice names it and lists each topic with its `room_id`), `gap` (events could not be replayed; the tag gives the positions) and `ended`.
   `ended` means the channel has stopped for the reason it gives (a refused token, a paused or
   retired agent, a removed membership, a scope the server would not confirm): do not restart it
@@ -267,6 +342,9 @@ pepper --profile <name> messages list --room <room> --topic <topic> --before <cu
 - To fetch the message an event names, read the topic and pick the message with that `id`. If it
   is not on the newest page, page back with `--before <next_before>` until you find it. Treat
   "not found" as an error to report, never as "not addressed to me".
+- A first run of the watch, the poll or the channel does not replay old events (section 4), so on
+  your very first start read each topic you care about (the reads below) rather than waiting
+  for events that will not come.
 - To catch up after a gap: remember the `created_at` of the newest message you finished handling
   in each topic, read with `--since` that value, and handle what comes back oldest first. If a
   topic was busy, read the newest page, and while its oldest message is still newer than your
@@ -306,7 +384,16 @@ EOF
 - `--mention PERSON_ID` (repeatable) structurally mentions someone, using a `person_id` from
   a message you read (`author_person_id` or `mentions`). Put their literal `@Display Name` in the body as well; send a mention only for a
   name that is still in the text.
-- `--idempotency-key KEY` replaces the random per-run key. The server remembers the key per
+- Without `--idempotency-key`, a post that has `--reply-to` gets a key derived from the message
+  you answer, the topic, the body and the sorted mentions (`cli:<reply-to id>:<digest>`), so running
+  the same reply again, after a timeout or a crash, posts it once. Another body, topic or mention
+  set is a new reply and posts. A post with no `--reply-to` gets a random key, so two identical
+  posts are two posts. The derived key also means the same reply to the same message is posted
+  once even when you mean it twice (the same `Done.` to one message in two wakes): the second run
+  gets the first message back, prints `Posted.` and its id, and nothing new appears. The server
+  does not say it was a replay. To post an identical reply again on purpose, give it its own
+  `--idempotency-key`.
+- `--idempotency-key KEY` replaces the key, random or derived. The server remembers the key per
   caller: running the same command again returns the original message and its id instead of
   posting a second one, and the same key with different content (another body or topic, for
   instance) is refused with a 409. Use a stable value that names what you are answering, such as a prefix of your own plus the
@@ -388,8 +475,8 @@ set.
 
 ## 8. What an agent token can run
 
-An agent token is accepted by exactly these seventeen commands (the channel server in section 4
-uses the same routes as the watch, the reads, the posts and the reactions, and adds none). They are also the prefixes a harness
+An agent token is accepted by exactly these nineteen commands (the channel server in section 4
+uses the same routes as the watch, the poll, the reads, the posts and the reactions, and adds none). They are also the prefixes a harness
 that asks before running commands needs to allow. Each is scoped to one profile name and one
 subcommand, so allowing them does not allow `login`, `logout` or anything in section 9.
 
@@ -398,6 +485,7 @@ pepper --profile <name> rooms list
 pepper --profile <name> topics list
 pepper --profile <name> messages list
 pepper --profile <name> rooms watch
+pepper --profile <name> rooms poll
 pepper --profile <name> messages post
 pepper --profile <name> messages react
 pepper --profile <name> messages unreact
@@ -411,6 +499,7 @@ pepper --profile <name> notes list
 pepper --profile <name> notes search
 pepper --profile <name> notes show
 pepper --profile <name> notes edit
+pepper --profile <name> whoami
 ```
 
 The four `notes` commands reach only the notes of a room whose roster names you, so always give
@@ -427,6 +516,9 @@ its body; `NOTE` is the note's name or id:
   being overwritten: read it again and decide, and never pass `--force` to get past it.
 
 Without `--room` these commands aim at your personal notes, which an agent token cannot reach.
+
+`pepper fortune` prints a short fortune. It is local, needs no token and calls no server, so
+any profile can run it; it is only for fun.
 
 In Claude Code, for example, each becomes an allow rule such as
 `Bash(pepper --profile <name> messages list:*)`. Log in once by hand (section 1) rather than
@@ -450,7 +542,7 @@ is changed. That covers:
   calendar command. They act on a person's own account, so only a person's own token reaches them.
 - Every other `rooms`, `topics`, `messages`, `attachments`, `members`, `sharing` or `apps` command, which are the ones that change a room, its topics, its members
   or its apps, or that read or search across rooms.
-- Every command outside those nouns that talks to the server, `whoami`, chat and `tui` included
+- Every command outside those nouns that talks to the server, chat and `tui` included
   (`tui` is a full-screen app for a person at a terminal, and bare `pepper` opens it when both
   stdin and stdout are a terminal; it posts to rooms and sends Pepper turns as that person, and
   `pepper tui` refuses to start without a terminal. A script or agent has no terminal, so bare
@@ -464,15 +556,20 @@ binary has, not commands your token may use.
 
 - 401: the CLI prints `Authentication failed (401). Run 'pepper login' to refresh your token.`
   Do not follow that advice; it is written for a person. First check the command against
-  sections 8 and 9. A 401 from a command or flag that is not on the list of seventeen is the expected
+  sections 8 and 9. A 401 from a command or flag that is not on the list of nineteen is the expected
   refusal of an agent token and says nothing about your login: stop using that command. A 401
-  from one of the seventeen means the token is unknown, revoked or expired, or its owner's access was
+  from one of the nineteen means the token is unknown, revoked or expired, or its owner's access was
   removed. Stop and tell your operator.
 - A paused or retired agent keeps a valid token, so it is not a 401. The groups service stops
   acting for it: the stream ends with `agent_unavailable` (section 4), and other commands fail
   with a server error or a degraded, empty room list. The exact status of each was not checked
   for this document. If commands that worked start failing that way, stop and tell your operator.
 - `Rooms are not enabled`: the server has no groups service for this login.
+- A malformed proxy setting is one error line (exit 2, or a JSON line under `--json`) that names
+  `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY`/`no_proxy`; fix or unset the bad variable
+  and run again. A malformed `NO_PROXY` entry stops the command the same way (it is never
+  skipped, since skipping it would send that host's requests through the proxy); the error names
+  its position, not its value.
 - 404: the room, topic or message is not one you can reach, or you were removed from the room.
   Every `rooms`, `topics`, `messages` and `attachments` command prints `not found, or you are not
   a member of that room` and exits 2. With `--json` (or `PEPPER_JSON=1`) stdout stays empty and

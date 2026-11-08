@@ -23,6 +23,8 @@ class _Api:
 
     calls: list[tuple] = []
     canned: dict = {}
+    #: A personal token: ``messages list`` may default the topic.
+    is_agent_token = False
 
     def __init__(self, **_: object) -> None:
         pass

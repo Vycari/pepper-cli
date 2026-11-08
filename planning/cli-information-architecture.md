@@ -168,6 +168,10 @@ The two J8 codes and exit 4 are `planning/research-projects.md` decision B, take
 rejected alternative added no codes). If the server answers a start request by naming work already
 in flight, `--wait` waits on that work instead (`planning/research-projects.md` §6.2).
 
+One flag shares the name and not the rule: `rooms poll --wait SECONDS` (pepper-cli#206) is the
+server's long-poll hold on a single page request (`GET /api/v1/groups/events?wait=`, 0 to 25). It
+takes no `--timeout`, never exits 4, and is not built from `_wait_parent`.
+
 ## 4. Old → new
 
 Every left-hand spelling stops working in 0.2.0; there are no aliases (§7). `#17`/`#18` = the open
@@ -236,7 +240,7 @@ deliberate break, made once, in 0.2.0, alongside the renames (§10 D).
 
 | # | Rule |
 |---|---|
-| J1 | Every leaf except `chat` with no message (the REPL) and `login` accepts `--json` and honours `PEPPER_JSON` (J10). `logout` emits `{"ok": true}`; `agents guide` without `--write` emits `{"markdown": "..."}`. |
+| J1 | Every leaf except `chat` with no message (the REPL) accepts `--json`, and every one of those except `login` honours `PEPPER_JSON` (J10). `login` takes `--json` as an explicit flag only (#216). `logout` emits `{"ok": true}`; `agents guide` without `--write` emits `{"markdown": "..."}`. |
 | J2 | In JSON mode (`--json` or `PEPPER_JSON=1`), stdout carries exactly one JSON document (or JSON lines for a stream, J6) and nothing else: no colour, no prose, no progress. Prompts never happen (destructive verbs need `--yes`, else exit 2). |
 | J3 | **One list envelope, everywhere.** Every `list`, `search` and `activity` leaf, plus `scheduled-tasks runs/thread` and `research-projects runs`, emits `{"items": [...], "next_before": str\|null}`. `next_before` is always present: `null` on the last page and on unpaged lists. List-level metadata the server returns sits beside them as extra top-level keys, never instead of them: `rooms list` adds `enabled`, `degraded`, `total`, `archived_total`; `notes list/search` add `truncated`. This replaces every 0.1.0 list shape: `groups list` (`groups` key), `groups read` (`messages` key), and the bare arrays of `todos list`, `groups topics/roster/apps/activity/search`. |
 | J4 | Views are not lists: `next` and `calendar` emit objects shaped as in 0.1.0 (`calendar --planning` keeps `{"range", "planning"}`). |
@@ -245,7 +249,7 @@ deliberate break, made once, in 0.2.0, alongside the renames (§10 D).
 | J7 | Field names are the server's, passed through. Unknown server fields are kept, not dropped (the CLI already tolerates them). |
 | J8 | **Errors** in JSON mode write one line to **stderr**: `{"error": {"code": "...", "status": <http int or null>, "message": "..."}}`. `code` ∈ `auth`, `forbidden`, `not_found`, `conflict`, `validation`, `ambiguous`, `usage`, `upgrade_required`, `server`, `network`, `gap`, `timeout`, `run_failed`. stdout stays empty, except under `--wait` (§3.5), where the final receipt is the result and goes to stdout beside the stderr line. `timeout` and `run_failed` are `--wait` only. Outside JSON mode, errors stay `pepper: …` text. |
 | J9 | Exit codes (unchanged from 0.1.0 except 4, added 2026-10-20): 0 ok, 1 auth/API/network (incl. 426), 2 usage/resolution/refused-without-`--yes`/renamed noun (§7), 3 watch replay gap, 4 `--wait` timed out with the work still going (§3.5), 130 interrupt. |
-| J10 | **`PEPPER_JSON=1`** turns JSON mode on for every leaf that accepts `--json`. Precedence: `--json` on the command line → on; else `PEPPER_JSON` exactly `1` → on; any other value, or unset → off. There is no `--no-json`; `PEPPER_JSON= pepper …` switches it off for one command. The J1 exemptions ignore it (the REPL and `login` stay interactive). There is no root `pepper --json` (§10 F). |
+| J10 | **`PEPPER_JSON=1`** turns JSON mode on for every leaf that accepts `--json`. Precedence: `--json` on the command line → on; else `PEPPER_JSON` exactly `1` → on; any other value, or unset → off. There is no `--no-json`; `PEPPER_JSON= pepper …` switches it off for one command. The J1 exemptions ignore it (the REPL and `login` stay interactive; `login` is JSON only under an explicit `--json`). There is no root `pepper --json` (§10 F). |
 
 ### 5.2 Mechanism
 
@@ -281,8 +285,23 @@ route takes; help says so.
 | `trajectories list` | offset, as cursor | yes | no |
 | `scheduled-tasks runs/thread` | server `before`/`before_id` | yes | no |
 | `research-projects runs`, `research-items list` | server opaque cursor (`runs` = iterations) / `seq` cursor (items), pepper#5028 §4.3 | yes | no |
-| `rooms watch` | event cursor | no | yes (+ `--cursor-file`) |
+| `rooms watch` | event cursor | no | yes (+ `--cursor-file`, `--start`) |
+| `rooms poll` | event cursor (`next_after_id`) | no | yes (+ `--cursor-file`, `--start`) |
 | `rooms activity` | time | no | yes (time) |
+
+**First run (pepper-cli#210).** The event feeds (`rooms watch`, scoped or not, `rooms poll`,
+`agents claude-channel`) start at the live edge when there is neither `--since` nor a position in
+`--cursor-file`: the CLI sends `start=head` and no position, prints one stderr line saying earlier
+events were skipped, and persists the head (the stream's opening `cursor` frame, or the page's
+`next_after_id`) so the next run resumes from it. `--start head|beginning` picks the first-run
+behaviour; `head` is the default and `beginning` restores the full replay (`since=0` /
+`after_id=0`). Precedence: a saved position, then `--since`, then `--start`. `--start beginning`
+with `--since` is a usage error (exit 2); `--start head` with `--since` is not, since `--since`
+wins. A reconnect never sends `start=head` once a position is known; until the head is learned (no
+cursor frame yet) it asks for the head again. A poll that fails with a 503 after reading the head
+gets that head back as `after_id` and saves it (forward-only) before exiting 1. The channel says
+it once, as a `backlog` event with `live_edge="true"`. A server older than the parameter ignores
+`start` and replays from 0.
 
 ### 5.4 Fill list (`--json` missing in 0.1.0; all client-only)
 
@@ -343,7 +362,7 @@ today); **S** needs a server change (or verification first); **N** a room is not
 | 7 | Skill-backed room task | pepper#4557 |
 | 8 | Join links (would land as `rooms links …`, spelled when the route exists) | pepper#4311 |
 | 9 | Typed response models for groups routes — lets the J3 `items` be checked against the contract | pepper#4673 |
-| 10 | `whoami` returns 401 for agent tokens, so `whoami --json` cannot be the agent login check | note only |
+| 10 | `whoami` returns 401 for agent tokens, so `whoami --json` cannot be the agent login check | resolved: `GET /api/v1/groups/self` (pepper#6031); `whoami` and `login` use it for an agent token and keep the old output on a 404 (pepper-cli#209) |
 | 11 | Research project routes, personal and room, with receipts, iterations, report and flag-off codes. Still open: the schedule-detach route path, an iteration id on report changelog entries, the pressing member on iterations, and the `web-research` default skill (`planning/research-projects.md` §10) | pepper `planning/research-projects-api.md` (pepper#5028) |
 
 Order per `CLAUDE.md`: server lands → weekly snapshot refresh of `contracts/api-v1.openapi.json`
@@ -375,7 +394,7 @@ argparse private attributes.
 | Noun | top-level name ∈ §2 nouns ∪ views/session set ∪ `RENAMED` (the three §7 stubs) |
 | Verb | leaf name ∈ §3.1 verbs |
 | `--json` | present, unless in `JSON_EXEMPT` (`chat` REPL path, `login`) |
-| `PEPPER_JSON` | for every non-exempt leaf, stdout is JSON with `PEPPER_JSON=1` and no flag, human text with `PEPPER_JSON=0` or unset, JSON with `--json` regardless of the variable; exempt leaves are unaffected by it |
+| `PEPPER_JSON` | for every non-exempt leaf (`login` takes `--json` but is exempt here, `PEPPER_JSON_EXEMPT`), stdout is JSON with `PEPPER_JSON=1` and no flag, human text with `PEPPER_JSON=0` or unset, JSON with `--json` regardless of the variable; exempt leaves are unaffected by it |
 | Envelope | for every list leaf (J3), stdout under a faked client parses to an object with `items` (array) and `next_before` keys |
 | `--room` | present, unless in `ROOM_NA` (reason string) or `ROOM_PENDING` (server issue link) |
 | `--yes` | present on every destructive verb, and on each leaf that prompts only in some cases (§3.1). For those leaves the refusal without `--yes` is tested only in the prompting cases, and the other cases are tested to succeed without it (`planning/research-projects.md` §11) |

@@ -745,12 +745,16 @@ async def test_redraws_before_the_first_restore_still_rest_on_the_open_conversat
         sidebar.set_rows(
             [*rows, state.SidebarRow("x", "inactive", "Older", 0)], current_key="pepper"
         )
-        await pilot.pause()
-        assert sidebar.highlighted_row is not None
-        assert sidebar.highlighted_row.key == "pepper"
+        # The restore is queued after a refresh; one pause is not always enough on a loaded
+        # runner (the Windows job saw no highlighted row yet), so wait for the row itself.
+        await until(pilot, lambda: getattr(sidebar.highlighted_row, "key", None) == "pepper")
         sidebar.select_key("app:me:todo")
         sidebar.set_rows(rows, current_key="pepper")  # once placed, a redraw keeps the cursor
         await pilot.pause()
+        await until(pilot, lambda: getattr(sidebar.highlighted_row, "key", None) == "app:me:todo")
+        # And it stays there once the queued work has run.
+        await pilot.pause()
+        assert sidebar.highlighted_row is not None
         assert sidebar.highlighted_row.key == "app:me:todo"
 
 

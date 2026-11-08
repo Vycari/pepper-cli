@@ -1,4 +1,4 @@
-"""Terminal window-title management for the interactive REPL.
+"""Terminal window-title management for the interactive REPL and the TUI.
 
 One small context manager rather than escape codes scattered through
 :mod:`pepper_cli.cli`: :func:`window_title` pushes the terminal's current
@@ -10,7 +10,7 @@ back "what was the title before" itself; the terminal remembers it.
 
 Restoring is best-effort. A terminal that doesn't implement the (private,
 xterm-specific) push/pop sequences just ignores them, and if it still honours
-OSC 0 the ``Pepper`` title stays after exit until something else (usually the
+OSC 0 the Pepper title stays after exit until something else (usually the
 shell prompt) sets a new one. That's cosmetic, never a hard failure, so this is
 safe to wrap around the REPL unconditionally rather than trying to detect
 terminal capability first. For the same reason a failed title write (a closed
@@ -23,6 +23,10 @@ from __future__ import annotations
 import contextlib
 import sys
 from collections.abc import Generator
+
+#: The base window/tab title. The pepper emoji is the closest a terminal program can
+#: get to an app icon: a terminal tab shows text, and no standard escape sets an image.
+APP_TITLE = "\N{HOT PEPPER}\N{VARIATION SELECTOR-16} Pepper"
 
 #: xterm "push current title onto the stack" (``Ps = 22``, ``Pt = 0`` for
 #: both the icon and window title).

@@ -15,8 +15,10 @@ from typing import Any, Self
 import httpx
 import pytest
 
-from pepper_cli import api_client, cli, credentials
+from pepper_cli import api_client, cli, credentials, window_title
 from pepper_cli.secret import SecretStr
+
+APP = window_title.APP_TITLE
 
 
 @pytest.fixture
@@ -402,7 +404,7 @@ def test_repl_tty_sets_and_restores_window_title(
 
     out = capsys.readouterr().out
     push_at = out.index("\x1b[22;0t")
-    set_at = out.index("\x1b]0;Pepper (example.com)\x07")
+    set_at = out.index("\x1b]0;\N{HOT PEPPER}\N{VARIATION SELECTOR-16} Pepper (example.com)\x07")
     pop_at = out.index("\x1b[23;0t")
     assert push_at < set_at < pop_at
 
@@ -418,25 +420,25 @@ def test_repl_default_server_title_has_no_host_suffix(
     assert rc == 0
 
     out = capsys.readouterr().out
-    assert "\x1b]0;Pepper\x07" in out
+    assert "\x1b]0;\N{HOT PEPPER}\N{VARIATION SELECTOR-16} Pepper\x07" in out
     assert "Pepper (" not in out
 
 
 @pytest.mark.parametrize(
     ("server_url", "expected"),
     [
-        ("http://localhost:8000", "Pepper (localhost:8000)"),
-        ("https://pepper.example.com", "Pepper (pepper.example.com)"),
-        ("https://alice:hunter2@pepper.example.com:8443/x", "Pepper (pepper.example.com:8443)"),
-        ("https://alice@pepper.example.com", "Pepper (pepper.example.com)"),
-        ("http://[::1]:8000", "Pepper ([::1]:8000)"),
-        ("not a url", "Pepper"),
+        ("http://localhost:8000", f"{APP} (localhost:8000)"),
+        ("https://pepper.example.com", f"{APP} (pepper.example.com)"),
+        ("https://alice:hunter2@pepper.example.com:8443/x", f"{APP} (pepper.example.com:8443)"),
+        ("https://alice@pepper.example.com", f"{APP} (pepper.example.com)"),
+        ("http://[::1]:8000", f"{APP} ([::1]:8000)"),
+        ("not a url", APP),
     ],
 )
 def test_repl_title_uses_host_and_port_only(server_url: str, expected: str) -> None:
     """Only hostname (+ port) reaches the title: userinfo in a ``--server``
     URL must never be written to the window title."""
-    title = cli._repl_title(server_url)
+    title = cli._terminal_title(server_url)
     assert title == expected
     assert "hunter2" not in title
     assert "alice" not in title
@@ -455,7 +457,7 @@ def test_repl_title_does_not_leak_credentials_end_to_end(
     assert rc == 0
 
     out = capsys.readouterr().out
-    assert "\x1b]0;Pepper (pepper.example.com)\x07" in out
+    assert "\x1b]0;\N{HOT PEPPER}\N{VARIATION SELECTOR-16} Pepper (pepper.example.com)\x07" in out
     assert "hunter2" not in out
 
 
@@ -753,3 +755,25 @@ async def test_completer_async_surface_matches_sync():
     assert async_words == sync_words
     assert "/morning-brief" in async_words
     assert {"/quit", "/exit", "/clear", "/help"} <= async_words
+
+
+def test_repl_banner_draws_the_rare_pepper(logged_in, patch_api_factory, monkeypatch, capsys):
+    from pepper_cli import whimsy
+
+    monkeypatch.setattr(whimsy, "startup_pepper", lambda **_: "PEPPER-ART-MARKER")
+    _patch_prompt(monkeypatch, lines=[])
+    assert cli.main(["chat"]) == 0
+    out = capsys.readouterr()
+    assert "PEPPER-ART-MARKER" in out.err
+    assert "PEPPER-ART-MARKER" not in out.out
+
+
+def test_repl_banner_has_no_pepper_on_most_starts(
+    logged_in, patch_api_factory, monkeypatch, capsys
+):
+    from pepper_cli import whimsy
+
+    monkeypatch.setattr(whimsy, "startup_pepper", lambda **_: None)
+    _patch_prompt(monkeypatch, lines=[])
+    assert cli.main(["chat"]) == 0
+    assert whimsy.PEPPER_ART not in capsys.readouterr().err

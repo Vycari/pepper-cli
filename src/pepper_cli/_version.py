@@ -72,6 +72,133 @@ def is_git_install() -> bool:
         return False
 
 
+def _receipt_requirements() -> list[dict]:
+    """The ``requirements`` entries of this uv tool install's receipt (``[]`` when unreadable)."""
+    import sys
+    import tomllib
+    from pathlib import Path
+
+    receipt = Path(sys.prefix) / "uv-receipt.toml"
+    try:
+        with receipt.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return []
+    tool = data.get("tool")
+    requirements = tool.get("requirements") if isinstance(tool, dict) else None
+    if not isinstance(requirements, list):
+        return []
+    return [e for e in requirements if isinstance(e, dict) and isinstance(e.get("name"), str)]
+
+
+def _is_this_package(entry: dict) -> bool:
+    from packaging.utils import canonicalize_name
+
+    return canonicalize_name(entry["name"].split("[")[0]) == canonicalize_name(DISTRIBUTION)
+
+
+def uv_tool_requirement() -> str | None:
+    """The requirement ``uv tool install`` recorded for this package, pin included.
+
+    ``None`` when this is not a uv tool install, the receipt cannot be read, or it lists no
+    requirement for this distribution.
+    """
+    for entry in _receipt_requirements():
+        if _is_this_package(entry):
+            specifier = entry.get("specifier")  # singular: uv's receipt and lock serialization
+            return entry["name"] + (specifier if isinstance(specifier, str) else "")
+    return None
+
+
+def uv_tool_with_requirements() -> list[str]:
+    """The ``--with`` packages the receipt records beside this one, as requirement strings.
+
+    A re-install with ``--force`` rewrites the receipt, so these have to be passed again or
+    they are dropped. Each keeps its extras and marker. Entries with a path or git source
+    cannot be rebuilt from the receipt and are left out.
+    """
+    out: list[str] = []
+    for entry in _receipt_requirements():
+        if _is_this_package(entry) or {"path", "directory", "git", "url"} & entry.keys():
+            continue
+        out.append(_requirement_string(entry))
+    return out
+
+
+def _requirement_string(entry: dict) -> str:
+    """A receipt entry as a PEP 508 requirement: name, extras, specifier and marker.
+
+    uv records extras (``extras = ["socks"]``) and an environment marker (``marker = "..."``)
+    as keys beside ``name`` and ``specifier``. Dropping them would re-install the package
+    without its extra's dependencies, or on a platform the marker excluded.
+    """
+    requirement = entry["name"]
+    extras = entry.get("extras")
+    if isinstance(extras, list):
+        names = [e for e in extras if isinstance(e, str)]
+        if names:
+            requirement += "[" + ",".join(names) + "]"
+    specifier = entry.get("specifier")
+    if isinstance(specifier, str):
+        requirement += specifier
+    marker = entry.get("marker")
+    if isinstance(marker, str) and marker:
+        requirement += "; " + marker
+    return requirement
+
+
+def is_pinned(
+    requirement: str, target: str | None = None, *, upgrade_required: bool = False
+) -> bool:
+    """Whether ``uv tool upgrade`` would stay where it is, for ``target`` when given.
+
+    A floor (``>=0.3``) and an exclusion (``!=0.2``) both still let it move up, so neither is
+    a pin on its own; anything that names a version to stay at, or a range to stay in, is.
+    With ``target`` known the question is whether the requirement still admits it, so an
+    exclusion that covers it (``!=0.4``, ``!=0.4.*``) is a pin.
+
+    ``upgrade_required`` is a 426: the server refuses this client, so a no-op upgrade is the
+    worst outcome. With no ``target`` to test against, any recorded specifier counts as a pin.
+    """
+    from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.version import InvalidVersion
+
+    try:
+        specifier = Requirement(requirement).specifier
+    except InvalidRequirement:
+        return False
+    if any(spec.operator not in (">=", "!=") for spec in specifier):
+        return True
+    if target is None:
+        return upgrade_required and len(specifier) > 0
+    try:
+        return not specifier.contains(target, prereleases=True)
+    except InvalidVersion:
+        return upgrade_required and len(specifier) > 0
+
+
+def pinned_below(latest: str) -> str | None:
+    """The recorded requirement that keeps this install off ``latest``, or ``None``.
+
+    A specifier that admits ``latest`` can take it with ``uv tool upgrade``; one that excludes
+    it makes the offer a loop, because the upgrade keeps the pin from the receipt (#127).
+    """
+    from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.version import InvalidVersion
+
+    requirement = uv_tool_requirement()
+    if requirement is None:
+        return None
+    try:
+        return (
+            None
+            if Requirement(requirement).specifier.contains(latest, prereleases=True)
+            else requirement
+        )
+    except (InvalidRequirement, InvalidVersion):
+        return None
+
+
 def _cache_path() -> Path:
     import os
     from pathlib import Path

@@ -925,17 +925,17 @@ def test_kinds_and_ignore_kinds_narrow_what_is_pushed_and_the_cursor_still_moves
 
 def test_the_cursor_file_moves_after_the_notification_is_handed_over(monkeypatch, tmp_path):
     events: list[str] = []
-    real_write = claude_channel._write_cursor_file
+    real_write = claude_channel._advance_cursor_file
 
-    def recording_write(path, cursor):
+    def recording_write(path, cursor, **kwargs):
         events.append(f"cursor:{getattr(cursor, 'cursor', cursor)}")
-        real_write(path, cursor)
+        return real_write(path, cursor, **kwargs)
 
     class Sink:
         def push(self, content, meta):
             events.append(f"push:{meta['kind']}")
 
-    monkeypatch.setattr(claude_channel, "_write_cursor_file", recording_write)
+    monkeypatch.setattr(claude_channel, "_advance_cursor_file", recording_write)
     fake = _Fake(_CONNECTED + _scope() + _event(7) + _cursor(9))
     api = api_client.ApiClient(
         server_url=_SERVER,
@@ -1020,6 +1020,141 @@ def test_a_first_run_says_so_and_gives_no_count(monkeypatch):
     assert note["meta"] == {"kind": "backlog", "first_run": "true"}
     assert "first run" in note["content"]
     assert f"room_id {_ROOM}" in note["content"]
+
+
+def test_a_head_start_sends_start_head_and_tells_the_session_once(monkeypatch, tmp_path, capsys):
+    cursor_file = tmp_path / "cursor"
+    fake = _Fake(
+        _CONNECTED + _scope() + _cursor(30) + _PING,
+        _CONNECTED + _scope() + _event(31),
+    )
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM, "--cursor-file", str(cursor_file)])
+
+    live, message = result.notifications
+    assert live["meta"] == {"kind": "backlog", "first_run": "true", "live_edge": "true"}
+    assert "live edge" in live["content"]
+    assert message["meta"]["kind"] == "message"
+    first, second = fake.stream_requests()[:2]
+    assert first.url.params["start"] == "head"
+    assert "since" not in first.url.params
+    assert "last-event-id" not in first.headers
+    # The reconnect resumes from the head it learned, and never asks for the head again.
+    assert "start" not in second.url.params
+    assert second.headers["last-event-id"] == "30"
+    assert json.loads(cursor_file.read_text())["cursor"] == 31
+    assert "Starting at the live edge" in " ".join(capsys.readouterr().err.split())
+
+
+def test_a_head_start_is_saved_even_when_no_event_follows(monkeypatch, tmp_path):
+    cursor_file = tmp_path / "cursor"
+    fake = _Fake(_CONNECTED + _scope() + _cursor(30))
+
+    run_channel(monkeypatch, fake, ["--room", _ROOM, "--cursor-file", str(cursor_file)])
+
+    assert json.loads(cursor_file.read_text())["cursor"] == 30
+
+
+def test_a_head_of_zero_is_saved_and_the_restart_resumes_from_it(monkeypatch, tmp_path):
+    cursor_file = tmp_path / "cursor"
+    run_channel(
+        monkeypatch,
+        _Fake(_CONNECTED + _scope() + _cursor(0)),
+        ["--room", _ROOM, "--cursor-file", str(cursor_file)],
+    )
+    assert json.loads(cursor_file.read_text())["cursor"] == 0
+
+    fake = _Fake(_CONNECTED + _scope() + _PING)
+    run_channel(monkeypatch, fake, ["--room", _ROOM, "--cursor-file", str(cursor_file)])
+
+    (request,) = fake.stream_requests()[:1]
+    assert "start" not in request.url.params
+
+
+def test_the_unscoped_channel_resumes_from_a_saved_zero_as_a_resume(monkeypatch, tmp_path):
+    cursor_file = tmp_path / "cursor"
+    cursor_file.write_text("0\n", encoding="utf-8")
+    old = _now() - timedelta(hours=2)
+    fake = _Fake(_CONNECTED + _event(1, created=old, scoped=False) + _PING)
+
+    result = run_channel(monkeypatch, fake, ["--cursor-file", str(cursor_file)])
+
+    (note,) = result.notifications
+    assert note["meta"]["kind"] == "backlog"
+    assert "first_run" not in note["meta"]
+    assert note["meta"]["count"] == "1"
+
+
+def test_nothing_is_saved_before_the_head_is_known(monkeypatch, tmp_path):
+    cursor_file = tmp_path / "cursor"
+    fake = _Fake(_CONNECTED + _scope() + _PING)
+
+    run_channel(monkeypatch, fake, ["--room", _ROOM, "--cursor-file", str(cursor_file)])
+
+    assert not cursor_file.exists()
+
+
+def test_the_unscoped_channel_also_starts_at_the_head(monkeypatch):
+    fake = _Fake(_CONNECTED + _cursor(12))
+
+    result = run_channel(monkeypatch, fake, [])
+
+    (live,) = result.notifications
+    assert live["meta"]["live_edge"] == "true"
+    request = fake.stream_requests()[0]
+    assert request.url.path == "/api/v1/groups/events/stream"
+    assert request.url.params["start"] == "head"
+    assert "since" not in request.url.params
+
+
+def test_start_beginning_replays_as_before_and_says_nothing_of_the_edge(monkeypatch, capsys):
+    fake = _Fake(_CONNECTED + _scope() + _PING)
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM, "--start", "beginning"])
+
+    assert result.notifications == []
+    params = fake.stream_requests()[0].url.params
+    assert params["since"] == "0"
+    assert "start" not in params
+    assert "live edge" not in capsys.readouterr().err
+
+
+def test_a_saved_position_wins_over_start_head(monkeypatch, tmp_path):
+    cursor_file = tmp_path / "cursor"
+    cursor_file.write_text(
+        json.dumps(
+            {
+                "v": 1,
+                "server": _SERVER,
+                "agent_person_id": _AGENT,
+                "room_id": _ROOM,
+                "topic_id": None,
+                "cursor": 3,
+            }
+        )
+    )
+    fake = _Fake(_CONNECTED + _scope() + _PING)
+
+    result = run_channel(
+        monkeypatch, fake, ["--room", _ROOM, "--start", "head", "--cursor-file", str(cursor_file)]
+    )
+
+    assert result.notifications == []
+    params = fake.stream_requests()[0].url.params
+    assert params["since"] == "3"
+    assert "start" not in params
+
+
+def test_a_server_that_ignores_start_still_gets_the_first_run_summary(monkeypatch):
+    """An older server replays its window and sends no cursor frame first: nothing is pushed as
+    messages, and the first-run summary still says what was skipped."""
+    old = _now() - timedelta(days=1)
+    fake = _Fake(_CONNECTED + _scope() + _event(4, created=old) + _PING)
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    (note,) = result.notifications
+    assert note["meta"] == {"kind": "backlog", "first_run": "true"}
 
 
 def test_nothing_is_pushed_for_a_quiet_restart(monkeypatch):
@@ -1300,6 +1435,57 @@ def test_an_unscoped_run_resumes_from_a_bare_cursor_file(monkeypatch, tmp_path):
     assert fake.stream_requests()[0].url.path == _UNSCOPED_PATH
     assert fake.stream_requests()[0].url.params["since"] == "12"
     assert cursor_file.read_text().strip() == "13"
+
+
+def test_the_channel_never_rewinds_a_cursor_file_another_reader_advanced(monkeypatch, tmp_path):
+    """The channel holds 13 in memory; a poll beside it moved the file to 50 meanwhile. The
+    channel's persist goes through the forward-only write, so the file keeps 50 (VR-d85ddac2)."""
+    cursor_file = tmp_path / "cursor"
+    cursor_file.write_text("12\n")
+    real_advance = claude_channel._advance_cursor_file
+
+    def poll_lands_first(path, cursor, **kwargs):
+        cli._write_cursor_file(path, 50)
+        return real_advance(path, cursor, **kwargs)
+
+    monkeypatch.setattr(claude_channel, "_advance_cursor_file", poll_lands_first)
+    fake = _Fake(_CONNECTED + _event(13, author=_BOB, scoped=False))
+
+    run_channel(monkeypatch, fake, ["--self", _BOB, "--cursor-file", str(cursor_file)])
+
+    assert cursor_file.read_text().strip() == "50"
+
+
+def test_a_reconnect_resumes_from_the_channels_own_cursor_not_the_file(monkeypatch, tmp_path):
+    """VR-ba861d68: at-least-once delivery to Claude. The channel pushed 13; another reader moved
+    the shared file to 50; the stream drops before 14..49 arrive. The reconnect resumes from 13,
+    the channel's own cursor, so 14..49 are pushed (a duplicate of what the other reader saw is
+    acceptable, a loss is not), and the file is never written back below 50."""
+    cursor_file = tmp_path / "cursor"
+    cursor_file.write_text("12\n")
+    real_advance = claude_channel._advance_cursor_file
+    landed: list[bool] = []
+
+    def another_reader_lands_first(path, cursor, **kwargs):
+        if not landed:
+            landed.append(True)
+            cli._write_cursor_file(path, 50)
+        return real_advance(path, cursor, **kwargs)
+
+    monkeypatch.setattr(claude_channel, "_advance_cursor_file", another_reader_lands_first)
+    ids = {n: f"00000000-0000-0000-0000-0000000001{n:02d}" for n in (14, 30, 49)}
+    later = "".join(_event(n, message=m, scoped=False) for n, m in ids.items())
+    fake = _Fake(_CONNECTED + _event(13, scoped=False), 503, _CONNECTED + later)
+    for m in ids.values():
+        fake.messages[m] = _message_json(m)
+
+    result = run_channel(monkeypatch, fake, ["--cursor-file", str(cursor_file)])
+
+    resumes = [r.headers.get("last-event-id") for r in fake.stream_requests()[:3]]
+    assert resumes[0] is None
+    assert resumes[1:] == ["13", "13"]
+    assert result.kinds() == ["message"] * 4
+    assert cursor_file.read_text().strip() == "50"
 
 
 def test_a_scoped_cursor_file_for_another_room_ends_the_channel(monkeypatch, tmp_path):

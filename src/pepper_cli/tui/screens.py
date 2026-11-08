@@ -256,3 +256,41 @@ class InfoScreen(ModalScreen[None]):
 
     def action_close(self) -> None:
         self.dismiss(None)
+
+
+class SplashScreen(ModalScreen[None]):
+    """The rare full-screen pepper at TUI start (``pepper_cli.whimsy``).
+
+    Any key or a click closes it, and it closes itself after :attr:`SECONDS`. The app's
+    first reads run behind it, so it never delays startup.
+    """
+
+    #: How long the pepper stays up on its own.
+    SECONDS: ClassVar[float] = 4.0
+
+    def __init__(self, fortune: str) -> None:
+        super().__init__(id="splash")
+        self._fortune = fortune
+
+    def compose(self) -> ComposeResult:
+        from pepper_cli.whimsy import SPLASH_ART
+
+        with Vertical(id="splash-body"):
+            yield Static(Text(SPLASH_ART, style="bold green"), id="splash-art")
+            yield Static(Text(self._fortune, style="italic"), id="splash-fortune")
+            yield Static(Text("any key to continue", style="dim"), id="splash-hint")
+
+    def on_mount(self) -> None:
+        self.set_timer(self.SECONDS, self._close)
+
+    def on_key(self, event: events.Key) -> None:
+        event.stop()
+        self._close()
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self._close()
+
+    def _close(self) -> None:
+        if self.is_current:
+            self.dismiss(None)

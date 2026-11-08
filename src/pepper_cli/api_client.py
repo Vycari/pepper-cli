@@ -28,7 +28,10 @@ import json as _json
 import math
 import os
 import re as _re
+import socket
 import sys
+import threading
+import time
 import uuid
 from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field
@@ -59,6 +62,147 @@ FEED_STREAM_READ_TIMEOUT = 60.0
 #: server — the route always sets one — but a fallback here means a
 #: malformed/mocked response still lands somewhere sensible).
 DEFAULT_TAKEOUT_FILENAME = "pepper-takeout.zip"
+
+
+class ProxyEnvironmentError(Exception):
+    """``httpx`` could not build a client from the proxy environment.
+
+    Raised by :func:`make_http_client` when ``HTTP_PROXY``/``HTTPS_PROXY``/``ALL_PROXY`` or a
+    ``NO_PROXY`` entry is malformed. The message names the variables (and, for ``NO_PROXY``, the
+    position of the bad entry) and never carries their values: a proxy URL can hold a
+    password, and a ``NO_PROXY`` entry can be one pasted in by mistake.
+    """
+
+
+#: Every spelling of the proxy variables ``httpx`` reads through ``urllib``.
+_PROXY_ENV_NAMES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
+
+
+def _client_builds() -> bool:
+    """Whether ``httpx`` accepts the current proxy environment."""
+    try:
+        httpx.Client().close()
+    except (httpx.InvalidURL, ValueError):
+        return False
+    return True
+
+
+def _no_proxy_entry_builds(entry: str) -> bool:
+    """Whether ``entry`` alone, as the whole ``NO_PROXY``, builds a client.
+
+    Every other proxy variable is hidden meanwhile, so a malformed ``HTTPS_PROXY`` is not
+    blamed on the entry; the environment is restored before returning. (On Windows the
+    environment is case-insensitive, so ``NO_PROXY`` and ``no_proxy`` are one variable; the
+    save and restore below work either way.)
+    """
+    saved = {key: value for key, value in os.environ.items() if key.upper() in _PROXY_ENV_NAMES}
+    for key in saved:
+        del os.environ[key]
+    os.environ["NO_PROXY"] = os.environ["no_proxy"] = entry
+    try:
+        return _client_builds()
+    finally:
+        for key in ("NO_PROXY", "no_proxy"):
+            os.environ.pop(key, None)
+        os.environ.update(saved)
+
+
+def _malformed_no_proxy_entries() -> list[str]:
+    """Where the ``NO_PROXY``/``no_proxy`` entries ``httpx`` cannot parse sit, as
+    ``"NO_PROXY entry 2"`` labels: the variable and the 1-based position, never the value."""
+    found: list[str] = []
+    # On Windows the two spellings are one variable; read it once.
+    names = ("NO_PROXY",) if os.name == "nt" else ("NO_PROXY", "no_proxy")
+    for name in names:
+        raw = os.environ.get(name)
+        if not raw:
+            continue
+        for position, part in enumerate(raw.split(","), start=1):
+            entry = part.strip()
+            if entry and not _no_proxy_entry_builds(entry):
+                found.append(f"{name} entry {position}")
+    return found
+
+
+def make_http_client(*, timeout: float) -> httpx.Client:
+    """An ``httpx.Client`` built from the proxy environment, or :class:`ProxyEnvironmentError`.
+
+    ``httpx`` parses the proxy environment when the client is built and raises
+    ``httpx.InvalidURL`` (not a ``RequestError``) on a bad value, such as the ``NO_PROXY``
+    entry ``[fe80::1]``. Nothing is skipped: a ``NO_PROXY`` entry is an instruction to reach a
+    host directly, and dropping it would send that host's requests, bearer token included,
+    through the proxy the user excluded. So the command stops, and the error names the
+    variable (and the bad entry's position) without its value.
+    """
+    try:
+        return httpx.Client(timeout=timeout)
+    except (httpx.InvalidURL, ValueError) as exc:
+        bad_entries = _malformed_no_proxy_entries()
+        if bad_entries:
+            msg = (
+                "Couldn't set up the HTTP client: "
+                f"{', '.join(bad_entries)} cannot be parsed. Fix or remove that entry (it "
+                "names a host to reach without the proxy, so it is not skipped), or unset "
+                "NO_PROXY/no_proxy."
+            )
+        else:
+            msg = (
+                "Couldn't set up the HTTP client: a proxy setting is malformed. Check "
+                "HTTP_PROXY, HTTPS_PROXY, ALL_PROXY and NO_PROXY/no_proxy "
+                "(and unset the bad one)."
+            )
+        raise ProxyEnvironmentError(msg) from exc
+
+
+def _within(limit: float | None, budget: float | None) -> float | None:
+    """``limit``, shortened to ``budget`` when one is given (``None`` is no limit)."""
+    if budget is None:
+        return limit
+    return budget if limit is None else min(limit, budget)
+
+
+class _DeadlineCut:
+    """Cut a streaming response's connection at a ``time.monotonic()`` deadline.
+
+    A read timeout is per read, so a stream that delivers a frame just before the deadline
+    gets the whole timeout again for the next read. This enforces one absolute end instead: a
+    timer shuts down and closes the connection's socket at the deadline, which wakes a read
+    blocked on it (on Windows only the close does), and :attr:`fired` tells the reader that the
+    error it then sees is the deadline. A response
+    with no socket to reach (a test transport, an unusual network stream) cannot be cut, so
+    :meth:`ApiClient._stream_feed` also ends the stream at the first frame past the deadline,
+    and the read timeout (already capped at the window's length) bounds a silent one.
+    """
+
+    def __init__(self, resp: httpx.Response, deadline: float | None) -> None:
+        self.fired = False
+        self._timer: threading.Timer | None = None
+        if deadline is None:
+            return
+        stream = resp.extensions.get("network_stream")
+        sock = None
+        with contextlib.suppress(Exception):
+            sock = stream.get_extra_info("socket") if stream is not None else None
+        if not isinstance(sock, socket.socket):
+            return
+
+        def cut() -> None:
+            self.fired = True
+            # shutdown wakes a read blocked on the socket on POSIX; Windows does not end a
+            # pending recv on shutdown, only on closesocket, so the socket is closed too.
+            # The reader then sees an OSError, which httpx raises as ReadError.
+            with contextlib.suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
+            with contextlib.suppress(OSError):
+                sock.close()
+
+        self._timer = threading.Timer(max(deadline - time.monotonic(), 0.0), cut)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def cancel(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
 
 
 class ApiError(Exception):
@@ -98,6 +242,18 @@ class ApiError(Exception):
             msg += f": {detail}"
         super().__init__(msg)
 
+    @property
+    def after_id(self) -> int | None:
+        """The ``after_id`` a 503 from the agent events page carries after a ``start=head``
+        read (``{"detail": ..., "after_id": N}``): the head that read found, which a retry must
+        resume from. ``None`` for any other body."""
+        try:
+            body = _json.loads(self.body)
+        except ValueError:
+            return None
+        value = body.get("after_id") if isinstance(body, dict) else None
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
 
 class UpgradeRequiredError(Exception):
     """A 426 from the server: this client version is no longer supported.
@@ -108,8 +264,10 @@ class UpgradeRequiredError(Exception):
     which prints ``message`` to stderr and exits non-zero. Never retried.
     """
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, minimum_version: str | None = None) -> None:
         self.message = message
+        #: The oldest supported release, from the 426 body's ``minimum_version`` field.
+        self.minimum_version = minimum_version
         super().__init__(message)
 
 
@@ -141,6 +299,20 @@ class ArtifactConflictError(ApiError):
         self.current_body = current_body
         self.current_etag = current_etag
         self.current_updated_at = current_updated_at
+
+
+# MIRROR: src/pepper/api/groups/_bodies.py::AgentSelf
+@dataclass(frozen=True)
+class AgentSelf:
+    """Response shape of ``GET /api/v1/groups/self`` (an agent token only)."""
+
+    person_id: str
+    display_name: str
+    room_count: int
+    #: The sponsoring person's display name; ``None`` when the agent has none.
+    sponsor_display_name: str | None = None
+    #: When the agent's token expires (ISO-8601 as the server wrote it); ``None`` if never.
+    expires_at: str | None = None
 
 
 # MIRROR: src/pepper/api/router.py::WhoamiResponse
@@ -1190,7 +1362,7 @@ def device_start(
     """
     server_url = server_url.rstrip("/")
     owns_client = client is None
-    http = client or httpx.Client(timeout=timeout)
+    http = client or make_http_client(timeout=timeout)
     try:
         resp = http.post(
             f"{server_url}/auth/device/start",
@@ -1228,7 +1400,7 @@ def device_poll(
     """
     server_url = server_url.rstrip("/")
     owns_client = client is None
-    http = client or httpx.Client(timeout=timeout)
+    http = client or make_http_client(timeout=timeout)
     try:
         resp = http.post(
             f"{server_url}/auth/device/poll",
@@ -1910,7 +2082,7 @@ class ApiClient:
         # ``client`` is the test seam — pass an ``httpx.Client`` with a
         # ``MockTransport`` to exercise this module without a real
         # server. Production code constructs one for itself.
-        self._client = client or httpx.Client(
+        self._client = client or make_http_client(
             timeout=DEFAULT_TIMEOUT if timeout is None else timeout
         )
         # Keep explicit caller/test timeouts intact. Only the normal CLI
@@ -1968,6 +2140,44 @@ class ApiClient:
             date_format=body.get("date_format", "mdy"),
             time_format=body.get("time_format", "12h"),
             person_id=body.get("person_id"),
+        )
+
+    def get_agent_self(self) -> AgentSelf | None:
+        """``GET /api/v1/groups/self``: who this agent token is. Agent tokens only (a PAT is a
+        403). ``None`` when the server has no such route (a 404, an older server), so the caller
+        keeps its earlier behaviour without an error."""
+        try:
+            resp = self._request("GET", "/api/v1/groups/self")
+        except ApiError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        # A body this can't read (a proxy's HTML page, a missing field) is no answer, the same
+        # as an older server's: the caller keeps its earlier output rather than crashing.
+        try:
+            body = resp.json()
+        except ValueError:
+            return None
+        if not isinstance(body, dict):
+            return None
+        person_id = body.get("person_id")
+        display_name = body.get("display_name")
+        room_count = body.get("room_count")
+        if (
+            not isinstance(person_id, str)
+            or not isinstance(display_name, str)
+            or not isinstance(room_count, int)
+            or isinstance(room_count, bool)
+        ):
+            return None
+        sponsor = body.get("sponsor_display_name")
+        expires = body.get("expires_at")
+        return AgentSelf(
+            person_id=person_id,
+            display_name=display_name,
+            room_count=room_count,
+            sponsor_display_name=sponsor if isinstance(sponsor, str) else None,
+            expires_at=expires if isinstance(expires, str) else None,
         )
 
     def list_skills(self) -> list[SkillSummary]:
@@ -2913,14 +3123,64 @@ class ApiClient:
                 return
             yield from _iter_sse_events(resp.iter_lines())
 
+    def get_agent_events_page(
+        self,
+        *,
+        after_id: int | None = 0,
+        limit: int = 100,
+        wait: int = 0,
+        start: str | None = None,
+    ) -> dict[str, Any]:
+        """``GET /api/v1/groups/events`` — one page of an agent member's roster-scoped event
+        feed as JSON, the non-streaming twin of :meth:`watch_agent_events`.
+
+        Returns the body, ``{"events": [...], "next_after_id": N}``: events with an id above
+        ``after_id`` (at most ``limit``, the server's cap is 100), in the shapes the stream
+        yields. A caller resumes from ``next_after_id``, which may be past the last event's id
+        (events the agent's roster does not show still move it), not from the last event.
+        ``wait`` (0 to 25 seconds) holds the request until an in-scope event arrives or the
+        wait ends, with an empty page. Agent-token only: a PAT is a 403, a revoked token a 401.
+
+        ``start="head"`` with ``after_id=None`` reads from the feed's current head (the server
+        takes ``start`` only when ``after_id`` is absent, so none is sent). A 503 after such a
+        read carries the head as :attr:`ApiError.after_id`; the retry resumes from that, never
+        from ``start="head"`` again. A server older than the parameter ignores it and reads
+        from the beginning.
+        """
+        params: dict[str, Any] = {"limit": limit, "wait": wait}
+        if after_id is not None:
+            params["after_id"] = after_id
+        if start is not None:
+            params["start"] = start
+        resp = self._request(
+            "GET",
+            "/api/v1/groups/events",
+            params=params,
+            timeout=DEFAULT_TIMEOUT + wait,
+        )
+        try:
+            body = resp.json()
+        except ValueError:
+            # Not JSON at all: the caller sees a page with no events list and reports it.
+            return {}
+        return body if isinstance(body, dict) else {}
+
     def watch_agent_events(
-        self, *, since: int = 0, last_event_id: int | None = None
+        self,
+        *,
+        since: int | None = 0,
+        last_event_id: int | None = None,
+        start: str | None = None,
+        read_timeout: float | None = None,
+        deadline: float | None = None,
     ) -> Generator[FeedFrame]:
         """``GET /api/v1/groups/events/stream`` — an agent member's roster-scoped
         event feed, as :class:`FeedFrame`s until the server closes it.
 
         Resumes after ``last_event_id`` (sent as ``Last-Event-ID``, what a
-        reconnect uses) when given, else after ``since`` (a first connect).
+        reconnect uses) when given, else after ``since`` (a first connect). With neither and
+        ``start="head"`` the stream begins at the feed's current head and opens with a
+        ``cursor`` frame naming it; a server that does not know ``start`` begins at 0 instead.
         Agent-token only: a PAT is a 403 and a revoked token a 401, both
         raised as :class:`ApiError` before any frame is yielded.
 
@@ -2928,10 +3188,20 @@ class ApiClient:
         stalled connection raises ``httpx.RequestError`` instead. Either way
         the caller reconnects from the last cursor it saw. Heartbeat comments
         surface as ``kind="comment"`` frames so the caller can tell a quiet
-        healthy connection from a dead one.
+        healthy connection from a dead one. ``read_timeout`` shortens the wait for the next
+        frame (never lengthens it), so a caller with a deadline gets
+        ``httpx.ReadTimeout`` on a quiet stream when the deadline comes. ``deadline`` (a
+        ``time.monotonic()`` instant) is the absolute end: the connection is cut then, and the
+        generator ends, however recently the last frame arrived (a read timeout alone is per
+        read, so it restarts with every frame).
         """
         yield from self._stream_feed(
-            "/api/v1/groups/events/stream", since=since, last_event_id=last_event_id
+            "/api/v1/groups/events/stream",
+            since=since,
+            last_event_id=last_event_id,
+            start=start,
+            read_timeout=read_timeout,
+            deadline=deadline,
         )
 
     def watch_scoped_events(
@@ -2939,8 +3209,11 @@ class ApiClient:
         room_id: str,
         *,
         topic_id: str | None = None,
-        since: int = 0,
+        since: int | None = 0,
         last_event_id: int | None = None,
+        start: str | None = None,
+        read_timeout: float | None = None,
+        deadline: float | None = None,
     ) -> Generator[FeedFrame]:
         """``GET /api/v1/groups/{room_id}/events/stream`` (or, with
         ``topic_id``, ``.../topics/{topic_id}/events/stream``): the agent
@@ -2958,7 +3231,12 @@ class ApiClient:
         if topic_id is not None:
             path += f"/topics/{topic_id}"
         yield from self._stream_feed(
-            f"{path}/events/stream", since=since, last_event_id=last_event_id
+            f"{path}/events/stream",
+            since=since,
+            last_event_id=last_event_id,
+            start=start,
+            read_timeout=read_timeout,
+            deadline=deadline,
         )
 
     def watch_person_events(
@@ -2984,9 +3262,17 @@ class ApiClient:
         )
 
     def _stream_feed(
-        self, path: str, *, since: int | None, last_event_id: int | None
+        self,
+        path: str,
+        *,
+        since: int | None,
+        last_event_id: int | None,
+        start: str | None = None,
+        read_timeout: float | None = None,
+        deadline: float | None = None,
     ) -> Generator[FeedFrame]:
-        """Open one SSE feed connection at ``path`` and yield its frames."""
+        """Open one SSE feed connection at ``path`` and yield its frames, until ``deadline``
+        (see :class:`_DeadlineCut`) when one is given."""
         headers = {
             "Authorization": f"Bearer {self._token.get_secret_value()}",
             "User-Agent": USER_AGENT,
@@ -2995,22 +3281,45 @@ class ApiClient:
         if last_event_id is not None:
             headers["Last-Event-ID"] = str(last_event_id)
         base_timeout = self._client.timeout
+        params: dict[str, Any] = {}
+        if since is not None:
+            params["since"] = since
+        if start is not None:
+            params["start"] = start
         with self._client.stream(
             "GET",
             f"{self._server_url}{path}",
-            params={"since": since} if since is not None else None,
+            params=params or None,
             headers=headers,
+            # ``read_timeout`` is a ``--for`` budget: connect, write and pool waits are bounded
+            # by it too, so a host that never answers cannot hold the run past its window. The
+            # read timeout restarts with every read, so ``deadline`` (``_DeadlineCut``) is what
+            # holds the window's end once the stream is open.
             timeout=httpx.Timeout(
-                connect=base_timeout.connect,
-                read=FEED_STREAM_READ_TIMEOUT,
-                write=base_timeout.write,
-                pool=base_timeout.pool,
+                connect=_within(base_timeout.connect, read_timeout),
+                read=_within(FEED_STREAM_READ_TIMEOUT, read_timeout),
+                write=_within(base_timeout.write, read_timeout),
+                pool=_within(base_timeout.pool, read_timeout),
             ),
         ) as resp:
             if resp.status_code >= 400:
                 resp.read()
                 _raise_for_error(resp)
-            yield from _iter_feed_frames(resp.iter_lines())
+            cut = _DeadlineCut(resp, deadline)
+            try:
+                for frame in _iter_feed_frames(resp.iter_lines()):
+                    yield frame
+                    # Whether or not the cut could be armed, a stream never outlasts its
+                    # window by more than the frame in hand.
+                    if deadline is not None and time.monotonic() >= deadline:
+                        return
+            except httpx.RequestError:
+                if cut.fired:
+                    # The deadline cut the connection: the stream ends, it did not fail.
+                    return
+                raise
+            finally:
+                cut.cancel()
 
     # ------------------------------------------------------------------
     # Research projects (``/api/v1/research-projects``)
@@ -4642,6 +4951,25 @@ def _upgrade_message(resp: httpx.Response) -> str:
     return line or DEFAULT_UPGRADE_MESSAGE
 
 
+def _minimum_version(resp: httpx.Response) -> str | None:
+    """The 426 body's ``minimum_version`` when it is a string that parses as a version."""
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+    value = data.get("minimum_version") if isinstance(data, dict) else None
+    if not isinstance(value, str):
+        return None
+    from packaging.version import InvalidVersion, Version
+
+    value = _sanitize_terminal_line(value, max_chars=64)
+    try:
+        Version(value)
+    except InvalidVersion:
+        return None
+    return value
+
+
 def _raise_for_error(resp: httpx.Response) -> NoReturn:
     """Raise for an error response (the body must already be read).
 
@@ -4649,7 +4977,7 @@ def _raise_for_error(resp: httpx.Response) -> NoReturn:
     :class:`UpgradeRequiredError`, everything else :class:`ApiError`.
     """
     if resp.status_code == 426:
-        raise UpgradeRequiredError(_upgrade_message(resp))
+        raise UpgradeRequiredError(_upgrade_message(resp), _minimum_version(resp))
     raise ApiError(
         status=resp.status_code,
         body=resp.text,

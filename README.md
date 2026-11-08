@@ -6,8 +6,9 @@ REPL, and read-only trajectory inspection.
 It authenticates with a **personal access token (PAT)** scoped to your own
 user — it never sees your Google credentials and never acts as anyone else.
 
-It depends only on `httpx`, `rich`, `prompt_toolkit`, and `textual` (no dependency on
-the Pepper server package).
+Its dependency list is deliberately short: `httpx`, `rich`, `prompt_toolkit`, `textual`,
+`pyyaml`, `packaging` and `mcp`, plus `tzdata` on Windows and the optional `setproctitle`
+where it ships a wheel. It has no dependency on the Pepper server package.
 
 The package is published as `vycari-pepper`; the command it installs is `pepper`.
 It is licensed under Apache-2.0 (see `LICENSE`).
@@ -41,18 +42,28 @@ There are two ways to get a `pepper` command, depending on what you're doing.
 ### Daily use — install it on your `PATH`
 
 ```bash
-uv tool install --from git+https://github.com/Vycari/pepper-cli vycari-pepper
+uv tool install vycari-pepper
 ```
 
-This puts a `pepper` executable on your `PATH` (typically `~/.local/bin/pepper`).
-Installing from PyPI will replace the git URL once the package is published there.
+This installs the latest release from [PyPI](https://pypi.org/project/vycari-pepper/) and puts
+a `pepper` executable on your `PATH` (typically `~/.local/bin/pepper`).
+
+**Install from `main` (unreleased changes).** To try changes that have merged but not yet
+been released, install from the repository instead:
+
+```bash
+uv tool install --force --from git+https://github.com/Vycari/pepper-cli vycari-pepper
+```
+
+Run `uv tool install --force vycari-pepper` to go back to the PyPI release.
 
 > [!NOTE]
 > **Upgrading from the old `pepper-cli` install.** Earlier versions were installed
 > from a subdirectory of the main Pepper repository under the name `pepper-cli`.
-> Remove that install once, then install as above:
+> Remove that install once, then install from PyPI:
 > ```bash
 > uv tool uninstall pepper-cli
+> uv tool install vycari-pepper
 > ```
 > Your credentials file (`~/.config/pepper/credentials.toml`) is unchanged and is
 > shared by the new install.
@@ -60,12 +71,16 @@ Installing from PyPI will replace the git URL once the package is published ther
 Keep in mind:
 
 > [!IMPORTANT]
-> **This is a *snapshot* pinned to the commit it was built from — it does not
-> auto-update.** After the CLI changes upstream (e.g. a new subcommand lands),
-> refresh it:
+> **An install is pinned to the release it came from — it does not
+> auto-update.** When a new release ships (e.g. one that adds a subcommand),
+> upgrade it:
 > ```bash
 > uv tool upgrade vycari-pepper
 > ```
+> If you installed a pinned version (`uv tool install vycari-pepper==0.3.0`), `uv tool
+> upgrade` keeps that pin. `uv tool install vycari-pepper` drops the pin but leaves the
+> old version in place; `uv tool install --force vycari-pepper` installs the latest. The
+> `F10` update prompt runs that for you, after saying the pin will be removed.
 > If you skip this, the old binary won't have the new subcommand — and because
 > bare `pepper <args>` is shorthand for `pepper chat`, an unrecognized command
 > like `pepper trajectories show <id>` is silently sent to your agent **as a chat
@@ -180,7 +195,7 @@ pepper whoami
 
 ### Every command
 
-Every command except `login` and the interactive REPL takes `--json`, and also switches to JSON output when the environment variable `PEPPER_JSON` is exactly `1`, so an agent can export it once; `--json` on the command line always wins, any other value (or unset) leaves the human output, and `login` and the interactive REPL ignore it. List commands answer `{"items": [...], "next_before": CURSOR-or-null}` (unpaged lists always have `null`); a failure under `--json` is one line on stderr, `{"error": {"code", "status", "message"}}`, with stdout empty. In JSON mode nothing prompts or opens an editor: pass `--yes` to destructive commands and `--file` to `notes`/`skills` create and edit, or the command exits 2. Exit 4 means a `--wait` stopped waiting; the work it started goes on.
+Every command except the interactive REPL takes `--json`, and also switches to JSON output when the environment variable `PEPPER_JSON` is exactly `1`, so an agent can export it once; `--json` on the command line always wins, any other value (or unset) leaves the human output, and the interactive REPL and `login` ignore it (`login` takes `--json` as a flag only, so an exported `PEPPER_JSON` never changes an interactive login). List commands answer `{"items": [...], "next_before": CURSOR-or-null}` (unpaged lists always have `null`); a failure under `--json` is one line on stderr, `{"error": {"code", "status", "message"}}`, with stdout empty. In JSON mode nothing prompts, opens an editor or opens a browser: pass `--yes` to destructive commands and `--file` to `notes`/`skills` create and edit, or the command exits 2; `login --json` takes the default server when `--server` is missing, refuses `--manual` without `--token` (exit 2), and prints the device flow's code and URL on stderr without opening a browser. Exit 4 means a `--wait` stopped waiting; the work it started goes on.
 
 | Command | What it does |
 | --- | --- |
@@ -188,7 +203,8 @@ Every command except `login` and the interactive REPL takes `--json`, and also s
 | `pepper <message>` | Send a one-shot message — multi-word, no quotes needed. |
 | `pepper chat ["msg"]` | One-shot with a message, or the REPL with none (the way back to the REPL on a terminal). On a terminal (not `--json`, trace off), a dim spinner on stderr shows what the turn is doing; pipes and `--json` output are unchanged. |
 | `pepper chat --root PATH ["msg"]` | Same, but let this session read files under `PATH` (repeatable). |
-| `pepper whoami [--json]` | Print the user behind the current credentials. |
+| `pepper whoami [--json]` | Print the user behind the current credentials. With an agent member's `pep_agt_` token it prints the agent instead: `person_id`, display name, sponsor, room count and expiry (a server without `GET /api/v1/groups/self` keeps the old 401). `pepper login` with an agent token prints the same identity: `Logged in as NAME (PERSON_ID), sponsored by SPONSOR, in N room(s).` |
+| `pepper fortune [--json]` | Print a short fortune from Pepper; `--json` prints `{"fortune"}`. Local and offline: no login, no server call. About one REPL start in fifty also draws a small pepper on stderr (terminals only), and about one `pepper tui` start in fifty opens on a full-screen pepper that any key (or four seconds) closes; set `PEPPER_NO_WHIMSY=1` to turn both off. |
 | `pepper tui` | Full-screen terminal UI: read and post in your rooms, and chat with Pepper. Needs a terminal; bare `pepper` opens it on one. See [`pepper tui`](#pepper-tui). |
 | `pepper chat "msg" --json` | One-shot chat; prints one JSON line per event, `{"kind", "payload"}`. The REPL ignores `--json`. |
 | `pepper calendar [WINDOW] [--planning] [--room R] [--json]` | Your calendar, or a room's with `--room` (any window except `schedule`; the room view has no weather, drive or schedule-plan layers). Your own view is the server's reading of your preferences: it leaves out calendars you hid, shows declined events if you turned them on, and `week` follows your week start and days shown unless you give `--start` or `--days`. |
@@ -250,13 +266,14 @@ Every command except `login` and the interactive REPL takes `--json`, and also s
 | `pepper rooms leave ROOM [--yes]` | Leave an open room; asks on a terminal unless `--yes`. |
 | `pepper rooms mute\|unmute ROOM` | Silence or restore a room's push notifications on your devices. |
 | `pepper rooms activity [--room ROOM] [--since TIME]` | The newest message from someone else in each recently active topic (default: last 24 hours). |
-| `pepper rooms watch [--room ROOM [--topic TOPIC]] [--since CURSOR] [--cursor-file PATH] [--json]` | Agent members: follow the event stream, one line per event (ids only; fetch bodies with `messages list`). Reconnects by itself and resumes from the cursor file. `--room`/`--topic` have the server narrow the stream to one room or topic, and refuse (never widen) on a server that cannot; use one cursor file per scope. Exit 3 when the server can no longer replay from the cursor without a gap. |
+| `pepper rooms watch [--room ROOM [--topic TOPIC]] [--since CURSOR] [--start head\|beginning] [--cursor-file PATH] [--for DURATION] [--json]` | Agent members: follow the event stream, one line per event (ids only; fetch bodies with `messages list`). Reconnects by itself and resumes from the cursor file. A first run (no `--since`, nothing saved in the cursor file) starts at the live edge, says so on stderr and saves the head at once; `--start beginning` replays from the start instead, and a saved position or `--since` always wins (`--start beginning` with `--since` exits 2). A server older than `--start` replays from the beginning either way. `--room`/`--topic` have the server narrow the stream to one room or topic, and refuse (never widen) on a server that cannot; use one cursor file per scope. `--for 45s` (or `2m`, `1h`) exits 0 after that long with the cursor saved (a hard end; a `--room` lookup counts against it), or 1 if no connection was accepted since the last failed attempt when the window ended. The cursor file only moves forward (a lower `--since` never rewinds it); to reset, delete it or use a new path. Give each reader (`rooms watch`, `rooms poll`, `agents claude-channel`) its own cursor file: readers sharing one split the events between them. Exit 3 when the server can no longer replay from the cursor without a gap. |
+| `pepper rooms poll [--since CURSOR] [--start head\|beginning] [--cursor-file PATH] [--wait SECONDS] [--kinds K,...] [--ignore-kinds K,...] [--json]` | Agent members: one read of the event feed instead of a stream, for a harness that runs one turn per wake. Prints the new events (the lines `rooms watch` prints), then the cursor (`cursor=N`, or `{"kind":"cursor","cursor":N}` under `--json`), and exits 0. `--wait` (0 to 25 s) holds the request for an event. Resumes from the server's `next_after_id`, which can be past the last event; `--cursor-file` is an unscoped watch's (a scoped watch's is refused, exit 2) and only moves forward, so an overlapping run or a lower `--since` never rewinds it. A first poll starts at the live edge like the watch (`--start beginning` polls from cursor 0); a 503 after it read the head saves that head to `--cursor-file` before exiting 1, so the next poll skips nothing. An answer that is not an events page exits 1. At most 100 events a call. |
 | `pepper topics list --room ROOM [--archived] [--json]` | List a room's topics (folded to unarchived by default, except the default topic, which always stays). `--json` marks the room's default topic with `is_default`. |
 | `pepper topics create --room ROOM NAME…` / `topics edit --room ROOM TOPIC --name NAME` | Start or rename a topic. |
 | `pepper topics archive\|unarchive --room ROOM TOPIC` | Archive or restore a topic. |
 | `pepper topics search [--room ROOM] QUERY… [--json]` | Find topics by name across your unarchived rooms, or in one room. |
-| `pepper messages list --room ROOM [--topic TOPIC] [--limit N] [--before C \| --since S] [--mark] [--json]` | Read a topic's messages, oldest to newest. Omit `--topic` for the room's default one. `--mark` then marks the topic read through its newest message. |
-| `pepper messages post --room ROOM --topic TOPIC [MESSAGE \| -] [--attach PATH ...] [--reply-to MESSAGE_ID] [--mention PERSON_ID ...] [--idempotency-key KEY]` | Post a message as yourself; `-` reads the body from stdin. `--reply-to` threads it onto a message, `--mention` structurally mentions a person id, and `--idempotency-key` makes a re-run of the same command unable to post twice. |
+| `pepper messages list --room ROOM [--topic TOPIC] [--limit N] [--before C \| --since S] [--mark] [--json]` | Read a topic's messages, oldest to newest. Omit `--topic` for the room's most recently active one (an agent token must name the topic: without `--topic` it exits 2). `--mark` then marks the topic read through its newest message. |
+| `pepper messages post --room ROOM --topic TOPIC [MESSAGE \| -] [--attach PATH ...] [--reply-to MESSAGE_ID] [--mention PERSON_ID ...] [--idempotency-key KEY]` | Post a message as yourself; `-` reads the body from stdin. `--reply-to` threads it onto a message, `--mention` structurally mentions a person id, and `--idempotency-key` makes a re-run of the same command unable to post twice. A `--reply-to` post without the flag derives the key (`cli:<reply-to>:<digest of topic, body and mentions>`), so a retried reply posts once (and so does an identical reply to the same message sent on purpose: give that one its own key); other posts get a random key. |
 | `pepper messages edit --room ROOM MESSAGE TEXT…` | Edit one of your messages. Message ids come from `messages list --json`. |
 | `pepper messages delete --room ROOM MESSAGE [--yes]` | Delete one of your messages. |
 | `pepper messages react\|unreact --room ROOM MESSAGE EMOJI` | Add or take back your reaction. |
@@ -272,14 +289,14 @@ Every command except `login` and the interactive REPL takes `--json`, and also s
 | `pepper apps uninstall --room ROOM APP [--yes]` | Uninstall an app (`APP` is an install id, app key or title). |
 | `pepper groups` | Retired: exits 2 and names the commands above. |
 | `pepper agents guide [--write DIR [--force]] [--json]` | Print the agent-usage guide (`SKILL.md`) shipped inside this binary: how an agent member logs in, watches, reads and posts in rooms. `--write DIR` writes `DIR/SKILL.md` and refuses to overwrite without `--force`. Needs no login and no network. |
-| `pepper agents claude-channel [--room ROOM [--topic TOPIC]] [--cursor-file PATH] [--kinds K,...] [--ignore-kinds K,...] [--self PERSON_ID]` | Agent members, in an interactive Claude Code session: an MCP server over stdio (Claude Code starts it from an `.mcp.json` entry; you do not run it by hand) that pushes each new room message, with its body, into the session as a Claude Code channel event and serves `messages_post`, `messages_list` and `messages_react` as tools. Takes `rooms watch`'s scope and cursor flags; no `--json`. Design: `planning/claude-code-channel.md`. |
+| `pepper agents claude-channel [--room ROOM [--topic TOPIC]] [--start head\|beginning] [--cursor-file PATH] [--kinds K,...] [--ignore-kinds K,...] [--self PERSON_ID]` | Agent members, in an interactive Claude Code session: an MCP server over stdio (Claude Code starts it from an `.mcp.json` entry; you do not run it by hand) that pushes each new room message, with its body, into the session as a Claude Code channel event and serves `messages_post`, `messages_list` and `messages_react` as tools. Takes `rooms watch`'s scope and cursor flags; no `--json`. A first run starts at the live edge and tells the session once (a `backlog` event with `live_edge="true"`). Design: `planning/claude-code-channel.md`. |
 | `pepper notes list [--room <group>] [--label L] [--json]` | List your notes, or a room's shared ones with `--room`. |
 | `pepper notes search "<query>" [--room <group>] [--label L] [--json]` | Case-insensitive substring search over note names and bodies. |
 | `pepper notes show <note> [--room <group>] [--json]` | Print one note's raw markdown body to stdout; `--json` for the full detail (labels, `updated_at`, `etag`, `shared`). |
 | `pepper notes create "<name>" [--room <group>] [--file PATH \| -]` | Create a note. Body from `$EDITOR`, or `--file PATH`/`--file -` for stdin. |
 | `pepper notes edit <note> [--room <group>] [--file PATH \| -] [--name NAME] [--if-match ETAG \| --force]` | Edit a note; sends nothing when the text is unchanged. |
 | `pepper comments list --note <note> [--room <room>] [--all] [--json]` | A room note's comment threads, oldest first: the quoted passage (or whole note), a `detached` marker when the quote is gone from the note, then author, time and body, with replies indented. Resolved threads are hidden (footer counts them); `--all` shows them marked "resolved by X"; `--json` always has every thread and `resolved_count`. |
-| `pepper comments create --note <note> [--room <room>] [--quote TEXT] [--reply-to ID] [--mention PERSON_ID]... [MESSAGE \| -] [--idempotency-key K] [--json]` | Comment on a room note: on an exact passage (`--quote`, which must appear once; exit 2 otherwise), or the whole note, or reply to a thread. Personal notes cannot be commented on (exit 2). |
+| `pepper comments create --note <note> [--room <room>] [--quote TEXT] [--reply-to ID] [--mention PERSON_ID]... [MESSAGE \| -] [--idempotency-key K] [--json]` | Comment on a room note: on an exact passage (`--quote`, which must appear once; exit 2 otherwise), or the whole note, or reply to a thread. A reply without `--idempotency-key` derives it from the reply-to id, note, body and mentions, so a retry comments once. Personal notes cannot be commented on (exit 2). |
 | `pepper comments resolve\|reopen --note <note> [--room <room>] THREAD_ID [--json]` | Mark a thread resolved, or reopen it (idempotent; `THREAD_ID` is the root message id from `comments list --json`). A reply to a resolved thread reopens it. |
 | `pepper messages list` on a note's comments topic | Prints a one-line header naming the note (and `pepper comments list --note <id>`), and a `> "quoted passage"` line above each anchored comment. |
 | `pepper notes delete <note> [--room <group>] [--yes]` | Delete a note; asks for confirmation unless `--yes` (off a terminal, `--yes` is required). |
@@ -290,7 +307,7 @@ Every command except `login` and the interactive REPL takes `--json`, and also s
 | `pepper artifacts delete ARTIFACT [--room R] [--yes] [--json]` | Delete an artifact of any kind (the server keeps it for a retention window; the CLI has no restore). Asks on a terminal; needs `--yes` otherwise. A number from a `--room` listing deletes in that room. |
 | `pepper preferences show [--json]` | Calendar > Preferences: home and work address, the account timezone, work days and hours, meals, workout time, how the calendar is drawn (hidden calendars by name, week start, days shown, declined events), weather switches. |
 | `pepper preferences edit [--timezone ZONE] [--home-address T] [--work-address T] [--work-days D] [--work-start HH:MM] [--work-end HH:MM] [--show N] [--hide N] [--meal NAME=HH:MM[,MIN]]... [--workout-at HH:MM] [--workout-minutes N] [--hide-calendar C]... [--show-calendar C]... [--week-start DAY] [--view-days N] [--json]` | Change only the fields given; the server keeps the rest and refuses an unknown timezone or an address it cannot place. `--work-days` takes `mon,wed-fri`, `weekdays`, `weekend`, `all`, or `none` to clear them; `--show`/`--hide` take `weather,commute,precip-amount,humidity,wind,uv,severe,declined`. `--hide-calendar`/`--show-calendar` take a calendar's name or id (`--show-calendar all` draws every one again); `--week-start` is `mon` to `sun`, or `today` to start on the date shown; `--view-days` is 2 to 7, or `work` for your work days. Moving the timezone also moves your scheduled tasks that follow it. Times, zones and addresses are sent as typed and the server checks them (a 422 is shown). A `--meal` or `--workout-*` flag that gives only half a pair is completed from your current values, because the server takes a meal's start and minutes together. |
-| `pepper login` / `pepper logout` | Store / delete credentials. |
+| `pepper login [--server URL] [--token T \| --manual] [--no-browser] [--json]` / `pepper logout` | Store / delete credentials. Under `--json` (the flag only; `login` ignores `PEPPER_JSON`) `login` prints one object, `{"ok": true, "server_url", "agent", ...}` (never the token), and its errors are the usual one-line `{"error": ...}` on stderr; the device code and URL still go to stderr. |
 
 **For agents.** `pepper agents guide` prints a skill document (frontmatter plus
 body, in the standard `SKILL.md` format) written for an agent that takes part in
@@ -412,12 +429,12 @@ Notes:
 - **The REPL streams** model thoughts, tool calls, and tool results as they
   happen over SSE. Slash commands: `/quit`, `/exit`, `/clear`, `/help`, plus one
   `/<skill-name>` entry per skill you own (Tab-completes). Ctrl-D exits.
-- **The REPL sets your terminal's window title** to `Pepper` (or `Pepper
-  (host)` when `--server` isn't the default — hostname and port only, never
+- **The REPL and `pepper tui` set your terminal's window title** to
+  `🌶️ Pepper` (or `🌶️ Pepper (host)` when `--server` isn't the default — hostname and port only, never
   any credentials in the URL) while it's open, and asks the terminal to
   restore the previous title on exit via the xterm title stack. Restoring is
   best-effort: a terminal that honours the title but not the stack (some
-  don't) keeps `Pepper` until your shell prompt or another program sets a
+  don't) keeps the title until your shell prompt or another program sets a
   new one. Only when stdout is a TTY — never for a one-shot
   `pepper chat MESSAGE` or piped/redirected output.
 - **The process itself shows as `pepper`** in process lists and in
@@ -596,6 +613,7 @@ numbers could not be saved (the top-level `note` is the calendar's):
   is stale and doesn't know the subcommand. Run `uv tool upgrade vycari-pepper`
   (or use `uv run pepper …` from a checkout).
 - **`401` / "log in again"** → token revoked or missing; re-run `pepper login`.
+- **A malformed proxy variable** → a malformed `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY`, or a `NO_PROXY`/`no_proxy` entry `httpx` cannot parse (for example `[fe80::1]`), stops the command with one error line naming the variable (and, for `NO_PROXY`, the entry's position) but never its value (exit 2; a JSON line under `--json`); fix or unset it. A bad `NO_PROXY` entry is not skipped: it names a host to reach without the proxy, and skipping it would send that host's requests, token included, through the proxy.
 - **"couldn't reach" / transport error** → check the `--server` URL and your
   connection.
 - **"Research projects are not enabled on this Pepper server."** (exit 1, `forbidden`) → the

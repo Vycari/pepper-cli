@@ -67,6 +67,8 @@ class _Watch:
     def __init__(self, *connections: _Connection | Exception) -> None:
         self.connections = list(connections)
         self.calls: list[dict[str, int | None]] = []
+        #: The ``start`` argument of each call (``"head"`` or ``None``).
+        self.starts: list[str | None] = []
         self.sleeps: list[float] = []
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> _Watch:
@@ -82,8 +84,9 @@ class _Watch:
             def __exit__(self, *exc_info):
                 return None
 
-            def watch_agent_events(self, *, since=0, last_event_id=None):
+            def watch_agent_events(self, *, since=0, last_event_id=None, start=None):
                 outer.calls.append({"since": since, "last_event_id": last_event_id})
+                outer.starts.append(start)
                 if not outer.connections:
                     raise KeyboardInterrupt
                 item = outer.connections.pop(0)
@@ -160,12 +163,112 @@ def test_the_cursor_file_supplies_the_start_and_since_overrides_it(monkeypatch, 
     assert watch.calls == [{"since": 5, "last_event_id": None}]
 
 
-def test_a_missing_cursor_file_starts_from_the_beginning(monkeypatch, tmp_path):
-    watch = _watch(monkeypatch)
+def test_a_missing_cursor_file_starts_at_the_live_edge(monkeypatch, tmp_path, capsys):
+    watch = _watch(monkeypatch, _Connection(_cursor(5)))
 
     cli.main(["rooms", "watch", "--cursor-file", str(tmp_path / "nope")])
 
+    # No position is sent: the server reads the head only when neither is given.
+    assert watch.calls[0] == {"since": None, "last_event_id": None}
+    assert watch.starts[0] == "head"
+    assert "Starting at the live edge" in " ".join(capsys.readouterr().err.split())
+
+
+def test_a_server_that_ignores_start_is_not_announced_as_the_live_edge(monkeypatch, capsys):
+    # It replays from the beginning and sends no cursor frame first.
+    _watch(monkeypatch, _Connection(_event(1)))
+
+    cli.main(["rooms", "watch"])
+
+    assert "live edge" not in capsys.readouterr().err
+
+
+def test_no_cursor_file_and_no_since_also_start_at_the_live_edge(monkeypatch):
+    watch = _watch(monkeypatch)
+
+    cli.main(["rooms", "watch"])
+
+    assert watch.calls == [{"since": None, "last_event_id": None}]
+    assert watch.starts == ["head"]
+
+
+def test_start_beginning_replays_from_zero_and_says_nothing(monkeypatch, tmp_path, capsys):
+    watch = _watch(monkeypatch)
+
+    cli.main(["rooms", "watch", "--start", "beginning", "--cursor-file", str(tmp_path / "nope")])
+
     assert watch.calls == [{"since": 0, "last_event_id": None}]
+    assert watch.starts == [None]
+    assert capsys.readouterr().err == ""
+
+
+def test_a_saved_position_wins_over_start(monkeypatch, tmp_path, capsys):
+    cursor_file = tmp_path / "cursor"
+    cursor_file.write_text("5\n")
+    for start in ("head", "beginning"):
+        watch = _watch(monkeypatch)
+
+        cli.main(["rooms", "watch", "--start", start, "--cursor-file", str(cursor_file)])
+
+        assert watch.calls == [{"since": 5, "last_event_id": None}]
+        assert watch.starts == [None]
+    assert capsys.readouterr().err == ""
+
+
+def test_since_wins_over_start_head_and_conflicts_with_start_beginning(monkeypatch, capsys):
+    watch = _watch(monkeypatch)
+    cli.main(["rooms", "watch", "--start", "head", "--since", "3"])
+    assert watch.calls == [{"since": 3, "last_event_id": None}]
+    assert watch.starts == [None]
+    capsys.readouterr()
+
+    watch = _watch(monkeypatch)
+    assert cli.main(["rooms", "watch", "--start", "beginning", "--since", "3"]) == 2
+    assert watch.calls == []
+    assert "--start beginning cannot be combined with --since" in capsys.readouterr().err
+
+
+def test_the_head_cursor_frame_is_saved_even_when_no_event_follows(monkeypatch, tmp_path):
+    cursor_file = tmp_path / "cursor"
+    _watch(monkeypatch, _Connection(_cursor(42)))
+
+    cli.main(["rooms", "watch", "--cursor-file", str(cursor_file)])
+
+    assert cursor_file.read_text().strip() == "42"
+
+
+def test_a_head_start_asks_for_the_head_again_until_it_is_learned(monkeypatch):
+    watch = _watch(
+        monkeypatch,
+        _Connection(then=httpx.ReadError("dropped")),
+        _Connection(_cursor(42), then=httpx.ReadError("dropped")),
+    )
+
+    cli.main(["rooms", "watch"])
+
+    assert watch.calls == [
+        {"since": None, "last_event_id": None},
+        {"since": None, "last_event_id": None},
+        {"since": 42, "last_event_id": 42},
+    ]
+    assert watch.starts == ["head", "head", None]
+
+
+def test_the_line_names_the_pepper_room_when_the_event_carries_one():
+    event = {
+        "id": 7,
+        "kind": "message.created",
+        "group_id": _GROUP,
+        "room_id": "00000000-0000-0000-0000-0000000000e1",
+        "payload": {"topic_id": _TOPIC},
+    }
+
+    line = cli._watch_event_line(event, as_json=False, cursor=7)
+
+    assert line == (
+        f"#7 message.created group={_GROUP} room=00000000-0000-0000-0000-0000000000e1 "
+        f"topic_id={_TOPIC}"
+    )
 
 
 def test_a_corrupt_cursor_file_is_an_error_not_a_silent_restart(monkeypatch, tmp_path, capsys):
@@ -200,8 +303,8 @@ def test_the_cursor_file_follows_each_event_and_each_cursor_frame(monkeypatch, t
 
     assert seen_at_print == ["", "3"]
     assert cursor_file.read_text() == "9\n"
-    # No temp file left behind.
-    assert [p.name for p in state.iterdir()] == ["cursor"]
+    # No temp file left behind; the sidecar lock file stays by design (never deleted).
+    assert sorted(p.name for p in state.iterdir()) == ["cursor", "cursor.lock"]
 
 
 def test_the_cursor_file_is_replaced_not_truncated(monkeypatch, tmp_path):
@@ -224,7 +327,7 @@ def test_a_dropped_stream_reconnects_from_the_last_cursor_with_last_event_id(mon
         _Connection(),
     )
 
-    assert cli.main(["rooms", "watch", "--json"]) == 0
+    assert cli.main(["rooms", "watch", "--start", "beginning", "--json"]) == 0
 
     assert watch.calls == [
         {"since": 0, "last_event_id": None},
@@ -521,7 +624,7 @@ def test_one_dropped_connection_that_reconnects_prints_nothing_on_stderr(monkeyp
         _Connection(_event(4)),
     )
 
-    assert cli.main(["rooms", "watch", "--json"]) == 0
+    assert cli.main(["rooms", "watch", "--start", "beginning", "--json"]) == 0
 
     out, err = capsys.readouterr()
     assert err == ""
@@ -532,7 +635,7 @@ def test_one_dropped_connection_that_reconnects_prints_nothing_on_stderr(monkeyp
 def test_two_failures_in_a_row_are_still_quiet(monkeypatch, capsys):
     _watch(monkeypatch, httpx.ConnectError("down"), httpx.ConnectError("down"), _Connection())
 
-    assert cli.main(["rooms", "watch"]) == 0
+    assert cli.main(["rooms", "watch", "--start", "beginning"]) == 0
 
     assert capsys.readouterr().err == ""
 
@@ -541,7 +644,7 @@ def test_consecutive_failures_print_the_notice_from_the_nth_and_keep_printing(mo
     n = cli._WATCH_QUIET_FAILURES
     _watch(monkeypatch, *[httpx.ConnectError("down")] * (n + 2))
 
-    cli.main(["rooms", "watch"])
+    cli.main(["rooms", "watch", "--start", "beginning"])
 
     notices = [line for line in capsys.readouterr().err.splitlines() if line]
     assert len(notices) == 3
@@ -557,7 +660,7 @@ def test_a_sign_of_life_restarts_the_quiet_count(monkeypatch, capsys):
     down = httpx.ConnectError("down")
     _watch(monkeypatch, down, down, _Connection(ping, then=down), down, _Connection())
 
-    assert cli.main(["rooms", "watch"]) == 0
+    assert cli.main(["rooms", "watch", "--start", "beginning"]) == 0
 
     assert capsys.readouterr().err == ""
 
@@ -579,7 +682,7 @@ def test_a_server_restarting_frame_resumes_quietly_and_at_once_from_the_cursor(m
         _Connection(_event(6), _event(7)),
     )
 
-    assert cli.main(["rooms", "watch", "--json"]) == 0
+    assert cli.main(["rooms", "watch", "--start", "beginning", "--json"]) == 0
 
     out, err = capsys.readouterr()
     assert err == ""
@@ -605,11 +708,11 @@ def test_repeated_server_restarting_backs_off_after_the_first_immediate_retry(mo
 
 def test_a_non_retryable_frame_and_fatal_statuses_still_speak_at_once(monkeypatch, capsys):
     _watch(monkeypatch, _Connection(_error("unauthorized", retry=False)))
-    assert cli.main(["rooms", "watch"]) == 1
+    assert cli.main(["rooms", "watch", "--start", "beginning"]) == 1
     assert capsys.readouterr().err.startswith("error: The server closed the stream")
 
     _watch(monkeypatch, api_client.ApiError(status=401, body="", detail="invalid bearer token"))
-    assert cli.main(["rooms", "watch"]) == 1
+    assert cli.main(["rooms", "watch", "--start", "beginning"]) == 1
     assert "401" in capsys.readouterr().err
 
 
@@ -701,7 +804,10 @@ def test_a_filtered_event_advances_the_cursor_the_reconnect_resumes_from(monkeyp
         _Connection(_event(1), _event(2, _CARDS), then=httpx.ReadError("dropped")),
         _Connection(_event(3)),
     )
-    assert cli.main(["rooms", "watch", "--json", "--ignore-kinds", _CARDS]) == 0
+    assert (
+        cli.main(["rooms", "watch", "--start", "beginning", "--json", "--ignore-kinds", _CARDS])
+        == 0
+    )
     assert _printed_ids(capsys) == [1, 3]
     assert [c["since"] for c in watch.calls[:2]] == [0, 2]
 
