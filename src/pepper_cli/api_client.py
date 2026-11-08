@@ -2150,13 +2150,30 @@ class ApiClient:
             if exc.status == 404:
                 return None
             raise
-        body = resp.json()
+        # A body this can't read (a proxy's HTML page, a missing field) is no answer, the same
+        # as an older server's: the caller keeps its earlier output rather than crashing.
+        try:
+            body = resp.json()
+        except ValueError:
+            return None
+        if not isinstance(body, dict):
+            return None
+        person_id = body.get("person_id")
+        display_name = body.get("display_name")
+        room_count = body.get("room_count")
+        if (
+            not isinstance(person_id, str)
+            or not isinstance(display_name, str)
+            or not isinstance(room_count, int)
+            or isinstance(room_count, bool)
+        ):
+            return None
         sponsor = body.get("sponsor_display_name")
         expires = body.get("expires_at")
         return AgentSelf(
-            person_id=body["person_id"],
-            display_name=body["display_name"],
-            room_count=body["room_count"],
+            person_id=person_id,
+            display_name=display_name,
+            room_count=room_count,
             sponsor_display_name=sponsor if isinstance(sponsor, str) else None,
             expires_at=expires if isinstance(expires, str) else None,
         )

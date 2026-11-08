@@ -300,6 +300,19 @@ def test_agent_login_drops_the_sponsor_clause_when_there_is_none(
     assert f"Logged in as Scout ({_AGENT_PERSON}), in 1 room(s)." in capsys.readouterr().err
 
 
+def test_agent_login_survives_a_network_error_on_the_self_lookup(
+    tmp_home: Path, patch_api, capsys
+) -> None:
+    """VR-f4d30bc2: the token was accepted by the rooms list; a timeout on the optional
+    self lookup keeps today's line and still saves the login."""
+    patch_api(groups=_ROOMS, agent_self=httpx.ReadTimeout("timed out"))
+
+    assert _agent_login() == 0
+
+    assert "Logged in as an agent member of" in capsys.readouterr().err
+    assert credentials.load() is not None
+
+
 def test_agent_login_json_carries_the_identity_fields(tmp_home: Path, patch_api, capsys) -> None:
     patch_api(groups=_ROOMS, agent_self=_agent_self())
 

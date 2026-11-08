@@ -2435,6 +2435,10 @@ def _login_agent(args: argparse.Namespace, server_url: str, token: SecretStr) ->
                     # server without the route (None above) or a hiccup keeps today's output.
                     if exc.status == 401:
                         raise
+                except httpx.RequestError:
+                    # The token was already accepted by list_groups: a timeout or a dropped
+                    # connection on this optional read must not fail the login.
+                    me = None
     except api_client.ApiError as exc:
         if exc.status == 401:
             _emit_error(

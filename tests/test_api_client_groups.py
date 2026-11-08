@@ -917,6 +917,26 @@ def test_get_agent_self_parses_the_agent_and_tolerates_nulls() -> None:
     assert bare.expires_at is None
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"<html>proxy</html>",
+        b"[]",
+        b"{}",
+        b'{"person_id": "p", "display_name": "S"}',
+        b'{"person_id": "p", "display_name": "S", "room_count": "3"}',
+    ],
+)
+def test_get_agent_self_is_none_for_a_body_it_cannot_read(content: bytes) -> None:
+    """VR-cf40470c: a 200 that is not the self record is no answer, not a crash."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=content)
+
+    with _agent_client(handler) as api:
+        assert api.get_agent_self() is None
+
+
 def test_get_agent_self_is_none_on_an_older_server_and_raises_on_other_errors() -> None:
     def old(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, json={"detail": "Not Found"})
