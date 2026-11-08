@@ -301,6 +301,11 @@ class _LoginApi:
     def put_client_capabilities(self):
         return None
 
+    def get_agent_self(self):
+        return api_client.AgentSelf(
+            person_id="p-1", display_name="Scout", room_count=3, sponsor_display_name="Ada"
+        )
+
     def list_groups(self, *, archived=False):
         if _LoginApi.groups_error:
             raise _LoginApi.groups_error
@@ -404,6 +409,7 @@ def test_login_json_for_an_agent_token(login_api, capsys):
     body = json.loads(captured.out)
     assert body["agent"] is True
     assert body["rooms"] == 3
+    assert body["person_id"] == "p-1"
     assert "pep_agt_secret" not in captured.out + captured.err
 
 

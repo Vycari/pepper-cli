@@ -231,7 +231,7 @@ def test_a_room_watch_streams_the_room_route_and_prints_json_byte_exact(monkeypa
     server = _Server(_CONNECTED + _scope() + _event(7) + _cursor(9))
     _serve(monkeypatch, server)
 
-    assert cli.main(["rooms", "watch", "--room", _ROOM, "--json"]) == 0
+    assert cli.main(["rooms", "watch", "--start", "beginning", "--room", _ROOM, "--json"]) == 0
 
     lines = capsys.readouterr().out.splitlines()
     assert lines[0] == json.dumps({**_event_data(7), "cursor": 7}, separators=(",", ":"))
@@ -915,3 +915,89 @@ def test_an_upper_case_room_id_is_canonical_before_the_topic_lookup(monkeypatch,
     assert cli.main(["rooms", "watch", "--room", _ROOM.upper(), "--topic", "dinner"]) == 0
 
     assert f"/api/v1/groups/{_ROOM}/topics" in server.paths()
+
+
+# ---------------------------------------------------------------------------
+# A first run starts at the live edge (--start).
+
+
+def test_a_scoped_first_run_sends_start_head_and_no_position(monkeypatch, tmp_path, capsys):
+    cursor_file = tmp_path / "cursor"
+    server = _Server(_CONNECTED + _scope() + _cursor(30))
+    _serve(monkeypatch, server)
+
+    assert cli.main(["rooms", "watch", "--room", _ROOM, "--cursor-file", str(cursor_file)]) == 0
+
+    params = server.stream_requests()[0].url.params
+    assert params["start"] == "head"
+    assert "since" not in params
+    assert "last-event-id" not in server.stream_requests()[0].headers
+    assert "Starting at the live edge" in " ".join(capsys.readouterr().err.split())
+    # The head is saved even though no event followed it.
+    assert json.loads(cursor_file.read_text())["cursor"] == 30
+
+
+def test_a_scoped_head_start_reconnects_from_the_head_it_learned(monkeypatch):
+    server = _Server(_CONNECTED + _scope() + _cursor(30), _CONNECTED + _scope() + _event(31))
+    _serve(monkeypatch, server)
+
+    assert cli.main(["rooms", "watch", "--room", _ROOM]) == 0
+
+    first, second = server.stream_requests()[:2]
+    assert first.url.params["start"] == "head"
+    assert "start" not in second.url.params
+    assert second.headers["last-event-id"] == "30"
+    assert second.url.params["since"] == "30"
+
+
+def test_a_scoped_head_start_that_dropped_before_the_head_asks_again(monkeypatch):
+    server = _Server(_CONNECTED + _scope(), _CONNECTED + _scope() + _cursor(30))
+    _serve(monkeypatch, server)
+
+    assert cli.main(["rooms", "watch", "--room", _ROOM]) == 0
+
+    first, second = server.stream_requests()[:2]
+    assert first.url.params["start"] == "head"
+    assert second.url.params["start"] == "head"
+    assert "since" not in second.url.params
+    assert "last-event-id" not in second.headers
+
+
+def test_scoped_start_beginning_sends_since_zero_and_no_start(monkeypatch, capsys):
+    server = _Server(_CONNECTED + _scope() + _event(7))
+    _serve(monkeypatch, server)
+
+    assert cli.main(["rooms", "watch", "--room", _ROOM, "--start", "beginning"]) == 0
+
+    params = server.stream_requests()[0].url.params
+    assert params["since"] == "0"
+    assert "start" not in params
+    assert capsys.readouterr().err == ""
+
+
+def test_a_scoped_saved_position_wins_over_start(monkeypatch, tmp_path, capsys):
+    cursor_file = tmp_path / "cursor"
+    _scoped_file(cursor_file, cursor=5)
+    server = _Server(_CONNECTED + _scope() + _event(7))
+    _serve(monkeypatch, server)
+
+    code = cli.main(
+        ["rooms", "watch", "--room", _ROOM, "--start", "head", "--cursor-file", str(cursor_file)]
+    )
+
+    assert code == 0
+    params = server.stream_requests()[0].url.params
+    assert params["since"] == "5"
+    assert "start" not in params
+    assert capsys.readouterr().err == ""
+
+
+def test_scoped_start_beginning_with_since_is_a_usage_error(monkeypatch, capsys):
+    server = _Server()
+    _serve(monkeypatch, server)
+
+    code = cli.main(["rooms", "watch", "--room", _ROOM, "--start", "beginning", "--since", "3"])
+
+    assert code == 2
+    assert server.requests == []
+    assert "cannot be combined with --since" in capsys.readouterr().err

@@ -8,6 +8,7 @@ on-disk path, redirected to a temp dir via ``HOME``.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Self
 
@@ -42,7 +43,9 @@ class _FakeApi:
         trajectory_raw_response: dict | Exception | None = None,
         trajectory_list_response: list[api_client.TrajectoryListEntry] | Exception | None = None,
         groups_response: api_client.GroupList | Exception | None = None,
+        agent_self_response: api_client.AgentSelf | Exception | None = None,
     ) -> None:
+        self.agent_self_response = agent_self_response
         self.server_url = server_url
         self.token = token
         self.whoami_response = whoami_response
@@ -67,6 +70,16 @@ class _FakeApi:
         if self.whoami_response is None:
             raise AssertionError("test forgot to set whoami_response")
         return self.whoami_response
+
+    @property
+    def is_agent_token(self) -> bool:
+        return str(self.token.get_secret_value()).startswith("pep_agt_")
+
+    def get_agent_self(self) -> api_client.AgentSelf | None:
+        """``None`` is the 404 of an older server, which the real client folds the same way."""
+        if isinstance(self.agent_self_response, Exception):
+            raise self.agent_self_response
+        return self.agent_self_response
 
     def put_client_capabilities(self) -> dict | None:
         self.capabilities_puts += 1
@@ -143,6 +156,7 @@ def patch_api(monkeypatch):
         trajectory_raw=None,
         trajectory_list=None,
         groups=None,
+        agent_self=None,
     ):
         def factory(**kwargs: Any) -> _FakeApi:
             return _FakeApi(
@@ -152,6 +166,7 @@ def patch_api(monkeypatch):
                 trajectory_raw_response=trajectory_raw,
                 trajectory_list_response=trajectory_list,
                 groups_response=groups,
+                agent_self_response=agent_self,
                 **kwargs,
             )
 
@@ -231,6 +246,125 @@ def test_login_with_an_agent_token_validates_against_the_rooms_list(
     assert rc == 0
     assert credentials.load().token.get_secret_value() == "pep_agt_abc"
     assert "agent member of 2 room(s)" in capsys.readouterr().err
+
+
+_AGENT_PERSON = "00000000-0000-0000-0000-0000000000d1"
+_ROOMS = api_client.GroupList(enabled=True, degraded=False, total=2, archived_total=0)
+
+
+def _agent_self(**over: Any) -> api_client.AgentSelf:
+    fields: dict[str, Any] = {
+        "person_id": _AGENT_PERSON,
+        "display_name": "Scout",
+        "room_count": 3,
+        "sponsor_display_name": "Ada",
+        "expires_at": "2027-01-01T00:00:00Z",
+    }
+    return api_client.AgentSelf(**{**fields, **over})
+
+
+def _agent_login(*extra: str) -> int:
+    return cli.main(
+        [
+            "--profile",
+            "agent",
+            "login",
+            "--server",
+            "http://example.com",
+            "--token",
+            "pep_agt_abc",
+            *extra,
+        ]
+    )
+
+
+def test_agent_login_names_the_agent_its_sponsor_and_rooms(
+    tmp_home: Path, patch_api, capsys
+) -> None:
+    patch_api(groups=_ROOMS, agent_self=_agent_self())
+
+    assert _agent_login() == 0
+
+    err = capsys.readouterr().err
+    assert f"Logged in as Scout ({_AGENT_PERSON}), sponsored by Ada, in 3 room(s)." in err
+    assert "pep_agt_abc" not in err
+
+
+def test_agent_login_drops_the_sponsor_clause_when_there_is_none(
+    tmp_home: Path, patch_api, capsys
+) -> None:
+    patch_api(groups=_ROOMS, agent_self=_agent_self(sponsor_display_name=None, room_count=1))
+
+    assert _agent_login() == 0
+
+    assert f"Logged in as Scout ({_AGENT_PERSON}), in 1 room(s)." in capsys.readouterr().err
+
+
+def test_agent_login_survives_a_network_error_on_the_self_lookup(
+    tmp_home: Path, patch_api, capsys
+) -> None:
+    """VR-f4d30bc2: the token was accepted by the rooms list; a timeout on the optional
+    self lookup keeps today's line and still saves the login."""
+    patch_api(groups=_ROOMS, agent_self=httpx.ReadTimeout("timed out"))
+
+    assert _agent_login() == 0
+
+    assert "Logged in as an agent member of" in capsys.readouterr().err
+    assert credentials.load() is not None
+
+
+def test_agent_login_json_carries_the_identity_fields(tmp_home: Path, patch_api, capsys) -> None:
+    patch_api(groups=_ROOMS, agent_self=_agent_self())
+
+    assert _agent_login("--json") == 0
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["agent"] is True
+    assert out["rooms"] == 3
+    assert out["person_id"] == _AGENT_PERSON
+    assert out["display_name"] == "Scout"
+    assert out["sponsor_display_name"] == "Ada"
+    assert out["expires_at"] == "2027-01-01T00:00:00Z"
+    assert "pep_agt_abc" not in json.dumps(out)
+
+
+def test_agent_login_ignores_pepper_json(
+    tmp_home: Path, patch_api, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PEPPER_JSON", "1")
+    patch_api(groups=_ROOMS, agent_self=_agent_self())
+
+    assert _agent_login() == 0
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Logged in as Scout" in captured.err
+
+
+@pytest.mark.parametrize(
+    "agent_self",
+    [None, api_client.ApiError(status=500, body="", detail="boom")],
+    ids=["old-server-404", "server-error"],
+)
+def test_agent_login_keeps_todays_output_when_self_is_unavailable(
+    tmp_home: Path, patch_api, capsys, agent_self
+) -> None:
+    patch_api(groups=_ROOMS, agent_self=agent_self)
+
+    assert _agent_login() == 0
+
+    captured = capsys.readouterr()
+    assert "Logged in as an agent member of 2 room(s)." in captured.err
+    assert "error" not in captured.err.lower()
+    assert credentials.load().token.get_secret_value() == "pep_agt_abc"
+
+
+def test_agent_login_rejects_a_token_the_self_route_refuses(tmp_home: Path, patch_api) -> None:
+    patch_api(groups=_ROOMS, agent_self=api_client.ApiError(status=401, body="", detail="dead"))
+
+    assert _agent_login() == 1
+
+    assert not credentials.credentials_path().exists()
 
 
 @pytest.mark.parametrize(
@@ -567,6 +701,65 @@ def test_whoami_prints_user_fields(tmp_home: Path, patch_api, capsys) -> None:
     assert "Alice" in out
     assert "alice@example.com" in out
     assert "America/Los_Angeles" in out
+
+
+def _save_agent_credentials() -> None:
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_agt_abc"))
+
+
+def test_whoami_with_an_agent_token_prints_the_agent(tmp_home: Path, patch_api, capsys) -> None:
+    _save_agent_credentials()
+    patch_api(agent_self=_agent_self())
+
+    assert cli.main(["whoami"]) == 0
+
+    assert capsys.readouterr().out.splitlines() == [
+        f"person_id: {_AGENT_PERSON}",
+        "display_name: Scout",
+        "sponsor: Ada",
+        "rooms: 3",
+        "expires_at: 2027-01-01T00:00:00Z",
+    ]
+
+
+def test_whoami_with_an_agent_token_json(tmp_home: Path, patch_api, capsys) -> None:
+    _save_agent_credentials()
+    patch_api(agent_self=_agent_self(sponsor_display_name=None, expires_at=None))
+
+    assert cli.main(["whoami", "--json"]) == 0
+
+    assert json.loads(capsys.readouterr().out) == {
+        "person_id": _AGENT_PERSON,
+        "display_name": "Scout",
+        "sponsor_display_name": None,
+        "room_count": 3,
+        "expires_at": None,
+    }
+
+
+def test_whoami_with_an_agent_token_on_an_older_server_keeps_the_old_answer(
+    tmp_home: Path, patch_api, capsys
+) -> None:
+    _save_agent_credentials()
+    patch_api(agent_self=None, whoami=api_client.ApiError(status=401, body="", detail="agent"))
+
+    assert cli.main(["whoami"]) == 1
+
+    assert "pepper login" in " ".join(capsys.readouterr().err.split()).lower()
+
+
+def test_whoami_with_a_pat_never_asks_for_the_agent(tmp_home: Path, patch_api, capsys) -> None:
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
+    patch_api(
+        agent_self=AssertionError("a PAT has no agent self"),
+        whoami=api_client.Whoami(
+            user_id="u", email="a@example.com", display_name="Al", timezone="UTC"
+        ),
+    )
+
+    assert cli.main(["whoami"]) == 0
+
+    assert "display_name: Al" in capsys.readouterr().out
 
 
 def test_whoami_without_credentials_errors(tmp_home: Path, patch_api) -> None:
