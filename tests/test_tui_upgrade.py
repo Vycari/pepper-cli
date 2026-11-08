@@ -454,11 +454,101 @@ def test_a_426_removes_a_real_exclusion_on_the_required_release(tmp_path) -> Non
     assert _installed(tool_env) == "0.4.0"
 
 
-def _publish_stub(index, name: str, release: str) -> None:
+@pytest.mark.skipif(shutil.which("uv") is None, reason="needs a real uv to record the extra")
+def test_a_reinstall_keeps_a_real_with_packages_extra_and_marker(tmp_path) -> None:
+    """A ``--with`` package's extras and marker sit in uv's receipt as keys of their own
+    (VR-9c6f71ba), so the forced re-install must pass them back or lose the extra's
+    dependencies and the marker's platform limit."""
+    from pepper_cli import _version
+
+    index = tmp_path / "index"
+    for release in ("0.3.0", "0.4.0"):
+        _publish_stub(index, _version.DISTRIBUTION, release)
+    _publish_stub(
+        index,
+        "withpkg",
+        "1.0",
+        "Provides-Extra: fast\nRequires-Dist: extradep; extra == 'fast'\n",
+    )
+    _publish_stub(index, "extradep", "1.0")
+    _publish_stub(index, "neverpkg", "1.0")
+    env = {
+        **os.environ,
+        "UV_TOOL_DIR": str(tmp_path / "tools"),
+        "UV_TOOL_BIN_DIR": str(tmp_path / "bin"),
+        "UV_INDEX_URL": index.as_uri(),
+        "UV_NO_CACHE": "1",
+    }
+
+    def uv(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["uv", *args], env=env, capture_output=True, text=True, timeout=120, check=False
+        )
+
+    never = "neverpkg; sys_platform == 'never'"
+    installed = uv(
+        "tool",
+        "install",
+        f"{_version.DISTRIBUTION}==0.3.0",
+        "--with",
+        "withpkg[fast]>=1",
+        "--with",
+        never,
+    )
+    assert installed.returncode == 0, installed.stderr
+    tool_env = tmp_path / "tools" / _version.DISTRIBUTION
+    assert _dists(tool_env) >= {"withpkg", "extradep"}
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("sys.prefix", str(tool_env))
+        command = tui.upgrade_command("0.4.0", upgrade_required=True)
+    assert command == [
+        "uv",
+        "tool",
+        "install",
+        "--force",
+        "--with",
+        "withpkg[fast]>=1",
+        "--with",
+        never,
+        _version.DISTRIBUTION,
+    ]
+
+    moved = uv(*command[1:])
+    assert moved.returncode == 0, moved.stderr
+    assert _installed(tool_env) == "0.4.0"
+    dists = _dists(tool_env)
+    assert {"withpkg", "extradep"} <= dists
+    assert "neverpkg" not in dists
+    receipt = (tool_env / "uv-receipt.toml").read_text(encoding="utf-8")
+    assert 'extras = ["fast"]' in receipt
+    assert "sys_platform == 'never'" in receipt
+
+
+def _dists(tool_env) -> set[str]:
+    """The canonical names of every distribution installed in a uv tool environment."""
+    from importlib.metadata import PathDistribution
+    from pathlib import Path
+
+    from packaging.utils import canonicalize_name
+
+    candidates = [
+        *(tool_env / "lib").glob("python*/site-packages"),
+        *(tool_env / "Lib").glob("site-packages"),
+    ]
+    assert candidates, f"no site-packages under {tool_env}"
+    return {
+        canonicalize_name(dist.metadata["Name"] or "")
+        for dist in map(PathDistribution, Path(candidates[0]).glob("*.dist-info"))
+    }
+
+
+def _publish_stub(index, name: str, release: str, metadata: str = "") -> None:
     """Publish ``name`` ``release`` to a PEP 503 index as a wheel uv accepts unmodified.
 
     A wheel without ``RECORD`` or a module for its entry point is repacked or rejected, so
-    the stub carries both and a console script that imports.
+    the stub carries both and a console script that imports. ``metadata`` is extra
+    ``METADATA`` lines (``Provides-Extra``, ``Requires-Dist``).
     """
     import hashlib
     import zipfile
@@ -476,7 +566,7 @@ def _publish_stub(index, name: str, release: str) -> None:
     with zipfile.ZipFile(buffer, "w") as wheel:
         wheel.writestr(
             f"{dist_info}/METADATA",
-            f"Metadata-Version: 2.1\nName: {name}\nVersion: {release}\n",
+            f"Metadata-Version: 2.1\nName: {name}\nVersion: {release}\n{metadata}",
         )
         wheel.writestr(
             f"{dist_info}/WHEEL",
@@ -1011,6 +1101,8 @@ def test_a_reinstall_keeps_the_receipts_with_packages(monkeypatch, tmp_path) -> 
         "[tool]\nrequirements = [\n"
         '  { name = "vycari-pepper", specifier = "==0.3.0" },\n'
         '  { name = "rich", specifier = ">=13" },\n'
+        '  { name = "requests", extras = ["socks", "use-chardet"], specifier = ">=2" },\n'
+        '  { name = "colorama", marker = "sys_platform == \'win32\'" },\n'
         '  { name = "local", directory = "/x" },\n'
         "]\n",
         encoding="utf-8",
@@ -1023,6 +1115,10 @@ def test_a_reinstall_keeps_the_receipts_with_packages(monkeypatch, tmp_path) -> 
         "--force",
         "--with",
         "rich>=13",
+        "--with",
+        "requests[socks,use-chardet]>=2",
+        "--with",
+        "colorama; sys_platform == 'win32'",
         "vycari-pepper",
     ]
 

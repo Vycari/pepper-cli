@@ -114,16 +114,37 @@ def uv_tool_with_requirements() -> list[str]:
     """The ``--with`` packages the receipt records beside this one, as requirement strings.
 
     A re-install with ``--force`` rewrites the receipt, so these have to be passed again or
-    they are dropped. Entries that are not a plain name plus specifier (a path or git source)
+    they are dropped. Each keeps its extras and marker. Entries with a path or git source
     cannot be rebuilt from the receipt and are left out.
     """
     out: list[str] = []
     for entry in _receipt_requirements():
         if _is_this_package(entry) or {"path", "directory", "git", "url"} & entry.keys():
             continue
-        specifier = entry.get("specifier")
-        out.append(entry["name"] + (specifier if isinstance(specifier, str) else ""))
+        out.append(_requirement_string(entry))
     return out
+
+
+def _requirement_string(entry: dict) -> str:
+    """A receipt entry as a PEP 508 requirement: name, extras, specifier and marker.
+
+    uv records extras (``extras = ["socks"]``) and an environment marker (``marker = "..."``)
+    as keys beside ``name`` and ``specifier``. Dropping them would re-install the package
+    without its extra's dependencies, or on a platform the marker excluded.
+    """
+    requirement = entry["name"]
+    extras = entry.get("extras")
+    if isinstance(extras, list):
+        names = [e for e in extras if isinstance(e, str)]
+        if names:
+            requirement += "[" + ",".join(names) + "]"
+    specifier = entry.get("specifier")
+    if isinstance(specifier, str):
+        requirement += specifier
+    marker = entry.get("marker")
+    if isinstance(marker, str) and marker:
+        requirement += "; " + marker
+    return requirement
 
 
 def is_pinned(
