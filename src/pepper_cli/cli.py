@@ -109,7 +109,7 @@ import uuid
 import webbrowser
 from collections.abc import Callable, Generator, Iterable, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, NamedTuple, NoReturn
+from typing import Any, NamedTuple, NoReturn, TypeIs
 from urllib.parse import urlparse
 
 import httpx
@@ -7124,6 +7124,11 @@ def cmd_rooms_watch(args: argparse.Namespace) -> int:
         return 1
 
 
+def _is_position(value: object) -> TypeIs[int]:
+    """Whether ``value`` is a feed position (an int, never a bool)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def cmd_rooms_poll(args: argparse.Namespace) -> int:
     """``pepper rooms poll [--since CURSOR] [--cursor-file PATH] [--wait SECONDS]
     [--kinds K,...] [--ignore-kinds K,...] [--json]``.
@@ -7173,9 +7178,20 @@ def cmd_rooms_poll(args: argparse.Namespace) -> int:
                 "cursor did not move.",
             )
             return 1
+        next_id = page.get("next_after_id")
+        if at_head and not _is_position(next_id):
+            # A head read is how a first poll learns where it stands. A page that names no
+            # position can neither be saved (a stored 0 would replay the feed) nor skipped (the
+            # next head read would pass over what arrives meanwhile), so it is a failure.
+            _emit_error(
+                args,
+                "server",
+                "The server's answer named no position to start from. Nothing was printed and "
+                "no cursor was saved.",
+            )
+            return 1
         if at_head:
             render.info(LIVE_EDGE_NOTICE, soft_wrap=True)
-        next_id = page.get("next_after_id")
         for event in events:
             event_id = event.get("id") if isinstance(event, dict) else None
             if isinstance(event_id, bool) or not isinstance(event_id, int):
@@ -7185,13 +7201,10 @@ def cmd_rooms_poll(args: argparse.Namespace) -> int:
                 _emit_line(_watch_event_line(event, as_json=args.json, cursor=event_id))
             # An unusual page (ids not above the cursor) never moves the cursor back.
             next_id = max(next_id, event_id) if isinstance(next_id, int) else event_id
-        learned = not isinstance(next_id, bool) and isinstance(next_id, int)
-        if not learned:
+        if not _is_position(next_id):
             next_id = cursor
         cursor = max(cursor, next_id)
-        # A head read that learned no position saves nothing: a stored 0 would read as a
-        # saved position next run and replay the whole feed instead of starting at the head.
-        if args.cursor_file and (learned or not at_head):
+        if args.cursor_file:
             # An overlapping run may have moved the file further; print where it now stands,
             # so the printed cursor never sits behind the file.
             cursor = _advance_cursor_file(args.cursor_file, cursor)

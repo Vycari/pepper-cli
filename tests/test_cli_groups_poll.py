@@ -512,16 +512,17 @@ def test_a_first_poll_starts_at_the_head_and_says_so(monkeypatch, capsys):
     assert "Starting at the live edge" in " ".join(captured.err.split())
 
 
-def test_a_head_poll_that_learns_no_position_saves_none(monkeypatch, tmp_path):
+def test_a_head_page_that_names_no_position_is_a_failure(monkeypatch, capsys, tmp_path):
     cursor_file = tmp_path / "cursor"
-    poll = _poll(monkeypatch, {"events": []}, {"events": [], "next_after_id": 12})
+    _poll(monkeypatch, {"events": [{"id": 5, "kind": "message"}]})
 
-    assert cli.main(["rooms", "poll", "--cursor-file", str(cursor_file)]) == 0
+    assert cli.main(["rooms", "poll", "--cursor-file", str(cursor_file)]) == 1
+
     assert not cursor_file.exists()
-    assert cli.main(["rooms", "poll", "--cursor-file", str(cursor_file)]) == 0
-
-    assert poll.starts == ["head", "head"]
-    assert cursor_file.read_text(encoding="utf-8").strip() == "12"
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "named no position" in " ".join(captured.err.split())
+    assert "Starting at the live edge" not in captured.err
 
 
 def test_start_beginning_polls_after_id_zero_and_a_saved_position_wins(
