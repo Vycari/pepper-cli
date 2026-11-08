@@ -755,3 +755,25 @@ async def test_completer_async_surface_matches_sync():
     assert async_words == sync_words
     assert "/morning-brief" in async_words
     assert {"/quit", "/exit", "/clear", "/help"} <= async_words
+
+
+def test_repl_banner_draws_the_rare_pepper(logged_in, patch_api_factory, monkeypatch, capsys):
+    from pepper_cli import whimsy
+
+    monkeypatch.setattr(whimsy, "startup_pepper", lambda **_: "PEPPER-ART-MARKER")
+    _patch_prompt(monkeypatch, lines=[])
+    assert cli.main(["chat"]) == 0
+    out = capsys.readouterr()
+    assert "PEPPER-ART-MARKER" in out.err
+    assert "PEPPER-ART-MARKER" not in out.out
+
+
+def test_repl_banner_has_no_pepper_on_most_starts(
+    logged_in, patch_api_factory, monkeypatch, capsys
+):
+    from pepper_cli import whimsy
+
+    monkeypatch.setattr(whimsy, "startup_pepper", lambda **_: None)
+    _patch_prompt(monkeypatch, lines=[])
+    assert cli.main(["chat"]) == 0
+    assert whimsy.PEPPER_ART not in capsys.readouterr().err

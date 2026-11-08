@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
+from pepper_cli import whimsy
 from pepper_cli.api_client import ApiClient
 
 if TYPE_CHECKING:
@@ -198,7 +199,13 @@ def run(
     from pepper_cli.tui.app import PepperApp  # Textual is imported here, not at module load
 
     with ApiClient(server_url=server_url, token=token) as api:
-        app = PepperApp(api, provider=provider, bell=bell_enabled(), update_checker=update_checker)
+        app = PepperApp(
+            api,
+            provider=provider,
+            bell=bell_enabled(),
+            update_checker=update_checker,
+            splash=whimsy.splash_fortune(),
+        )
         app.run()
         update_version = getattr(app, "update_version", None)
         upgrade_requested = getattr(app, "upgrade_requested", False)
