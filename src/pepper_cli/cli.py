@@ -9526,7 +9526,8 @@ def _feed_changes(args: argparse.Namespace, current: dict[str, Any]) -> dict[str
 def cmd_calendar_publish_set(args: argparse.Namespace) -> int:
     """``pepper calendar publish set [--add-calendar C]… [--remove-calendar C]… [--add-follow F]…
     [--remove-follow F]… [--titles-off C]… [--titles-on C]… [--detail busy|full]
-    [--meals|--no-meals] [--workouts|--no-workouts] [--todos|--no-todos] [--consent] [--json]``: ``PATCH /api/v1/calendars/feed/sources``.
+    [--meals|--no-meals] [--workouts|--no-workouts] [--todos|--no-todos] [--consent] [--json]``:
+    ``PATCH /api/v1/calendars/feed/sources``.
 
     Reads the status once to turn labels into ids and to send whole replacement lists, then
     sends only what changed. On ``consent_required`` a terminal sees the server's disclosure and
