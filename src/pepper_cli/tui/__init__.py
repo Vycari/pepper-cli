@@ -64,6 +64,35 @@ def upgrade_command(
     return ["uv", "tool", "upgrade", _version.DISTRIBUTION]
 
 
+def manual_command(command: list[str], *, windows: bool | None = None) -> str:
+    """``command`` as one line a person can paste into their shell.
+
+    A plain ``" ".join`` breaks once an argument carries shell syntax: ``rich>=13`` is a
+    redirect, and a ``--with`` marker (``colorama; sys_platform == 'win32'``) ends the command
+    at the semicolon. POSIX gets :func:`shlex.join`. Windows gets double quotes, which both
+    PowerShell and cmd read as one argument; an argument with ``$``, a backtick or ``"`` (none
+    of which a requirement normally holds) gets PowerShell single quotes instead. The list
+    handed to ``subprocess.run`` is never quoted.
+    """
+    import re
+    import shlex
+    import sys
+
+    if windows is None:
+        windows = sys.platform == "win32"
+    if not windows:
+        return shlex.join(command)
+
+    def quote(arg: str) -> str:
+        if arg and re.fullmatch(r"[A-Za-z0-9_\-./:\\=]+", arg):
+            return arg
+        if re.search(r'[$`"]', arg):
+            return "'" + arg.replace("'", "''") + "'"
+        return f'"{arg}"'
+
+    return " ".join(quote(arg) for arg in command)
+
+
 def upgrade_prompt(
     message: str, *, offer: bool = True, target_version: str | None = None
 ) -> tuple[str, str]:
@@ -95,10 +124,10 @@ def upgrade_prompt(
 
     method = detect_install_method()
     if method == "uv-tool" and sys.platform == "win32":
-        manual = " ".join(upgrade_command(target_version, upgrade_required=not offer))
+        manual = manual_command(upgrade_command(target_version, upgrade_required=not offer))
         detail = f"Pepper will exit. Run '{manual}' in your terminal."
     elif method == "uv-tool" and pinned:
-        manual = " ".join(upgrade_command(target_version, upgrade_required=not offer))
+        manual = manual_command(upgrade_command(target_version, upgrade_required=not offer))
         detail = f"Pepper will exit and run '{manual}' in your terminal."
     elif method == "uv-tool":
         detail = "Pepper will exit and run 'uv tool upgrade vycari-pepper' in your terminal."
@@ -136,9 +165,9 @@ def _perform_upgrade(
         return 0
 
     command = upgrade_command(required, upgrade_required=upgrade_required)
-    manual = " ".join(command)
+    manual = manual_command(command)
     if sys.platform == "win32":
-        render.info(f"To upgrade to {to}, run:\n  {manual}")
+        render.info(f"To upgrade to {to}, run:\n  {manual}", soft_wrap=True)
         return 0
 
     uv_bin = shutil.which("uv")

@@ -316,6 +316,45 @@ def test_perform_upgrade_windows(monkeypatch, capsys) -> None:
     assert "To upgrade to v0.4.0, run:\n  uv tool upgrade vycari-pepper" in captured.err
 
 
+_WITH_MARKER = [
+    "uv",
+    "tool",
+    "install",
+    "--force",
+    "--with",
+    "rich>=13",
+    "--with",
+    "colorama; sys_platform == 'win32'",
+    "vycari-pepper",
+]
+
+
+def test_the_manual_command_quotes_shell_syntax_for_posix() -> None:
+    import shlex
+
+    line = tui.manual_command(_WITH_MARKER, windows=False)
+    assert shlex.split(line) == _WITH_MARKER
+    assert line.startswith("uv tool install --force --with 'rich>=13' ")
+
+
+def test_the_manual_command_quotes_shell_syntax_for_windows() -> None:
+    assert tui.manual_command(_WITH_MARKER, windows=True) == (
+        'uv tool install --force --with "rich>=13" '
+        "--with \"colorama; sys_platform == 'win32'\" vycari-pepper"
+    )
+    assert tui.manual_command(["uv", 'a$b"c'], windows=True) == "uv 'a$b\"c'"
+    assert tui.manual_command(["uv", "it's$"], windows=True) == "uv 'it''s$'"
+    assert tui.manual_command(["uv", ""], windows=True) == 'uv ""'
+
+
+def test_perform_upgrade_windows_prints_a_pasteable_marker(monkeypatch, capsys) -> None:
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.setattr(tui, "detect_install_method", lambda: "uv-tool")
+    monkeypatch.setattr(tui, "upgrade_command", lambda *a, **k: list(_WITH_MARKER))
+    assert tui._perform_upgrade("0.4.0", required="0.4.0") == 0
+    assert "--with \"colorama; sys_platform == 'win32'\" vycari-pepper" in capsys.readouterr().err
+
+
 def test_perform_upgrade_failure(monkeypatch, capsys) -> None:
     monkeypatch.setattr("sys.platform", "linux")
     monkeypatch.setattr(tui, "detect_install_method", lambda: "uv-tool")
