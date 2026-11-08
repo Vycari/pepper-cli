@@ -264,8 +264,10 @@ class UpgradeRequiredError(Exception):
     which prints ``message`` to stderr and exits non-zero. Never retried.
     """
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, minimum_version: str | None = None) -> None:
         self.message = message
+        #: The oldest supported release, from the 426 body's ``minimum_version`` field.
+        self.minimum_version = minimum_version
         super().__init__(message)
 
 
@@ -4915,6 +4917,25 @@ def _upgrade_message(resp: httpx.Response) -> str:
     return line or DEFAULT_UPGRADE_MESSAGE
 
 
+def _minimum_version(resp: httpx.Response) -> str | None:
+    """The 426 body's ``minimum_version`` when it is a string that parses as a version."""
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+    value = data.get("minimum_version") if isinstance(data, dict) else None
+    if not isinstance(value, str):
+        return None
+    from packaging.version import InvalidVersion, Version
+
+    value = _sanitize_terminal_line(value, max_chars=64)
+    try:
+        Version(value)
+    except InvalidVersion:
+        return None
+    return value
+
+
 def _raise_for_error(resp: httpx.Response) -> NoReturn:
     """Raise for an error response (the body must already be read).
 
@@ -4922,7 +4943,7 @@ def _raise_for_error(resp: httpx.Response) -> NoReturn:
     :class:`UpgradeRequiredError`, everything else :class:`ApiError`.
     """
     if resp.status_code == 426:
-        raise UpgradeRequiredError(_upgrade_message(resp))
+        raise UpgradeRequiredError(_upgrade_message(resp), _minimum_version(resp))
     raise ApiError(
         status=resp.status_code,
         body=resp.text,
