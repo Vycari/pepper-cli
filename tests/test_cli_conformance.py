@@ -79,6 +79,8 @@ NOUNS = frozenset(
         "whoami",
         "takeout",
         "tui",
+        # `fortune` is a session-style command like `whoami`: one local line, no object.
+        "fortune",
     }
 )
 
@@ -188,6 +190,7 @@ ROOM_NA = {
     "login": "session command",
     "logout": "session command",
     "whoami": "session command",
+    "fortune": "a local fortune; nothing about it is per room",
     "tui": "opens the whole app; rooms are chosen inside it",
     "chat": "talking to Pepper in a room is `messages post --mention`",
     "takeout": "exports the account, not a room",
@@ -1215,6 +1218,7 @@ JSON_CASES: dict[str, list[str]] = {
     "apps run": ["apps", "run", "notes", "archive"],
     "chat": ["chat", "hello"],
     "whoami": ["whoami"],
+    "fortune": ["fortune"],
     "login": ["login", "--server", "http://example.com", "--token", "pep_pat_new"],
     "logout": ["logout"],
     "takeout": ["takeout", "--out", "t.zip"],

@@ -138,6 +138,7 @@ from pepper_cli import (
     skill_doc,
     todos_view,
     turn,
+    whimsy,
     window_title,
 )
 from pepper_cli.due import parse_due
@@ -717,6 +718,13 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "whoami", help="Print the user behind the current credentials.", parents=[_json_parent]
     )
     p_whoami.set_defaults(handler=cmd_whoami)
+
+    p_fortune = sub.add_parser(
+        "fortune",
+        help="Print a short fortune from Pepper. Offline: needs no login.",
+        parents=[_json_parent],
+    )
+    p_fortune.set_defaults(handler=cmd_fortune)
 
     p_tui = sub.add_parser(
         "tui",
@@ -2620,6 +2628,13 @@ def cmd_whoami(args: argparse.Namespace) -> int:
     return _run_personal(args, run)
 
 
+def cmd_fortune(args: argparse.Namespace) -> int:
+    """``pepper fortune [--json]``: one local fortune. No server, no credentials."""
+    fortune = whimsy.pick_fortune()
+    _emit({"fortune": fortune}, args, lambda: print(fortune))
+    return 0
+
+
 def cmd_tui(args: argparse.Namespace) -> int:
     """``pepper tui``: the full-screen terminal UI.
 
@@ -2884,6 +2899,11 @@ def _run_repl(
                 " for non-chat subcommands (login / whoami / logout).",
             )
         )
+        # The rare pepper (about one start in fifty, never off a terminal, off with
+        # PEPPER_NO_WHIMSY=1). On stderr with the rest of the banner, so it never
+        # reaches anything piped from stdout.
+        if (art := whimsy.startup_pepper(is_tty=sys.stderr.isatty())) is not None:
+            render.info(render.styled((art, "green")))
         skill_names = {s.name for s in skills}
 
         while True:
