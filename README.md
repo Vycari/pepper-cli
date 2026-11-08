@@ -77,6 +77,10 @@ Keep in mind:
 > ```bash
 > uv tool upgrade vycari-pepper
 > ```
+> If you installed a pinned version (`uv tool install vycari-pepper==0.3.0`), `uv tool
+> upgrade` keeps that pin. `uv tool install vycari-pepper` drops the pin but leaves the
+> old version in place; `uv tool install --force vycari-pepper` installs the latest. The
+> `F10` update prompt runs that for you, after saying the pin will be removed.
 > If you skip this, the old binary won't have the new subcommand — and because
 > bare `pepper <args>` is shorthand for `pepper chat`, an unrecognized command
 > like `pepper trajectories show <id>` is silently sent to your agent **as a chat
@@ -419,12 +423,12 @@ Notes:
 - **The REPL streams** model thoughts, tool calls, and tool results as they
   happen over SSE. Slash commands: `/quit`, `/exit`, `/clear`, `/help`, plus one
   `/<skill-name>` entry per skill you own (Tab-completes). Ctrl-D exits.
-- **The REPL sets your terminal's window title** to `Pepper` (or `Pepper
-  (host)` when `--server` isn't the default — hostname and port only, never
+- **The REPL and `pepper tui` set your terminal's window title** to
+  `🌶️ Pepper` (or `🌶️ Pepper (host)` when `--server` isn't the default — hostname and port only, never
   any credentials in the URL) while it's open, and asks the terminal to
   restore the previous title on exit via the xterm title stack. Restoring is
   best-effort: a terminal that honours the title but not the stack (some
-  don't) keeps `Pepper` until your shell prompt or another program sets a
+  don't) keeps the title until your shell prompt or another program sets a
   new one. Only when stdout is a TTY — never for a one-shot
   `pepper chat MESSAGE` or piped/redirected output.
 - **The process itself shows as `pepper`** in process lists and in

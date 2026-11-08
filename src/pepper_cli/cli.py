@@ -153,11 +153,11 @@ from pepper_cli.terminal_text import sanitize_line
 _DEFAULT_SERVER = "https://pepper.vycari.ai"
 
 
-def _repl_title(server_url: str) -> str:
-    """Terminal window title for the REPL.
+def _terminal_title(server_url: str) -> str:
+    """Terminal window title for the REPL and the TUI.
 
-    Bare ``Pepper`` against the default production server; ``Pepper
-    (host)`` otherwise, so a REPL pointed at a local dev server or a
+    Bare :data:`window_title.APP_TITLE` (``🌶️ Pepper``) against the default
+    production server; ``🌶️ Pepper (host)`` otherwise, so a REPL pointed at a local dev server or a
     self-hosted instance never looks indistinguishable from one talking
     to production in your window/tab list.
 
@@ -165,14 +165,14 @@ def _repl_title(server_url: str) -> str:
     never ``netloc``: a ``--server`` URL may carry ``user:password@``
     userinfo, and a window title is visible to anyone looking at the screen
     and to other processes that can read it. A URL with no parseable host
-    falls back to bare ``Pepper`` rather than echoing the raw string.
+    falls back to the bare title rather than echoing the raw string.
     """
     if server_url == _DEFAULT_SERVER:
-        return "Pepper"
+        return window_title.APP_TITLE
     parsed = urlparse(server_url)
     host = parsed.hostname
     if not host:
-        return "Pepper"
+        return window_title.APP_TITLE
     if ":" in host:  # IPv6 literal: re-bracket so a port suffix stays readable.
         host = f"[{host}]"
     try:
@@ -181,7 +181,7 @@ def _repl_title(server_url: str) -> str:
         port = None
     if port is not None:
         host = f"{host}:{port}"
-    return f"Pepper ({host})"
+    return f"{window_title.APP_TITLE} ({host})"
 
 
 #: Destinations a user may pin a scheduled task to. Mirrors
@@ -2693,7 +2693,8 @@ def cmd_tui(args: argparse.Namespace) -> int:
     from pepper_cli import tui
 
     try:
-        return tui.run(server_url=creds.server_url, token=creds.token, provider=provider)
+        with window_title.window_title(_terminal_title(creds.server_url)):
+            return tui.run(server_url=creds.server_url, token=creds.token, provider=provider)
     except httpx.RequestError as exc:
         _emit_error(None, "network", f"Couldn't reach {creds.server_url}: {exc}")
         return 1
@@ -2889,7 +2890,7 @@ def _run_repl(
     history_path.parent.mkdir(parents=True, exist_ok=True)
 
     with (
-        window_title.window_title(_repl_title(creds.server_url)),
+        window_title.window_title(_terminal_title(creds.server_url)),
         api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api,
     ):
         # Fetch the skill list once at startup. A 401 here means the
