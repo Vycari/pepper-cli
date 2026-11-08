@@ -1071,6 +1071,20 @@ def test_a_head_of_zero_is_saved_and_the_restart_resumes_from_it(monkeypatch, tm
     assert "start" not in request.url.params
 
 
+def test_the_unscoped_channel_resumes_from_a_saved_zero_as_a_resume(monkeypatch, tmp_path):
+    cursor_file = tmp_path / "cursor"
+    cursor_file.write_text("0\n", encoding="utf-8")
+    old = _now() - timedelta(hours=2)
+    fake = _Fake(_CONNECTED + _event(1, created=old, scoped=False) + _PING)
+
+    result = run_channel(monkeypatch, fake, ["--cursor-file", str(cursor_file)])
+
+    (note,) = result.notifications
+    assert note["meta"]["kind"] == "backlog"
+    assert "first_run" not in note["meta"]
+    assert note["meta"]["count"] == "1"
+
+
 def test_nothing_is_saved_before_the_head_is_known(monkeypatch, tmp_path):
     cursor_file = tmp_path / "cursor"
     fake = _Fake(_CONNECTED + _scope() + _PING)
