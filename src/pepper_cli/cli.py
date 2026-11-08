@@ -19,8 +19,8 @@ Subcommands:
 - ``pepper trajectories show <id> | list`` — inspect saved turns; ``--room`` scopes
   to one room's.
 - ``pepper calendar [today|week|schedule] [--planning]`` — read-only agenda.
-- ``pepper calendar feed [show] | on | off | rotate | set`` — the calendar subscribe link
-  (``GET/POST/PATCH /api/v1/calendars/feed``).
+- ``pepper calendar publish [show] | on | off | rotate | set`` — publish your calendars at a
+  private address another calendar app subscribes to (``GET/POST/PATCH /api/v1/calendars/feed``).
 - ``pepper next [--room R] [--source PREFIX] [--all] [--json]`` — Now / today's calendar /
   todos, prioritized.
 - ``pepper todos list | create | edit | done | dismiss | reopen`` — manage tracked
@@ -122,7 +122,7 @@ from pepper_cli import (
     article_reader,
     artifacts_view,
     brief_view,
-    calendar_feed_view,
+    calendar_publish_view,
     credentials,
     feed,
     feed_detail_render,
@@ -347,10 +347,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     # flags) flows straight to the top-level argparse so flag-style
     # errors and help text stay sensible.
 
-    if argv[:2] == ["calendar", "feed"]:
+    if argv[:2] == ["calendar", "publish"]:
         # ``calendar`` takes an optional window word, which argparse cannot also split into
-        # subcommands, so the feed's verbs have a parser of their own.
-        parser = _build_calendar_feed_parser()
+        # subcommands, so publish's verbs have a parser of their own.
+        parser = _build_calendar_publish_parser()
         argv = argv[2:]
     args = parser.parse_args(argv)
     if hasattr(args, "json"):
@@ -836,7 +836,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
             "Show your calendar as a per-day agenda with weather, daylight and commute. "
             "today (the default), week and schedule are shortcuts; --start/--days pick any "
             "window (1-31 days). --room reads a room's calendar instead. "
-            "`pepper calendar feed --help` covers the subscribe link (show, on, off, rotate, set)."
+            "`pepper calendar publish --help` covers publishing your calendars at a private "
+            "address (show, on, off, rotate, set)."
         ),
         parents=[_room_parent(omitted="Omit for your own calendar."), _json_parent],
     )
@@ -8462,51 +8463,53 @@ def cmd_drafts_send(args: argparse.Namespace) -> int:
     return _run_personal(args, run, _report_draft_error)
 
 
-def _build_calendar_feed_parser() -> argparse.ArgumentParser:
-    """``pepper calendar feed [show|on|off|rotate|set]``; bare is ``show``."""
+def _build_calendar_publish_parser() -> argparse.ArgumentParser:
+    """``pepper calendar publish [show|on|off|rotate|set]``; bare is ``show``."""
     parser = argparse.ArgumentParser(
-        prog="pepper calendar feed",
+        prog="pepper calendar publish",
         description=(
-            "The calendar subscribe feed: a private link another calendar app polls. The link "
-            "is a secret and is shown only when it is made (on, rotate); it cannot be shown "
-            "again. The server decides what the feed carries. Bare `pepper calendar feed` is "
-            "`show`."
+            "Publish your calendars at a private address another calendar app subscribes to. "
+            "The address is a secret and is shown only when it is made (on, rotate); it cannot "
+            "be shown again. The server decides what is published. Stopping is final: the "
+            "address stops working for good and publishing again makes a new one. Bare "
+            "`pepper calendar publish` is `show`."
         ),
     )
     parser.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="JSON out.")
-    parser.set_defaults(handler=cmd_calendar_feed_show)
-    sub = parser.add_subparsers(dest="feed_action", metavar="{show,on,off,rotate,set}")
+    parser.set_defaults(handler=cmd_calendar_publish_show)
+    sub = parser.add_subparsers(dest="publish_action", metavar="{show,on,off,rotate,set}")
     p = sub.add_parser(
         "show",
-        help="Whether the feed is on, its detail level and sources (never the link).",
+        help="Whether you are publishing, its detail level and sources (never the address).",
         parents=[_json_parent],
     )
-    p.set_defaults(handler=cmd_calendar_feed_show)
+    p.set_defaults(handler=cmd_calendar_publish_show)
     p = sub.add_parser(
         "on",
-        help="Turn the feed on and print its link and webcal link once.",
+        help="Publish your calendars and print the private address once.",
         parents=[_json_parent],
     )
-    p.set_defaults(handler=cmd_calendar_feed_on)
+    p.set_defaults(handler=cmd_calendar_publish_on)
     p = sub.add_parser(
         "off",
-        help="Turn the feed off; the link stops answering.",
-        parents=[_json_parent],
-    )
-    p.set_defaults(handler=cmd_calendar_feed_off)
-    p = sub.add_parser(
-        "rotate",
-        help="Make a new link. Every subscription to the old one stops working.",
+        help="Stop publishing. The address stops working for good; publishing again makes a "
+        "new one.",
         parents=[_json_parent, _yes_parent],
     )
-    p.set_defaults(handler=cmd_calendar_feed_rotate)
+    p.set_defaults(handler=cmd_calendar_publish_off)
+    p = sub.add_parser(
+        "rotate",
+        help="Replace the address with a new one; the old one stops working for good.",
+        parents=[_json_parent, _yes_parent],
+    )
+    p.set_defaults(handler=cmd_calendar_publish_rotate)
     p = sub.add_parser(
         "set",
-        help="Change what the feed carries: calendars, follows, detail, meals, workouts, todos.",
+        help="Change what is published: calendars, follows, detail, meals, workouts, todos.",
         description=(
             "Change only what you name. Calendars and follows are given by label or id (a "
             "unique label prefix works); the rest of your list is sent back unchanged. Adding "
-            "your first Google calendar publishes its events at the link, so the server asks "
+            "your first Google calendar publishes its events at the address, so the server asks "
             "for consent: a terminal shows its disclosure and asks, anything else must pass "
             "--consent after showing the person the disclosure."
         ),
@@ -8522,15 +8525,15 @@ def _build_calendar_feed_parser() -> argparse.ArgumentParser:
             f"--{name}",
             action=argparse.BooleanOptionalAction,
             default=None,
-            help=f"Put {name} in the feed (--no-{name} takes them out).",
+            help=f"Publish {name} too (--no-{name} takes them out).",
         )
     p.add_argument(
         "--consent",
         action="store_true",
-        help="The person has agreed to publish their Google calendars at the link. Never "
+        help="The person has agreed to publish their Google calendars at the address. Never "
         "assume this; without it a terminal is asked and anything else is refused.",
     )
-    p.set_defaults(handler=cmd_calendar_feed_set)
+    p.set_defaults(handler=cmd_calendar_publish_set)
     return parser
 
 
@@ -8559,27 +8562,27 @@ def _feed_error_body(exc: api_client.ApiError) -> dict[str, Any]:
     return detail if isinstance(detail, dict) else {}
 
 
-def cmd_calendar_feed_show(args: argparse.Namespace) -> int:
-    """``pepper calendar feed [show] [--json]``: ``GET /api/v1/calendars/feed``."""
+def cmd_calendar_publish_show(args: argparse.Namespace) -> int:
+    """``pepper calendar publish [show] [--json]``: ``GET /api/v1/calendars/feed``."""
 
     def run(api: api_client.ApiClient) -> int:
         body = api.calendar_feed()
-        _emit(body, args, lambda: calendar_feed_view.status(body))
+        _emit(body, args, lambda: calendar_publish_view.status(body))
         return 0
 
     return _run_personal(args, run, _report_feed_error)
 
 
 def _emit_link(body: dict[str, Any], args: argparse.Namespace, *, rotated: bool) -> None:
-    """Print the one-time link. It is a credential: stdout only, never a log or a cache."""
-    _emit(body, args, lambda: calendar_feed_view.link(body, rotated=rotated))
+    """Print the one-time address. It is a credential: stdout only, never a log or a cache."""
+    _emit(body, args, lambda: calendar_publish_view.link(body, rotated=rotated))
     if not _json_mode(args):
-        render.info("Copy it now: the link can't be shown again. 'pepper calendar feed rotate'")
-        render.info("makes a new one, and the old one stops working.")
+        render.info("Copy it now: the address can't be shown again. 'pepper calendar publish")
+        render.info("rotate' makes a new one, and the old one stops working for good.")
 
 
-def cmd_calendar_feed_on(args: argparse.Namespace) -> int:
-    """``pepper calendar feed on [--json]``: ``POST /api/v1/calendars/feed/enable``."""
+def cmd_calendar_publish_on(args: argparse.Namespace) -> int:
+    """``pepper calendar publish on [--json]``: ``POST /api/v1/calendars/feed/enable``."""
 
     def run(api: api_client.ApiClient) -> int:
         _emit_link(api.calendar_feed_enable(), args, rotated=False)
@@ -8588,26 +8591,40 @@ def cmd_calendar_feed_on(args: argparse.Namespace) -> int:
     return _run_personal(args, run, _report_feed_error)
 
 
-def cmd_calendar_feed_off(args: argparse.Namespace) -> int:
-    """``pepper calendar feed off [--json]``: ``POST /api/v1/calendars/feed/disable``."""
+def cmd_calendar_publish_off(args: argparse.Namespace) -> int:
+    """``pepper calendar publish off [--yes] [--json]``: ``POST /api/v1/calendars/feed/disable``.
+
+    Confirms first (``--yes`` without a terminal): stopping is final, the address stops working
+    for good and anything subscribed to it shows nothing new."""
+    if (
+        code := _confirm_destructive(
+            args,
+            "Stop publishing? The address stops working for good, and anything subscribed to "
+            "it shows nothing new.",
+            yes=args.yes,
+            refusal="stopping is final and breaks every existing subscription; pass --yes to "
+            "run it without a prompt",
+        )
+    ) is not None:
+        return code
 
     def run(api: api_client.ApiClient) -> int:
         body = api.calendar_feed_disable()
-        _emit(body, args, lambda: render.info("Calendar feed is off."))
+        _emit(body, args, lambda: render.info("Publishing is off. The address no longer works."))
         return 0
 
     return _run_personal(args, run, _report_feed_error)
 
 
-def cmd_calendar_feed_rotate(args: argparse.Namespace) -> int:
-    """``pepper calendar feed rotate [--yes] [--json]``: ``POST /api/v1/calendars/feed/rotate``.
+def cmd_calendar_publish_rotate(args: argparse.Namespace) -> int:
+    """``pepper calendar publish rotate [--yes] [--json]``: ``POST /api/v1/calendars/feed/rotate``.
 
     Confirms first (``--yes`` without a terminal): every calendar app subscribed to the old
-    link stops getting updates."""
+    address stops getting updates."""
     if (
         code := _confirm_destructive(
             args,
-            "Rotating makes a new link; every subscription to the old one stops working. Go on?",
+            "Rotating makes a new address; every subscription to the old one stops working. Go on?",
             yes=args.yes,
             refusal="rotating breaks every existing subscription; pass --yes to run it without "
             "a prompt",
@@ -8625,7 +8642,7 @@ def cmd_calendar_feed_rotate(args: argparse.Namespace) -> int:
 def _feed_changes(args: argparse.Namespace, current: dict[str, Any]) -> dict[str, Any]:
     """The PATCH body for ``set``: the flags given, with the full replacement lists worked out
     from the status ``current`` (label -> id is a lookup; the lists are whole)."""
-    view = calendar_feed_view
+    view = calendar_publish_view
     cals, follows = list(current.get("calendars") or []), list(current.get("follows") or [])
     changes: dict[str, Any] = {}
     if args.add_calendar or args.remove_calendar:
@@ -8654,8 +8671,8 @@ def _feed_changes(args: argparse.Namespace, current: dict[str, Any]) -> dict[str
     return changes
 
 
-def cmd_calendar_feed_set(args: argparse.Namespace) -> int:
-    """``pepper calendar feed set [--add-calendar C]… [--remove-calendar C]… [--add-follow F]…
+def cmd_calendar_publish_set(args: argparse.Namespace) -> int:
+    """``pepper calendar publish set [--add-calendar C]… [--remove-calendar C]… [--add-follow F]…
     [--remove-follow F]… [--detail busy|full] [--meals|--no-meals] [--workouts|--no-workouts]
     [--todos|--no-todos] [--consent] [--json]``: ``PATCH /api/v1/calendars/feed/sources``.
 
@@ -8677,7 +8694,7 @@ def cmd_calendar_feed_set(args: argparse.Namespace) -> int:
     def run(api: api_client.ApiClient) -> int:
         try:
             changes = _feed_changes(args, api.calendar_feed())
-        except calendar_feed_view.SourceError as exc:
+        except calendar_publish_view.SourceError as exc:
             _emit_error(args, "usage", str(exc))
             return 2
         if args.consent:
@@ -8699,12 +8716,12 @@ def cmd_calendar_feed_set(args: argparse.Namespace) -> int:
                 )
                 return 2
             render.info(disclosure)
-            question = "Publish your Google calendar events at the feed link? [y/N] "
+            question = "Publish your Google calendar events at the private address? [y/N] "
             if _prompt(question).lower() not in ("y", "yes"):
                 render.info("Aborted. Nothing changed.")
                 return 0
             body = api.calendar_feed_sources({**changes, "consent": True})
-        _emit(body, args, lambda: calendar_feed_view.status(body))
+        _emit(body, args, lambda: calendar_publish_view.status(body))
         return 0
 
     return _run_personal(args, run, _report_feed_error)

@@ -1,4 +1,4 @@
-"""``pepper calendar feed`` — the client methods and each command, with the HTTP layer mocked."""
+"""``pepper calendar publish`` — the client methods and each command, with the HTTP layer mocked."""
 
 from __future__ import annotations
 
@@ -76,26 +76,26 @@ def server(monkeypatch, tmp_path):
 
 def test_show_prints_state_sources_and_the_rotate_hint(server, capsys) -> None:
     server.reply("GET", "/api/v1/calendars/feed")
-    assert cli.main(["calendar", "feed"]) == 0
+    assert cli.main(["calendar", "publish"]) == 0
     out = capsys.readouterr().out
-    assert "Calendar feed: on" in out and "detail: busy" in out
+    assert "Publishing: on" in out and "detail: busy" in out
     assert (
         "[x] Work" in out and "[ ] Family" in out and "[x] Dodgers" in out and "[ ] Lakers" in out
     )
     assert "meals    yes" in out and "workouts no" in out
     assert "can't be shown again" in out and "rotate" in out
-    assert SECRET not in out
+    assert "feed" not in out.lower() and SECRET not in out
 
 
 def test_show_off_points_at_on(server, capsys) -> None:
     server.reply("GET", "/api/v1/calendars/feed", body={**_STATUS, "enabled": False})
-    assert cli.main(["calendar", "feed", "show"]) == 0
+    assert cli.main(["calendar", "publish", "show"]) == 0
     out = capsys.readouterr().out
-    assert "Calendar feed: off" in out and "calendar feed on" in out
+    assert "Publishing: off" in out and "calendar publish on" in out
 
 
 @pytest.mark.parametrize(
-    "argv", [["calendar", "feed", "--json"], ["calendar", "feed", "show", "--json"]]
+    "argv", [["calendar", "publish", "--json"], ["calendar", "publish", "show", "--json"]]
 )
 def test_show_json_is_the_server_status(server, capsys, argv) -> None:
     server.reply("GET", "/api/v1/calendars/feed")
@@ -109,7 +109,7 @@ def test_on_prints_both_links_once_on_stdout(server, capsys) -> None:
         "/api/v1/calendars/feed/enable",
         body={**_STATUS, "url": _URL, "webcal_url": _WEBCAL},
     )
-    assert cli.main(["calendar", "feed", "on"]) == 0
+    assert cli.main(["calendar", "publish", "on"]) == 0
     cap = capsys.readouterr()
     assert _URL in cap.out and _WEBCAL in cap.out
     assert SECRET not in cap.err
@@ -122,7 +122,7 @@ def test_on_json_carries_the_url(server, capsys) -> None:
         "/api/v1/calendars/feed/enable",
         body={**_STATUS, "url": _URL, "webcal_url": _WEBCAL},
     )
-    assert cli.main(["calendar", "feed", "on", "--json"]) == 0
+    assert cli.main(["calendar", "publish", "on", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["url"] == _URL
 
 
@@ -133,19 +133,60 @@ def test_on_when_already_on_shows_the_server_reason(server, capsys) -> None:
         409,
         {"detail": "The feed is already on. rotate it."},
     )
-    assert cli.main(["calendar", "feed", "on"]) == 1
+    assert cli.main(["calendar", "publish", "on"]) == 1
     assert "already on" in capsys.readouterr().err
 
 
-def test_off_posts_disable(server, capsys) -> None:
+def test_off_with_yes_posts_disable(server, capsys) -> None:
     server.reply("POST", "/api/v1/calendars/feed/disable", body={**_STATUS, "enabled": False})
-    assert cli.main(["calendar", "feed", "off"]) == 0
+    assert cli.main(["calendar", "publish", "off", "--yes"]) == 0
     assert server.seen == [("POST", "/api/v1/calendars/feed/disable", None)]
-    assert "off" in capsys.readouterr().err
+    assert "Publishing is off" in capsys.readouterr().err
+
+
+def test_off_refuses_without_yes_when_there_is_no_terminal(server, capsys) -> None:
+    assert cli.main(["calendar", "publish", "off"]) == 2
+    assert server.seen == []
+    assert "--yes" in capsys.readouterr().err
+
+
+def test_off_json_without_yes_refuses_even_on_a_terminal(server, monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    assert cli.main(["calendar", "publish", "off", "--json"]) == 2
+    assert server.seen == []
+
+
+def test_off_asks_on_a_terminal_and_aborts_on_no(server, monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    asked = []
+    monkeypatch.setattr(cli, "_prompt", lambda q: asked.append(q) or "n")
+    assert cli.main(["calendar", "publish", "off"]) == 0
+    assert server.seen == []
+    assert "Stop publishing?" in asked[0] and "stops working for good" in asked[0]
+    assert "[y/N]" in asked[0]
+
+
+def test_off_asks_on_a_terminal_and_stops_on_yes(server, monkeypatch) -> None:
+    server.reply("POST", "/api/v1/calendars/feed/disable", body={**_STATUS, "enabled": False})
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_prompt", lambda q: "y")
+    assert cli.main(["calendar", "publish", "off"]) == 0
+    assert server.seen == [("POST", "/api/v1/calendars/feed/disable", None)]
+
+
+def test_off_yes_skips_the_prompt(server, monkeypatch) -> None:
+    server.reply("POST", "/api/v1/calendars/feed/disable", body={**_STATUS, "enabled": False})
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+
+    def no_prompt(q):
+        raise AssertionError("--yes must not prompt")
+
+    monkeypatch.setattr(cli, "_prompt", no_prompt)
+    assert cli.main(["calendar", "publish", "off", "--yes"]) == 0
 
 
 def test_rotate_refuses_without_yes_when_there_is_no_terminal(server, capsys) -> None:
-    assert cli.main(["calendar", "feed", "rotate"]) == 2
+    assert cli.main(["calendar", "publish", "rotate"]) == 2
     assert server.seen == []
     assert "--yes" in capsys.readouterr().err
 
@@ -154,7 +195,7 @@ def test_rotate_asks_on_a_terminal_and_aborts_on_no(server, monkeypatch, capsys)
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     asked = []
     monkeypatch.setattr(cli, "_prompt", lambda q: asked.append(q) or "n")
-    assert cli.main(["calendar", "feed", "rotate"]) == 0
+    assert cli.main(["calendar", "publish", "rotate"]) == 0
     assert server.seen == [] and "stops working" in asked[0]
 
 
@@ -164,9 +205,9 @@ def test_rotate_with_yes_prints_the_new_links(server, capsys) -> None:
         "/api/v1/calendars/feed/rotate",
         body={**_STATUS, "url": _URL, "webcal_url": _WEBCAL},
     )
-    assert cli.main(["calendar", "feed", "rotate", "--yes"]) == 0
+    assert cli.main(["calendar", "publish", "rotate", "--yes"]) == 0
     out = capsys.readouterr().out
-    assert "rotated" in out and _URL in out and _WEBCAL in out
+    assert "replaced" in out and _URL in out and _WEBCAL in out
 
 
 def test_rotate_when_off_is_the_servers_409(server, capsys) -> None:
@@ -176,7 +217,7 @@ def test_rotate_when_off_is_the_servers_409(server, capsys) -> None:
         409,
         {"detail": "The feed is off; turn it on first."},
     )
-    assert cli.main(["calendar", "feed", "rotate", "--yes"]) == 1
+    assert cli.main(["calendar", "publish", "rotate", "--yes"]) == 1
     assert "turn it on first" in capsys.readouterr().err
 
 
@@ -184,7 +225,7 @@ def _set(server, *flags, status_body=None, patched=None):
     server.reply("GET", "/api/v1/calendars/feed", body=status_body)
     if patched is not False:
         server.reply("PATCH", "/api/v1/calendars/feed/sources", body=patched)
-    return cli.main(["calendar", "feed", "set", *flags])
+    return cli.main(["calendar", "publish", "set", *flags])
 
 
 def test_set_sends_whole_calendar_list_resolved_from_labels(server) -> None:
@@ -214,21 +255,21 @@ def test_set_exact_label_beats_prefix_and_a_shared_prefix_is_ambiguous(server, c
     assert server.seen[-1][2] == {"calendars": ["work@x"]}
     server.seen.clear()
     server.reply("GET", "/api/v1/calendars/feed")
-    assert cli.main(["calendar", "feed", "set", "--add-calendar", "wor"]) == 2
+    assert cli.main(["calendar", "publish", "set", "--add-calendar", "wor"]) == 2
     assert "matches several" in capsys.readouterr().err
     assert [m for m, *_ in server.seen] == ["GET"]
 
 
 def test_set_unknown_name_is_a_usage_error_listing_yours(server, capsys) -> None:
     server.reply("GET", "/api/v1/calendars/feed")
-    assert cli.main(["calendar", "feed", "set", "--add-follow", "Mets"]) == 2
+    assert cli.main(["calendar", "publish", "set", "--add-follow", "Mets"]) == 2
     err = capsys.readouterr().err
     assert "Mets" in err and "Dodgers" in err
     assert [m for m, *_ in server.seen] == ["GET"]
 
 
 def test_set_with_no_flags_is_a_usage_error(server, capsys) -> None:
-    assert cli.main(["calendar", "feed", "set"]) == 2
+    assert cli.main(["calendar", "publish", "set"]) == 2
     assert server.seen == [] and "nothing to change" in capsys.readouterr().err
 
 
@@ -240,7 +281,7 @@ def test_set_consent_flag_is_sent_when_given(server) -> None:
 def test_set_consent_required_without_terminal_refuses_and_never_retries(server, capsys) -> None:
     server.reply("GET", "/api/v1/calendars/feed")
     server.reply("PATCH", "/api/v1/calendars/feed/sources", 409, _CONSENT)
-    assert cli.main(["calendar", "feed", "set", "--add-calendar", "family"]) == 2
+    assert cli.main(["calendar", "publish", "set", "--add-calendar", "family"]) == 2
     err = capsys.readouterr().err
     assert "DISCLOSURE" in err and "--consent" in err
     assert [m for m, *_ in server.seen] == ["GET", "PATCH"]
@@ -250,7 +291,7 @@ def test_set_consent_required_without_terminal_refuses_and_never_retries(server,
 def test_set_consent_required_json_error_carries_the_disclosure(server, capsys) -> None:
     server.reply("GET", "/api/v1/calendars/feed")
     server.reply("PATCH", "/api/v1/calendars/feed/sources", 409, _CONSENT)
-    assert cli.main(["calendar", "feed", "set", "--add-calendar", "family", "--json"]) == 2
+    assert cli.main(["calendar", "publish", "set", "--add-calendar", "family", "--json"]) == 2
     err = json.loads(capsys.readouterr().err)["error"]
     assert err["code"] == "usage" and "DISCLOSURE" in err["message"]
 
@@ -263,10 +304,10 @@ def test_set_consent_required_on_a_terminal_asks_then_retries_with_consent(
     server.reply("GET", "/api/v1/calendars/feed")
     server.reply("PATCH", "/api/v1/calendars/feed/sources", 409, _CONSENT)
     server.reply("PATCH", "/api/v1/calendars/feed/sources", 200, _STATUS)
-    assert cli.main(["calendar", "feed", "set", "--add-calendar", "family"]) == 0
+    assert cli.main(["calendar", "publish", "set", "--add-calendar", "family"]) == 0
     assert server.seen[-1][2] == {"calendars": ["work@x", "fam@x"], "consent": True}
     cap = capsys.readouterr()
-    assert "DISCLOSURE" in cap.err and "Calendar feed: on" in cap.out
+    assert "DISCLOSURE" in cap.err and "Publishing: on" in cap.out
 
 
 def test_set_consent_declined_on_a_terminal_changes_nothing(server, monkeypatch) -> None:
@@ -274,7 +315,7 @@ def test_set_consent_declined_on_a_terminal_changes_nothing(server, monkeypatch)
     monkeypatch.setattr(cli, "_prompt", lambda q: "")
     server.reply("GET", "/api/v1/calendars/feed")
     server.reply("PATCH", "/api/v1/calendars/feed/sources", 409, _CONSENT)
-    assert cli.main(["calendar", "feed", "set", "--add-calendar", "family"]) == 0
+    assert cli.main(["calendar", "publish", "set", "--add-calendar", "family"]) == 0
     assert [m for m, *_ in server.seen] == ["GET", "PATCH"]
 
 
@@ -286,7 +327,7 @@ def test_set_unknown_sources_422_names_them(server, capsys) -> None:
         422,
         {"detail": {"code": "unknown_sources", "calendars": ["gone@x"], "follows": []}},
     )
-    assert cli.main(["calendar", "feed", "set", "--add-calendar", "family"]) == 1
+    assert cli.main(["calendar", "publish", "set", "--add-calendar", "family"]) == 1
     assert "gone@x" in capsys.readouterr().err
 
 
@@ -295,8 +336,16 @@ def test_set_json_prints_the_new_status(server, capsys) -> None:
     assert json.loads(capsys.readouterr().out) == _STATUS
 
 
+def test_calendar_feed_is_no_longer_a_command(server, capsys) -> None:
+    # Renamed to `publish` with no alias: `feed` is not a window word either.
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["calendar", "feed"])
+    assert exc.value.code == 2
+    assert server.seen == []
+
+
 def test_calendar_agenda_commands_still_parse(server, capsys) -> None:
-    # The feed verbs have their own parser; the window word on `calendar` is unchanged.
+    # The publish verbs have their own parser; the window word on `calendar` is unchanged.
     with pytest.raises(SystemExit):
         cli.main(["calendar", "feeds"])
 
@@ -307,7 +356,7 @@ def test_the_link_is_never_written_under_the_config_dir(server, tmp_path) -> Non
         "/api/v1/calendars/feed/enable",
         body={**_STATUS, "url": _URL, "webcal_url": _WEBCAL},
     )
-    assert cli.main(["calendar", "feed", "on"]) == 0
+    assert cli.main(["calendar", "publish", "on"]) == 0
     for path in tmp_path.rglob("*"):
         if path.is_file():
             assert SECRET not in path.read_text(errors="ignore"), path

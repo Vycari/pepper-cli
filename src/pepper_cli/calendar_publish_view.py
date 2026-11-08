@@ -1,6 +1,6 @@
-"""``pepper calendar feed``: render the feed's status and turn a label into an id.
+"""``pepper calendar publish``: render the publishing status and turn a label into an id.
 
-The CLI only fetches and renders. Which events a feed carries, and the consent rule for adding a
+The CLI only fetches and renders. Which events are published, and the consent rule for adding a
 Google calendar, are the server's; this module looks a label up in the status list the server
 sent (so the replacement list can be sent back) and prints what came back.
 """
@@ -49,33 +49,37 @@ def _rows(title: str, rows: list[dict[str, Any]]) -> None:
 
 
 def status(body: dict[str, Any]) -> None:
-    """The feed's state, what it carries, and where to go for the link (it is never shown again)."""
+    """Whether you are publishing, what is published, and how to get a new address (the address is
+    never shown again)."""
     on = bool(body.get("enabled"))
     state = "on" if on else "off"
-    _line(f"[bold]Calendar feed:[/bold] {state}  [dim](detail: {_s(body.get('detail'))})[/dim]")
+    _line(f"[bold]Publishing:[/bold] {state}  [dim](detail: {_s(body.get('detail'))})[/dim]")
     if on:
         if body.get("link_created_at"):
-            _line(f"  link created {_s(_stamp(body['link_created_at']))}")
+            _line(f"  address created {_s(_stamp(body['link_created_at']))}")
         _line(
-            "  [dim]The link can't be shown again; "
-            "'pepper calendar feed rotate' makes a new one.[/dim]"
+            "  [dim]The address can't be shown again; "
+            "'pepper calendar publish rotate' makes a new one.[/dim]"
         )
     else:
-        _line("  [dim]'pepper calendar feed on' turns it on and prints the link.[/dim]")
+        _line(
+            "  [dim]'pepper calendar publish on' starts publishing and prints the private "
+            "address.[/dim]"
+        )
     _line()
     _rows("Calendars", list(body.get("calendars") or []))
     _line()
     _rows("Follows", list(body.get("follows") or []))
     _line()
-    _line("[bold]Also in the feed[/bold]")
+    _line("[bold]Also published[/bold]")
     for key in ("meals", "workouts", "todos"):
         _line(f"  {key:<9}{'yes' if body.get(key) else 'no'}")
 
 
 def link(body: dict[str, Any], *, rotated: bool) -> None:
-    """The one-time link. Plain text, never folded or marked up, so it pastes cleanly.
+    """The one-time address. Plain text, never folded or marked up, so it pastes cleanly.
 
     The URL is a credential: it goes to stdout only, and nowhere else."""
-    _line(f"[bold]Calendar feed link {'rotated' if rotated else 'on'}.[/bold]")
+    _line(f"[bold]Private address {'replaced' if rotated else 'ready'}.[/bold]")
     out_text(f"url:    {body.get('url')}")
     out_text(f"webcal: {body.get('webcal_url')}")
