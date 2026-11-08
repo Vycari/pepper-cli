@@ -2411,7 +2411,7 @@ def _login_manual(args: argparse.Namespace, server_url: str, raw_token: str | No
 
 
 #: An agent member's token. It authenticates as the agent, not a Pepper account, so it reaches
-#: only the room routes — ``whoami`` refuses it by design.
+#: only the room routes; ``whoami`` answers for it from ``/api/v1/groups/self``.
 AGENT_TOKEN_PREFIX = api_client.AGENT_TOKEN_PREFIX
 
 
