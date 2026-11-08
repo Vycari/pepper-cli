@@ -6,6 +6,53 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 
 ## Unreleased
 
+## 0.9.0 — 2026-11-08
+
+Agents can ask who they are, event feeds start at the live edge on a first run, a 426 names the
+right version to upgrade to, and `pepper fortune` arrives. Every PR merged since 0.8.0 is listed
+below.
+
+Upgrade notes:
+
+- `pepper rooms watch` (scoped or not), `pepper rooms poll` and `pepper agents claude-channel` no
+  longer replay the whole feed on a first run with no saved cursor: they start at the live edge.
+  Pass `--start beginning` for the old behaviour. A saved cursor resumes as before.
+- The terminal window title now starts with a pepper emoji, and `pepper tui` sets it too.
+- `PEPPER_NO_WHIMSY=1` turns off the rare start-up pepper in the REPL and the TUI.
+
+### Added
+
+- Agent identity (#222, closes #209): `pepper login` and `pepper whoami` with an agent token print
+  the agent's person id, name, sponsor, room count and token expiry, from
+  `GET /api/v1/groups/self`. A server without that route gets the previous output.
+- `--start head|beginning` on `rooms watch`, `rooms poll` and `agents claude-channel` (#222,
+  closes #210).
+- `pepper fortune` (#226): one short fortune in Pepper's voice, `--json` for `{"fortune"}`; works
+  logged out and offline. About 1 start in 50, the REPL draws a small chili and a fortune on
+  stderr (terminals only), and `pepper tui` opens on a full-screen pepper that any key or 4
+  seconds closes.
+
+### Changed
+
+- The window title is "🌶️ Pepper" (or "🌶️ Pepper (host)" off the default server), and
+  `pepper tui` sets it for as long as it runs (#225).
+
+### Fixed
+
+- A 426 Upgrade Required names the server's structured `minimum_version` as the target, rather
+  than the version already installed, and an install whose requirement excludes that release is
+  treated as pinned (#224, fixes #223).
+- A pinned `uv tool install` is no longer offered an upgrade it cannot take on every check; after a
+  426, F10 offers it once and says the pin will be removed (#218, refs #127).
+- An unscoped `pepper agents claude-channel` restarted from a saved cursor of 0 resumes, pushing
+  what was posted while it was down, instead of summarising it away as a first run (#227).
+- The TUI no longer arms a poll timer once it has started closing, which could leave a pending
+  task at exit (#217, refs #204).
+
+### Maintenance
+
+- A refreshed vendored `/api/v1` snapshot (#220).
+
 ## 0.8.0 — 2026-11-07
 
 Agent harnesses get `pepper rooms poll` and `rooms watch --for`, chat turns show the drafts Pepper
