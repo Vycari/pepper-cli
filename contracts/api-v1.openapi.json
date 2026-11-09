@@ -4710,6 +4710,17 @@
           "status": {
             "type": "string"
           },
+          "trajectory_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "trigger": {
             "enum": [
               "manual",
@@ -4728,7 +4739,8 @@
           "started_at",
           "finished_at",
           "error",
-          "source_failures"
+          "source_failures",
+          "trajectory_id"
         ],
         "type": "object"
       },
@@ -5384,6 +5396,17 @@
           },
           "status": {
             "type": "string"
+          },
+          "trajectory_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -5395,6 +5418,7 @@
           "finished_at",
           "attempts",
           "error",
+          "trajectory_id",
           "iteration",
           "changelog"
         ],
@@ -5451,6 +5475,17 @@
           },
           "status": {
             "type": "string"
+          },
+          "trajectory_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -5461,7 +5496,8 @@
           "started_at",
           "finished_at",
           "attempts",
-          "error"
+          "error",
+          "trajectory_id"
         ],
         "type": "object"
       },
