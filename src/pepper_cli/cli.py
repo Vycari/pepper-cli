@@ -8161,13 +8161,23 @@ def cmd_notes_links(args: argparse.Namespace) -> int:
 
     The read takes the same viewer-scoped ``/detail`` route as ``show``, so
     the ``--room``/UUID resolution rules are identical
-    (:func:`cmd_notes_show`): ``--room`` scopes *name* resolution only.
+    (:func:`cmd_notes_show`): ``--room`` scopes *name* resolution only. The
+    detail is read first for the same kind check ``show`` and ``delete``
+    make: a file or saved link's UUID would otherwise print as a note with
+    no links instead of being refused.
     """
 
     def run(api: api_client.ApiClient) -> int:
         room_principal = _opt_group(api, args.room, args=args)
         note_id = _resolve_note(api, room_principal=room_principal, value=args.note, args=args)
         if note_id is None:
+            return 2
+        detail = api.get_artifact_detail(note_id)
+        if detail.kind != _NOTES_KIND:
+            # Same refusal as ``show``/``delete``: a UUID for a file or
+            # saved link is "doesn't exist for you", never a note whose
+            # links happen to be empty.
+            _note_not_found(args)
             return 2
         links = api.get_note_links(note_id)
         _emit(links, args, lambda: render.render_note_links(links))

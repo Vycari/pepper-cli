@@ -567,7 +567,7 @@ def _wiki_link(state="resolved", **over) -> api_client.NoteWikiLink:
 
 def test_notes_links_by_uuid_prints_each_link_and_its_state(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
-    patch_api(links=_links(_wiki_link(), _wiki_link(state="missing")))
+    patch_api(detail=_detail(), links=_links(_wiki_link(), _wiki_link(state="missing")))
     rc = cli.main(["notes", "links", _NID_PACKING])
     assert rc == 0
     out = capsys.readouterr().out
@@ -575,24 +575,33 @@ def test_notes_links_by_uuid_prints_each_link_and_its_state(tmp_home, patch_api,
     assert _NID_RUNBOOK_1 in out
     assert "resolved" in out
     assert "missing" in out
-    assert _FakeNotesApi.instances[-1].calls == [("get_note_links", _NID_PACKING)]
+    assert _FakeNotesApi.instances[-1].calls == [
+        ("get_artifact_detail", _NID_PACKING),
+        ("get_note_links", _NID_PACKING),
+    ]
 
 
 def test_notes_links_by_title_resolves_then_reads_links(tmp_home, patch_api) -> None:
     _login(tmp_home)
-    patch_api(notes=_note_list(_note()), links=_links(_wiki_link()))
+    patch_api(notes=_note_list(_note()), detail=_detail(), links=_links(_wiki_link()))
     rc = cli.main(["notes", "links", "Packing list"])
     assert rc == 0
-    assert _FakeNotesApi.instances[-1].calls[-1] == ("get_note_links", _NID_PACKING)
+    assert [c[0] for c in _FakeNotesApi.instances[-1].calls] == [
+        "list_artifacts",
+        "get_artifact_detail",
+        "get_note_links",
+    ]
 
 
 def test_notes_links_room_scopes_name_resolution_only(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
-    patch_api(groups=_group_list(_group()), links=_links())
+    patch_api(groups=_group_list(_group()), detail=_detail(), links=_links())
     rc = cli.main(["notes", "links", _NID_PACKING, "--room", "trip"])
     assert rc == 0
     calls = _FakeNotesApi.instances[-1].calls
     assert ("get_note_links", _NID_PACKING) in calls
+    # Bare UUID: no room listing, and the detail read takes no principal.
+    assert ("get_artifact_detail", _NID_PACKING) in calls
     assert not any(c[0] == "list_artifacts" for c in calls)
 
 
@@ -603,7 +612,7 @@ def test_notes_links_json_passes_backlinks_through_untouched(tmp_home, patch_api
         "a bare string the server might send",
     ]
     _login(tmp_home)
-    patch_api(links=_links(_wiki_link(), backlinks=backlinks, skipped=2))
+    patch_api(detail=_detail(), links=_links(_wiki_link(), backlinks=backlinks, skipped=2))
     rc = cli.main(["notes", "links", _NID_PACKING, "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
@@ -616,7 +625,10 @@ def test_notes_links_json_passes_backlinks_through_untouched(tmp_home, patch_api
 
 def test_notes_links_renders_object_and_string_backlinks(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
-    patch_api(links=_links(_wiki_link(), backlinks=[{"name": "Day plan"}, "loose entry"]))
+    patch_api(
+        detail=_detail(),
+        links=_links(_wiki_link(), backlinks=[{"name": "Day plan"}, "loose entry"]),
+    )
     rc = cli.main(["notes", "links", _NID_PACKING])
     assert rc == 0
     out = capsys.readouterr().out
@@ -626,7 +638,7 @@ def test_notes_links_renders_object_and_string_backlinks(tmp_home, patch_api, ca
 
 def test_notes_links_empty_backlinks_says_none(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
-    patch_api(links=_links(backlinks=[]))
+    patch_api(detail=_detail(), links=_links(backlinks=[]))
     rc = cli.main(["notes", "links", _NID_PACKING])
     assert rc == 0
     out = capsys.readouterr().out
@@ -638,15 +650,28 @@ def test_notes_links_reports_skipped_entries_without_hiding_them(
     tmp_home, patch_api, capsys
 ) -> None:
     _login(tmp_home)
-    patch_api(links=_links(_wiki_link(), skipped=1))
+    patch_api(detail=_detail(), links=_links(_wiki_link(), skipped=1))
     rc = cli.main(["notes", "links", _NID_PACKING])
     assert rc == 0
     assert "1 wiki link(s) not in a shape" in capsys.readouterr().out
 
 
+def test_notes_links_refuses_a_non_note_uuid_like_show_does(tmp_home, patch_api, capsys) -> None:
+    """A UUID for a file or saved link is "doesn't exist for you", not a note
+    with no links; ``show`` and ``delete`` already answer it this way, so
+    ``links`` must not be the one command that succeeds on a non-note."""
+    _login(tmp_home)
+    patch_api(detail=_detail(kind="external_url"), links=_links())
+    rc = cli.main(["notes", "links", _NID_PACKING])
+    assert rc == 2
+    assert "no such room or note, or you are not a member" in capsys.readouterr().err
+    # Refused before any link read.
+    assert not any(c[0] == "get_note_links" for c in _FakeNotesApi.instances[-1].calls)
+
+
 def test_notes_links_404_prints_the_uniform_message(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
-    patch_api(links=api_client.ApiError(status=404, body="", detail="not found"))
+    patch_api(detail=api_client.ApiError(status=404, body="", detail="not found"))
     rc = cli.main(["notes", "links", _NID_PACKING])
     assert rc == 2
     assert "no such room or note, or you are not a member" in capsys.readouterr().err

@@ -2082,11 +2082,25 @@ class NoteLinks:
 def _note_links_from_dict(body: dict[str, Any], *, artifact_id: str | None = None) -> NoteLinks:
     """Parse the link fields out of a detail-shaped dict.
 
-    Tolerant by design: a malformed ``wiki_links`` entry is counted and
-    skipped rather than failing the whole read, and ``backlinks`` keeps
-    whatever came back (only a non-list is dropped, since nothing else can
-    iterate).
+    An absent key means the server sent no links. A key that is present
+    but not a list is a response-contract error, not an empty list: reading
+    it as ``[]`` would print a note with links as an orphan and exit 0,
+    which is indistinguishable from "this note has none". Guessing a
+    different key name would be worse still, since that invents a contract
+    the server has not documented.
+
+    Inside a list, a ``wiki_links`` entry that is not an object is counted
+    and skipped rather than failing the whole read, so one odd row does
+    not hide the rest; the count is reported.
     """
+    for name in ("wiki_links", "backlinks"):
+        value = body.get(name)
+        if value is not None and not isinstance(value, list):
+            raise ApiError(
+                status=200,
+                body=str(body),
+                detail=f"{name} was not a list ({type(value).__name__})",
+            )
     links: list[NoteWikiLink] = []
     skipped = 0
     for row in body.get("wiki_links") or []:
@@ -2108,7 +2122,8 @@ def _note_links_from_dict(body: dict[str, Any], *, artifact_id: str | None = Non
     return NoteLinks(
         artifact_id=artifact_id or str(body.get("id") or ""),
         wiki_links=links,
-        backlinks=backlinks if isinstance(backlinks, list) else [],
+        # Already checked above: a list, or absent.
+        backlinks=backlinks or [],
         skipped_wiki_links=skipped,
     )
 
@@ -4129,8 +4144,13 @@ class ApiClient:
     def get_note_links(self, artifact_id: str) -> NoteLinks:
         """``GET /api/v1/artifacts/{id}/detail`` — a note's outgoing wiki links
         and its backlinks. Same viewer scoping and 404 behaviour as
-        :meth:`get_artifact_detail`."""
+        :meth:`get_artifact_detail`.
+
+        The caller reads the detail's ``kind`` first; this returns the link
+        fields only, so a non-note artifact would otherwise look link-free."""
         body = self._request("GET", f"/api/v1/artifacts/{artifact_id}/detail").json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
         return _note_links_from_dict(body, artifact_id=artifact_id)
 
     def list_note_comments(self, artifact_id: str) -> NoteComments:

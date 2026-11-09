@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 
 import httpx
+import pytest
 
 from pepper_cli import api_client
 from pepper_cli.secret import SecretStr
@@ -590,6 +591,37 @@ def test_get_note_links_counts_unreadable_wiki_entries_instead_of_dropping_them(
     assert links.wiki_links[0].note_id is None
 
 
-def test_get_note_links_drops_a_non_list_backlinks_value() -> None:
-    with _client(lambda request: httpx.Response(200, json=_links_detail(backlinks="oops"))) as api:
-        assert api.get_note_links(_NID).backlinks == []
+@pytest.mark.parametrize("field", ["wiki_links", "backlinks"])
+@pytest.mark.parametrize("wrong", ["oops", {"a": 1}, 7, True])
+def test_get_note_links_rejects_a_wrongly_typed_field(field, wrong) -> None:
+    """A present-but-mistyped field is a contract error, not "no links".
+
+    Reading it as ``[]`` would print a linked note as an orphan and exit 0,
+    indistinguishable from a note that genuinely has none.
+    """
+    with _client(lambda request: httpx.Response(200, json=_links_detail(**{field: wrong}))) as api:
+        try:
+            api.get_note_links(_NID)
+        except api_client.ApiError as exc:
+            assert field in exc.detail
+        else:
+            raise AssertionError(f"{field}={wrong!r} must not read as no links")
+
+
+def test_get_note_links_accepts_an_explicit_empty_or_absent_field() -> None:
+    """Absent and ``[]`` both mean the server sent no links; only a wrong
+    type is an error."""
+    for body in ({"id": _NID}, _links_detail(wiki_links=[], backlinks=[])):
+        with _client(lambda request, b=body: httpx.Response(200, json=b)) as api:
+            links = api.get_note_links(_NID)
+        assert (links.wiki_links, links.backlinks) == ([], [])
+
+
+def test_get_note_links_rejects_a_non_object_detail() -> None:
+    with _client(lambda request: httpx.Response(200, json=["not", "a", "dict"])) as api:
+        try:
+            api.get_note_links(_NID)
+        except api_client.ApiError as exc:
+            assert exc.status == 200
+        else:
+            raise AssertionError("a non-object detail must not parse as no links")
