@@ -2037,6 +2037,82 @@ def _artifact_detail_from_dict(body: dict[str, Any]) -> ArtifactDetail:
     )
 
 
+@dataclass(frozen=True)
+class NoteWikiLink:
+    """One outgoing ``[[wiki link]]`` in a note, with what it resolved to.
+
+    ``state`` is the server's own word: ``resolved``, ``ambiguous`` or
+    ``missing``. It is kept as a plain string rather than an enum so a
+    state the server adds later still prints instead of failing to parse
+    (``/api/v1`` is additive-only).
+
+    ``note_id`` is the target note when the link resolved, ``None``
+    otherwise; ``principal`` names the owner whose note it points at,
+    when the server includes one.
+    """
+
+    text: str
+    label: str
+    state: str
+    note_id: str | None = None
+    principal: str | None = None
+
+
+@dataclass(frozen=True)
+class NoteLinks:
+    """``GET /api/v1/artifacts/{id}/detail``, the link fields only.
+
+    ``backlinks`` is deliberately untyped: the response shape is not
+    pinned by ``contracts/api-v1.openapi.json`` (the detail route answers
+    an untyped ``JSONResponse``), so the raw entries are kept exactly as
+    the server sent them. Typing them would either discard fields we
+    cannot see or invent a schema the server has not promised; ``--json``
+    passes them through untouched.
+    """
+
+    artifact_id: str
+    wiki_links: list[NoteWikiLink] = field(default_factory=list)
+    backlinks: list[Any] = field(default_factory=list)
+    #: ``wiki_links`` entries that were not objects and could not be read.
+    #: Reported rather than silently dropped, so a changed server shape
+    #: shows up in the output instead of looking like a note with no links.
+    skipped_wiki_links: int = 0
+
+
+def _note_links_from_dict(body: dict[str, Any], *, artifact_id: str | None = None) -> NoteLinks:
+    """Parse the link fields out of a detail-shaped dict.
+
+    Tolerant by design: a malformed ``wiki_links`` entry is counted and
+    skipped rather than failing the whole read, and ``backlinks`` keeps
+    whatever came back (only a non-list is dropped, since nothing else can
+    iterate).
+    """
+    links: list[NoteWikiLink] = []
+    skipped = 0
+    for row in body.get("wiki_links") or []:
+        if not isinstance(row, dict):
+            skipped += 1
+            continue
+        target = row.get("note_id")
+        principal = row.get("principal")
+        links.append(
+            NoteWikiLink(
+                text=str(row.get("text") or ""),
+                label=str(row.get("label") or ""),
+                state=str(row.get("state") or ""),
+                note_id=str(target) if target is not None else None,
+                principal=str(principal) if principal is not None else None,
+            )
+        )
+    backlinks = body.get("backlinks")
+    return NoteLinks(
+        artifact_id=artifact_id or str(body.get("id") or ""),
+        wiki_links=links,
+        backlinks=backlinks if isinstance(backlinks, list) else [],
+        skipped_wiki_links=skipped,
+    )
+
+
 # MIRROR: src/pepper/api/artifacts.py::ArtifactCreateResponse
 @dataclass(frozen=True)
 class ArtifactCreateResult:
@@ -4049,6 +4125,13 @@ class ApiClient:
         """
         body = self._request("GET", f"/api/v1/artifacts/{artifact_id}/detail").json()
         return _artifact_detail_from_dict(body)
+
+    def get_note_links(self, artifact_id: str) -> NoteLinks:
+        """``GET /api/v1/artifacts/{id}/detail`` — a note's outgoing wiki links
+        and its backlinks. Same viewer scoping and 404 behaviour as
+        :meth:`get_artifact_detail`."""
+        body = self._request("GET", f"/api/v1/artifacts/{artifact_id}/detail").json()
+        return _note_links_from_dict(body, artifact_id=artifact_id)
 
     def list_note_comments(self, artifact_id: str) -> NoteComments:
         """``GET /api/v1/artifacts/{id}/comments`` — a note's comment threads, oldest first."""

@@ -516,3 +516,80 @@ def test_toggle_checklist_409_carries_the_servers_sentence() -> None:
             assert (exc.status, exc.detail) == (409, sentence)
         else:
             raise AssertionError("expected a 409")
+
+
+# ---------------------------------------------------------------------------
+# get_note_links
+#
+# The fixtures here are synthetic. The detail route's ``wiki_links`` and
+# ``backlinks`` are not in the OpenAPI snapshot (it answers an untyped
+# ``JSONResponse``), so these pin the client's tolerance, not the server shape.
+
+
+def _links_detail(**over) -> dict:
+    base = {
+        "id": _NID,
+        "wiki_links": [
+            {
+                "text": "Trip runbook",
+                "label": "runbook",
+                "state": "resolved",
+                "note_id": "00000000-0000-0000-0000-0000000000d2",
+                "principal": "alice",
+            }
+        ],
+        "backlinks": [{"id": "00000000-0000-0000-0000-0000000000d3", "name": "Day plan"}],
+    }
+    base.update(over)
+    return base
+
+
+def test_get_note_links_reads_the_detail_path_and_parses_the_links() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        return httpx.Response(200, json=_links_detail())
+
+    with _client(handler) as api:
+        links = api.get_note_links(_NID)
+
+    assert seen["path"] == f"/api/v1/artifacts/{_NID}/detail"
+    assert links.artifact_id == _NID
+    assert len(links.wiki_links) == 1
+    link = links.wiki_links[0]
+    assert (link.text, link.label, link.state) == ("Trip runbook", "runbook", "resolved")
+    assert link.note_id == "00000000-0000-0000-0000-0000000000d2"
+    assert link.principal == "alice"
+    assert links.skipped_wiki_links == 0
+
+
+def test_get_note_links_keeps_backlinks_exactly_as_sent() -> None:
+    backlinks = [{"anything": [1, 2]}, "a string", 7]
+    with _client(
+        lambda request: httpx.Response(200, json=_links_detail(backlinks=backlinks))
+    ) as api:
+        assert api.get_note_links(_NID).backlinks == backlinks
+
+
+def test_get_note_links_defaults_when_the_fields_are_absent() -> None:
+    with _client(lambda request: httpx.Response(200, json={"id": _NID})) as api:
+        links = api.get_note_links(_NID)
+    assert links.wiki_links == []
+    assert links.backlinks == []
+    assert links.skipped_wiki_links == 0
+
+
+def test_get_note_links_counts_unreadable_wiki_entries_instead_of_dropping_them() -> None:
+    body = _links_detail(wiki_links=["not an object", {"label": "fine", "state": "ambiguous"}])
+    with _client(lambda request: httpx.Response(200, json=body)) as api:
+        links = api.get_note_links(_NID)
+    assert links.skipped_wiki_links == 1
+    assert [link.label for link in links.wiki_links] == ["fine"]
+    # An entry with no note_id is unresolved, not malformed.
+    assert links.wiki_links[0].note_id is None
+
+
+def test_get_note_links_drops_a_non_list_backlinks_value() -> None:
+    with _client(lambda request: httpx.Response(200, json=_links_detail(backlinks="oops"))) as api:
+        assert api.get_note_links(_NID).backlinks == []
