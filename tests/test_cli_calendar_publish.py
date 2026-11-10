@@ -229,7 +229,7 @@ def test_off_asks_on_a_terminal_and_aborts_on_no(server, monkeypatch) -> None:
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     asked = []
     monkeypatch.setattr(cli, "_prompt", lambda q: asked.append(q) or "n")
-    assert cli.main(["calendar", "publish", "off"]) == 0
+    assert cli.main(["calendar", "publish", "off"]) == 1
     assert server.seen == []
     assert "Stop publishing?" in asked[0] and "stops working for good" in asked[0]
     assert "[y/N]" in asked[0]
@@ -264,7 +264,7 @@ def test_rotate_asks_on_a_terminal_and_aborts_on_no(server, monkeypatch, capsys)
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     asked = []
     monkeypatch.setattr(cli, "_prompt", lambda q: asked.append(q) or "n")
-    assert cli.main(["calendar", "publish", "rotate"]) == 0
+    assert cli.main(["calendar", "publish", "rotate"]) == 1
     assert server.seen == [] and "stops working" in asked[0]
 
 

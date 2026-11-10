@@ -5269,12 +5269,13 @@ def _confirm_destructive(
     *,
     yes: bool,
     refusal: str = "this deletes for good; pass --yes to run it without a prompt",
+    declined: int = 0,
 ) -> int | None:
     """Gate a destructive personal command: ``None`` to go ahead, else the exit code.
 
-    ``--yes`` skips it; a terminal gets a y/N question; with no terminal (or under
-    JSON mode, which never prompts) it refuses with exit 2 and ``refusal``, since a script
-    must say ``--yes`` out loud.
+    ``--yes`` skips it; a terminal gets a y/N question, and a no exits ``declined``; with no
+    terminal (or under JSON mode, which never prompts) it refuses with exit 2 and ``refusal``,
+    since a script must say ``--yes`` out loud.
     """
     if yes:
         return None
@@ -5283,7 +5284,7 @@ def _confirm_destructive(
         return 2
     if _prompt(f"{prompt} [y/N] ").lower() not in ("y", "yes"):
         render.info("Aborted.")
-        return 0
+        return declined
     return None
 
 
@@ -9499,8 +9500,9 @@ def cmd_calendar_publish_on(args: argparse.Namespace) -> int:
 def cmd_calendar_publish_off(args: argparse.Namespace) -> int:
     """``pepper calendar publish off [--yes] [--json]``: ``POST /api/v1/calendars/feed/disable``.
 
-    Confirms first (``--yes`` without a terminal): stopping is final, the address stops working
-    for good and anything subscribed to it shows nothing new."""
+    Confirms first (``--yes`` without a terminal; a no exits 1, like a declined consent): stopping
+    is final, the address stops working for good and anything subscribed to it shows nothing
+    new."""
     if (
         code := _confirm_destructive(
             args,
@@ -9509,6 +9511,7 @@ def cmd_calendar_publish_off(args: argparse.Namespace) -> int:
             yes=args.yes,
             refusal="stopping is final and breaks every existing subscription; pass --yes to "
             "run it without a prompt",
+            declined=1,
         )
     ) is not None:
         return code
@@ -9524,8 +9527,8 @@ def cmd_calendar_publish_off(args: argparse.Namespace) -> int:
 def cmd_calendar_publish_rotate(args: argparse.Namespace) -> int:
     """``pepper calendar publish rotate [--yes] [--json]``: ``POST /api/v1/calendars/feed/rotate``.
 
-    Confirms first (``--yes`` without a terminal): every calendar app subscribed to the old
-    address stops getting updates."""
+    Confirms first (``--yes`` without a terminal; a no exits 1, like a declined consent): every
+    calendar app subscribed to the old address stops getting updates."""
     if (
         code := _confirm_destructive(
             args,
@@ -9533,6 +9536,7 @@ def cmd_calendar_publish_rotate(args: argparse.Namespace) -> int:
             yes=args.yes,
             refusal="rotating breaks every existing subscription; pass --yes to run it without "
             "a prompt",
+            declined=1,
         )
     ) is not None:
         return code

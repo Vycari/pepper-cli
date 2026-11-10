@@ -14,7 +14,8 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
   calendars and follows by label or id, `--detail busy|full`, and `--meals/--workouts/--todos` with
   their `--no-` forms, and `--titles-off C` / `--titles-on C` to hide or show the titles of a
   calendar someone shared with you in Full details (`show` marks those `titles shown/hidden`). Adding a first Google calendar needs the person's consent: a terminal shows
-  the server's disclosure and asks, anything else must pass `--consent`.
+  the server's disclosure and asks, anything else must pass `--consent`. Declining any of these
+  prompts (consent, `off`, `rotate`) exits 1.
 
 ## 0.8.0 — 2026-11-07
 
