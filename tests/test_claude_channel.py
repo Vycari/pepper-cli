@@ -189,10 +189,13 @@ class _Fake:
         self.requests: list[httpx.Request] = []
         self.messages: dict[str, dict] = {_MESSAGE: _message_json()}
         self.topics = {_TOPIC: "Dinner", _OTHER_TOPIC: "Chores"}
+        #: the topic an unprompted post lands in; the rail marks it ``is_default``.
+        self.default_topic = _TOPIC
         #: topic id -> the note id when that topic holds a note's comments.
         self.subjects: dict[str, str] = {}
         self.message_status = 200
         self.fail_messages = 0
+        self.fail_topics = 0
         self.fail_status = 503
         self.fail_headers: dict[str, str] = {}
         self.exhausted = threading.Event()
@@ -227,11 +230,14 @@ class _Fake:
                 },
             )
         if path == f"/api/v1/groups/{_ROOM}/topics":
+            if self.fail_topics:
+                return httpx.Response(503, json={"detail": "down"})
             rows = [
                 {
                     "topic_id": tid,
                     "name": name,
                     "last_activity_at": None,
+                    "is_default": tid == self.default_topic,
                     "subject_artifact_id": self.subjects.get(tid),
                 }
                 for tid, name in self.topics.items()
@@ -540,7 +546,7 @@ def test_discover_before_initialize_is_method_not_found_even_with_the_modern_env
     assert replies["init"]["result"]["protocolVersion"] == "2025-11-25"
 
 
-def test_tools_list_names_the_three_p1_tools(monkeypatch):
+def test_tools_list_names_the_four_p1_and_p2_tools(monkeypatch):
     replies: dict = {}
 
     def script(s: _Session) -> None:
@@ -549,7 +555,12 @@ def test_tools_list_names_the_three_p1_tools(monkeypatch):
     run_channel(monkeypatch, _Fake(_CONNECTED), script=script)
 
     tools = replies["tools"]["result"]["tools"]
-    assert [t["name"] for t in tools] == ["messages_post", "messages_list", "messages_react"]
+    assert [t["name"] for t in tools] == [
+        "messages_post",
+        "messages_list",
+        "messages_react",
+        "topics_list",
+    ]
     assert all(t["inputSchema"]["type"] == "object" for t in tools)
 
 
@@ -1816,6 +1827,118 @@ def test_messages_list_returns_the_json_envelope_and_never_marks(monkeypatch):
     assert all("mark" not in str(r.url) for r in fake.requests)
 
 
+def test_topics_list_returns_every_topic_with_its_default_mark(monkeypatch):
+    fake = _Fake(_CONNECTED)
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["topics"] = s.call("topics_list", {})
+
+    run_channel(monkeypatch, fake, script=script)
+
+    text, is_error = out["topics"]
+    assert not is_error
+    assert json.loads(text) == {
+        "items": [
+            {
+                "room_id": _ROOM,
+                "topic_id": _TOPIC,
+                "room_name": "Kitchen",
+                "topic_name": "Dinner",
+                "is_default": True,
+            },
+            {
+                "room_id": _ROOM,
+                "topic_id": _OTHER_TOPIC,
+                "room_name": "Kitchen",
+                "topic_name": "Chores",
+                "is_default": False,
+            },
+        ],
+        "next_before": None,
+    }
+
+
+def test_topics_list_reads_the_rail_on_every_call(monkeypatch):
+    fake = _Fake(_CONNECTED)
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["first"] = s.call("topics_list", {})
+        # A topic made after the session started, for the second call to see.
+        fake.topics[_MESSAGE_2] = "Laundry"
+        out["second"] = s.call("topics_list", {})
+
+    run_channel(monkeypatch, fake, script=script)
+
+    assert len(json.loads(out["first"][0])["items"]) == 2
+    assert [t["topic_name"] for t in json.loads(out["second"][0])["items"]] == [
+        "Dinner",
+        "Chores",
+        "Laundry",
+    ]
+
+
+def test_topics_list_marks_names_as_data(monkeypatch):
+    fake = _Fake(_CONNECTED)
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["topics"] = s.call("topics_list", {})
+
+    fake.topics[_TOPIC] = "Din\x1b[31mner\r\nnow"
+    run_channel(monkeypatch, fake, script=script)
+
+    topics = json.loads(out["topics"][0])["items"]
+    # The escape sequence goes, the newline becomes a space, the id stays as it was sent.
+    assert topics[0]["topic_name"] == "Dinner now"
+    assert topics[0]["topic_id"] == _TOPIC
+
+
+def test_topics_list_is_limited_to_the_rooms_the_channel_serves(monkeypatch):
+    fake = _Fake(_CONNECTED)
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["topics"] = s.call("topics_list", {})
+
+    run_channel(monkeypatch, fake, ["--room", _ROOM], script=script)
+
+    topics = json.loads(out["topics"][0])["items"]
+    assert [t["topic_id"] for t in topics] == [_TOPIC, _OTHER_TOPIC]
+
+
+def test_topics_list_includes_an_archived_room(monkeypatch):
+    fake = _Fake(_CONNECTED)
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["topics"] = s.call("topics_list", {})
+
+    fake.room_archived = True
+    run_channel(monkeypatch, fake, script=script)
+
+    # An archived room still delivers messages, so its topics must still be findable.
+    topics = json.loads(out["topics"][0])["items"]
+    assert [t["topic_id"] for t in topics] == [_TOPIC, _OTHER_TOPIC]
+
+
+def test_topics_list_reports_a_refused_listing(monkeypatch):
+    fake = _Fake(_CONNECTED)
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        # Only the tool's call fails: the startup map is already built.
+        fake.fail_topics = True
+        out["topics"] = s.call("topics_list", {})
+
+    run_channel(monkeypatch, fake, script=script)
+
+    text, is_error = out["topics"]
+    assert is_error
+    assert text == "Server returned 503: down"
+
+
 def test_messages_react_returns_the_reactions(monkeypatch):
     fake = _Fake(_CONNECTED)
     out: dict = {}
@@ -2165,6 +2288,7 @@ def test_the_instructions_and_tools_use_the_names_the_events_carry():
         "reply_to",
         "on_behalf_of",
         "messages_post",
+        "topics_list",
     ):
         assert word in text
     for kind in ("backlog", "resync", "gap", "ended"):

@@ -6,6 +6,13 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 
 ## Unreleased
 
+### Added
+
+- `pepper agents claude-channel` serves a `topics_list` tool (#130): every room and topic the
+  channel can see, each with `room_id`, `topic_id`, `room_name`, `topic_name` and `is_default`, so a
+  session with no event yet can find the ids instead of guessing them. It reads the topic rail on
+  each call, so a topic made mid-session is listed, and stays inside the room named with `--room`.
+
 ## 0.9.0 — 2026-11-08
 
 Agents can ask who they are, event feeds start at the live edge on a first run, a 426 names the
