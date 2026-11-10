@@ -35,8 +35,11 @@ _CONSENT = {
         "code": "consent_required",
         "message": "Adding a Google calendar publishes its events.",
         "disclosure": "DISCLOSURE: anyone with the link can read these events.",
+        "calendars": [{"id": "work@x", "label": "Work"}, {"id": "fam@x", "label": "Family"}],
     }
 }
+_ENABLE = "/api/v1/calendars/feed/enable"
+_LINKS = {**_STATUS, "url": _URL, "webcal_url": _WEBCAL}
 
 
 @pytest.fixture
@@ -135,6 +138,72 @@ def test_on_when_already_on_shows_the_server_reason(server, capsys) -> None:
     )
     assert cli.main(["calendar", "publish", "on"]) == 1
     assert "already on" in capsys.readouterr().err
+
+
+def _bodies(server) -> list[object]:
+    return [b for m, path, b in server.seen if path == _ENABLE]
+
+
+def test_enable_sends_no_body_without_consent_and_the_flag_with_it(server) -> None:
+    server.reply("POST", _ENABLE, body=_LINKS)
+    with api_client.ApiClient(server_url="http://example.com", token=SecretStr("t")) as api:
+        api.calendar_feed_enable()
+        api.calendar_feed_enable(consent=True)
+    assert _bodies(server) == [None, {"consent": True}]
+
+
+def test_on_consent_required_without_terminal_refuses_and_never_retries(server, capsys) -> None:
+    server.reply("POST", _ENABLE, 409, _CONSENT)
+    assert cli.main(["calendar", "publish", "on"]) == 2
+    err = capsys.readouterr().err
+    assert "DISCLOSURE" in err and "--consent" in err and "Work, Family" in err
+    assert _bodies(server) == [None]
+
+
+def test_on_consent_required_json_error_carries_the_disclosure(server, capsys) -> None:
+    server.reply("POST", _ENABLE, 409, _CONSENT)
+    assert cli.main(["calendar", "publish", "on", "--json"]) == 2
+    err = json.loads(capsys.readouterr().err)["error"]
+    assert err["code"] == "usage" and "DISCLOSURE" in err["message"]
+    assert _bodies(server) == [None]
+
+
+def test_on_consent_flag_sends_consent_up_front(server, capsys) -> None:
+    server.reply("POST", _ENABLE, body=_LINKS)
+    assert cli.main(["calendar", "publish", "on", "--consent"]) == 0
+    assert _bodies(server) == [{"consent": True}]
+    assert _URL in capsys.readouterr().out
+
+
+def test_on_yes_does_not_imply_consent(server) -> None:
+    server.reply("POST", _ENABLE, 409, _CONSENT)
+    with pytest.raises(SystemExit):
+        cli.main(["calendar", "publish", "on", "--yes"])
+    assert _bodies(server) == []
+
+
+def test_on_consent_accepted_on_a_terminal_retries_and_prints_the_address(
+    server, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_prompt", lambda q: "y")
+    server.reply("POST", _ENABLE, 409, _CONSENT)
+    server.reply("POST", _ENABLE, 200, _LINKS)
+    assert cli.main(["calendar", "publish", "on"]) == 0
+    assert _bodies(server) == [None, {"consent": True}]
+    cap = capsys.readouterr()
+    assert "DISCLOSURE" in cap.err and "- Work" in cap.err and "- Family" in cap.err
+    assert _URL in cap.out and _WEBCAL in cap.out
+
+
+def test_on_consent_declined_on_a_terminal_publishes_nothing(server, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_prompt", lambda q: "")
+    server.reply("POST", _ENABLE, 409, _CONSENT)
+    assert cli.main(["calendar", "publish", "on"]) == 0
+    assert _bodies(server) == [None]
+    cap = capsys.readouterr()
+    assert "Nothing was published" in cap.err and _URL not in cap.out
 
 
 def test_off_with_yes_posts_disable(server, capsys) -> None:
@@ -308,6 +377,7 @@ def test_set_consent_required_on_a_terminal_asks_then_retries_with_consent(
     assert server.seen[-1][2] == {"calendars": ["work@x", "fam@x"], "consent": True}
     cap = capsys.readouterr()
     assert "DISCLOSURE" in cap.err and "Publishing: on" in cap.out
+    assert "- Work" in cap.err and "- Family" in cap.err
 
 
 def test_set_consent_declined_on_a_terminal_changes_nothing(server, monkeypatch) -> None:

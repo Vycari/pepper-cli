@@ -9301,7 +9301,19 @@ def _build_calendar_publish_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "on",
         help="Publish your calendars and print the private address once.",
+        description=(
+            "Publish your calendars and print the private address once. A first publish "
+            "that includes Google calendars needs consent: a terminal shows the server's "
+            "disclosure and the calendars it names and asks, anything else must pass "
+            "--consent after showing the person the disclosure."
+        ),
         parents=[_json_parent],
+    )
+    p.add_argument(
+        "--consent",
+        action="store_true",
+        help="The person has agreed to publish their Google calendars at the address. Never "
+        "assume this; without it a terminal is asked and anything else is refused.",
     )
     p.set_defaults(handler=cmd_calendar_publish_on)
     p = sub.add_parser(
@@ -9423,11 +9435,61 @@ def _emit_link(body: dict[str, Any], args: argparse.Namespace, *, rotated: bool)
         render.info("rotate' makes a new one, and the old one stops working for good.")
 
 
+def _feed_consent_gate(
+    args: argparse.Namespace, detail: dict[str, Any], declined: str
+) -> int | None:
+    """The shared consent step of ``publish on`` and ``publish set``, for a 409
+    ``consent_required``: ``None`` once a person on a terminal agreed (the caller retries with
+    consent), else the exit code. Anything but a terminal is refused with the disclosure and
+    never prompted; a "no" prints ``declined`` and exits 0. Consent is never assumed."""
+    disclosure = str(detail.get("disclosure") or detail.get("message") or "")
+    named = [
+        str(c.get("label") or c.get("id"))
+        for c in detail.get("calendars") or []
+        if isinstance(c, dict)
+    ]
+    if _json_mode(args) or not _stdin_is_tty():
+        which = f" Calendars: {', '.join(named)}." if named else ""
+        _emit_error(
+            args,
+            "usage",
+            f"consent is needed: {disclosure}{which} Show this to the person, and only if "
+            "they agree run the command again with --consent.",
+            status=409,
+        )
+        return 2
+    render.info(disclosure)
+    if named:
+        render.info("Calendars that would be published:")
+        for label in named:
+            render.info(f"  - {label}")
+    question = "Publish your Google calendar events at the private address? [y/N] "
+    if _prompt(question).lower() not in ("y", "yes"):
+        render.info(declined)
+        return 0
+    return None
+
+
 def cmd_calendar_publish_on(args: argparse.Namespace) -> int:
-    """``pepper calendar publish on [--json]``: ``POST /api/v1/calendars/feed/enable``."""
+    """``pepper calendar publish on [--consent] [--json]``: ``POST /api/v1/calendars/feed/enable``.
+
+    A first publish that includes Google calendars answers 409 ``consent_required`` with the
+    disclosure and the calendars; a terminal sees both and is asked, otherwise the command
+    refuses unless ``--consent`` was given (same step as ``publish set``). Nothing is published
+    until consent is sent."""
 
     def run(api: api_client.ApiClient) -> int:
-        _emit_link(api.calendar_feed_enable(), args, rotated=False)
+        try:
+            body = api.calendar_feed_enable(consent=args.consent)
+        except api_client.ApiError as exc:
+            detail = _feed_error_body(exc)
+            if exc.status != 409 or detail.get("code") != "consent_required":
+                raise
+            code = _feed_consent_gate(args, detail, "Aborted. Nothing was published.")
+            if code is not None:
+                return code
+            body = api.calendar_feed_enable(consent=True)
+        _emit_link(body, args, rotated=False)
         return 0
 
     return _run_personal(args, run, _report_feed_error)
@@ -9560,21 +9622,9 @@ def cmd_calendar_publish_set(args: argparse.Namespace) -> int:
             detail = _feed_error_body(exc)
             if exc.status != 409 or detail.get("code") != "consent_required":
                 raise
-            disclosure = str(detail.get("disclosure") or detail.get("message") or "")
-            if _json_mode(args) or not _stdin_is_tty():
-                _emit_error(
-                    args,
-                    "usage",
-                    f"consent is needed: {disclosure} Show this to the person, and only if they "
-                    "agree run the command again with --consent.",
-                    status=409,
-                )
-                return 2
-            render.info(disclosure)
-            question = "Publish your Google calendar events at the private address? [y/N] "
-            if _prompt(question).lower() not in ("y", "yes"):
-                render.info("Aborted. Nothing changed.")
-                return 0
+            code = _feed_consent_gate(args, detail, "Aborted. Nothing changed.")
+            if code is not None:
+                return code
             body = api.calendar_feed_sources({**changes, "consent": True})
         _emit(body, args, lambda: calendar_publish_view.status(body))
         return 0
