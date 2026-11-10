@@ -202,6 +202,8 @@ class _Fake:
         self.on_stream = None
         self.unreachable = False
         self.room_archived = False
+        #: every extra room the server lists, so a merge's survivor can be looked up.
+        self.extra_groups: list[str] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -216,20 +218,36 @@ class _Fake:
                 "archived": self.room_archived,
                 "topics": [],
             }
+            extras = [
+                {
+                    "group_id": gid,
+                    "display_name": f"Room {gid[-2:]}",
+                    "color": "#000",
+                    "sub": "",
+                    "member_count": 2,
+                    "archived": False,
+                    "topics": [],
+                }
+                for gid in self.extra_groups
+            ]
             # ``archived=1`` lists the archived rooms; the default lists the others.
             listed = (request.url.params.get("archived") == "1") == self.room_archived
+            rows = ([room] if listed else []) + (extras if not self.room_archived else [])
+            archived_total = 1 if self.room_archived else 0
             return httpx.Response(
                 200,
                 json={
                     "enabled": True,
                     "degraded": False,
-                    "total": 1 if listed else 0,
-                    "archived_total": 1 if self.room_archived else 0,
-                    "groups": [room] if listed else [],
+                    "total": len(rows),
+                    "archived_total": archived_total,
+                    "groups": rows,
                     "features": list(self.features),
                 },
             )
-        if path == f"/api/v1/groups/{_ROOM}/topics":
+        if path == f"/api/v1/groups/{_ROOM}/topics" or path in {
+            f"/api/v1/groups/{gid}/topics" for gid in self.extra_groups
+        }:
             if self.fail_topics:
                 return httpx.Response(503, json={"detail": "down"})
             rows = [
@@ -1906,6 +1924,23 @@ def test_topics_list_is_limited_to_the_rooms_the_channel_serves(monkeypatch):
 
     topics = json.loads(out["topics"][0])["items"]
     assert [t["topic_id"] for t in topics] == [_TOPIC, _OTHER_TOPIC]
+
+
+def test_topics_list_follows_a_room_merged_after_startup(monkeypatch):
+    # The scope's first frame names the survivor, so both ids are allowed: listing by the
+    # requested id alone would find no room and return nothing.
+    fake = _Fake(_CONNECTED + _scope(room=_SURVIVOR, requested=_ROOM))
+    fake.extra_groups.append(_SURVIVOR)
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        s.wait_exhausted()
+        out["topics"] = s.call("topics_list", {})
+
+    run_channel(monkeypatch, fake, ["--room", _ROOM], script=script)
+
+    topics = json.loads(out["topics"][0])["items"]
+    assert {t["room_id"] for t in topics} == {_ROOM, _SURVIVOR}
 
 
 def test_topics_list_includes_an_archived_room(monkeypatch):

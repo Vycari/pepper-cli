@@ -33,6 +33,7 @@ import re
 import sys
 import threading
 import uuid
+from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -211,27 +212,34 @@ class TopicInfo:
 TopicMap = dict[str, TopicInfo]
 
 
-def scope_groups(groups: api_client.GroupList, room_id: str | None) -> api_client.GroupList:
-    """``groups`` narrowed to ``room_id`` (all of it when ``None``)."""
-    if room_id is None:
+def scope_groups(
+    groups: api_client.GroupList, room_ids: str | Collection[str] | None
+) -> api_client.GroupList:
+    """``groups`` narrowed to ``room_ids`` (all of it when ``None``). Several ids matter because a
+    room merged after startup is served under its survivor while the requested id stays allowed."""
+    if room_ids is None:
         return groups
+    allowed = {room_ids} if isinstance(room_ids, str) else room_ids
     return dataclasses.replace(
-        groups, groups=[g for g in groups.groups if _same_id(g.group_id, room_id)]
+        groups,
+        groups=[g for g in groups.groups if any(_same_id(g.group_id, r) for r in allowed)],
     )
 
 
 def visible_groups(
-    api: api_client.ApiClient, listing: api_client.GroupList, room_id: str | None
+    api: api_client.ApiClient,
+    listing: api_client.GroupList,
+    room_ids: str | Collection[str] | None,
 ) -> api_client.GroupList:
     """``listing`` (the default, unarchived rooms) plus the archived ones, narrowed to
-    ``room_id``. Archiving is a viewer preference, not leaving, so an archived room's messages
+    ``room_ids``. Archiving is a viewer preference, not leaving, so an archived room's messages
     still arrive and its topics have to be placeable."""
     groups = list(listing.groups)
     if listing.archived_total:
         known = {g.group_id for g in groups}
         archived = api.list_groups(archived=True).groups
         groups += [g for g in archived if g.group_id not in known]
-    return scope_groups(dataclasses.replace(listing, groups=groups), room_id)
+    return scope_groups(dataclasses.replace(listing, groups=groups), room_ids)
 
 
 def build_topic_map(api: api_client.ApiClient, groups: api_client.GroupList) -> TopicMap:
@@ -557,10 +565,11 @@ class ChannelWorker:
         info = self.topics.get(topic_id)
         if info is not None:
             return info
+        # An unscoped channel allows no rooms, which means every room rather than none.
+        scope = self.allowed_rooms or None
         try:
-            room = self.bound.room_id if self.bound is not None else self.room_id
             self.topics.update(
-                build_topic_map(self.api, visible_groups(self.api, self.api.list_groups(), room))
+                build_topic_map(self.api, visible_groups(self.api, self.api.list_groups(), scope))
             )
         except (api_client.ApiError, httpx.RequestError):
             return None
@@ -1173,7 +1182,7 @@ class ChannelTools:
     def _topics(self, args: dict[str, Any]) -> object:
         """Every topic of every room this channel serves (design §9.1). Read per call rather than
         from the startup map, so a topic made since then is listed."""
-        served = next(iter(self.allowed_rooms)) if self.allowed_rooms else None
+        served = self.allowed_rooms or None
         groups = visible_groups(self.api, self.api.list_groups(), served)
         rows: list[dict[str, object]] = []
         for room in groups.groups:
