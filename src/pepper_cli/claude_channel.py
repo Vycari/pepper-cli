@@ -499,7 +499,6 @@ class ChannelWorker:
         self._push(content, meta)
         self.skipped.clear()
         self.skipped_times.clear()
-        self.first_run = False
 
     def _live_edge(self) -> None:
         """Tell Claude, once, that the channel started at the live edge: there is no backlog to
@@ -549,6 +548,9 @@ class ChannelWorker:
     def _caught_up(self) -> None:
         self._flush_backlog()
         self._flush_resync()
+        # The catch-up is over whether or not anything was skipped. Left set when nothing was,
+        # ``first_run`` would go on suppressing resyncs for the rest of the process.
+        self.first_run = False
         self._persist()
 
     def _resync(self, cause: str) -> None:

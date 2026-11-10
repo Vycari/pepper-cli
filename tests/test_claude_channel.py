@@ -888,6 +888,23 @@ def test_a_resync_names_its_cause_gives_room_ids_and_is_safe_on_a_first_run(monk
     assert f"{_TOPIC} (room_id {_ROOM}; Kitchen › Dinner)" in note["content"]
 
 
+def test_an_old_event_replayed_after_a_first_run_still_owes_a_resync(monkeypatch):
+    """A first run whose window holds no messages pushes no backlog, so nothing but the completed
+    catch-up can clear ``first_run``. The stream then drops, and the reconnect replays an older
+    unrecognised event, which was missed and owes a resync. Left set, the flag takes it for
+    first-run history and drops it."""
+    old = _now() - timedelta(days=3)
+    fake = _Fake(
+        _CONNECTED + _scope() + _PING,
+        503,
+        _CONNECTED + _scope() + _event(7, kind="group.renamed", created=old) + _PING,
+    )
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM, "--start", "beginning"])
+
+    assert result.kinds() == ["resync"]
+
+
 def test_a_first_run_replay_of_old_room_events_owes_no_resync(monkeypatch):
     """The retained window on a first run holds old room events of every kind (a rename, an
     app install); none was missed, and the backlog already says to catch up."""
