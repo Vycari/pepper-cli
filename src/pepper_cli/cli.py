@@ -9441,7 +9441,8 @@ def _feed_consent_gate(
     """The shared consent step of ``publish on`` and ``publish set``, for a 409
     ``consent_required``: ``None`` once a person on a terminal agreed (the caller retries with
     consent), else the exit code. Anything but a terminal is refused with the disclosure and
-    never prompted; a "no" prints ``declined`` and exits 0. Consent is never assumed."""
+    never prompted; a "no" prints ``declined`` and exits 1, since nothing was done. Consent is
+    never assumed."""
     disclosure = str(detail.get("disclosure") or detail.get("message") or "")
     named = [
         str(c.get("label") or c.get("id"))
@@ -9466,7 +9467,7 @@ def _feed_consent_gate(
     question = "Publish your Google calendar events at the private address? [y/N] "
     if _prompt(question).lower() not in ("y", "yes"):
         render.info(declined)
-        return 0
+        return 1
     return None
 
 

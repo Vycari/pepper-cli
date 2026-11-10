@@ -200,7 +200,7 @@ def test_on_consent_declined_on_a_terminal_publishes_nothing(server, monkeypatch
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(cli, "_prompt", lambda q: "")
     server.reply("POST", _ENABLE, 409, _CONSENT)
-    assert cli.main(["calendar", "publish", "on"]) == 0
+    assert cli.main(["calendar", "publish", "on"]) == 1
     assert _bodies(server) == [None]
     cap = capsys.readouterr()
     assert "Nothing was published" in cap.err and _URL not in cap.out
@@ -385,7 +385,7 @@ def test_set_consent_declined_on_a_terminal_changes_nothing(server, monkeypatch)
     monkeypatch.setattr(cli, "_prompt", lambda q: "")
     server.reply("GET", "/api/v1/calendars/feed")
     server.reply("PATCH", "/api/v1/calendars/feed/sources", 409, _CONSENT)
-    assert cli.main(["calendar", "publish", "set", "--add-calendar", "family"]) == 0
+    assert cli.main(["calendar", "publish", "set", "--add-calendar", "family"]) == 1
     assert [m for m, *_ in server.seen] == ["GET", "PATCH"]
 
 
