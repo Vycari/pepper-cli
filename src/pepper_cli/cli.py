@@ -2005,6 +2005,15 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_notes_show.add_argument("--room", help=_GROUP_ARG_HELP + " Omit for your own notes.")
     p_notes_show.set_defaults(handler=cmd_notes_show)
 
+    p_notes_links = sub_notes.add_parser(
+        "links",
+        help="List one note's outgoing wiki links and its backlinks.",
+        parents=[_json_parent],
+    )
+    p_notes_links.add_argument("note", help=_NOTE_ARG_HELP)
+    p_notes_links.add_argument("--room", help=_GROUP_ARG_HELP + " Omit for your own notes.")
+    p_notes_links.set_defaults(handler=cmd_notes_links)
+
     p_notes_new = sub_notes.add_parser(
         "create",
         help="Create a note. Body from $EDITOR, --file PATH, or --file - for stdin.",
@@ -8137,6 +8146,40 @@ def cmd_notes_show(args: argparse.Namespace) -> int:
             _note_not_found(args)
             return 2
         _emit(detail, args, lambda: render.render_markdown(detail.body or ""))
+        return 0
+
+    return _with_api(run, _report_notes_api_error, args)
+
+
+def cmd_notes_links(args: argparse.Namespace) -> int:
+    """``pepper notes links <note> [--room ROOM] [--json]``.
+
+    Lists the note's outgoing ``[[wiki links]]`` with what each resolved to,
+    then the notes that link to it. ``--json`` is the whole ``NoteLinks``
+    shape: ``artifact_id``, ``wiki_links`` (typed) and ``backlinks``
+    (passed through exactly as the server sent them).
+
+    The read takes the same viewer-scoped ``/detail`` route as ``show``, so
+    the ``--room``/UUID resolution rules are identical
+    (:func:`cmd_notes_show`): ``--room`` scopes *name* resolution only. The
+    same read carries the kind, for the check ``show`` and ``delete`` make: a
+    file or saved link's UUID would otherwise print as a note with no links
+    instead of being refused.
+    """
+
+    def run(api: api_client.ApiClient) -> int:
+        room_principal = _opt_group(api, args.room, args=args)
+        note_id = _resolve_note(api, room_principal=room_principal, value=args.note, args=args)
+        if note_id is None:
+            return 2
+        links = api.get_note_links(note_id)
+        if links is None:
+            # Same refusal as ``show``/``delete``: a UUID for a file or
+            # saved link is "doesn't exist for you", never a note whose
+            # links happen to be empty.
+            _note_not_found(args)
+            return 2
+        _emit(links, args, lambda: render.render_note_links(links))
         return 0
 
     return _with_api(run, _report_notes_api_error, args)

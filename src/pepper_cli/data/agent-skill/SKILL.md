@@ -498,11 +498,12 @@ pepper --profile <name> comments reopen
 pepper --profile <name> notes list
 pepper --profile <name> notes search
 pepper --profile <name> notes show
+pepper --profile <name> notes links
 pepper --profile <name> notes edit
 pepper --profile <name> whoami
 ```
 
-The four `notes` commands reach only the notes of a room whose roster names you, so always give
+The five `notes` commands reach only the notes of a room whose roster names you, so always give
 them `--room <room>`. They list that room's notes (text notes only), print one note, or replace
 its body; `NOTE` is the note's name or id:
 
@@ -510,6 +511,11 @@ its body; `NOTE` is the note's name or id:
   `pepper --profile <name> notes search QUERY --room <room>` find notes.
 - `pepper --profile <name> notes show NOTE --room <room>` prints a note's markdown body
   (`--json`: the full detail, with its `etag`).
+- `pepper --profile <name> notes links NOTE --room <room>` lists the note's outgoing
+  `[[wiki links]]` with what each resolved to (`resolved`, `ambiguous`, `missing`), then the
+  notes that link back to it (`--json`: the whole link shape, with `backlinks` exactly as the
+  server sent them). The human backlink lines are best-effort until the server's backlink shape
+  is pinned, so read `--json` when you need the full entries.
 - `pepper --profile <name> notes edit NOTE --room <room> --file -` replaces the body from stdin
   (an agent has no editor; `--name` renames). Edit only when you were asked to. An edit sends the
   etag it just read, so a note someone changed in between answers a conflict (exit 1) rather than

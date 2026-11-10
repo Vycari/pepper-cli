@@ -93,6 +93,9 @@ VERBS = frozenset(
     {
         "list",
         "show",
+        # `links NOTE` lists a note's wiki links and backlinks: a read of one
+        # note, like `show`, but a different view than its body.
+        "links",
         "search",
         "watch",
         # `poll` is `watch` as one bounded read (`rooms poll`): the page, the cursor, exit.
@@ -236,6 +239,7 @@ WORDING_PENDING = frozenset(
         "notes delete",
         "notes search",
         "notes show",
+        "notes links",
         "scheduled-tasks create",
         "scheduled-tasks list",
         "scheduled-tasks pause",
@@ -1143,6 +1147,7 @@ JSON_CASES: dict[str, list[str]] = {
     "notes list": ["notes", "list"],
     "notes search": ["notes", "search", "run"],
     "notes show": ["notes", "show", _NOTE],
+    "notes links": ["notes", "links", _NOTE],
     "notes create": ["notes", "create", "Runbook", "--file", "body.md"],
     "notes edit": ["notes", "edit", _NOTE, "--file", "body.md"],
     "notes delete": ["notes", "delete", _NOTE, "--yes"],

@@ -94,6 +94,7 @@ _AGENT_COMMANDS = frozenset(
         "notes list",
         "notes search",
         "notes show",
+        "notes links",
         "notes edit",
     }
 )
