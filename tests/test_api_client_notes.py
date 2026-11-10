@@ -530,6 +530,7 @@ def test_toggle_checklist_409_carries_the_servers_sentence() -> None:
 def _links_detail(**over) -> dict:
     base = {
         "id": _NID,
+        "kind": "inline_text",
         "wiki_links": [
             {
                 "text": "Trip runbook",
@@ -562,7 +563,7 @@ def test_get_note_links_reads_the_detail_path_and_parses_the_links() -> None:
     assert (link.text, link.label, link.state) == ("Trip runbook", "runbook", "resolved")
     assert link.note_id == "00000000-0000-0000-0000-0000000000d2"
     assert link.principal == "alice"
-    assert links.skipped_wiki_links == 0
+    assert links.skipped_wiki_links == []
 
 
 def test_get_note_links_keeps_backlinks_exactly_as_sent() -> None:
@@ -574,18 +575,34 @@ def test_get_note_links_keeps_backlinks_exactly_as_sent() -> None:
 
 
 def test_get_note_links_defaults_when_the_fields_are_absent() -> None:
-    with _client(lambda request: httpx.Response(200, json={"id": _NID})) as api:
+    body = {"id": _NID, "kind": "inline_text"}
+    with _client(lambda request: httpx.Response(200, json=body)) as api:
         links = api.get_note_links(_NID)
+    assert links is not None
     assert links.wiki_links == []
     assert links.backlinks == []
-    assert links.skipped_wiki_links == 0
+    assert links.skipped_wiki_links == []
 
 
-def test_get_note_links_counts_unreadable_wiki_entries_instead_of_dropping_them() -> None:
+@pytest.mark.parametrize("kind", ["external_url", "blob", None])
+def test_get_note_links_is_none_for_a_non_note(kind) -> None:
+    """The kind is read off the same response, so a non-note never looks link-free."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=_links_detail(kind=kind))
+
+    with _client(handler) as api:
+        assert api.get_note_links(_NID) is None
+    assert len(requests) == 1
+
+
+def test_get_note_links_keeps_unreadable_wiki_entries_instead_of_dropping_them() -> None:
     body = _links_detail(wiki_links=["not an object", {"label": "fine", "state": "ambiguous"}])
     with _client(lambda request: httpx.Response(200, json=body)) as api:
         links = api.get_note_links(_NID)
-    assert links.skipped_wiki_links == 1
+    assert links.skipped_wiki_links == ["not an object"]
     assert [link.label for link in links.wiki_links] == ["fine"]
     # An entry with no note_id is unresolved, not malformed.
     assert links.wiki_links[0].note_id is None
@@ -611,7 +628,7 @@ def test_get_note_links_rejects_a_wrongly_typed_field(field, wrong) -> None:
 def test_get_note_links_accepts_an_explicit_empty_or_absent_field() -> None:
     """Absent and ``[]`` both mean the server sent no links; only a wrong
     type is an error."""
-    for body in ({"id": _NID}, _links_detail(wiki_links=[], backlinks=[])):
+    for body in ({"id": _NID, "kind": "inline_text"}, _links_detail(wiki_links=[], backlinks=[])):
         with _client(lambda request, b=body: httpx.Response(200, json=b)) as api:
             links = api.get_note_links(_NID)
         assert (links.wiki_links, links.backlinks) == ([], [])

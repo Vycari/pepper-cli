@@ -1119,7 +1119,7 @@ def render_note_links(result: NoteLinks) -> None:
         _stdout.print("(no outgoing links)")
     if result.skipped_wiki_links:
         _stdout.print(
-            f"[dim]({result.skipped_wiki_links} wiki link(s) not in a shape this CLI "
+            f"[dim]({len(result.skipped_wiki_links)} wiki link(s) not in a shape this CLI "
             "understands; use --json to see them)[/dim]"
         )
     _stdout.print("")

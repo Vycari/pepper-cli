@@ -2073,10 +2073,11 @@ class NoteLinks:
     artifact_id: str
     wiki_links: list[NoteWikiLink] = field(default_factory=list)
     backlinks: list[Any] = field(default_factory=list)
-    #: ``wiki_links`` entries that were not objects and could not be read.
-    #: Reported rather than silently dropped, so a changed server shape
-    #: shows up in the output instead of looking like a note with no links.
-    skipped_wiki_links: int = 0
+    #: ``wiki_links`` entries that were not objects and could not be read,
+    #: kept exactly as the server sent them. Reported rather than silently
+    #: dropped, so a changed server shape shows up in the output (and in
+    #: full under ``--json``) instead of looking like a note with no links.
+    skipped_wiki_links: list[Any] = field(default_factory=list)
 
 
 def _note_links_from_dict(body: dict[str, Any], *, artifact_id: str | None = None) -> NoteLinks:
@@ -2089,9 +2090,9 @@ def _note_links_from_dict(body: dict[str, Any], *, artifact_id: str | None = Non
     different key name would be worse still, since that invents a contract
     the server has not documented.
 
-    Inside a list, a ``wiki_links`` entry that is not an object is counted
-    and skipped rather than failing the whole read, so one odd row does
-    not hide the rest; the count is reported.
+    Inside a list, a ``wiki_links`` entry that is not an object is kept raw
+    in ``skipped_wiki_links`` rather than failing the whole read, so one odd
+    row does not hide the rest.
     """
     for name in ("wiki_links", "backlinks"):
         value = body.get(name)
@@ -2102,10 +2103,10 @@ def _note_links_from_dict(body: dict[str, Any], *, artifact_id: str | None = Non
                 detail=f"{name} was not a list ({type(value).__name__})",
             )
     links: list[NoteWikiLink] = []
-    skipped = 0
+    skipped: list[Any] = []
     for row in body.get("wiki_links") or []:
         if not isinstance(row, dict):
-            skipped += 1
+            skipped.append(row)
             continue
         target = row.get("note_id")
         principal = row.get("principal")
@@ -4141,16 +4142,19 @@ class ApiClient:
         body = self._request("GET", f"/api/v1/artifacts/{artifact_id}/detail").json()
         return _artifact_detail_from_dict(body)
 
-    def get_note_links(self, artifact_id: str) -> NoteLinks:
+    def get_note_links(self, artifact_id: str) -> NoteLinks | None:
         """``GET /api/v1/artifacts/{id}/detail`` — a note's outgoing wiki links
         and its backlinks. Same viewer scoping and 404 behaviour as
         :meth:`get_artifact_detail`.
 
-        The caller reads the detail's ``kind`` first; this returns the link
-        fields only, so a non-note artifact would otherwise look link-free."""
+        ``None`` when the artifact is not a note (a file or saved link): the
+        link fields alone would make it look like a note with no links. The
+        kind is checked on this same response, so the note is read once."""
         body = self._request("GET", f"/api/v1/artifacts/{artifact_id}/detail").json()
         if not isinstance(body, dict):
             raise ApiError(status=200, body=str(body), detail="malformed response")
+        if body.get("kind") != "inline_text":
+            return None
         return _note_links_from_dict(body, artifact_id=artifact_id)
 
     def list_note_comments(self, artifact_id: str) -> NoteComments:
