@@ -1493,6 +1493,12 @@ class GroupSummary:
     a hex accent — both server-rendered, both to be shown rather than
     re-derived. ``archived`` is a *per-viewer* preference, not a
     groups-service concept.
+
+    ``mascot_url`` is the room's mascot picture as a server-relative path
+    (``/api/v1/artifacts/{id}/raw``), fetched with the same PAT bearer token.
+    ``None`` when the room shows no mascot (none set, the picture deleted, the
+    rollout off for the room), for an agent token, and from a server that
+    predates the field. The terminal shows nothing for it; ``--json`` carries it.
     """
 
     group_id: str
@@ -1502,6 +1508,7 @@ class GroupSummary:
     member_count: int
     archived: bool
     topics: list[GroupTopicSummary] = field(default_factory=list)
+    mascot_url: str | None = None
 
 
 # MIRROR: src/pepper/api/groups.py::person_unread
@@ -1830,6 +1837,7 @@ def _group_summary_from_dict(row: dict[str, Any]) -> GroupSummary:
         member_count=row["member_count"],
         archived=row["archived"],
         topics=[_group_topic_from_dict(t) for t in row.get("topics") or []],
+        mascot_url=mascot if isinstance(mascot := row.get("mascot_url"), str) else None,
     )
 
 

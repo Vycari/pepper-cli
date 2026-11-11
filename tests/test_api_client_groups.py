@@ -118,6 +118,45 @@ def test_list_groups_parses_the_capability_signal() -> None:
     assert room.display_name == "Trip planning"
     assert room.member_count == 3
     assert [t.name for t in room.topics] == ["Flights"]
+    assert room.mascot_url is None  # a server that predates the field sends none
+
+
+@pytest.mark.parametrize(
+    ("sent", "parsed"),
+    [
+        ("/api/v1/artifacts/00000000-0000-0000-0000-0000000000d4/raw",) * 2,
+        (None, None),
+        (42, None),
+    ],
+)
+def test_list_groups_reads_the_mascot_url(sent, parsed) -> None:
+    """``mascot_url`` (pepper#6188) is optional: a path, ``null``, or a shape the client drops."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        row = {
+            "group_id": _GID,
+            "display_name": "Trip planning",
+            "color": "#ffaa00",
+            "sub": "active 2h ago",
+            "member_count": 3,
+            "archived": False,
+            "topics": [],
+            "mascot_url": sent,
+        }
+        return httpx.Response(
+            200,
+            json={
+                "enabled": True,
+                "degraded": False,
+                "total": 1,
+                "archived_total": 0,
+                "groups": [row],
+            },
+        )
+
+    with _client(handler) as api:
+        (room,) = api.list_groups().groups
+    assert room.mascot_url == parsed
 
 
 def test_list_groups_asks_for_the_archived_fold() -> None:
