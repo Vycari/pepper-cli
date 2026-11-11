@@ -85,5 +85,5 @@ def link(body: dict[str, Any], *, rotated: bool) -> None:
 
     The URL is a credential: it goes to stdout only, and nowhere else."""
     _line(f"[bold]Private address {'replaced' if rotated else 'ready'}.[/bold]")
-    out_text(f"url:    {body.get('url')}")
-    out_text(f"webcal: {body.get('webcal_url')}")
+    out_text(f"url:    {body.get('url')}", soft_wrap=True)
+    out_text(f"webcal: {body.get('webcal_url')}", soft_wrap=True)

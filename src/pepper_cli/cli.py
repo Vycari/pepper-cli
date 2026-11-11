@@ -9290,13 +9290,23 @@ def _build_calendar_publish_parser() -> argparse.ArgumentParser:
             "`pepper calendar publish` is `show`."
         ),
     )
-    parser.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="JSON out.")
+    # ``--json`` may come before the verb (``publish --json off``) or after it. The verbs'
+    # copy defaults to SUPPRESS so it cannot overwrite a flag given before them, and the
+    # root's ``False`` gives bare ``publish`` the attribute that lets PEPPER_JSON=1 reach it.
+    parser.add_argument("--json", action="store_true", default=False, help="JSON out.")
     parser.set_defaults(handler=cmd_calendar_publish_show)
+    json_verb = argparse.ArgumentParser(add_help=False)
+    json_verb.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit JSON on stdout instead of text (also on when PEPPER_JSON=1).",
+    )
     sub = parser.add_subparsers(dest="publish_action", metavar="{show,on,off,rotate,set}")
     p = sub.add_parser(
         "show",
         help="Whether you are publishing, its detail level and sources (never the address).",
-        parents=[_json_parent],
+        parents=[json_verb],
     )
     p.set_defaults(handler=cmd_calendar_publish_show)
     p = sub.add_parser(
@@ -9308,7 +9318,7 @@ def _build_calendar_publish_parser() -> argparse.ArgumentParser:
             "disclosure and the calendars it names and asks, anything else must pass "
             "--consent after showing the person the disclosure."
         ),
-        parents=[_json_parent],
+        parents=[json_verb],
     )
     p.add_argument(
         "--consent",
@@ -9321,13 +9331,13 @@ def _build_calendar_publish_parser() -> argparse.ArgumentParser:
         "off",
         help="Stop publishing. The address stops working for good; publishing again makes a "
         "new one.",
-        parents=[_json_parent, _yes_parent],
+        parents=[json_verb, _yes_parent],
     )
     p.set_defaults(handler=cmd_calendar_publish_off)
     p = sub.add_parser(
         "rotate",
         help="Replace the address with a new one; the old one stops working for good.",
-        parents=[_json_parent, _yes_parent],
+        parents=[json_verb, _yes_parent],
     )
     p.set_defaults(handler=cmd_calendar_publish_rotate)
     p = sub.add_parser(
@@ -9343,7 +9353,7 @@ def _build_calendar_publish_parser() -> argparse.ArgumentParser:
             "for consent: a terminal shows its disclosure and asks, anything else must pass "
             "--consent after showing the person the disclosure."
         ),
-        parents=[_json_parent],
+        parents=[json_verb],
     )
     p.add_argument("--add-calendar", action="append", default=[], metavar="CALENDAR")
     p.add_argument("--remove-calendar", action="append", default=[], metavar="CALENDAR")
@@ -9576,8 +9586,13 @@ def _feed_changes(args: argparse.Namespace, current: dict[str, Any]) -> dict[str
         changes["follows_off"] = off
     if args.titles_off or args.titles_on:
         hidden = [str(c["id"]) for c in cals if c.get("titles_switch") and not c.get("titles")]
+        switchable = {str(c["id"]) for c in cals if c.get("titles_switch")}
         for name in args.titles_on:
             cid = view.resolve(name, cals, "calendar")
+            if cid not in switchable:
+                # Not in ``hidden`` either, so the server would never see it: say so here
+                # rather than send an unchanged list and report success.
+                raise view.SourceError(f"--titles-on: {name!r} has no titles switch")
             hidden = [i for i in hidden if i != cid]
         for name in args.titles_off:
             cid = view.resolve(name, cals, "calendar")

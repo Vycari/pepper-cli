@@ -7,7 +7,7 @@ import json
 import httpx
 import pytest
 
-from pepper_cli import api_client, cli, credentials
+from pepper_cli import api_client, cli, credentials, render
 from pepper_cli.secret import SecretStr
 
 SECRET = "SECRETTOKEN"
@@ -225,6 +225,20 @@ def test_off_json_without_yes_refuses_even_on_a_terminal(server, monkeypatch) ->
     assert server.seen == []
 
 
+def test_json_before_the_verb_is_kept(server, monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_prompt", lambda q: pytest.fail("JSON mode never prompts"))
+    assert cli.main(["calendar", "publish", "--json", "off"]) == 2
+    assert server.seen == []
+
+
+def test_pepper_json_reaches_bare_publish(server, capsys, monkeypatch) -> None:
+    server.reply("GET", "/api/v1/calendars/feed", body=_STATUS)
+    monkeypatch.setenv("PEPPER_JSON", "1")
+    assert cli.main(["calendar", "publish"]) == 0
+    assert json.loads(capsys.readouterr().out)["enabled"] == _STATUS["enabled"]
+
+
 def test_off_asks_on_a_terminal_and_aborts_on_no(server, monkeypatch) -> None:
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     asked = []
@@ -277,6 +291,20 @@ def test_rotate_with_yes_prints_the_new_links(server, capsys) -> None:
     assert cli.main(["calendar", "publish", "rotate", "--yes"]) == 0
     out = capsys.readouterr().out
     assert "replaced" in out and _URL in out and _WEBCAL in out
+
+
+def test_a_long_address_is_printed_whole_on_a_narrow_console(server, capsys, monkeypatch) -> None:
+    long_url = "https://pepper.example/cal/" + "T" * 120 + ".ics"
+    server.reply(
+        "POST",
+        "/api/v1/calendars/feed/rotate",
+        body={**_STATUS, "url": long_url, "webcal_url": "webcal" + long_url[5:]},
+    )
+    monkeypatch.setattr(render._stdout, "_width", 40)
+    assert cli.main(["calendar", "publish", "rotate", "--yes"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert f"url:    {long_url}" in lines
+    assert "webcal: webcal" + long_url[5:] in lines
 
 
 def test_rotate_when_off_is_the_servers_409(server, capsys) -> None:
@@ -517,6 +545,12 @@ def test_set_titles_on_removes_from_the_list(server) -> None:
 def test_set_titles_unknown_label_is_a_usage_error(server, capsys) -> None:
     assert _set(server, "--titles-off", "nobody", status_body=_SHARED, patched=False) == 2
     assert "no calendar named 'nobody'" in capsys.readouterr().err
+    assert all(m == "GET" for m, _, _ in server.seen)
+
+
+def test_set_titles_on_for_a_calendar_without_the_switch_is_a_usage_error(server, capsys) -> None:
+    assert _set(server, "--titles-on", "busy", status_body=_SHARED, patched=False) == 2
+    assert "'busy' has no titles switch" in capsys.readouterr().err
     assert all(m == "GET" for m, _, _ in server.seen)
 
 
