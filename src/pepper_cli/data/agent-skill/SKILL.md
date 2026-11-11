@@ -84,7 +84,9 @@ Setting the environment variable `PEPPER_JSON=1` turns on `--json` for every com
   "archived_total": ...}`. Every list command's `--json` output (including the ones your token cannot run) has this
   `items` and `next_before` shape; an error under `--json` is one stderr line,
   `{"error": {"code", "status", "message"}}`, with stdout empty. Each entry of `items` has a `group_id` (also printed in the text form), a `display_name`, and a
-  list of topics that holds only the room's most recently active ones. `degraded: true` means the
+  list of topics that holds only the room's most recently active ones, and a `mascot_url`: the
+  room's picture as a server-relative path (`/api/v1/artifacts/<id>/raw`, fetched with the same
+  token), or `null` when the room shows none. `degraded: true` means the
   server could not ask the groups service, so an empty list then is not "no rooms".
 - `pepper --profile <name> topics list --room <room> --json` lists all of a room's topics: `topic_id`,
   `name`, `last_activity_at`, `archived_at`, `dedicated_conversation`, and `is_default` (true on

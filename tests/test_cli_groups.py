@@ -246,6 +246,26 @@ def test_rooms_list_json_shape(tmp_home, patch_api, capsys) -> None:
     assert payload["items"][0]["display_name"] == "Trip planning"
     assert payload["next_before"] is None
     assert (payload["degraded"], payload["total"], payload["archived_total"]) == (False, 1, 0)
+    assert payload["items"][0]["mascot_url"] is None
+
+
+_MASCOT = "/api/v1/artifacts/00000000-0000-0000-0000-0000000000d4/raw"
+
+
+def test_rooms_list_json_carries_the_mascot_url(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(groups=_group_list(_group(mascot_url=_MASCOT)))
+    rc = cli.main(["rooms", "list", "--json"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["items"][0]["mascot_url"] == _MASCOT
+
+
+def test_rooms_list_text_shows_no_mascot_url(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(groups=_group_list(_group(mascot_url=_MASCOT)))
+    rc = cli.main(["rooms", "list"])
+    assert rc == 0
+    assert "artifacts" not in capsys.readouterr().out
 
 
 def test_rooms_list_archived_help_says_only_archived(capsys) -> None:
@@ -355,6 +375,14 @@ def test_rooms_show_renders_kind_members_topics_apps(tmp_home, patch_api, capsys
     assert "owner" in out
     assert "General" in out
     assert "To-do" in out
+
+
+def test_rooms_show_json_passes_the_mascot_url_through(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(group_detail=_room_detail(mascot_url=_MASCOT))
+    rc = cli.main(["rooms", "show", _GID_TRIP, "--json"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["mascot_url"] == _MASCOT
 
 
 def test_rooms_show_marks_an_agent_and_its_sponsor(tmp_home, patch_api, capsys) -> None:
