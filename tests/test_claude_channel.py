@@ -193,6 +193,8 @@ class _Fake:
         self.default_topic = _TOPIC
         #: topic id -> the note id when that topic holds a note's comments.
         self.subjects: dict[str, str] = {}
+        #: topic ids the rail marks archived.
+        self.archived_topics: set[str] = set()
         self.message_status = 200
         self.fail_messages = 0
         self.fail_topics = 0
@@ -256,6 +258,7 @@ class _Fake:
                     "name": name,
                     "last_activity_at": None,
                     "is_default": tid == self.default_topic,
+                    "archived_at": "2026-11-01T00:00:00Z" if tid in self.archived_topics else None,
                     "subject_artifact_id": self.subjects.get(tid),
                 }
                 for tid, name in self.topics.items()
@@ -1864,6 +1867,8 @@ def test_topics_list_returns_every_topic_with_its_default_mark(monkeypatch):
                 "room_name": "Kitchen",
                 "topic_name": "Dinner",
                 "is_default": True,
+                "archived": False,
+                "note_id": None,
             },
             {
                 "room_id": _ROOM,
@@ -1871,6 +1876,8 @@ def test_topics_list_returns_every_topic_with_its_default_mark(monkeypatch):
                 "room_name": "Kitchen",
                 "topic_name": "Chores",
                 "is_default": False,
+                "archived": False,
+                "note_id": None,
             },
         ],
         "next_before": None,
@@ -1956,6 +1963,43 @@ def test_topics_list_includes_an_archived_room(monkeypatch):
     # An archived room still delivers messages, so its topics must still be findable.
     topics = json.loads(out["topics"][0])["items"]
     assert [t["topic_id"] for t in topics] == [_TOPIC, _OTHER_TOPIC]
+
+
+def test_topics_list_folds_archived_topics_but_keeps_the_default(monkeypatch):
+    # ``pepper topics list``'s default fold: an archived topic is not offered as a place to post,
+    # but an archived default stays, marked, so ``is_default`` always names one.
+    fake = _Fake(_CONNECTED)
+    fake.topics[_MESSAGE_2] = "Old plans"
+    fake.archived_topics = {_MESSAGE_2, _TOPIC}
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["topics"] = s.call("topics_list", {})
+
+    run_channel(monkeypatch, fake, script=script)
+
+    topics = json.loads(out["topics"][0])["items"]
+    assert [(t["topic_id"], t["archived"]) for t in topics] == [
+        (_TOPIC, True),
+        (_OTHER_TOPIC, False),
+    ]
+
+
+def test_topics_list_names_the_note_a_comment_topic_belongs_to(monkeypatch):
+    # The same ``note_id`` a message tag from that topic carries, so the agent can tell a note's
+    # comment thread from an ordinary topic.
+    fake = _Fake(_CONNECTED)
+    fake.subjects[_OTHER_TOPIC] = _MESSAGE_2
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["topics"] = s.call("topics_list", {})
+
+    run_channel(monkeypatch, fake, script=script)
+
+    topics = {t["topic_id"]: t for t in json.loads(out["topics"][0])["items"]}
+    assert topics[_OTHER_TOPIC]["note_id"] == _MESSAGE_2
+    assert topics[_TOPIC]["note_id"] is None
 
 
 def test_topics_list_reports_a_refused_listing(monkeypatch):

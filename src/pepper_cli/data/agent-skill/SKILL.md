@@ -308,8 +308,10 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
   `mentions`, `idempotency_key`), `messages_list` (`room_id`, `topic_id`, and at most one of
   `since`, `before` and `at`, plus `limit`; it never marks a read position), `messages_react`
   (`room_id`, `message_id`, `emoji`) and `topics_list` (no arguments; every room and topic this
-  channel can see, each with `room_id`, `topic_id`, `room_name`, `topic_name` and `is_default`).
-  Call `topics_list` when no event has named a room yet: never guess an id. A failed call comes
+  channel can see, each with `room_id`, `topic_id`, `room_name`, `topic_name`, `is_default`,
+  `archived`, and `note_id` when the topic holds a note's comments; archived topics are left out
+  except a room's default). Call `topics_list` when no event has named a room yet: never guess
+  an id. A failed call comes
   back as an error result carrying the command's own error line.
 - `messages_post` threads and attributes the way a post from section 6 does. `on_behalf_of` is yours to
   pass; the channel never infers it, and it needs `reply_to`. `idempotency_key` defaults, for a reply, to

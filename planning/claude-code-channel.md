@@ -441,7 +441,7 @@ Each tool is one command an agent token can already run (guide §8), with the sa
 | `messages_post` (`room_id`, `topic_id`, `text`, `reply_to?`, `on_behalf_of?`, `mentions?`, `idempotency_key?`) | `messages post` | P1 |
 | `messages_list` (`room_id`, `topic_id`, `since?` / `before?` / `at?`, `limit?`) | `messages list` (never `--mark`) | P1 |
 | `messages_react` (`room_id`, `message_id`, `emoji`) | `messages react` | P1 |
-| `topics_list` (no arguments; `room_id`, `topic_id`, `room_name`, `topic_name`, `is_default`) | `topics list` | P2 |
+| `topics_list` (no arguments; `room_id`, `topic_id`, `room_name`, `topic_name`, `is_default`, `archived`, `note_id`; archived topics folded as `topics list` folds them) | `topics list` | P2 |
 | `messages_unreact`, `members_list`, `rooms_list` | the matching commands | P2 |
 | `attachments_download` (`room_id`, `attachment_id`, `out`) | `attachments download` | P2 |
 

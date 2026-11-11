@@ -219,7 +219,9 @@ def scope_groups(
     room merged after startup is served under its survivor while the requested id stays allowed."""
     if room_ids is None:
         return groups
-    allowed = {room_ids} if isinstance(room_ids, str) else room_ids
+    # A snapshot: the tool thread reads the shared set while the worker may add a merge's
+    # survivor to it, and iterating a set that grows mid-loop raises.
+    allowed = (room_ids,) if isinstance(room_ids, str) else tuple(room_ids)
     return dataclasses.replace(
         groups,
         groups=[g for g in groups.groups if any(_same_id(g.group_id, r) for r in allowed)],
@@ -1001,7 +1003,9 @@ TOOLS = [
         "topics_list",
         "List the rooms and topics this channel can see (`pepper topics list`), so you can find "
         "a room_id and topic_id before any event names one. Returns {items, next_before} as JSON; "
-        "each item has room_id, topic_id, room_name, topic_name and is_default.",
+        "each item has room_id, topic_id, room_name, topic_name, is_default, archived and "
+        "note_id (set when the topic holds a note's comments). Archived topics are left out, "
+        "except a room's default topic.",
         {},
         [],
     ),
@@ -1109,7 +1113,7 @@ class ChannelTools:
     def _room(self, args: dict[str, Any]) -> str:
         room_id = _uuid(args, "room_id")
         if self.allowed_rooms is not None and not any(
-            _same_id(room_id, allowed) for allowed in self.allowed_rooms
+            _same_id(room_id, allowed) for allowed in tuple(self.allowed_rooms)
         ):
             raise ToolError(
                 f"room_id {room_id} is not the room this channel serves; this channel is "
@@ -1181,12 +1185,19 @@ class ChannelTools:
 
     def _topics(self, args: dict[str, Any]) -> object:
         """Every topic of every room this channel serves (design §9.1). Read per call rather than
-        from the startup map, so a topic made since then is listed."""
+        from the startup map, so a topic made since then is listed.
+
+        Folded the way ``pepper topics list`` folds by default: an archived topic is left out
+        unless it is the room's default, which stays so ``is_default`` always names one. A
+        note's comment topic stays, with its ``note_id``, the same id a message tag from it
+        carries, so it is never mistaken for an ordinary topic."""
         served = self.allowed_rooms or None
         groups = visible_groups(self.api, self.api.list_groups(), served)
         rows: list[dict[str, object]] = []
         for room in groups.groups:
             for topic in self.api.list_group_topics(room.group_id):
+                if topic.archived_at is not None and not topic.is_default:
+                    continue
                 rows.append(
                     {
                         "room_id": room.group_id,
@@ -1194,6 +1205,8 @@ class ChannelTools:
                         "room_name": sanitize_line(room.display_name),
                         "topic_name": sanitize_line(topic.name),
                         "is_default": topic.is_default,
+                        "archived": topic.archived_at is not None,
+                        "note_id": topic.subject_artifact_id,
                     }
                 )
         return _list_envelope(rows)
