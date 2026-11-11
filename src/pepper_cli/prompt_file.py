@@ -40,8 +40,8 @@ def build_prompt(text: str, args: Sequence[str]) -> str:
     """The message for ``text`` (the file's contents) with ``args`` applied.
 
     Raises :class:`PromptFileError` for an empty body or a placeholder with no
-    matching argument (``{{@}}`` with no arguments at all included): a silent blank would send a prompt that reads as complete
-    and is not.
+    matching argument, ``{{@}}`` with no arguments at all included: a silent blank
+    would send a prompt that reads as complete and is not.
     """
     body = strip_shebang(text)
     used: set[int] = set()
