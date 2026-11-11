@@ -449,6 +449,42 @@ def test_set_after_consent_rebuilds_its_lists_from_a_fresh_read(server, monkeypa
     assert server.seen[-1][2] == {"calendars": ["fam@x"], "consent": True}
 
 
+def test_set_after_consent_keeps_the_calendar_it_named_when_another_takes_its_name(
+    server, monkeypatch
+) -> None:
+    """Greptile: the retry sends the id looked up before the prompt, never a fresh match."""
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_prompt", lambda q: "y")
+    server.reply("GET", "/api/v1/calendars/feed")
+    renamed = {
+        **_STATUS,
+        "calendars": [
+            {"id": "work@x", "label": "Work", "included": True},
+            {"id": "fam@x", "label": "Old family", "included": False},
+            {"id": "new@x", "label": "Family", "included": False},
+        ],
+    }
+    server.reply("GET", "/api/v1/calendars/feed", body=renamed)
+    server.reply("PATCH", "/api/v1/calendars/feed/sources", 409, _CONSENT)
+    server.reply("PATCH", "/api/v1/calendars/feed/sources", 200, _STATUS)
+    assert cli.main(["calendar", "publish", "set", "--add-calendar", "family"]) == 0
+    assert server.seen[-1][2] == {"calendars": ["work@x", "fam@x"], "consent": True}
+
+
+def test_set_after_consent_stops_when_the_calendar_it_named_is_gone(
+    server, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_prompt", lambda q: "y")
+    server.reply("GET", "/api/v1/calendars/feed")
+    gone = {**_STATUS, "calendars": [c for c in _STATUS["calendars"] if c["id"] != "fam@x"]}
+    server.reply("GET", "/api/v1/calendars/feed", body=gone)
+    server.reply("PATCH", "/api/v1/calendars/feed/sources", 409, _CONSENT)
+    assert cli.main(["calendar", "publish", "set", "--add-calendar", "family"]) == 2
+    assert "fam@x" in capsys.readouterr().err
+    assert [m for m, _, _ in server.seen].count("PATCH") == 1
+
+
 def test_set_consent_declined_on_a_terminal_changes_nothing(server, monkeypatch) -> None:
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(cli, "_prompt", lambda q: "")

@@ -9622,46 +9622,65 @@ def cmd_calendar_publish_rotate(args: argparse.Namespace) -> int:
     return _run_personal(args, run, _report_feed_error)
 
 
-def _feed_changes(args: argparse.Namespace, current: dict[str, Any]) -> dict[str, Any]:
-    """The PATCH body for ``set``: the flags given, with the full replacement lists worked out
-    from the status ``current`` (label -> id is a lookup; the lists are whole)."""
+_FEED_ID_FLAGS: tuple[tuple[str, str, str], ...] = (
+    ("add_calendar", "calendars", "calendar"),
+    ("remove_calendar", "calendars", "calendar"),
+    ("add_follow", "follows", "follow"),
+    ("remove_follow", "follows", "follow"),
+    ("titles_on", "calendars", "calendar"),
+    ("titles_off", "calendars", "calendar"),
+)
+
+
+def _feed_ids(args: argparse.Namespace, current: dict[str, Any]) -> dict[str, list[str]]:
+    """The ids the ``set`` flags name, looked up once in the status ``current``: a retry after
+    the consent prompt keeps these, so a calendar renamed meanwhile cannot make a name match
+    one the person was not shown."""
     view = calendar_publish_view
+    ids = {
+        flag: [
+            view.resolve(name, list(current.get(rows) or []), kind) for name in getattr(args, flag)
+        ]
+        for flag, rows, kind in _FEED_ID_FLAGS
+    }
+    switchable = {str(c["id"]) for c in current.get("calendars") or [] if c.get("titles_switch")}
+    for name, cid in zip(args.titles_on, ids["titles_on"], strict=True):
+        if cid not in switchable:
+            # Not in the hidden list either, so the server would never see it: say so here
+            # rather than send an unchanged list and report success.
+            raise view.SourceError(f"--titles-on: {name!r} has no titles switch")
+    return ids
+
+
+def _feed_changes(
+    args: argparse.Namespace, current: dict[str, Any], ids: dict[str, list[str]]
+) -> dict[str, Any]:
+    """The PATCH body for ``set``: the flags given as ``ids``, with the full replacement lists
+    worked out from the status ``current`` (the lists are whole). An id no longer in
+    ``current`` (removed since it was looked up) stops the command."""
     cals, follows = list(current.get("calendars") or []), list(current.get("follows") or [])
+    present = {
+        "calendars": {str(c["id"]) for c in cals},
+        "follows": {str(f["id"]) for f in follows},
+    }
+    for flag, rows, kind in _FEED_ID_FLAGS:
+        if gone := [i for i in ids[flag] if i not in present[rows]]:
+            raise calendar_publish_view.SourceError(f"that {kind} is gone ({', '.join(gone)})")
     changes: dict[str, Any] = {}
-    if args.add_calendar or args.remove_calendar:
+    if ids["add_calendar"] or ids["remove_calendar"]:
         chosen = [str(c["id"]) for c in cals if c.get("included")]
-        for name in args.remove_calendar:
-            cid = view.resolve(name, cals, "calendar")
-            chosen = [i for i in chosen if i != cid]
-        for name in args.add_calendar:
-            cid = view.resolve(name, cals, "calendar")
-            if cid not in chosen:
-                chosen.append(cid)
+        chosen = [i for i in chosen if i not in ids["remove_calendar"]]
+        chosen += [i for i in dict.fromkeys(ids["add_calendar"]) if i not in chosen]
         changes["calendars"] = chosen
-    if args.add_follow or args.remove_follow:
+    if ids["add_follow"] or ids["remove_follow"]:
         off = [str(f["id"]) for f in follows if not f.get("included")]
-        for name in args.add_follow:
-            fid = view.resolve(name, follows, "follow")
-            off = [i for i in off if i != fid]
-        for name in args.remove_follow:
-            fid = view.resolve(name, follows, "follow")
-            if fid not in off:
-                off.append(fid)
+        off = [i for i in off if i not in ids["add_follow"]]
+        off += [i for i in dict.fromkeys(ids["remove_follow"]) if i not in off]
         changes["follows_off"] = off
-    if args.titles_off or args.titles_on:
+    if ids["titles_on"] or ids["titles_off"]:
         hidden = [str(c["id"]) for c in cals if c.get("titles_switch") and not c.get("titles")]
-        switchable = {str(c["id"]) for c in cals if c.get("titles_switch")}
-        for name in args.titles_on:
-            cid = view.resolve(name, cals, "calendar")
-            if cid not in switchable:
-                # Not in ``hidden`` either, so the server would never see it: say so here
-                # rather than send an unchanged list and report success.
-                raise view.SourceError(f"--titles-on: {name!r} has no titles switch")
-            hidden = [i for i in hidden if i != cid]
-        for name in args.titles_off:
-            cid = view.resolve(name, cals, "calendar")
-            if cid not in hidden:
-                hidden.append(cid)
+        hidden = [i for i in hidden if i not in ids["titles_on"]]
+        hidden += [i for i in dict.fromkeys(ids["titles_off"]) if i not in hidden]
         changes["titles_off"] = hidden
     for key in ("detail", "meals", "workouts", "todos"):
         if getattr(args, key) is not None:
@@ -9694,7 +9713,9 @@ def cmd_calendar_publish_set(args: argparse.Namespace) -> int:
 
     def run(api: api_client.ApiClient) -> int:
         try:
-            changes = _feed_changes(args, api.calendar_feed())
+            current = api.calendar_feed()
+            ids = _feed_ids(args, current)
+            changes = _feed_changes(args, current, ids)
         except calendar_publish_view.SourceError as exc:
             _emit_error(args, "usage", str(exc))
             return 2
@@ -9710,9 +9731,10 @@ def cmd_calendar_publish_set(args: argparse.Namespace) -> int:
             if code is not None:
                 return code
             # The prompt can stay open for minutes: rebuild the lists from a fresh read, so
-            # a change made on the page meanwhile is not undone (VR-28a942d3).
+            # a change made on the page meanwhile is not undone (VR-28a942d3), keeping the
+            # ids looked up before the prompt, the ones the person was shown.
             try:
-                changes = _feed_changes(args, api.calendar_feed())
+                changes = _feed_changes(args, api.calendar_feed(), ids)
             except calendar_publish_view.SourceError as stale:
                 _emit_error(args, "usage", f"{stale}; nothing changed")
                 return 2
