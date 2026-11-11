@@ -360,7 +360,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         # subcommands, so publish's verbs have a parser of their own.
         parser = _build_calendar_publish_parser()
         argv = argv[2:]
-    args = parser.parse_args(argv)
+    if argv[:1] == ["run"]:
+        # Prompt ARGS may sit on either side of ``--root``/``--json`` (:func:`_build_run_parser`).
+        args = _build_run_parser().parse_intermixed_args(argv[1:])
+    else:
+        args = parser.parse_args(argv)
     if hasattr(args, "json"):
         # Resolve J10 once, here: every leaf that declares ``--json`` reads the
         # result from ``args.json`` below, so ``PEPPER_JSON=1`` reaches all of
@@ -799,46 +803,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "(also on when PEPPER_JSON=1). The REPL ignores it.",
     )
 
-    p_run = sub.add_parser(
-        "run",
-        help=(
-            "Send a prompt file as one turn (one-shot). With "
-            "`#!/usr/bin/env -S pepper run` the file is an executable script."
-        ),
-        description=(
-            "Read FILE (or '-' for stdin), drop a leading #! line, and send the rest as one "
-            "message, printing the reply on stdout. In the file, {{1}}..{{N}} become the "
-            "positional ARGS and {{@}} all of them; {{{{ is a literal {{. ARGS the file does "
-            "not reference are appended as context. Put '--' before ARGS that start with '-'."
-        ),
-    )
-    p_run.add_argument("file", metavar="FILE", help="The prompt file, or '-' to read stdin.")
-    p_run.add_argument(
-        "prompt_args",
-        nargs="*",
-        metavar="ARGS",
-        help="Arguments for the prompt: substituted for {{N}}, or appended as context.",
-    )
-    # The same read-only grant as ``chat --root``, and only from the command line: a
-    # prompt file cannot give itself access to this machine's files.
-    p_run.add_argument(
-        "--root",
-        "--tools-root",
-        action="append",
-        dest="root",
-        metavar="PATH",
-        help=(
-            "Let this turn read files under PATH on this machine (repeatable). "
-            "Read-only; the search runs here and only matches are sent."
-        ),
-    )
-    p_run.set_defaults(handler=cmd_run)
-    p_run.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit one JSON line per streamed event on stdout, the reply last "
-        "(also on when PEPPER_JSON=1).",
-    )
+    # The subparser is what ``--help`` and the noun list see; ``main`` parses ``run`` with
+    # :func:`_build_run_parser` instead, so prompt ARGS may sit on either side of options.
+    _add_run_arguments(sub.add_parser("run", help=_RUN_HELP, description=_RUN_DESCRIPTION))
 
     p_traj = sub.add_parser(
         "trajectories",
@@ -9401,6 +9368,62 @@ def cmd_drafts_send(args: argparse.Namespace) -> int:
         return 0
 
     return _run_personal(args, run, _report_draft_error)
+
+
+_RUN_HELP = (
+    "Send a prompt file as one turn (one-shot). With "
+    "`#!/usr/bin/env -S pepper run` the file is an executable script."
+)
+_RUN_DESCRIPTION = (
+    "Read FILE (or '-' for stdin), drop a leading #! line, and send the rest as one "
+    "message, printing the reply on stdout. In the file, {{1}}..{{N}} become the "
+    "positional ARGS and {{@}} all of them; {{{{ is a literal {{. ARGS the file does "
+    "not reference are appended as context. Options may come before, between or after "
+    "ARGS; put '--' before ARGS that start with '-'."
+)
+
+
+def _add_run_arguments(p_run: argparse.ArgumentParser) -> None:
+    """``pepper run``'s arguments, shared by its subparser and :func:`_build_run_parser`."""
+    p_run.add_argument("file", metavar="FILE", help="The prompt file, or '-' to read stdin.")
+    p_run.add_argument(
+        "prompt_args",
+        nargs="*",
+        metavar="ARGS",
+        help="Arguments for the prompt: substituted for {{N}}, or appended as context.",
+    )
+    # The same read-only grant as ``chat --root``, and only from the command line: a
+    # prompt file cannot give itself access to this machine's files.
+    p_run.add_argument(
+        "--root",
+        "--tools-root",
+        action="append",
+        dest="root",
+        metavar="PATH",
+        help=(
+            "Let this turn read files under PATH on this machine (repeatable). "
+            "Read-only; the search runs here and only matches are sent."
+        ),
+    )
+    p_run.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit one JSON line per streamed event on stdout, the reply last "
+        "(also on when PEPPER_JSON=1).",
+    )
+    p_run.set_defaults(handler=cmd_run)
+
+
+def _build_run_parser() -> argparse.ArgumentParser:
+    """A standalone ``pepper run`` parser, parsed with ``parse_intermixed_args``.
+
+    Through the subcommand parser, ``nargs="*"`` stops at the first option, so
+    ``run FILE a --json b`` would reject ``b``. A shebang script's caller writes
+    arguments and flags in any order, so ``run`` gets a parser of its own.
+    """
+    parser = argparse.ArgumentParser(prog="pepper run", description=_RUN_DESCRIPTION)
+    _add_run_arguments(parser)
+    return parser
 
 
 def _build_calendar_publish_parser() -> argparse.ArgumentParser:

@@ -163,3 +163,35 @@ def test_an_executable_prompt_file_runs_through_its_shebang(tmp_path: Path) -> N
     full = subprocess.run([str(script), "Allen", "Chris"], env=env, capture_output=True, text=True)
     assert full.returncode == 1, full.stderr
     assert "pepper login" in full.stderr
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        ["a", "--json", "b"],
+        ["--json", "a", "b"],
+        ["a", "b", "--json"],
+    ],
+)
+def test_arguments_may_sit_on_either_side_of_options(api, tmp_path, capsys, tail) -> None:
+    path = _script(tmp_path, "{{1}} then {{2}}")
+    assert cli.main(["run", str(path), *tail]) == 0
+    assert api.instances[-1].messages == ["a then b"]
+    capsys.readouterr()
+
+
+def test_arguments_split_around_root(api, tmp_path) -> None:
+    path = _script(tmp_path, "{{1}} then {{2}}")
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    assert cli.main(["run", str(path), "a", "--root", str(notes), "b"]) == 0
+    assert api.instances[-1].messages == ["a then b"]
+    assert api.instances[-1].client_tools[0] is not None
+
+
+def test_run_help_still_lists_its_options(capsys) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["run", "--help"])
+    out = capsys.readouterr().out
+    assert "--root" in out
+    assert "--json" in out
