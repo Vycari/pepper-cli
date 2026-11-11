@@ -63,6 +63,11 @@ def test_missing_arguments_are_all_named() -> None:
         build_prompt("{{1}} {{3}}", [])
 
 
+def test_all_placeholder_with_no_arguments_is_an_error() -> None:
+    with pytest.raises(PromptFileError, match=r"\{\{@\}\} but was given 0 arguments"):
+        build_prompt("Summarize {{@}} and list open items.", [])
+
+
 @pytest.mark.parametrize("text", ["", "   \n", "#!/usr/bin/env -S pepper run\n\n"])
 def test_an_empty_prompt_is_an_error(text: str) -> None:
     with pytest.raises(PromptFileError, match="empty"):
