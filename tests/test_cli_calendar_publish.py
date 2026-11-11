@@ -56,7 +56,10 @@ def server(monkeypatch, tmp_path):
         body = json.loads(request.content) if request.content else None
         seen.append((request.method, request.url.path, body))
         queue = replies[(request.method, request.url.path)]
-        return queue.pop(0) if len(queue) > 1 else queue[0]
+        reply = queue.pop(0) if len(queue) > 1 else queue[0]
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
 
     real = api_client.ApiClient
 
@@ -71,6 +74,7 @@ def server(monkeypatch, tmp_path):
 
     s = S()
     s.seen, s.replies = seen, replies  # type: ignore[attr-defined]
+    s.fail = lambda method, path, exc: replies.setdefault((method, path), []).append(exc)  # type: ignore[attr-defined]
     s.reply = lambda method, path, status=200, body=None: replies.setdefault(  # type: ignore[attr-defined]
         (method, path), []
     ).append(httpx.Response(status, json=body if body is not None else _STATUS))
@@ -148,8 +152,8 @@ def test_enable_sends_no_body_without_consent_and_the_flag_with_it(server) -> No
     server.reply("POST", _ENABLE, body=_LINKS)
     with api_client.ApiClient(server_url="http://example.com", token=SecretStr("t")) as api:
         api.calendar_feed_enable()
-        api.calendar_feed_enable(consent=True)
-    assert _bodies(server) == [None, {"consent": True}]
+        api.calendar_feed_enable(consent_to=["work@x"])
+    assert _bodies(server) == [None, {"consent": True, "calendars": ["work@x"]}]
 
 
 def test_on_consent_required_without_terminal_refuses_and_never_retries(server, capsys) -> None:
@@ -168,11 +172,32 @@ def test_on_consent_required_json_error_carries_the_disclosure(server, capsys) -
     assert _bodies(server) == [None]
 
 
-def test_on_consent_flag_sends_consent_up_front(server, capsys) -> None:
+def test_on_consent_flag_agrees_to_the_calendars_the_server_names(server, capsys) -> None:
+    server.reply("POST", _ENABLE, 409, _CONSENT)
+    server.reply("POST", _ENABLE, 200, _LINKS)
+    assert cli.main(["calendar", "publish", "on", "--consent"]) == 0
+    assert _bodies(server) == [None, {"consent": True, "calendars": ["work@x", "fam@x"]}]
+    assert _URL in capsys.readouterr().out
+
+
+def test_on_with_nothing_to_consent_to_publishes_on_the_first_post(server, capsys) -> None:
     server.reply("POST", _ENABLE, body=_LINKS)
     assert cli.main(["calendar", "publish", "on", "--consent"]) == 0
-    assert _bodies(server) == [{"consent": True}]
+    assert _bodies(server) == [None]
     assert _URL in capsys.readouterr().out
+
+
+def test_on_a_lost_answer_after_consent_says_it_may_be_on_and_how_to_recover(
+    server, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_prompt", lambda q: "y")
+    server.reply("POST", _ENABLE, 409, _CONSENT)
+    server.fail("POST", _ENABLE, httpx.ReadTimeout("timed out"))
+    assert cli.main(["calendar", "publish", "on"]) == 1
+    cap = capsys.readouterr()
+    assert "may have started" in cap.err and "publish show" in cap.err and "rotate" in cap.err
+    assert _URL not in cap.out
 
 
 def test_on_yes_does_not_imply_consent(server) -> None:
@@ -190,7 +215,7 @@ def test_on_consent_accepted_on_a_terminal_retries_and_prints_the_address(
     server.reply("POST", _ENABLE, 409, _CONSENT)
     server.reply("POST", _ENABLE, 200, _LINKS)
     assert cli.main(["calendar", "publish", "on"]) == 0
-    assert _bodies(server) == [None, {"consent": True}]
+    assert _bodies(server) == [None, {"consent": True, "calendars": ["work@x", "fam@x"]}]
     cap = capsys.readouterr()
     assert "DISCLOSURE" in cap.err and "- Work" in cap.err and "- Family" in cap.err
     assert _URL in cap.out and _WEBCAL in cap.out
@@ -406,6 +431,22 @@ def test_set_consent_required_on_a_terminal_asks_then_retries_with_consent(
     cap = capsys.readouterr()
     assert "DISCLOSURE" in cap.err and "Publishing: on" in cap.out
     assert "- Work" in cap.err and "- Family" in cap.err
+
+
+def test_set_after_consent_rebuilds_its_lists_from_a_fresh_read(server, monkeypatch) -> None:
+    """VR-28a942d3: a change made on the page while the prompt was open is kept."""
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_prompt", lambda q: "y")
+    server.reply("GET", "/api/v1/calendars/feed")
+    changed = {
+        **_STATUS,
+        "calendars": [{**c, "included": False} for c in _STATUS["calendars"]],
+    }
+    server.reply("GET", "/api/v1/calendars/feed", body=changed)
+    server.reply("PATCH", "/api/v1/calendars/feed/sources", 409, _CONSENT)
+    server.reply("PATCH", "/api/v1/calendars/feed/sources", 200, _STATUS)
+    assert cli.main(["calendar", "publish", "set", "--add-calendar", "family"]) == 0
+    assert server.seen[-1][2] == {"calendars": ["fam@x"], "consent": True}
 
 
 def test_set_consent_declined_on_a_terminal_changes_nothing(server, monkeypatch) -> None:

@@ -2502,13 +2502,16 @@ class ApiClient:
         the link (only its hash is stored)."""
         return self._feed_object("GET", "")
 
-    def calendar_feed_enable(self, consent: bool = False) -> dict[str, Any]:
+    def calendar_feed_enable(self, consent_to: list[str] | None = None) -> dict[str, Any]:
         """``POST /api/v1/calendars/feed/enable``: status plus ``url`` and ``webcal_url``, shown
         once (409 when already on). The URL is a credential: callers print it, never keep it.
 
-        No body is sent unless ``consent`` is set, then ``{"consent": true}``: the answer to a
-        first publish's 409 ``consent_required`` once the person has agreed to its disclosure."""
-        return self._feed_object("POST", "/enable", json={"consent": True} if consent else None)
+        No body is sent unless ``consent_to`` is given, then ``{"consent": true, "calendars":
+        consent_to}``: the answer to a first publish's 409 ``consent_required`` once the person
+        has agreed to its disclosure, naming the calendar ids that answer listed. The server
+        publishes only those still selected."""
+        body = None if consent_to is None else {"consent": True, "calendars": consent_to}
+        return self._feed_object("POST", "/enable", json=body)
 
     def calendar_feed_rotate(self) -> dict[str, Any]:
         """``POST /api/v1/calendars/feed/rotate``: a new link, same shape as enable (409 when

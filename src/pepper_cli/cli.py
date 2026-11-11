@@ -9531,19 +9531,40 @@ def cmd_calendar_publish_on(args: argparse.Namespace) -> int:
     A first publish that includes Google calendars answers 409 ``consent_required`` with the
     disclosure and the calendars; a terminal sees both and is asked, otherwise the command
     refuses unless ``--consent`` was given (same step as ``publish set``). Nothing is published
-    until consent is sent."""
+    until consent is sent, and the consent names the calendars that answer listed, so the
+    server publishes no calendar the person was not shown. ``--consent`` agrees to the
+    calendars the server names on this run, without asking."""
 
     def run(api: api_client.ApiClient) -> int:
         try:
-            body = api.calendar_feed_enable(consent=args.consent)
+            body = api.calendar_feed_enable()
         except api_client.ApiError as exc:
             detail = _feed_error_body(exc)
             if exc.status != 409 or detail.get("code") != "consent_required":
                 raise
-            code = _feed_consent_gate(args, detail, "Aborted. Nothing was published.")
-            if code is not None:
-                return code
-            body = api.calendar_feed_enable(consent=True)
+            if not args.consent:
+                code = _feed_consent_gate(args, detail, "Aborted. Nothing was published.")
+                if code is not None:
+                    return code
+            named = [
+                str(c["id"])
+                for c in detail.get("calendars") or []
+                if isinstance(c, dict) and c.get("id")
+            ]
+            try:
+                body = api.calendar_feed_enable(consent_to=named)
+            except httpx.RequestError as lost:
+                # The server may have published and the one-time address is lost with the
+                # answer; "couldn't reach" alone would send the person to rerun `on`, which
+                # then only says it is already on (VR-b2a76a64).
+                _emit_error(
+                    args,
+                    "network",
+                    f"The answer was lost ({lost}), so publishing may have started without "
+                    "showing the address. Check with `pepper calendar publish show`; if it is "
+                    "on, `pepper calendar publish rotate` makes a new address.",
+                )
+                return 1
         _emit_link(body, args, rotated=False)
         return 0
 
@@ -9688,6 +9709,13 @@ def cmd_calendar_publish_set(args: argparse.Namespace) -> int:
             code = _feed_consent_gate(args, detail, "Aborted. Nothing changed.")
             if code is not None:
                 return code
+            # The prompt can stay open for minutes: rebuild the lists from a fresh read, so
+            # a change made on the page meanwhile is not undone (VR-28a942d3).
+            try:
+                changes = _feed_changes(args, api.calendar_feed())
+            except calendar_publish_view.SourceError as stale:
+                _emit_error(args, "usage", f"{stale}; nothing changed")
+                return 2
             body = api.calendar_feed_sources({**changes, "consent": True})
         _emit(body, args, lambda: calendar_publish_view.status(body))
         return 0
