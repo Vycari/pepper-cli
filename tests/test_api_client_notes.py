@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 
 import httpx
+import pytest
 
 from pepper_cli import api_client
 from pepper_cli.secret import SecretStr
@@ -516,3 +517,128 @@ def test_toggle_checklist_409_carries_the_servers_sentence() -> None:
             assert (exc.status, exc.detail) == (409, sentence)
         else:
             raise AssertionError("expected a 409")
+
+
+# ---------------------------------------------------------------------------
+# get_note_links
+#
+# The fixtures here are synthetic. The detail route's ``wiki_links`` and
+# ``backlinks`` are not in the OpenAPI snapshot (it answers an untyped
+# ``JSONResponse``), so these pin the client's tolerance, not the server shape.
+
+
+def _links_detail(**over) -> dict:
+    base = {
+        "id": _NID,
+        "kind": "inline_text",
+        "wiki_links": [
+            {
+                "text": "Trip runbook",
+                "label": "runbook",
+                "state": "resolved",
+                "note_id": "00000000-0000-0000-0000-0000000000d2",
+                "principal": "alice",
+            }
+        ],
+        "backlinks": [{"id": "00000000-0000-0000-0000-0000000000d3", "name": "Day plan"}],
+    }
+    base.update(over)
+    return base
+
+
+def test_get_note_links_reads_the_detail_path_and_parses_the_links() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        return httpx.Response(200, json=_links_detail())
+
+    with _client(handler) as api:
+        links = api.get_note_links(_NID)
+
+    assert seen["path"] == f"/api/v1/artifacts/{_NID}/detail"
+    assert links.artifact_id == _NID
+    assert len(links.wiki_links) == 1
+    link = links.wiki_links[0]
+    assert (link.text, link.label, link.state) == ("Trip runbook", "runbook", "resolved")
+    assert link.note_id == "00000000-0000-0000-0000-0000000000d2"
+    assert link.principal == "alice"
+    assert links.skipped_wiki_links == []
+
+
+def test_get_note_links_keeps_backlinks_exactly_as_sent() -> None:
+    backlinks = [{"anything": [1, 2]}, "a string", 7]
+    with _client(
+        lambda request: httpx.Response(200, json=_links_detail(backlinks=backlinks))
+    ) as api:
+        assert api.get_note_links(_NID).backlinks == backlinks
+
+
+def test_get_note_links_defaults_when_the_fields_are_absent() -> None:
+    body = {"id": _NID, "kind": "inline_text"}
+    with _client(lambda request: httpx.Response(200, json=body)) as api:
+        links = api.get_note_links(_NID)
+    assert links is not None
+    assert links.wiki_links == []
+    assert links.backlinks == []
+    assert links.skipped_wiki_links == []
+
+
+@pytest.mark.parametrize("kind", ["external_url", "blob", None])
+def test_get_note_links_is_none_for_a_non_note(kind) -> None:
+    """The kind is read off the same response, so a non-note never looks link-free."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=_links_detail(kind=kind))
+
+    with _client(handler) as api:
+        assert api.get_note_links(_NID) is None
+    assert len(requests) == 1
+
+
+def test_get_note_links_keeps_unreadable_wiki_entries_instead_of_dropping_them() -> None:
+    body = _links_detail(wiki_links=["not an object", {"label": "fine", "state": "ambiguous"}])
+    with _client(lambda request: httpx.Response(200, json=body)) as api:
+        links = api.get_note_links(_NID)
+    assert links.skipped_wiki_links == ["not an object"]
+    assert [link.label for link in links.wiki_links] == ["fine"]
+    # An entry with no note_id is unresolved, not malformed.
+    assert links.wiki_links[0].note_id is None
+
+
+@pytest.mark.parametrize("field", ["wiki_links", "backlinks"])
+@pytest.mark.parametrize("wrong", ["oops", {"a": 1}, 7, True])
+def test_get_note_links_rejects_a_wrongly_typed_field(field, wrong) -> None:
+    """A present-but-mistyped field is a contract error, not "no links".
+
+    Reading it as ``[]`` would print a linked note as an orphan and exit 0,
+    indistinguishable from a note that genuinely has none.
+    """
+    with _client(lambda request: httpx.Response(200, json=_links_detail(**{field: wrong}))) as api:
+        try:
+            api.get_note_links(_NID)
+        except api_client.ApiError as exc:
+            assert field in exc.detail
+        else:
+            raise AssertionError(f"{field}={wrong!r} must not read as no links")
+
+
+def test_get_note_links_accepts_an_explicit_empty_or_absent_field() -> None:
+    """Absent and ``[]`` both mean the server sent no links; only a wrong
+    type is an error."""
+    for body in ({"id": _NID, "kind": "inline_text"}, _links_detail(wiki_links=[], backlinks=[])):
+        with _client(lambda request, b=body: httpx.Response(200, json=b)) as api:
+            links = api.get_note_links(_NID)
+        assert (links.wiki_links, links.backlinks) == ([], [])
+
+
+def test_get_note_links_rejects_a_non_object_detail() -> None:
+    with _client(lambda request: httpx.Response(200, json=["not", "a", "dict"])) as api:
+        try:
+            api.get_note_links(_NID)
+        except api_client.ApiError as exc:
+            assert exc.status == 200
+        else:
+            raise AssertionError("a non-object detail must not parse as no links")

@@ -302,13 +302,17 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
   in a loop, tell your operator, and expect the tools to disappear within seconds. The process
   exits 1 after `ended`, 2 for a cursor file or room it cannot use, and 0 when Claude Code closes
   it. Reconnects are silent and lose nothing.
-- Three tools do what the reads, posts and reactions in sections 5 and 6 do, with the same
-  arguments and the JSON that their `--json` form prints:
+- Four tools do what the reads, posts, discoveries and reactions in sections 5 and 6 do, with
+  the same arguments and the JSON that their `--json` form prints:
   `messages_post` (`room_id`, `topic_id`, `text`, and optionally `reply_to`, `on_behalf_of`,
   `mentions`, `idempotency_key`), `messages_list` (`room_id`, `topic_id`, and at most one of
-  `since`, `before` and `at`, plus `limit`; it never marks a read position) and `messages_react`
-  (`room_id`, `message_id`, `emoji`). A failed call comes back as an error result carrying the
-  command's own error line.
+  `since`, `before` and `at`, plus `limit`; it never marks a read position), `messages_react`
+  (`room_id`, `message_id`, `emoji`) and `topics_list` (no arguments; every room and topic this
+  channel can see, each with `room_id`, `topic_id`, `room_name`, `topic_name`, `is_default`,
+  `archived`, and `note_id` when the topic holds a note's comments; archived topics are left out
+  except a room's default). Call `topics_list` when no event has named a room yet: never guess
+  an id. A failed call comes
+  back as an error result carrying the command's own error line.
 - `messages_post` threads and attributes the way a post from section 6 does. `on_behalf_of` is yours to
   pass; the channel never infers it, and it needs `reply_to`. `idempotency_key` defaults, for a reply, to
   `claude-channel:`, the `reply_to` id and a hash of the post, so retrying the same reply after a
@@ -498,11 +502,12 @@ pepper --profile <name> comments reopen
 pepper --profile <name> notes list
 pepper --profile <name> notes search
 pepper --profile <name> notes show
+pepper --profile <name> notes links
 pepper --profile <name> notes edit
 pepper --profile <name> whoami
 ```
 
-The four `notes` commands reach only the notes of a room whose roster names you, so always give
+The five `notes` commands reach only the notes of a room whose roster names you, so always give
 them `--room <room>`. They list that room's notes (text notes only), print one note, or replace
 its body; `NOTE` is the note's name or id:
 
@@ -510,6 +515,11 @@ its body; `NOTE` is the note's name or id:
   `pepper --profile <name> notes search QUERY --room <room>` find notes.
 - `pepper --profile <name> notes show NOTE --room <room>` prints a note's markdown body
   (`--json`: the full detail, with its `etag`).
+- `pepper --profile <name> notes links NOTE --room <room>` lists the note's outgoing
+  `[[wiki links]]` with what each resolved to (`resolved`, `ambiguous`, `missing`), then the
+  notes that link back to it (`--json`: the whole link shape, with `backlinks` exactly as the
+  server sent them). The human backlink lines are best-effort until the server's backlink shape
+  is pinned, so read `--json` when you need the full entries.
 - `pepper --profile <name> notes edit NOTE --room <room> --file -` replaces the body from stdin
   (an agent has no editor; `--name` renames). Edit only when you were asked to. An edit sends the
   etag it just read, so a note someone changed in between answers a conflict (exit 1) rather than

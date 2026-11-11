@@ -58,6 +58,7 @@ if TYPE_CHECKING:
         GroupRosterMember,
         GroupTopicSummary,
         NoteComments,
+        NoteLinks,
         ScheduledTaskDetail,
         ScheduledTaskMessage,
         ScheduledTaskRunEntry,
@@ -1067,6 +1068,67 @@ def render_note_list(result: ArtifactListResponse) -> None:
         )
     if result.truncated:
         _stdout.print("[dim](more notes than shown — narrow with --label or --room)[/dim]")
+
+
+def _backlink_line(entry: object) -> str:
+    """One backlink as a display line, best-effort.
+
+    The server's backlink shape is not pinned by the OpenAPI snapshot, so this
+    reads ``name``/``title``/``id`` when the entry is an object that has them
+    and otherwise shows the value as it came. It is a display convenience,
+    not a parse of the real contract; ``notes links --json`` carries the
+    untouched entries.
+    """
+    if isinstance(entry, dict):
+        for key in ("name", "title"):
+            value = entry.get(key)
+            if isinstance(value, str) and value.strip():
+                return _s(value)
+        for key in ("id", "artifact_id", "note_id"):
+            value = entry.get(key)
+            if isinstance(value, (str, int)) and str(value).strip():
+                return _s(value)
+        return "[dim](backlink with no recognizable name or id)[/dim]"
+    if isinstance(entry, str) and entry.strip():
+        return _s(entry)
+    return "[dim](backlink in an unrecognized shape)[/dim]"
+
+
+def render_note_links(result: NoteLinks) -> None:
+    """Pretty-print ``pepper notes links`` to stdout: outgoing links, then backlinks.
+
+    Each outgoing link is its label, then where it points and what that
+    resolved to. A link with no resolved target has no note id to name, so
+    that column says so. The state prints as the server spells it: a state
+    this CLI does not know yet still shows, since the wire contract is
+    additive-only. Backlinks print after a blank line; see
+    :func:`_backlink_line` for why that section is best-effort. Plain text,
+    no tables, matching every other listing here.
+    """
+    _stdout.print(f"[bold]Links from[/bold] [dim]{_s(result.artifact_id)}[/dim]", soft_wrap=True)
+    if result.wiki_links:
+        for link in result.wiki_links:
+            where = (f"{_s(link.principal)}/" if link.principal else "") + (
+                f"[dim]{_s(link.note_id)}[/dim]" if link.note_id else "[dim](no target)[/dim]"
+            )
+            _stdout.print(
+                f"  {_s(link.label or link.text)}  ->  {where}  [dim]{_s(link.state)}[/dim]",
+                soft_wrap=True,
+            )
+    else:
+        _stdout.print("(no outgoing links)")
+    if result.skipped_wiki_links:
+        _stdout.print(
+            f"[dim]({len(result.skipped_wiki_links)} wiki link(s) not in a shape this CLI "
+            "understands; use --json to see them)[/dim]"
+        )
+    _stdout.print("")
+    _stdout.print("[bold]Backlinks[/bold]")
+    if result.backlinks:
+        for entry in result.backlinks:
+            _stdout.print(f"  {_backlink_line(entry)}", soft_wrap=True)
+    else:
+        _stdout.print("(none)")
 
 
 def group_message_tags(m: GroupMessage) -> tuple[str, str]:

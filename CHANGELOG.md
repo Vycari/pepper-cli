@@ -6,6 +6,14 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 
 ## Unreleased
 
+### Added
+
+- `pepper agents claude-channel` serves a `topics_list` tool (#130): every room and topic the
+  channel can see, each with `room_id`, `topic_id`, `room_name`, `topic_name`, `is_default`,
+  `archived` and `note_id` (a note's comment topic), so a session with no event yet can find the
+  ids instead of guessing them. Archived topics are left out, as `pepper topics list` does, except
+  a room's default. It reads the topic rail on each call, so a topic made mid-session is listed,
+  and stays inside the room named with `--room`.
 - `pepper calendar publish [show] | on | off | rotate | set`: publish your calendars at a private
   address another calendar app subscribes to (`GET/POST/PATCH /api/v1/calendars/feed`). `on` and
   `rotate` print the address and the webcal address once and write them nowhere else; `off` and

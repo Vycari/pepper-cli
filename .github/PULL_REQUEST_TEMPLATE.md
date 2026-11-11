@@ -5,7 +5,11 @@ shape here, in `plugins/vycari-ops/references/pr-template.md`, not in a repo.
 
 Everything above `## AI reviewer` is for a human who is busy and reading across many workstreams.
 Everything below it is for the Greptile reviewer and for future Claude sessions reading this PR as
-history. Write each for its own reader: don't pad the human half with detail, and don't thin the AI
+history. The section is folded in a `<details>` block, the same split Vycari Review uses on its
+inline threads: GitHub shows the heading and one closed line, while the raw body (what the API
+returns to an agent) is plain Markdown. Keep the heading outside the fold, since tools find the
+section by that line, and keep `</details>` as the last line you write: Greptile appends its summary
+after it, and an unclosed fold would hide that summary too. Write each for its own reader: don't pad the human half with detail, and don't thin the AI
 half because a human might skim it. State gaps and trade-offs plainly — a description that admits
 its own limitations is the one a reviewer trusts. No marketing language, no emoji.
 
@@ -29,6 +33,8 @@ section when it is empty. -->
 - [ ]
 
 ## AI reviewer
+
+<details><summary>Details for agents: what the diff does, invariants, verification, checklist</summary>
 
 <!-- For Greptile and for future Claude sessions; assume no human reads this. As dense as is useful.
 Cover what applies and drop what doesn't:
@@ -58,3 +64,5 @@ one-line reason. An N/A with a reason is fine, a silently ticked box is not. -->
 - [ ] Server-contract changes: `/api/v1` usage stays additive-only, `# MIRROR:` comments updated, unknown fields and frames still tolerated
 - [ ] No token or credential is logged, printed, or put in a fixture
 - [ ] README and the bundled `SKILL.md` updated if commands or output changed
+
+</details>
