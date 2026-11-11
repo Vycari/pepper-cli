@@ -14,6 +14,16 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
   ids instead of guessing them. Archived topics are left out, as `pepper topics list` does, except
   a room's default. It reads the topic rail on each call, so a topic made mid-session is listed,
   and stays inside the room named with `--room`.
+- `pepper calendar publish [show] | on | off | rotate | set`: publish your calendars at a private
+  address another calendar app subscribes to (`GET/POST/PATCH /api/v1/calendars/feed`). `on` and
+  `rotate` print the address and the webcal address once and write them nowhere else; `off` and
+  `rotate` confirm (`--yes` without a terminal), because stopping is final: the address stops
+  working for good and publishing again makes a new one. `set` takes
+  calendars and follows by label or id, `--detail busy|full`, and `--meals/--workouts/--todos` with
+  their `--no-` forms, and `--titles-off C` / `--titles-on C` to hide or show the titles of a
+  calendar someone shared with you in Full details (`show` marks those `titles shown/hidden`). Adding a first Google calendar needs the person's consent: a terminal shows
+  the server's disclosure and asks, anything else must pass `--consent`. Declining any of these
+  prompts (consent, `off`, `rotate`) exits 1.
 
 ## 0.9.0 — 2026-11-08
 

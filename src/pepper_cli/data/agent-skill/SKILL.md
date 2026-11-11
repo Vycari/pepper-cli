@@ -548,6 +548,8 @@ is changed. That covers:
 - `pepper --profile <name> notes create` and `pepper --profile <name> notes delete`: an agent
   member cannot create or delete a note. Personal notes (any `notes` command without `--room`) and
   every other kind of artifact (images, links, files) are out of reach too.
+- Calendar publishing (`pepper calendar publish`, the private address another calendar app subscribes to, including the per-calendar titles switch that `set` offers for calendars shared with the person) and every other
+  calendar command. They act on a person's own account, so only a person's own token reaches them.
 - Every other `rooms`, `topics`, `messages`, `attachments`, `members`, `sharing` or `apps` command, which are the ones that change a room, its topics, its members
   or its apps, or that read or search across rooms.
 - Every command outside those nouns that talks to the server, chat and `tui` included

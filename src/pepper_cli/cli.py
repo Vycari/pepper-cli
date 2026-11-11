@@ -19,6 +19,8 @@ Subcommands:
 - ``pepper trajectories show <id> | list`` — inspect saved turns; ``--room`` scopes
   to one room's.
 - ``pepper calendar [today|week|schedule] [--planning]`` — read-only agenda.
+- ``pepper calendar publish [show] | on | off | rotate | set`` — publish your calendars at a
+  private address another calendar app subscribes to (``GET/POST/PATCH /api/v1/calendars/feed``).
 - ``pepper next [--room R] [--source PREFIX] [--all] [--json]`` — Now / today's calendar /
   todos, prioritized.
 - ``pepper todos list | create | edit | done | dismiss | reopen`` — manage tracked
@@ -122,6 +124,7 @@ from pepper_cli import (
     article_reader,
     artifacts_view,
     brief_view,
+    calendar_publish_view,
     credentials,
     feed,
     feed_detail_render,
@@ -347,6 +350,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     # flags) flows straight to the top-level argparse so flag-style
     # errors and help text stay sensible.
 
+    if argv[:2] == ["calendar", "publish"]:
+        # ``calendar`` takes an optional window word, which argparse cannot also split into
+        # subcommands, so publish's verbs have a parser of their own.
+        parser = _build_calendar_publish_parser()
+        argv = argv[2:]
     args = parser.parse_args(argv)
     if hasattr(args, "json"):
         # Resolve J10 once, here: every leaf that declares ``--json`` reads the
@@ -858,7 +866,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         description=(
             "Show your calendar as a per-day agenda with weather, daylight and commute. "
             "today (the default), week and schedule are shortcuts; --start/--days pick any "
-            "window (1-31 days). --room reads a room's calendar instead."
+            "window (1-31 days). --room reads a room's calendar instead. "
+            "`pepper calendar publish --help` covers publishing your calendars at a private "
+            "address (show, on, off, rotate, set)."
         ),
         parents=[_room_parent(omitted="Omit for your own calendar."), _json_parent],
     )
@@ -5268,12 +5278,13 @@ def _confirm_destructive(
     *,
     yes: bool,
     refusal: str = "this deletes for good; pass --yes to run it without a prompt",
+    declined: int = 0,
 ) -> int | None:
     """Gate a destructive personal command: ``None`` to go ahead, else the exit code.
 
-    ``--yes`` skips it; a terminal gets a y/N question; with no terminal (or under
-    JSON mode, which never prompts) it refuses with exit 2 and ``refusal``, since a script
-    must say ``--yes`` out loud.
+    ``--yes`` skips it; a terminal gets a y/N question, and a no exits ``declined``; with no
+    terminal (or under JSON mode, which never prompts) it refuses with exit 2 and ``refusal``,
+    since a script must say ``--yes`` out loud.
     """
     if yes:
         return None
@@ -5282,7 +5293,7 @@ def _confirm_destructive(
         return 2
     if _prompt(f"{prompt} [y/N] ").lower() not in ("y", "yes"):
         render.info("Aborted.")
-        return 0
+        return declined
     return None
 
 
@@ -9308,6 +9319,430 @@ def cmd_drafts_send(args: argparse.Namespace) -> int:
         return 0
 
     return _run_personal(args, run, _report_draft_error)
+
+
+def _build_calendar_publish_parser() -> argparse.ArgumentParser:
+    """``pepper calendar publish [show|on|off|rotate|set]``; bare is ``show``."""
+    parser = argparse.ArgumentParser(
+        prog="pepper calendar publish",
+        description=(
+            "Publish your calendars at a private address another calendar app subscribes to. "
+            "The address is a secret and is shown only when it is made (on, rotate); it cannot "
+            "be shown again. The server decides what is published. Stopping is final: the "
+            "address stops working for good and publishing again makes a new one. Bare "
+            "`pepper calendar publish` is `show`."
+        ),
+    )
+    # ``--json`` may come before the verb (``publish --json off``) or after it. The verbs'
+    # copy defaults to SUPPRESS so it cannot overwrite a flag given before them, and the
+    # root's ``False`` gives bare ``publish`` the attribute that lets PEPPER_JSON=1 reach it.
+    parser.add_argument("--json", action="store_true", default=False, help="JSON out.")
+    parser.set_defaults(handler=cmd_calendar_publish_show)
+    json_verb = argparse.ArgumentParser(add_help=False)
+    json_verb.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit JSON on stdout instead of text (also on when PEPPER_JSON=1).",
+    )
+    sub = parser.add_subparsers(dest="publish_action", metavar="{show,on,off,rotate,set}")
+    p = sub.add_parser(
+        "show",
+        help="Whether you are publishing, its detail level and sources (never the address).",
+        parents=[json_verb],
+    )
+    p.set_defaults(handler=cmd_calendar_publish_show)
+    p = sub.add_parser(
+        "on",
+        help="Publish your calendars and print the private address once.",
+        description=(
+            "Publish your calendars and print the private address once. A first publish "
+            "that includes Google calendars needs consent: a terminal shows the server's "
+            "disclosure and the calendars it names and asks, anything else must pass "
+            "--consent after showing the person the disclosure."
+        ),
+        parents=[json_verb],
+    )
+    p.add_argument(
+        "--consent",
+        action="store_true",
+        help="The person has agreed to publish their Google calendars at the address. Never "
+        "assume this; without it a terminal is asked and anything else is refused.",
+    )
+    p.set_defaults(handler=cmd_calendar_publish_on)
+    p = sub.add_parser(
+        "off",
+        help="Stop publishing. The address stops working for good; publishing again makes a "
+        "new one.",
+        parents=[json_verb, _yes_parent],
+    )
+    p.set_defaults(handler=cmd_calendar_publish_off)
+    p = sub.add_parser(
+        "rotate",
+        help="Replace the address with a new one; the old one stops working for good.",
+        parents=[json_verb, _yes_parent],
+    )
+    p.set_defaults(handler=cmd_calendar_publish_rotate)
+    p = sub.add_parser(
+        "set",
+        help="Change what is published: calendars, follows, titles, detail, meals, workouts, "
+        "todos.",
+        description=(
+            "Change only what you name. Calendars and follows are given by label or id (a "
+            "unique label prefix works); the rest of your list is sent back unchanged. "
+            "--titles-off / --titles-on hide or show the titles of a calendar someone shared "
+            "with you in Full details (only those that offer the switch). Adding "
+            "your first Google calendar publishes its events at the address, so the server asks "
+            "for consent: a terminal shows its disclosure and asks, anything else must pass "
+            "--consent after showing the person the disclosure."
+        ),
+        parents=[json_verb],
+    )
+    p.add_argument("--add-calendar", action="append", default=[], metavar="CALENDAR")
+    p.add_argument("--remove-calendar", action="append", default=[], metavar="CALENDAR")
+    p.add_argument("--add-follow", action="append", default=[], metavar="FOLLOW")
+    p.add_argument("--remove-follow", action="append", default=[], metavar="FOLLOW")
+    p.add_argument(
+        "--titles-off",
+        action="append",
+        default=[],
+        metavar="CALENDAR",
+        help="Hide this shared calendar's titles in Full details (busy blocks instead).",
+    )
+    p.add_argument(
+        "--titles-on",
+        action="append",
+        default=[],
+        metavar="CALENDAR",
+        help="Show this shared calendar's titles in Full details again.",
+    )
+    p.add_argument("--detail", choices=["busy", "full"], help="Busy blocks only, or full events.")
+    for name in ("meals", "workouts", "todos"):
+        p.add_argument(
+            f"--{name}",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help=f"Publish {name} too (--no-{name} takes them out).",
+        )
+    p.add_argument(
+        "--consent",
+        action="store_true",
+        help="The person has agreed to publish their Google calendars at the address. Never "
+        "assume this; without it a terminal is asked and anything else is refused.",
+    )
+    p.set_defaults(handler=cmd_calendar_publish_set)
+    return parser
+
+
+def _report_feed_error(args: argparse.Namespace, exc: api_client.ApiError) -> int:
+    """:func:`_fail_api`, but an unknown-source 422 names the sources the server refused."""
+    body = _feed_error_body(exc)
+    if exc.status == 422 and body.get("code") == "unknown_sources":
+        titles = [str(t) for t in body.get("titles_off") or []]
+        names = [*(body.get("calendars") or []), *(body.get("follows") or [])]
+        if titles and not names:
+            _emit_error(
+                args,
+                "validation",
+                "these calendars have no titles switch (it is offered only for calendars "
+                f"shared with you that are not busy-only): {', '.join(titles)}",
+                status=422,
+            )
+            return 1
+        names += [f"{t} (no titles switch)" for t in titles]
+        _emit_error(
+            args,
+            "validation",
+            f"the server does not know these sources: {', '.join(map(str, names))}",
+            status=422,
+        )
+        return 1
+    return _fail_api(args, exc)
+
+
+def _feed_error_body(exc: api_client.ApiError) -> dict[str, Any]:
+    """The structured ``detail`` of a feed error (``consent_required``, ``unknown_sources``),
+    or ``{}`` when the server sent a string or nothing."""
+    try:
+        detail = json.loads(exc.body).get("detail")
+    except (ValueError, AttributeError):
+        return {}
+    return detail if isinstance(detail, dict) else {}
+
+
+def cmd_calendar_publish_show(args: argparse.Namespace) -> int:
+    """``pepper calendar publish [show] [--json]``: ``GET /api/v1/calendars/feed``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.calendar_feed()
+        _emit(body, args, lambda: calendar_publish_view.status(body))
+        return 0
+
+    return _run_personal(args, run, _report_feed_error)
+
+
+def _emit_link(body: dict[str, Any], args: argparse.Namespace, *, rotated: bool) -> None:
+    """Print the one-time address. It is a credential: stdout only, never a log or a cache."""
+    _emit(body, args, lambda: calendar_publish_view.link(body, rotated=rotated))
+    if not _json_mode(args):
+        render.info("Copy it now: the address can't be shown again. 'pepper calendar publish")
+        render.info("rotate' makes a new one, and the old one stops working for good.")
+
+
+def _feed_consent_gate(
+    args: argparse.Namespace, detail: dict[str, Any], declined: str
+) -> int | None:
+    """The shared consent step of ``publish on`` and ``publish set``, for a 409
+    ``consent_required``: ``None`` once a person on a terminal agreed (the caller retries with
+    consent), else the exit code. Anything but a terminal is refused with the disclosure and
+    never prompted; a "no" prints ``declined`` and exits 1, since nothing was done. Consent is
+    never assumed."""
+    disclosure = str(detail.get("disclosure") or detail.get("message") or "")
+    named = [
+        str(c.get("label") or c.get("id"))
+        for c in detail.get("calendars") or []
+        if isinstance(c, dict)
+    ]
+    if _json_mode(args) or not _stdin_is_tty():
+        which = f" Calendars: {', '.join(named)}." if named else ""
+        _emit_error(
+            args,
+            "usage",
+            f"consent is needed: {disclosure}{which} Show this to the person, and only if "
+            "they agree run the command again with --consent.",
+            status=409,
+        )
+        return 2
+    render.info(disclosure)
+    if named:
+        render.info("Calendars that would be published:")
+        for label in named:
+            render.info(f"  - {label}")
+    question = "Publish your Google calendar events at the private address? [y/N] "
+    if _prompt(question).lower() not in ("y", "yes"):
+        render.info(declined)
+        return 1
+    return None
+
+
+def cmd_calendar_publish_on(args: argparse.Namespace) -> int:
+    """``pepper calendar publish on [--consent] [--json]``: ``POST /api/v1/calendars/feed/enable``.
+
+    A first publish that includes Google calendars answers 409 ``consent_required`` with the
+    disclosure and the calendars; a terminal sees both and is asked, otherwise the command
+    refuses unless ``--consent`` was given (same step as ``publish set``). Nothing is published
+    until consent is sent, and the consent names the calendars that answer listed, so the
+    server publishes no calendar the person was not shown. ``--consent`` agrees to the
+    calendars the server names on this run, without asking."""
+
+    def run(api: api_client.ApiClient) -> int:
+        try:
+            body = api.calendar_feed_enable()
+        except api_client.ApiError as exc:
+            detail = _feed_error_body(exc)
+            if exc.status != 409 or detail.get("code") != "consent_required":
+                raise
+            if not args.consent:
+                code = _feed_consent_gate(args, detail, "Aborted. Nothing was published.")
+                if code is not None:
+                    return code
+            named = [
+                str(c["id"])
+                for c in detail.get("calendars") or []
+                if isinstance(c, dict) and c.get("id")
+            ]
+            try:
+                body = api.calendar_feed_enable(consent_to=named)
+            except httpx.RequestError as lost:
+                # The server may have published and the one-time address is lost with the
+                # answer; "couldn't reach" alone would send the person to rerun `on`, which
+                # then only says it is already on (VR-b2a76a64).
+                _emit_error(
+                    args,
+                    "network",
+                    f"The answer was lost ({lost}), so publishing may have started without "
+                    "showing the address. Check with `pepper calendar publish show`; if it is "
+                    "on, `pepper calendar publish rotate` makes a new address.",
+                )
+                return 1
+        _emit_link(body, args, rotated=False)
+        return 0
+
+    return _run_personal(args, run, _report_feed_error)
+
+
+def cmd_calendar_publish_off(args: argparse.Namespace) -> int:
+    """``pepper calendar publish off [--yes] [--json]``: ``POST /api/v1/calendars/feed/disable``.
+
+    Confirms first (``--yes`` without a terminal; a no exits 1, like a declined consent): stopping
+    is final, the address stops working for good and anything subscribed to it shows nothing
+    new."""
+    if (
+        code := _confirm_destructive(
+            args,
+            "Stop publishing? The address stops working for good, and anything subscribed to "
+            "it shows nothing new.",
+            yes=args.yes,
+            refusal="stopping is final and breaks every existing subscription; pass --yes to "
+            "run it without a prompt",
+            declined=1,
+        )
+    ) is not None:
+        return code
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.calendar_feed_disable()
+        _emit(body, args, lambda: render.info("Publishing is off. The address no longer works."))
+        return 0
+
+    return _run_personal(args, run, _report_feed_error)
+
+
+def cmd_calendar_publish_rotate(args: argparse.Namespace) -> int:
+    """``pepper calendar publish rotate [--yes] [--json]``: ``POST /api/v1/calendars/feed/rotate``.
+
+    Confirms first (``--yes`` without a terminal; a no exits 1, like a declined consent): every
+    calendar app subscribed to the old address stops getting updates."""
+    if (
+        code := _confirm_destructive(
+            args,
+            "Rotating makes a new address; every subscription to the old one stops working. Go on?",
+            yes=args.yes,
+            refusal="rotating breaks every existing subscription; pass --yes to run it without "
+            "a prompt",
+            declined=1,
+        )
+    ) is not None:
+        return code
+
+    def run(api: api_client.ApiClient) -> int:
+        _emit_link(api.calendar_feed_rotate(), args, rotated=True)
+        return 0
+
+    return _run_personal(args, run, _report_feed_error)
+
+
+_FEED_ID_FLAGS: tuple[tuple[str, str, str], ...] = (
+    ("add_calendar", "calendars", "calendar"),
+    ("remove_calendar", "calendars", "calendar"),
+    ("add_follow", "follows", "follow"),
+    ("remove_follow", "follows", "follow"),
+    ("titles_on", "calendars", "calendar"),
+    ("titles_off", "calendars", "calendar"),
+)
+
+
+def _feed_ids(args: argparse.Namespace, current: dict[str, Any]) -> dict[str, list[str]]:
+    """The ids the ``set`` flags name, looked up once in the status ``current``: a retry after
+    the consent prompt keeps these, so a calendar renamed meanwhile cannot make a name match
+    one the person was not shown."""
+    view = calendar_publish_view
+    ids = {
+        flag: [
+            view.resolve(name, list(current.get(rows) or []), kind) for name in getattr(args, flag)
+        ]
+        for flag, rows, kind in _FEED_ID_FLAGS
+    }
+    switchable = {str(c["id"]) for c in current.get("calendars") or [] if c.get("titles_switch")}
+    for name, cid in zip(args.titles_on, ids["titles_on"], strict=True):
+        if cid not in switchable:
+            # Not in the hidden list either, so the server would never see it: say so here
+            # rather than send an unchanged list and report success.
+            raise view.SourceError(f"--titles-on: {name!r} has no titles switch")
+    return ids
+
+
+def _feed_changes(
+    args: argparse.Namespace, current: dict[str, Any], ids: dict[str, list[str]]
+) -> dict[str, Any]:
+    """The PATCH body for ``set``: the flags given as ``ids``, with the full replacement lists
+    worked out from the status ``current`` (the lists are whole). An id no longer in
+    ``current`` (removed since it was looked up) stops the command."""
+    cals, follows = list(current.get("calendars") or []), list(current.get("follows") or [])
+    present = {
+        "calendars": {str(c["id"]) for c in cals},
+        "follows": {str(f["id"]) for f in follows},
+    }
+    for flag, rows, kind in _FEED_ID_FLAGS:
+        if gone := [i for i in ids[flag] if i not in present[rows]]:
+            raise calendar_publish_view.SourceError(f"that {kind} is gone ({', '.join(gone)})")
+    changes: dict[str, Any] = {}
+    if ids["add_calendar"] or ids["remove_calendar"]:
+        chosen = [str(c["id"]) for c in cals if c.get("included")]
+        chosen = [i for i in chosen if i not in ids["remove_calendar"]]
+        chosen += [i for i in dict.fromkeys(ids["add_calendar"]) if i not in chosen]
+        changes["calendars"] = chosen
+    if ids["add_follow"] or ids["remove_follow"]:
+        off = [str(f["id"]) for f in follows if not f.get("included")]
+        off = [i for i in off if i not in ids["add_follow"]]
+        off += [i for i in dict.fromkeys(ids["remove_follow"]) if i not in off]
+        changes["follows_off"] = off
+    if ids["titles_on"] or ids["titles_off"]:
+        hidden = [str(c["id"]) for c in cals if c.get("titles_switch") and not c.get("titles")]
+        hidden = [i for i in hidden if i not in ids["titles_on"]]
+        hidden += [i for i in dict.fromkeys(ids["titles_off"]) if i not in hidden]
+        changes["titles_off"] = hidden
+    for key in ("detail", "meals", "workouts", "todos"):
+        if getattr(args, key) is not None:
+            changes[key] = getattr(args, key)
+    return changes
+
+
+def cmd_calendar_publish_set(args: argparse.Namespace) -> int:
+    """``pepper calendar publish set [--add-calendar C]… [--remove-calendar C]… [--add-follow F]…
+    [--remove-follow F]… [--titles-off C]… [--titles-on C]… [--detail busy|full]
+    [--meals|--no-meals] [--workouts|--no-workouts] [--todos|--no-todos] [--consent] [--json]``:
+    ``PATCH /api/v1/calendars/feed/sources``.
+
+    Reads the status once to turn labels into ids and to send whole replacement lists, then
+    sends only what changed. On ``consent_required`` a terminal sees the server's disclosure and
+    is asked; otherwise the command refuses unless ``--consent`` was given. Consent is never
+    assumed."""
+    given = (
+        args.add_calendar
+        or args.remove_calendar
+        or args.add_follow
+        or args.remove_follow
+        or args.titles_off
+        or args.titles_on
+        or any(getattr(args, k) is not None for k in ("detail", "meals", "workouts", "todos"))
+    )
+    if not given:
+        _emit_error(args, "usage", "nothing to change: give at least one flag (see --help)")
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        try:
+            current = api.calendar_feed()
+            ids = _feed_ids(args, current)
+            changes = _feed_changes(args, current, ids)
+        except calendar_publish_view.SourceError as exc:
+            _emit_error(args, "usage", str(exc))
+            return 2
+        if args.consent:
+            changes["consent"] = True
+        try:
+            body = api.calendar_feed_sources(changes)
+        except api_client.ApiError as exc:
+            detail = _feed_error_body(exc)
+            if exc.status != 409 or detail.get("code") != "consent_required":
+                raise
+            code = _feed_consent_gate(args, detail, "Aborted. Nothing changed.")
+            if code is not None:
+                return code
+            # The prompt can stay open for minutes: rebuild the lists from a fresh read, so
+            # a change made on the page meanwhile is not undone (VR-28a942d3), keeping the
+            # ids looked up before the prompt, the ones the person was shown.
+            try:
+                changes = _feed_changes(args, api.calendar_feed(), ids)
+            except calendar_publish_view.SourceError as stale:
+                _emit_error(args, "usage", f"{stale}; nothing changed")
+                return 2
+            body = api.calendar_feed_sources({**changes, "consent": True})
+        _emit(body, args, lambda: calendar_publish_view.status(body))
+        return 0
+
+    return _run_personal(args, run, _report_feed_error)
 
 
 def cmd_preferences_show(args: argparse.Namespace) -> int:

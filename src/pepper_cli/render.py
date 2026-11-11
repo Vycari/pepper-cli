@@ -1510,9 +1510,12 @@ def out_line(text: str = "") -> None:
     _stdout.print(text, soft_wrap=True)
 
 
-def out_text(text: str) -> None:
-    """Server text to stdout as it is: no markup, no highlighting."""
-    _stdout.print(sanitize_text(text), markup=False, highlight=False)
+def out_text(text: str, *, soft_wrap: bool = False) -> None:
+    """Server text to stdout as it is: no markup, no highlighting.
+
+    ``soft_wrap=True`` is for a line a person copies (an address): it is never folded at
+    the console width, so a redirect or a narrow terminal gets it in one piece."""
+    _stdout.print(sanitize_text(text), markup=False, highlight=False, soft_wrap=soft_wrap)
 
 
 def local_stamp(iso: object) -> str:
