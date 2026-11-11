@@ -40,6 +40,12 @@ uv run pytest -n auto --cov --cov-report=json:coverage-summary.json   # what CI 
   (a weekly workflow refreshes it). `tests/test_api_contract.py` checks every `MIRROR`ed dataclass
   field against it, so a new field on a mirrored dataclass must already be in the snapshot: the
   server lands first, then the snapshot refresh, then the CLI.
+- A big new feature is gated on the server by a rollout (`planning/feature-rollouts.md` in
+  Vycari/pepper), and the CLI never gates on a flag of its own. It reads `GET /api/v1/rollouts`,
+  which lists the person-scoped rollout keys enabled for the token's person, hides a gated command
+  whose key is absent, and ignores keys it does not know. A 404 from an older server means an
+  empty list, so the command stays hidden. Server first: a CLI change that reads the list merges
+  only after the endpoint has deployed.
 - Tokens never get logged, printed, or placed in error messages; keep them in `SecretStr`.
 - Do not add lint ignores to pass CI, and do not lower `coverage.floor` in
   `.claude/maintainerd.json`.
