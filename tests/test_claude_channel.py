@@ -189,16 +189,24 @@ class _Fake:
         self.requests: list[httpx.Request] = []
         self.messages: dict[str, dict] = {_MESSAGE: _message_json()}
         self.topics = {_TOPIC: "Dinner", _OTHER_TOPIC: "Chores"}
+        #: the topic an unprompted post lands in; the rail marks it ``is_default``.
+        self.default_topic = _TOPIC
         #: topic id -> the note id when that topic holds a note's comments.
         self.subjects: dict[str, str] = {}
+        #: topic ids the rail marks archived.
+        self.archived_topics: set[str] = set()
         self.message_status = 200
         self.fail_messages = 0
+        self.fail_topics = 0
+        self.groups_degraded = False
         self.fail_status = 503
         self.fail_headers: dict[str, str] = {}
         self.exhausted = threading.Event()
         self.on_stream = None
         self.unreachable = False
         self.room_archived = False
+        #: every extra room the server lists, so a merge's survivor can be looked up.
+        self.extra_groups: list[str] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -213,25 +221,45 @@ class _Fake:
                 "archived": self.room_archived,
                 "topics": [],
             }
+            extras = [
+                {
+                    "group_id": gid,
+                    "display_name": f"Room {gid[-2:]}",
+                    "color": "#000",
+                    "sub": "",
+                    "member_count": 2,
+                    "archived": False,
+                    "topics": [],
+                }
+                for gid in self.extra_groups
+            ]
             # ``archived=1`` lists the archived rooms; the default lists the others.
             listed = (request.url.params.get("archived") == "1") == self.room_archived
+            rows = ([room] if listed else []) + (extras if not self.room_archived else [])
+            archived_total = 1 if self.room_archived else 0
             return httpx.Response(
                 200,
                 json={
                     "enabled": True,
-                    "degraded": False,
-                    "total": 1 if listed else 0,
-                    "archived_total": 1 if self.room_archived else 0,
-                    "groups": [room] if listed else [],
+                    "degraded": self.groups_degraded,
+                    "total": len(rows),
+                    "archived_total": archived_total,
+                    "groups": rows,
                     "features": list(self.features),
                 },
             )
-        if path == f"/api/v1/groups/{_ROOM}/topics":
+        if path == f"/api/v1/groups/{_ROOM}/topics" or path in {
+            f"/api/v1/groups/{gid}/topics" for gid in self.extra_groups
+        }:
+            if self.fail_topics:
+                return httpx.Response(503, json={"detail": "down"})
             rows = [
                 {
                     "topic_id": tid,
                     "name": name,
                     "last_activity_at": None,
+                    "is_default": tid == self.default_topic,
+                    "archived_at": "2026-11-01T00:00:00Z" if tid in self.archived_topics else None,
                     "subject_artifact_id": self.subjects.get(tid),
                 }
                 for tid, name in self.topics.items()
@@ -540,7 +568,7 @@ def test_discover_before_initialize_is_method_not_found_even_with_the_modern_env
     assert replies["init"]["result"]["protocolVersion"] == "2025-11-25"
 
 
-def test_tools_list_names_the_three_p1_tools(monkeypatch):
+def test_tools_list_names_the_four_p1_and_p2_tools(monkeypatch):
     replies: dict = {}
 
     def script(s: _Session) -> None:
@@ -549,7 +577,12 @@ def test_tools_list_names_the_three_p1_tools(monkeypatch):
     run_channel(monkeypatch, _Fake(_CONNECTED), script=script)
 
     tools = replies["tools"]["result"]["tools"]
-    assert [t["name"] for t in tools] == ["messages_post", "messages_list", "messages_react"]
+    assert [t["name"] for t in tools] == [
+        "messages_post",
+        "messages_list",
+        "messages_react",
+        "topics_list",
+    ]
     assert all(t["inputSchema"]["type"] == "object" for t in tools)
 
 
@@ -1816,6 +1849,192 @@ def test_messages_list_returns_the_json_envelope_and_never_marks(monkeypatch):
     assert all("mark" not in str(r.url) for r in fake.requests)
 
 
+def test_topics_list_returns_every_topic_with_its_default_mark(monkeypatch):
+    fake = _Fake(_CONNECTED)
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["topics"] = s.call("topics_list", {})
+
+    run_channel(monkeypatch, fake, script=script)
+
+    text, is_error = out["topics"]
+    assert not is_error
+    assert json.loads(text) == {
+        "items": [
+            {
+                "room_id": _ROOM,
+                "topic_id": _TOPIC,
+                "room_name": "Kitchen",
+                "topic_name": "Dinner",
+                "is_default": True,
+                "archived": False,
+                "note_id": None,
+            },
+            {
+                "room_id": _ROOM,
+                "topic_id": _OTHER_TOPIC,
+                "room_name": "Kitchen",
+                "topic_name": "Chores",
+                "is_default": False,
+                "archived": False,
+                "note_id": None,
+            },
+        ],
+        "next_before": None,
+    }
+
+
+def test_topics_list_reads_the_rail_on_every_call(monkeypatch):
+    fake = _Fake(_CONNECTED)
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["first"] = s.call("topics_list", {})
+        # A topic made after the session started, for the second call to see.
+        fake.topics[_MESSAGE_2] = "Laundry"
+        out["second"] = s.call("topics_list", {})
+
+    run_channel(monkeypatch, fake, script=script)
+
+    assert len(json.loads(out["first"][0])["items"]) == 2
+    assert [t["topic_name"] for t in json.loads(out["second"][0])["items"]] == [
+        "Dinner",
+        "Chores",
+        "Laundry",
+    ]
+
+
+def test_topics_list_marks_names_as_data(monkeypatch):
+    fake = _Fake(_CONNECTED)
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["topics"] = s.call("topics_list", {})
+
+    fake.topics[_TOPIC] = "Din\x1b[31mner\r\nnow"
+    run_channel(monkeypatch, fake, script=script)
+
+    topics = json.loads(out["topics"][0])["items"]
+    # The escape sequence goes, the newline becomes a space, the id stays as it was sent.
+    assert topics[0]["topic_name"] == "Dinner now"
+    assert topics[0]["topic_id"] == _TOPIC
+
+
+def test_topics_list_is_limited_to_the_rooms_the_channel_serves(monkeypatch):
+    fake = _Fake(_CONNECTED)
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["topics"] = s.call("topics_list", {})
+
+    run_channel(monkeypatch, fake, ["--room", _ROOM], script=script)
+
+    topics = json.loads(out["topics"][0])["items"]
+    assert [t["topic_id"] for t in topics] == [_TOPIC, _OTHER_TOPIC]
+
+
+def test_topics_list_follows_a_room_merged_after_startup(monkeypatch):
+    # The scope's first frame names the survivor, so both ids are allowed: listing by the
+    # requested id alone would find no room and return nothing.
+    fake = _Fake(_CONNECTED + _scope(room=_SURVIVOR, requested=_ROOM))
+    fake.extra_groups.append(_SURVIVOR)
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        s.wait_exhausted()
+        out["topics"] = s.call("topics_list", {})
+
+    run_channel(monkeypatch, fake, ["--room", _ROOM], script=script)
+
+    topics = json.loads(out["topics"][0])["items"]
+    assert {t["room_id"] for t in topics} == {_ROOM, _SURVIVOR}
+
+
+def test_topics_list_includes_an_archived_room(monkeypatch):
+    fake = _Fake(_CONNECTED)
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["topics"] = s.call("topics_list", {})
+
+    fake.room_archived = True
+    run_channel(monkeypatch, fake, script=script)
+
+    # An archived room still delivers messages, so its topics must still be findable.
+    topics = json.loads(out["topics"][0])["items"]
+    assert [t["topic_id"] for t in topics] == [_TOPIC, _OTHER_TOPIC]
+
+
+def test_topics_list_folds_archived_topics_but_keeps_the_default(monkeypatch):
+    # ``pepper topics list``'s default fold: an archived topic is not offered as a place to post,
+    # but an archived default stays, marked, so ``is_default`` always names one.
+    fake = _Fake(_CONNECTED)
+    fake.topics[_MESSAGE_2] = "Old plans"
+    fake.archived_topics = {_MESSAGE_2, _TOPIC}
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["topics"] = s.call("topics_list", {})
+
+    run_channel(monkeypatch, fake, script=script)
+
+    topics = json.loads(out["topics"][0])["items"]
+    assert [(t["topic_id"], t["archived"]) for t in topics] == [
+        (_TOPIC, True),
+        (_OTHER_TOPIC, False),
+    ]
+
+
+def test_topics_list_names_the_note_a_comment_topic_belongs_to(monkeypatch):
+    # The same ``note_id`` a message tag from that topic carries, so the agent can tell a note's
+    # comment thread from an ordinary topic.
+    fake = _Fake(_CONNECTED)
+    fake.subjects[_OTHER_TOPIC] = _MESSAGE_2
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["topics"] = s.call("topics_list", {})
+
+    run_channel(monkeypatch, fake, script=script)
+
+    topics = {t["topic_id"]: t for t in json.loads(out["topics"][0])["items"]}
+    assert topics[_OTHER_TOPIC]["note_id"] == _MESSAGE_2
+    assert topics[_TOPIC]["note_id"] is None
+
+
+def test_topics_list_reports_a_refused_listing(monkeypatch):
+    fake = _Fake(_CONNECTED)
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        # Only the tool's call fails: the startup map is already built.
+        fake.fail_topics = True
+        out["topics"] = s.call("topics_list", {})
+
+    run_channel(monkeypatch, fake, script=script)
+
+    text, is_error = out["topics"]
+    assert is_error
+    assert text == "Server returned 503: down"
+
+
+def test_topics_list_reports_a_degraded_room_listing(monkeypatch):
+    fake = _Fake(_CONNECTED)
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        # The startup map is already built; only the tool's own listing comes back degraded.
+        fake.groups_degraded = True
+        out["topics"] = s.call("topics_list", {})
+
+    run_channel(monkeypatch, fake, script=script)
+
+    text, is_error = out["topics"]
+    assert is_error
+    assert text == "The rooms service could not read your rooms. Try again shortly."
+
+
 def test_messages_react_returns_the_reactions(monkeypatch):
     fake = _Fake(_CONNECTED)
     out: dict = {}
@@ -2165,6 +2384,7 @@ def test_the_instructions_and_tools_use_the_names_the_events_carry():
         "reply_to",
         "on_behalf_of",
         "messages_post",
+        "topics_list",
     ):
         assert word in text
     for kind in ("backlog", "resync", "gap", "ended"):
