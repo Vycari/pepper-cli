@@ -554,7 +554,7 @@ is changed. That covers:
   calendar command. They act on a person's own account, so only a person's own token reaches them.
 - Every other `rooms`, `topics`, `messages`, `attachments`, `members`, `sharing` or `apps` command, which are the ones that change a room, its topics, its members
   or its apps, or that read or search across rooms.
-- Every command outside those nouns that talks to the server, chat and `tui` included
+- Every command outside those nouns that talks to the server, chat, `run` and `tui` included
   (`tui` is a full-screen app for a person at a terminal, and bare `pepper` opens it when both
   stdin and stdout are a terminal; it posts to rooms and sends Pepper turns as that person, and
   `pepper tui` refuses to start without a terminal. A script or agent has no terminal, so bare

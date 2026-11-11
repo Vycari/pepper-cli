@@ -16,6 +16,10 @@ Subcommands:
 - ``pepper chat MESSAGE`` — one-shot turn against the server, render
   the reply. ``pepper chat`` with no message (or bare ``pepper``) opens
   the interactive REPL, which streams each turn over SSE.
+- ``pepper run FILE [ARGS...] [--root PATH] [--json]`` — send a prompt file as one
+  turn, so ``#!/usr/bin/env -S pepper run`` makes it an executable script. A leading
+  ``#!`` line is dropped, ``{{1}}``/``{{@}}`` take the arguments, and arguments the
+  file does not reference are appended as context (``prompt_file``).
 - ``pepper trajectories show <id> | list`` — inspect saved turns; ``--room`` scopes
   to one room's.
 - ``pepper calendar [today|week|schedule] [--planning]`` — read-only agenda.
@@ -136,6 +140,7 @@ from pepper_cli import (
     numbered_view,
     preferences_view,
     proctitle,
+    prompt_file,
     render,
     research_view,
     skill_doc,
@@ -792,6 +797,47 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         action="store_true",
         help="One-shot only: emit one JSON line per streamed event on stdout, the reply last "
         "(also on when PEPPER_JSON=1). The REPL ignores it.",
+    )
+
+    p_run = sub.add_parser(
+        "run",
+        help=(
+            "Send a prompt file as one turn (one-shot). With "
+            "`#!/usr/bin/env -S pepper run` the file is an executable script."
+        ),
+        description=(
+            "Read FILE (or '-' for stdin), drop a leading #! line, and send the rest as one "
+            "message, printing the reply on stdout. In the file, {{1}}..{{N}} become the "
+            "positional ARGS and {{@}} all of them; {{{{ is a literal {{. ARGS the file does "
+            "not reference are appended as context. Put '--' before ARGS that start with '-'."
+        ),
+    )
+    p_run.add_argument("file", metavar="FILE", help="The prompt file, or '-' to read stdin.")
+    p_run.add_argument(
+        "prompt_args",
+        nargs="*",
+        metavar="ARGS",
+        help="Arguments for the prompt: substituted for {{N}}, or appended as context.",
+    )
+    # The same read-only grant as ``chat --root``, and only from the command line: a
+    # prompt file cannot give itself access to this machine's files.
+    p_run.add_argument(
+        "--root",
+        "--tools-root",
+        action="append",
+        dest="root",
+        metavar="PATH",
+        help=(
+            "Let this turn read files under PATH on this machine (repeatable). "
+            "Read-only; the search runs here and only matches are sent."
+        ),
+    )
+    p_run.set_defaults(handler=cmd_run)
+    p_run.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit one JSON line per streamed event on stdout, the reply last "
+        "(also on when PEPPER_JSON=1).",
     )
 
     p_traj = sub.add_parser(
@@ -2765,6 +2811,16 @@ def cmd_chat(args: argparse.Namespace) -> int:
     if not message:
         _emit_error(args, "usage", "Empty message — nothing to send.")
         return 2
+    return _send_one_shot(args, creds, provider, message)
+
+
+def _send_one_shot(
+    args: argparse.Namespace,
+    creds: credentials.Credentials,
+    provider: provider_fs.FilesystemProvider | None,
+    message: str,
+) -> int:
+    """Stream one turn and print its reply: the shared tail of ``chat MESSAGE`` and ``run``."""
     try:
         with api_client.ApiClient(server_url=creds.server_url, token=creds.token) as api:
             # Stream one-shot turns too: a long turn can exceed the unary
@@ -2796,6 +2852,32 @@ def cmd_chat(args: argparse.Namespace) -> int:
             "The turn may have been saved; check the web chat before retrying.",
         )
         return 1
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    """``pepper run FILE [ARGS...]``: a prompt file as one one-shot turn.
+
+    Everything local (reading the file, building the prompt, checking ``--root``) happens
+    before credentials or the network, so a bad file or a missing argument exits 2
+    without sending anything.
+    """
+    text = _read_file_or_stdin(args.file, args)
+    if text is None:
+        return 2
+    try:
+        message = prompt_file.build_prompt(text, args.prompt_args)
+    except prompt_file.PromptFileError as exc:
+        _emit_error(args, "usage", f"{args.file}: {exc}")
+        return 2
+    try:
+        provider = _build_provider(args.root)
+    except provider_fs.PathRefused as exc:
+        _emit_error(args, "usage", f"--root: {exc}")
+        return 2
+    creds = _load_or_error(args)
+    if creds is None:
+        return 1
+    return _send_one_shot(args, creds, provider, message)
 
 
 def _build_provider(roots: list[str] | None) -> provider_fs.FilesystemProvider | None:
