@@ -198,6 +198,7 @@ class _Fake:
         self.message_status = 200
         self.fail_messages = 0
         self.fail_topics = 0
+        self.groups_degraded = False
         self.fail_status = 503
         self.fail_headers: dict[str, str] = {}
         self.exhausted = threading.Event()
@@ -240,7 +241,7 @@ class _Fake:
                 200,
                 json={
                     "enabled": True,
-                    "degraded": False,
+                    "degraded": self.groups_degraded,
                     "total": len(rows),
                     "archived_total": archived_total,
                     "groups": rows,
@@ -2016,6 +2017,22 @@ def test_topics_list_reports_a_refused_listing(monkeypatch):
     text, is_error = out["topics"]
     assert is_error
     assert text == "Server returned 503: down"
+
+
+def test_topics_list_reports_a_degraded_room_listing(monkeypatch):
+    fake = _Fake(_CONNECTED)
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        # The startup map is already built; only the tool's own listing comes back degraded.
+        fake.groups_degraded = True
+        out["topics"] = s.call("topics_list", {})
+
+    run_channel(monkeypatch, fake, script=script)
+
+    text, is_error = out["topics"]
+    assert is_error
+    assert text == "The rooms service could not read your rooms. Try again shortly."
 
 
 def test_messages_react_returns_the_reactions(monkeypatch):

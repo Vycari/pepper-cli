@@ -1192,7 +1192,11 @@ class ChannelTools:
         note's comment topic stays, with its ``note_id``, the same id a message tag from it
         carries, so it is never mistaken for an ordinary topic."""
         served = self.allowed_rooms or None
-        groups = visible_groups(self.api, self.api.list_groups(), served)
+        listing = self.api.list_groups()
+        if listing.degraded:
+            # "Could not ask", not "no rooms": an empty list here would read as the latter.
+            raise ToolError("The rooms service could not read your rooms. Try again shortly.")
+        groups = visible_groups(self.api, listing, served)
         rows: list[dict[str, object]] = []
         for room in groups.groups:
             for topic in self.api.list_group_topics(room.group_id):
