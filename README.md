@@ -10,6 +10,12 @@ Its dependency list is deliberately short: `httpx`, `rich`, `prompt_toolkit`, `t
 `pyyaml`, `packaging` and `mcp`, plus `tzdata` on Windows and the optional `setproctitle`
 where it ships a wheel. It has no dependency on the Pepper server package.
 
+> [!TIP]
+> **Join the Pepper CLI Contributors room.** Questions, ideas, bug reports, or want to help
+> build the CLI? Come talk to us and to Pepper in the
+> [Pepper CLI Contributors room](https://pepper.vycari.ai/join/grp_join_hjcgnsv475rhqgtu5oolovw2e2rwox7tvy2cmlagur32gdxwpbva).
+> Open the link, sign in to Pepper, and you're in.
+
 The package is published as `vycari-pepper`; the command it installs is `pepper`.
 It is licensed under Apache-2.0 (see `LICENSE`).
 
