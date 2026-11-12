@@ -4071,6 +4071,32 @@
         ],
         "type": "object"
       },
+      "PhoneConfirmRequest": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone",
+          "code"
+        ],
+        "type": "object"
+      },
+      "PhoneConsentView": {
+        "properties": {
+          "disclosure": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "disclosure"
+        ],
+        "type": "object"
+      },
       "PhoneRequest": {
         "properties": {
           "user_phone_id": {
@@ -4079,6 +4105,33 @@
         },
         "required": [
           "user_phone_id"
+        ],
+        "type": "object"
+      },
+      "PhoneStartRequest": {
+        "properties": {
+          "consent": {
+            "const": true,
+            "type": "boolean"
+          },
+          "phone": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone",
+          "consent"
+        ],
+        "type": "object"
+      },
+      "PhoneStartResult": {
+        "properties": {
+          "phone": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone"
         ],
         "type": "object"
       },
@@ -9981,12 +10034,12 @@
         ]
       }
     },
-    "/api/v1/account/phones/remove": {
+    "/api/v1/account/phones/confirm": {
       "post": {
         "parameters": [
           {
             "in": "header",
-            "name": "X-Pepper-Step-Up",
+            "name": "authorization",
             "required": false,
             "schema": {
               "anyOf": [
@@ -9998,7 +10051,94 @@
                 }
               ]
             }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PhoneConfirmRequest"
+              }
+            }
           },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PhoneView"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "native"
+        ]
+      }
+    },
+    "/api/v1/account/phones/consent": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PhoneConsentView"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "native"
+        ]
+      }
+    },
+    "/api/v1/account/phones/remove": {
+      "post": {
+        "parameters": [
           {
             "in": "header",
             "name": "authorization",
@@ -10031,6 +10171,62 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResult"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "native"
+        ]
+      }
+    },
+    "/api/v1/account/phones/start": {
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PhoneStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PhoneStartResult"
                 }
               }
             },
@@ -10230,21 +10426,6 @@
         "parameters": [
           {
             "in": "header",
-            "name": "X-Pepper-Step-Up",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          {
-            "in": "header",
             "name": "authorization",
             "required": false,
             "schema": {
@@ -10287,21 +10468,6 @@
       },
       "put": {
         "parameters": [
-          {
-            "in": "header",
-            "name": "X-Pepper-Step-Up",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
           {
             "in": "header",
             "name": "authorization",
