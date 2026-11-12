@@ -678,6 +678,6 @@ in `src/pepper_cli/api_client.py`) and tolerates unknown fields and stream frame
 (see `contracts/README.md`; do not hand-edit it). `tests/test_api_contract.py` checks every
 `# MIRROR:`-annotated dataclass against it: each field must be a property of the named server
 schema. Adding a field to a mirrored dataclass therefore needs the field in the snapshot first
--- the server change lands, the snapshot is refreshed (a weekly workflow opens the PR), then the
+-- the server change lands, the server's contract-push opens a sync PR here, then the
 CLI change follows. A mirror the test cannot check must be listed, with a reason, in the test's
 allowlists.

@@ -37,7 +37,7 @@ uv run pytest -n auto --cov --cov-report=json:coverage-summary.json   # what CI 
   naming the server model they follow; keep both in step. `/api/v1` is additive-only, so the
   client must tolerate unknown fields and unknown stream frame types.
 - `contracts/api-v1.openapi.json` is a vendored copy of the server's schema; never hand-edit it
-  (a weekly workflow refreshes it). `tests/test_api_contract.py` checks every `MIRROR`ed dataclass
+  (Vycari/pepper's contract-push workflow opens a `contract-sync` PR when it changes). `tests/test_api_contract.py` checks every `MIRROR`ed dataclass
   field against it, so a new field on a mirrored dataclass must already be in the snapshot: the
   server lands first, then the snapshot refresh, then the CLI.
 - A big new feature is gated on the server by a rollout (`planning/feature-rollouts.md` in
