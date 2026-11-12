@@ -74,6 +74,8 @@ NOUNS = frozenset(
         "following",
         "feed",
         "chat",
+        # `run` sends a prompt file as one chat turn (a shebang interpreter).
+        "run",
         "login",
         "logout",
         "whoami",
@@ -196,6 +198,7 @@ ROOM_NA = {
     "fortune": "a local fortune; nothing about it is per room",
     "tui": "opens the whole app; rooms are chosen inside it",
     "chat": "talking to Pepper in a room is `messages post --mention`",
+    "run": "a prompt file is a chat turn; talking to Pepper in a room is `messages post`",
     "takeout": "exports the account, not a room",
     "agents guide": "prints the bundled guide; nothing about it is per room",
     "agents claude-channel": "--room is optional: without it the channel serves every room "
@@ -1222,6 +1225,7 @@ JSON_CASES: dict[str, list[str]] = {
     "apps show": ["apps", "show", "notes"],
     "apps run": ["apps", "run", "notes", "archive"],
     "chat": ["chat", "hello"],
+    "run": ["run", "body.md", "x"],
     "whoami": ["whoami"],
     "fortune": ["fortune"],
     "login": ["login", "--server", "http://example.com", "--token", "pep_pat_new"],

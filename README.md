@@ -203,6 +203,7 @@ Every command except the interactive REPL takes `--json`, and also switches to J
 | `pepper <message>` | Send a one-shot message — multi-word, no quotes needed. |
 | `pepper chat ["msg"]` | One-shot with a message, or the REPL with none (the way back to the REPL on a terminal). On a terminal (not `--json`, trace off), a dim spinner on stderr shows what the turn is doing; pipes and `--json` output are unchanged. |
 | `pepper chat --root PATH ["msg"]` | Same, but let this session read files under `PATH` (repeatable). |
+| `pepper run FILE [ARGS...] [--root PATH] [--json]` | Send a prompt file as one one-shot turn, so a file starting `#!/usr/bin/env -S pepper run` is an executable script. See [Prompt files](#prompt-files-pepper-run). |
 | `pepper whoami [--json]` | Print the user behind the current credentials. With an agent member's `pep_agt_` token it prints the agent instead: `person_id`, display name, sponsor, room count and expiry (a server without `GET /api/v1/groups/self` keeps the old 401). `pepper login` with an agent token prints the same identity: `Logged in as NAME (PERSON_ID), sponsored by SPONSOR, in N room(s).` |
 | `pepper fortune [--json]` | Print a short fortune from Pepper; `--json` prints `{"fortune"}`. Local and offline: no login, no server call. About one REPL start in fifty also draws a small pepper on stderr (terminals only), and about one `pepper tui` start in fifty opens on a full-screen pepper that any key (or four seconds) closes; set `PEPPER_NO_WHIMSY=1` to turn both off. |
 | `pepper tui` | Full-screen terminal UI: read and post in your rooms, and chat with Pepper. Needs a terminal; bare `pepper` opens it on one. See [`pepper tui`](#pepper-tui). |
@@ -457,6 +458,30 @@ Notes:
   same. The server also has to have client tools turned on
   (`client_tools_enabled`); with the flag off your manifest is ignored and the
   turn runs exactly as it would have. `--tools-root` is an accepted alias.
+
+- **<a id="prompt-files-pepper-run"></a>Prompt files (`pepper run`).** A text file can be a
+  script whose body is the prompt:
+
+  ```sh
+  #!/usr/bin/env -S pepper run
+  Read {{1}} and list anything in it that needs my attention this week.
+  ```
+
+  ```sh
+  chmod +x triage.prompt
+  ./triage.prompt standup.md --root ~/notes
+  ```
+
+  `pepper run FILE` (or `-` for stdin) drops the `#!` line and sends the rest as one turn,
+  printing only the reply on stdout, like `pepper chat MESSAGE`; `--json` and the exit codes are
+  the same too. Arguments after the file fill `{{1}}`…`{{N}}`, and `{{@}}` takes all of them
+  (`{{{{` is a literal `{{`). Any argument the file does not reference is appended under an
+  `Arguments:` block, so a file that never mentions its arguments still passes them on. A
+  placeholder with no matching argument, or an empty file, exits 2 before anything is sent.
+  Local file access comes only from `--root` on the command line, never from the file itself.
+  Put `--` before arguments that start with `-`. The turn lands in your Pepper DM. The
+  shebang needs `env -S` (Linux coreutils 8.30+, macOS), because plain `env` passes
+  `pepper run` as one word.
 
 - **`trajectory` is PAT-scoped** — you can read trajectories you own (or that
   are shared with you via a group). Someone else's trajectory returns `404`.
