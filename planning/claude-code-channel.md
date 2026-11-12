@@ -334,7 +334,10 @@ put that backlog into context on every Claude Code restart. Decided (§14 C):
 - An event whose `created_at` is older than the process start time minus 60 seconds is consumed
   without a push. Instead, once the stream has caught up (the first heartbeat after replay), push
   one `kind="backlog"` control event: how many messages were skipped, per topic id, and the oldest
-  and newest timestamps. The skill tells the sponsor, as it does today.
+  and newest timestamps. The skill tells the sponsor, as it does today. The heartbeat is the
+  boundary because the server sends a `: ping` only while it has nothing past the client's
+  position. A `cursor` frame is a skip marker, not a boundary: it can arrive mid-replay, or not
+  at all.
 - In-process reconnects resume from the cursor and push everything, since nothing they replay is
   from before the session.
 - With no cursor file, `rooms watch` starts from the beginning of the retained stream (`--since`
