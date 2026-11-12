@@ -485,7 +485,12 @@ class FeedFrame:
 
     ``"comment"`` (empty ``payload``) stands for an SSE comment line, the
     server's ``: connected`` / ``: ping`` heartbeat: it carries nothing to act
-    on but tells the caller the connection is healthy.
+    on but tells the caller the connection is healthy. A ``: ping`` is also the
+    replay boundary: the server sends one only while it has nothing past the
+    caller's position, so the first ping after connecting means the stream has
+    caught up. A ``cursor`` frame is not a boundary: it can arrive mid-replay,
+    or not at all. A ``start=head`` stream opens with its head ``cursor`` frame
+    (after ``scope``) before any event or ping.
 
     ``id`` is the frame's SSE ``id:``: for an event frame the event id, for a
     ``cursor`` frame the cursor, ``None`` on ``error`` and ``scope``. Either
