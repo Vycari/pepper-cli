@@ -1800,6 +1800,16 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "wrapped_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1861,6 +1871,16 @@
           },
           "unsupported_cron": {
             "type": "boolean"
+          },
+          "wrapped_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1930,6 +1950,41 @@
         },
         "required": [
           "selections"
+        ],
+        "type": "object"
+      },
+      "CalendarRowOut": {
+        "properties": {
+          "busy_only": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "included": {
+            "type": "boolean"
+          },
+          "label": {
+            "type": "string"
+          },
+          "shared": {
+            "type": "boolean"
+          },
+          "titles": {
+            "type": "boolean"
+          },
+          "titles_switch": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "included",
+          "shared",
+          "busy_only",
+          "titles",
+          "titles_switch"
         ],
         "type": "object"
       },
@@ -2896,6 +2951,28 @@
         ],
         "type": "object"
       },
+      "EnableIn": {
+        "properties": {
+          "calendars": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "consent": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "EntryIn": {
         "properties": {
           "body": {
@@ -3022,6 +3099,120 @@
           "timezone",
           "unsupported_cron",
           "options"
+        ],
+        "type": "object"
+      },
+      "FeedLinkOut": {
+        "properties": {
+          "calendars": {
+            "items": {
+              "$ref": "#/components/schemas/CalendarRowOut"
+            },
+            "type": "array"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "follows": {
+            "items": {
+              "$ref": "#/components/schemas/SourceRowOut"
+            },
+            "type": "array"
+          },
+          "link_created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "meals": {
+            "type": "boolean"
+          },
+          "todos": {
+            "type": "boolean"
+          },
+          "url": {
+            "type": "string"
+          },
+          "webcal_url": {
+            "type": "string"
+          },
+          "workouts": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled",
+          "detail",
+          "link_created_at",
+          "calendars",
+          "follows",
+          "meals",
+          "workouts",
+          "todos",
+          "url",
+          "webcal_url"
+        ],
+        "type": "object"
+      },
+      "FeedStatusOut": {
+        "properties": {
+          "calendars": {
+            "items": {
+              "$ref": "#/components/schemas/CalendarRowOut"
+            },
+            "type": "array"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "follows": {
+            "items": {
+              "$ref": "#/components/schemas/SourceRowOut"
+            },
+            "type": "array"
+          },
+          "link_created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "meals": {
+            "type": "boolean"
+          },
+          "todos": {
+            "type": "boolean"
+          },
+          "workouts": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled",
+          "detail",
+          "link_created_at",
+          "calendars",
+          "follows",
+          "meals",
+          "workouts",
+          "todos"
         ],
         "type": "object"
       },
@@ -5748,6 +5939,20 @@
         ],
         "type": "object"
       },
+      "RolloutsResponse": {
+        "properties": {
+          "rollouts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "rollouts"
+        ],
+        "type": "object"
+      },
       "RoomSkillDetail": {
         "properties": {
           "builtin": {
@@ -6713,6 +6918,120 @@
           "description",
           "body"
         ],
+        "type": "object"
+      },
+      "SourceRowOut": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "included": {
+            "type": "boolean"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "included"
+        ],
+        "type": "object"
+      },
+      "SourcesIn": {
+        "properties": {
+          "calendars": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "consent": {
+            "default": false,
+            "type": "boolean"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "enum": [
+                  "busy",
+                  "full"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "follows_off": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "meals": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "titles_off": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "todos": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workouts": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
         "type": "object"
       },
       "StepUpStartRequest": {
@@ -13399,6 +13718,262 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-calendars"
+        ]
+      }
+    },
+    "/api/v1/calendars/feed": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedStatusOut"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-calendars"
+        ]
+      }
+    },
+    "/api/v1/calendars/feed/disable": {
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedStatusOut"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-calendars"
+        ]
+      }
+    },
+    "/api/v1/calendars/feed/enable": {
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/EnableIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedLinkOut"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-calendars"
+        ]
+      }
+    },
+    "/api/v1/calendars/feed/rotate": {
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedLinkOut"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-calendars"
+        ]
+      }
+    },
+    "/api/v1/calendars/feed/sources": {
+      "patch": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourcesIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedStatusOut"
+                }
               }
             },
             "description": ""
@@ -27607,6 +28182,52 @@
         },
         "tags": [
           "client-api-research-projects"
+        ]
+      }
+    },
+    "/api/v1/rollouts": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RolloutsResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api"
         ]
       }
     },
