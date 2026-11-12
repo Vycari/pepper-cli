@@ -1,0 +1,162 @@
+name: docs-push
+
+# Pushes this repo's help topics to Vycari/pepper (planning/help-docs-coverage.md section 1 there).
+# `help/<slug>.md` is the user-facing help for the pepper command; pepper's guide is where the
+# agent, the in-app Help and www.vycari.ai/pepper/docs read it. After a push to main that touches
+# help/, this copies the files pepper's `.github/docs-owners.json` gives to this repo into a
+# checkout of pepper's main and opens, updates or closes one `docs-sync/pepper-cli` PR there.
+# The file logic is scripts/docs_push.py; this file wires the trigger, the token and git. It is the
+# mirror of pepper's contract-push.yml, which pushes the other way.
+#
+# Trust boundary. It runs only from main (push to main, or a dispatch from main: the job's `if`).
+# Nothing from pepper is executed: the pepper checkout is data that scripts/docs_push.py (from
+# this repo, run as `python3 -I`) reads the manifest from and writes into. No `${{ }}` expression
+# is interpolated into a `run:` script; values reach the scripts through env vars. On pepper's
+# side a check refuses a change to an owned help file from anywhere but this App's
+# `docs-sync/<repo>` branch, and a sync PR that touches anything but the files this repo owns.
+#
+# Credentials. Top-level `permissions: {}`; the job reads this repo only. The App id and key come
+# from the `docs-push` environment, whose deployment branches are limited to main. The token is
+# minted for Vycari/pepper alone, and never appears in argv: git reads it through a credential
+# helper that expands it from the environment. With the secrets unset the job prints a notice and
+# succeeds, so this can merge before the App is installed on Vycari/pepper.
+#
+# Ordering. One concurrency group, never cancelling a running job (GitHub replaces a pending one).
+# The job checks out main's tip rather than the pushed commit, so whichever run survives pushes
+# the newest help files.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "help/**"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: docs-push
+  cancel-in-progress: false
+
+jobs:
+  push:
+    name: push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: docs-push
+    permissions:
+      contents: read # check out this repo; pepper writes use the App token below
+    env:
+      SERVER_REPO: Vycari/pepper
+      SYNC_BRANCH: docs-sync/pepper-cli
+      CLIENT_REPO: ${{ github.repository }}
+    steps:
+      # Only a boolean reaches this step; the key itself is not in its environment.
+      - name: Check for the App secrets
+        id: gate
+        env:
+          APP_SET: ${{ secrets.CONTRACT_SYNC_APP_ID != '' && secrets.CONTRACT_SYNC_APP_KEY != '' }}
+        run: |
+          if [ "$APP_SET" = "true" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::CONTRACT_SYNC_APP_ID/KEY are not set on the docs-push environment; skipping."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          ref: main
+          path: src
+          persist-credentials: false
+
+      - name: App token (Vycari/pepper only)
+        id: app-token
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.CONTRACT_SYNC_APP_ID }}
+          private-key: ${{ secrets.CONTRACT_SYNC_APP_KEY }}
+          owner: Vycari
+          repositories: pepper
+          permission-contents: write
+          permission-pull-requests: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          repository: Vycari/pepper
+          ref: main
+          path: server
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+
+      # No token here. Writes the owned help files into server/ and reports whether one differs.
+      - name: Place the help files
+        id: place
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          src_sha="$(git -C src rev-parse HEAD)"
+          echo "src_sha=$src_sha" >> "$GITHUB_OUTPUT"
+          python3 -I src/scripts/docs_push.py place --repo "$CLIENT_REPO" \
+            --help-dir src/help --server server \
+            --paths-out "$RUNNER_TEMP/help-paths" >> "$GITHUB_OUTPUT"
+
+      - name: Open, update or close the sync PR
+        if: steps.gate.outputs.enabled == 'true'
+        working-directory: server
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: Vycari/pepper
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          CHANGED: ${{ steps.place.outputs.changed }}
+          SRC_SHA: ${{ steps.place.outputs.src_sha }}
+        run: |
+          set -euo pipefail
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.helper
+          export GIT_CONFIG_VALUE_0='!f() { echo username=x-access-token; echo "password=${GH_TOKEN}"; }; f'
+          short_sha="${SRC_SHA:0:8}"
+
+          existing="$(gh pr list --head "$SYNC_BRANCH" --base main --state open \
+            --json number,isCrossRepository,headRepositoryOwner \
+            -q 'map(select((.isCrossRepository | not) and
+              (.headRepositoryOwner.login | ascii_downcase) == "vycari")) | .[0].number // empty')"
+          branch_exists=false
+          rc=0
+          git ls-remote --exit-code --heads origin "$SYNC_BRANCH" > /dev/null || rc=$?
+          case "$rc" in
+            0) branch_exists=true ;;
+            2) ;;
+            *) echo "::error::git ls-remote failed ($rc)."; exit 1 ;;
+          esac
+
+          if [ "$CHANGED" != "true" ]; then
+            if [ -n "$existing" ]; then
+              gh pr close "$existing" --comment "Closing: the help files from $CLIENT_REPO @ ${short_sha} match \`main\` again. The next help change opens a fresh sync PR."
+            fi
+            if [ "$branch_exists" = "true" ]; then
+              git push --quiet origin --delete "$SYNC_BRANCH"
+            fi
+            echo "Vycari/pepper already has these help files."
+            exit 0
+          fi
+
+          title="docs(help): sync from $CLIENT_REPO @ ${short_sha}"
+          bot_id="$(gh api "users/${APP_SLUG}[bot]" --jq .id)"
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+          git switch --quiet -C "$SYNC_BRANCH"
+          mapfile -t paths < "$RUNNER_TEMP/help-paths"
+          git add -- "${paths[@]}"
+          git commit --quiet -m "$title"
+          git push --quiet --force origin "HEAD:refs/heads/$SYNC_BRANCH"
+
+          body="Automated sync of the help topics $CLIENT_REPO owns (its \`help/\` directory, at ${SRC_SHA}), pushed by that repo's docs-push workflow. The owned files are listed in \`.github/docs-owners.json\`. Edit them in $CLIENT_REPO, not here: the next sync force-pushes this branch, and a hand edit to an owned file fails the docs-owners check."
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --title "$title" --body "$body"
+          else
+            gh pr create --head "$SYNC_BRANCH" --base main --title "$title" --body "$body"
+          fi

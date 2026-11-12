@@ -168,6 +168,10 @@ ignore = [
 # Everything else writes through the rich consoles in `render.py`, which this
 # rule does not flag, so a `print` anywhere else still fails lint.
 "src/pepper_cli/cli.py" = ["T201"]
+# `scripts/` holds CI helpers run as `python3 -I scripts/<name>.py`, never imported as a package
+# (INP001). They write GitHub Actions output lines, `name=value` on stdout and `::error::` on
+# stderr, which is what `print` is for (T201).
+"scripts/**" = ["T201", "INP001"]
 # Tests assert, reach into internals, and use literal fixtures on purpose.
 # Entries here are only those NOT already in the global `ignore` above, so
 # every line is load-bearing.
