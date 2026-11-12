@@ -1,0 +1,9 @@
+{
+  // help/ is the help text this repo owns for Pepper's guide (docs-push.yml copies it into
+  // Vycari/pepper). Its `#slug` links point at other help topics, which exist in the guide that
+  // renders them, not in this directory, so link-fragment checking (MD051) cannot see them.
+  // Everything else follows the root config.
+  "config": {
+    "MD051": false
+  }
+}

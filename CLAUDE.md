@@ -19,6 +19,8 @@ command is `pepper`. User documentation is `README.md`.
 - `agent_skill.py`, `skill_doc.py`, `data/agent-skill/SKILL.md` — the bundled agent skill.
 - `proctitle.py`, `window_title.py` — process and terminal title helpers.
 - `tests/` — pytest suite; HTTP is mocked, so it needs no network or server.
+- `help/cli.md` — the user-facing help for the CLI, in Pepper's guide. `.github/workflows/docs-push.yml`
+  (logic in `scripts/docs_push.py`) copies it into Vycari/pepper as a `docs-sync/pepper-cli` PR.
 
 ## Commands
 
@@ -50,6 +52,13 @@ uv run pytest -n auto --cov --cov-report=json:coverage-summary.json   # what CI 
 - Do not add lint ignores to pass CI, and do not lower `coverage.floor` in
   `.claude/maintainerd.json`.
 - The bundled `SKILL.md` documents the commands; change it together with the CLI.
+- **Help ships with the feature.** `help/cli.md` is what the Pepper agent, the in-app Help and
+  www.vycari.ai/pepper/docs tell people about the CLI. A user-visible command change updates it in
+  the same PR, in plain language for a person rather than flag-by-flag. Text about a feature behind a
+  server rollout goes inside `<!-- rollout: <key> -->` … `<!-- /rollout -->`, so the public docs
+  leave it out; an unknown key fails pepper's checks. Edit it here, never in Vycari/pepper: its
+  docs-owners check refuses a hand edit there. The push needs the `vycari-contract-sync` App
+  secrets on this repo's `docs-push` environment; without them the job is a no-op.
 - Guidelines: `.claude/guidelines/`. Vycari-wide house rules (review, PR template, escalation)
   load from the `vycari-ops` plugin enabled in `.claude/settings.json`.
 
