@@ -332,9 +332,12 @@ put that backlog into context on every Claude Code restart. Decided (§14 C):
 
 - Resume the stream from the cursor file, so nothing is lost on the wire.
 - An event whose `created_at` is older than the process start time minus 60 seconds is consumed
-  without a push. Instead, once the stream has caught up (the first heartbeat after replay), push
-  one `kind="backlog"` control event: how many messages were skipped, per topic id, and the oldest
-  and newest timestamps. The skill tells the sponsor, as it does today.
+  without a push. Instead, once replay reaches its explicit boundary, push one `kind="backlog"`
+  control event: how many messages were skipped, per topic id, and the oldest and newest
+  timestamps. The cursor frame is the normal replay boundary. A heartbeat indicates liveness only
+  and does not end replay. If the client receives `history_expired`, it reports the gap and
+  advances to the supplied floor before ending replay. Server-side emission of `history_expired`
+  on out-of-retention reconnects remains unverified. The skill tells the sponsor, as it does today.
 - In-process reconnects resume from the cursor and push everything, since nothing they replay is
   from before the session.
 - With no cursor file, `rooms watch` starts from the beginning of the retained stream (`--since`
