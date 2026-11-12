@@ -15,12 +15,10 @@ listed, with a reason, in the test's allowlists.
 
 ## How it is refreshed
 
-`.github/workflows/contract-sync.yml` runs weekly (and on demand). It downloads the
-`api-v1-openapi` artifact from the latest successful `ci.yml` run on the server repo's `main`
-and, if this file differs, opens or updates a single `contract-sync` pull request. The server
-repo is private, so the job needs the `PEPPER_CONTRACT_READ_TOKEN` repository secret (a
-fine-grained token with *Actions: read* on `Vycari/pepper`); without it the job exits
-successfully and does nothing.
+The server pushes it. After each green CI run on its `main`, `Vycari/pepper`'s contract-push
+workflow (`planning/contract-push.md` there) copies this file in and, if it differs, opens or
+updates a single `contract-sync` pull request, authored by the `vycari-contract-sync` App.
+`SOURCE.json` records the server commit and CI run it came from. Nothing in this repo fetches it.
 
 When a server change adds a field the CLI wants, the order is: the server change merges, the
 snapshot is refreshed here, then the CLI change lands.
