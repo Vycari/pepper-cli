@@ -91,6 +91,21 @@
         ],
         "type": "object"
       },
+      "AliasOut": {
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "value"
+        ],
+        "type": "object"
+      },
       "AllDayGroupIn": {
         "properties": {
           "items": {
@@ -2082,6 +2097,63 @@
         ],
         "type": "object"
       },
+      "CardOut": {
+        "properties": {
+          "aliases": {
+            "items": {
+              "$ref": "#/components/schemas/AliasOut"
+            },
+            "type": "array"
+          },
+          "entity_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "is_new": {
+            "type": "boolean"
+          },
+          "last_contact": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "meetings": {
+            "items": {
+              "$ref": "#/components/schemas/MeetingOut"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "tie": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TieOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "entity_id",
+          "name",
+          "aliases",
+          "last_contact",
+          "tie",
+          "meetings",
+          "is_new"
+        ],
+        "type": "object"
+      },
       "ChatDraftActionRequest": {
         "properties": {
           "account_id": {
@@ -2578,6 +2650,17 @@
             },
             "type": "array"
           },
+          "prefix": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "quote": {
             "anyOf": [
               {
@@ -2605,6 +2688,17 @@
               {
                 "minimum": 0.0,
                 "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "suffix": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
               },
               {
                 "type": "null"
@@ -2981,6 +3075,32 @@
         },
         "required": [
           "body"
+        ],
+        "type": "object"
+      },
+      "EventBriefOut": {
+        "properties": {
+          "attendees": {
+            "items": {
+              "$ref": "#/components/schemas/CardOut"
+            },
+            "type": "array"
+          },
+          "event_id": {
+            "type": "string"
+          },
+          "found": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "found",
+          "event_id",
+          "attendees"
         ],
         "type": "object"
       },
@@ -3889,6 +4009,22 @@
         },
         "type": "object"
       },
+      "MeetingOut": {
+        "properties": {
+          "event_id": {
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "occurred_at"
+        ],
+        "type": "object"
+      },
       "NativeClientTimings": {
         "properties": {
           "samples": {
@@ -4068,6 +4204,24 @@
         },
         "required": [
           "level"
+        ],
+        "type": "object"
+      },
+      "PeopleOut": {
+        "properties": {
+          "people": {
+            "items": {
+              "$ref": "#/components/schemas/CardOut"
+            },
+            "type": "array"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "people"
         ],
         "type": "object"
       },
@@ -7935,6 +8089,40 @@
         ],
         "type": "object"
       },
+      "TieOut": {
+        "properties": {
+          "band": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "percentile": {
+            "type": "number"
+          },
+          "rank": {
+            "type": "integer"
+          },
+          "strength": {
+            "type": "number"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rank",
+          "total",
+          "band",
+          "percentile",
+          "strength"
+        ],
+        "type": "object"
+      },
       "TimezoneDecisionRequest": {
         "properties": {
           "accept": {
@@ -8603,6 +8791,47 @@
         },
         "required": [
           "token"
+        ],
+        "type": "object"
+      },
+      "UpcomingMeetingOut": {
+        "properties": {
+          "attendees": {
+            "items": {
+              "$ref": "#/components/schemas/CardOut"
+            },
+            "type": "array"
+          },
+          "event_id": {
+            "type": "string"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "starts_at",
+          "attendees"
+        ],
+        "type": "object"
+      },
+      "UpcomingOut": {
+        "properties": {
+          "meetings": {
+            "items": {
+              "$ref": "#/components/schemas/UpcomingMeetingOut"
+            },
+            "type": "array"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "meetings"
         ],
         "type": "object"
       },
@@ -17091,6 +17320,186 @@
         },
         "tags": [
           "client-api-feeds"
+        ]
+      }
+    },
+    "/api/v1/graph/meetings/brief": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "event",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventBriefOut"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-graph"
+        ]
+      }
+    },
+    "/api/v1/graph/meetings/upcoming": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 5,
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpcomingOut"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-graph"
+        ]
+      }
+    },
+    "/api/v1/graph/people": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 200,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PeopleOut"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-graph"
         ]
       }
     },
