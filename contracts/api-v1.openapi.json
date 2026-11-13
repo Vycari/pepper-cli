@@ -6407,6 +6407,16 @@
               }
             ]
           },
+          "slot_anchor_minute": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "solar_event": {
             "anyOf": [
               {
@@ -7243,6 +7253,18 @@
               }
             ]
           },
+          "slot_anchor_minute": {
+            "anyOf": [
+              {
+                "maximum": 1439.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "solar_event": {
             "anyOf": [
               {
@@ -7478,6 +7500,16 @@
               }
             ]
           },
+          "slot_anchor_minute": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "solar_event": {
             "anyOf": [
               {
@@ -7677,6 +7709,16 @@
               }
             ]
           },
+          "slot_anchor_minute": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "solar_event": {
             "anyOf": [
               {
@@ -7793,6 +7835,18 @@
               {
                 "minLength": 1,
                 "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slot_anchor_minute": {
+            "anyOf": [
+              {
+                "maximum": 1439.0,
+                "minimum": 0.0,
+                "type": "integer"
               },
               {
                 "type": "null"
