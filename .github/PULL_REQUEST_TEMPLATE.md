@@ -64,5 +64,6 @@ one-line reason. An N/A with a reason is fine, a silently ticked box is not. -->
 - [ ] Server-contract changes: `/api/v1` usage stays additive-only, `# MIRROR:` comments updated, unknown fields and frames still tolerated
 - [ ] No token or credential is logged, printed, or put in a fixture
 - [ ] README and the bundled `SKILL.md` updated if commands or output changed
+- [ ] Help: `help/cli.md` updated for a new or changed command, or not user-facing because ___
 
 </details>
