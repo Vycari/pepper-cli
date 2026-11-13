@@ -8,6 +8,10 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 
 ### Added
 
+- `pepper graph list | search | show | upcoming`: read-only views of the entity graph (people, ties,
+  last contact, past meetings, and attendee briefs for an event or the next meetings), over
+  `GET /api/v1/graph/*` (Vycari/pepper#6321). 404 until the `entity-graph` rollout reaches the
+  caller. A slow or failed server read comes back as a `status` of `timeout` or `error`.
 - `pepper agents claude-channel` serves a `topics_list` tool (#130): every room and topic the
   channel can see, each with `room_id`, `topic_id`, `room_name`, `topic_name`, `is_default`,
   `archived` and `note_id` (a note's comment topic), so a session with no event yet can find the

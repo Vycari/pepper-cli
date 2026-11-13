@@ -138,6 +138,17 @@ ever want to look back at a specific conversation in detail.
   of shared screens and logs, and get a new address if it ends up somewhere
   shared. See [Calendar](#calendar).
 <!-- /rollout -->
+<!-- rollout: entity-graph -->
+- **The people Pepper has seen:** `pepper graph list` shows your strongest
+  ties, strongest first. `pepper graph search <name or address>` looks one
+  person up. Each person shows their addresses, when you last mailed or met,
+  how close the tie is (for example "#2 of 40, top 5") and your recent
+  meetings. `pepper graph upcoming` lists your next meetings with who is on
+  each, and `pepper graph show <event id>` does the same for one event. People
+  you have never mailed or met are marked "new to you". It only reads, and the
+  data comes from the headers of your own mail and calendar attendees, never
+  message text. If a read is slow it shows what it had and says so.
+<!-- /rollout -->
 - **What's next:** `pepper next` shows what's on now (with the time left) and
   what's after it, the rest of today's calendar, and your top ten open to-dos
   in the order Pepper ranks them (`--all` for every one). `--room <room>` (its

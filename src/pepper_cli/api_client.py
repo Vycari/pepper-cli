@@ -36,6 +36,7 @@ import uuid
 from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field
 from typing import Any, NoReturn, Self, cast
+from urllib.parse import urlencode
 
 import httpx
 
@@ -2549,6 +2550,22 @@ class ApiClient:
         if not isinstance(body, dict):
             raise ApiError(status=resp.status_code, body="", detail="malformed response")
         return body
+
+    def graph_people(self, query: str | None = None, *, limit: int = 10) -> dict[str, Any]:
+        """``GET /api/v1/graph/people``: people matching ``query``, else the strongest ties.
+
+        404 when the ``entity-graph`` rollout does not reach the caller.
+        """
+        params = {"limit": str(limit), **({"q": query} if query else {})}
+        return self._get_object(f"/api/v1/graph/people?{urlencode(params)}")
+
+    def graph_event_brief(self, event_id: str) -> dict[str, Any]:
+        """``GET /api/v1/graph/meetings/brief``: a card for each attendee of one calendar event."""
+        return self._get_object(f"/api/v1/graph/meetings/brief?{urlencode({'event': event_id})}")
+
+    def graph_upcoming(self, *, limit: int = 5) -> dict[str, Any]:
+        """``GET /api/v1/graph/meetings/upcoming``: the next meetings, each with attendee cards."""
+        return self._get_object(f"/api/v1/graph/meetings/upcoming?{urlencode({'limit': limit})}")
 
     def _get_object(self, path: str) -> dict[str, Any]:
         resp = self._request("GET", path)
