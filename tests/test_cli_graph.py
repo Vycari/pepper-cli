@@ -150,3 +150,10 @@ def test_limit_is_checked_before_any_request(server, capsys, limit) -> None:
     assert cli.main(["graph", "list", "--limit", limit]) == 2
     assert cli.main(["graph", "upcoming", "--limit", limit]) == 2
     assert server.seen == []
+
+
+@pytest.mark.parametrize("argv", [["graph", "search", "   "], ["graph", "show", ""]])
+def test_a_blank_query_or_event_is_refused_before_any_request(server, capsys, argv) -> None:
+    assert cli.main(argv) == 2
+    assert "must not be blank" in capsys.readouterr().err
+    assert server.seen == []

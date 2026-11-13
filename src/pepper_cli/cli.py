@@ -9650,7 +9650,12 @@ def cmd_graph_people(args: argparse.Namespace) -> int:
     """``pepper graph list|search QUERY [--limit N] [--json]``: ``GET /api/v1/graph/people``."""
     if (limit := _graph_limit(args)) is None:
         return 2
-    query = (getattr(args, "query", None) or "").strip() or None
+    query: str | None = None
+    if hasattr(args, "query"):  # `graph search`; `graph list` has no QUERY
+        query = args.query.strip()
+        if not query:
+            _emit_error(args, "usage", "QUERY must not be blank.")
+            return 2
 
     def run(api: api_client.ApiClient) -> int:
         body = api.graph_people(query, limit=limit)
@@ -9663,9 +9668,13 @@ def cmd_graph_people(args: argparse.Namespace) -> int:
 
 def cmd_graph_brief(args: argparse.Namespace) -> int:
     """``pepper graph show EVENT_ID [--json]``: ``GET /api/v1/graph/meetings/brief``."""
+    event = args.event.strip()
+    if not event:
+        _emit_error(args, "usage", "EVENT_ID must not be blank.")
+        return 2
 
     def run(api: api_client.ApiClient) -> int:
-        body = api.graph_event_brief(args.event.strip())
+        body = api.graph_event_brief(event)
         _emit(body, args, lambda: graph_view.brief(body))
         return 0
 
