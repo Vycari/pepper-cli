@@ -135,6 +135,7 @@ from pepper_cli import (
     following_render,
     following_search,
     following_view,
+    graph_view,
     next_view,
     note_edit,
     numbered_view,
@@ -1033,6 +1034,54 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         help="Open the item's link in your default browser (the link is printed too).",
     )
     p.set_defaults(handler=cmd_feed_show)
+
+    p_graph = sub.add_parser(
+        "graph",
+        help="Inspect the people Pepper has seen in your mail and meetings (read-only).",
+        description=(
+            "Read what Pepper's entity graph holds: who someone is to you, when you last spoke, "
+            "how close the tie is and your past meetings. Read-only. The graph is built from "
+            "mail headers and calendar attendees, and is only available once it is turned on "
+            "for your account."
+        ),
+    )
+    sub_graph = p_graph.add_subparsers(dest="graph_action", required=True)
+    p = sub_graph.add_parser(
+        "list",
+        help="Your strongest ties, strongest first.",
+        parents=[_json_parent],
+    )
+    p.add_argument(
+        "--limit", type=int, default=10, metavar="N", help="How many people (default 10, max 50)."
+    )
+    p.set_defaults(handler=cmd_graph_people)
+    p = sub_graph.add_parser(
+        "search",
+        help="Look a person up by email address or part of a name.",
+        description="An exact email address, else part of a name or address.",
+        parents=[_json_parent],
+    )
+    p.add_argument("query", metavar="QUERY", help="An email address or part of a name.")
+    p.add_argument(
+        "--limit", type=int, default=10, metavar="N", help="How many people (default 10, max 50)."
+    )
+    p.set_defaults(handler=cmd_graph_people)
+    p = sub_graph.add_parser(
+        "show",
+        help="The attendees of one calendar event, as cards.",
+        parents=[_json_parent],
+    )
+    p.add_argument("event", metavar="EVENT_ID", help="A calendar event id (see 'graph upcoming').")
+    p.set_defaults(handler=cmd_graph_brief)
+    p = sub_graph.add_parser(
+        "upcoming",
+        help="Your next meetings the graph knows, with each attendee's card.",
+        parents=[_json_parent],
+    )
+    p.add_argument(
+        "--limit", type=int, default=5, metavar="N", help="How many meetings (default 5, max 50)."
+    )
+    p.set_defaults(handler=cmd_graph_upcoming)
 
     p_todos = sub.add_parser(
         "todos",
@@ -9573,6 +9622,76 @@ def _feed_error_body(exc: api_client.ApiError) -> dict[str, Any]:
     except (ValueError, AttributeError):
         return {}
     return detail if isinstance(detail, dict) else {}
+
+
+def _report_graph_error(args: argparse.Namespace, exc: api_client.ApiError) -> int:
+    """A 404 means the ``entity-graph`` rollout does not reach this account (or an older server
+    has no such route); say so rather than printing a bare "Not Found"."""
+    if exc.status == 404:
+        _emit_error(
+            args,
+            "not_found",
+            "The entity graph is not available for your account (or this server is too old).",
+            status=404,
+        )
+        return 1
+    return _fail_api(args, exc)
+
+
+def _graph_limit(args: argparse.Namespace) -> int | None:
+    """``--limit`` when it is 1 to 50, else report it and return ``None``."""
+    if 1 <= args.limit <= 50:
+        return int(args.limit)
+    _emit_error(args, "usage", "--limit must be between 1 and 50.")
+    return None
+
+
+def cmd_graph_people(args: argparse.Namespace) -> int:
+    """``pepper graph list|search QUERY [--limit N] [--json]``: ``GET /api/v1/graph/people``."""
+    if (limit := _graph_limit(args)) is None:
+        return 2
+    query: str | None = None
+    if hasattr(args, "query"):  # `graph search`; `graph list` has no QUERY
+        query = args.query.strip()
+        if not query:
+            _emit_error(args, "usage", "QUERY must not be blank.")
+            return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.graph_people(query, limit=limit)
+        envelope = _list_envelope(body.get("people") or [], status=body.get("status"))
+        _emit(envelope, args, lambda: graph_view.people(body, query=query))
+        return 0
+
+    return _run_personal(args, run, _report_graph_error)
+
+
+def cmd_graph_brief(args: argparse.Namespace) -> int:
+    """``pepper graph show EVENT_ID [--json]``: ``GET /api/v1/graph/meetings/brief``."""
+    event = args.event.strip()
+    if not event:
+        _emit_error(args, "usage", "EVENT_ID must not be blank.")
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.graph_event_brief(event)
+        _emit(body, args, lambda: graph_view.brief(body))
+        return 0
+
+    return _run_personal(args, run, _report_graph_error)
+
+
+def cmd_graph_upcoming(args: argparse.Namespace) -> int:
+    """``pepper graph upcoming [--limit N] [--json]``: ``GET /api/v1/graph/meetings/upcoming``."""
+    if (limit := _graph_limit(args)) is None:
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.graph_upcoming(limit=limit)
+        _emit(body, args, lambda: graph_view.upcoming(body))
+        return 0
+
+    return _run_personal(args, run, _report_graph_error)
 
 
 def cmd_calendar_publish_show(args: argparse.Namespace) -> int:

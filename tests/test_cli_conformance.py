@@ -73,6 +73,8 @@ NOUNS = frozenset(
         # noun too (list/show): the server's ranked stream of what you follow.
         "following",
         "feed",
+        # `graph` is a read-only view of the entity graph (your own people and meetings).
+        "graph",
         "chat",
         # `run` sends a prompt file as one chat turn (a shebang interpreter).
         "run",
@@ -138,6 +140,9 @@ VERBS = frozenset(
         # `agents claude-channel` is a named exception to IA §2 (planning/claude-code-channel.md
         # §14 A): "claude-channel" is Anthropic's product term and the verb says which vendor.
         "claude-channel",
+        # `graph upcoming` is the next meetings the graph holds: a bounded list, but of
+        # meetings, which `graph list` (people) is not.
+        "upcoming",
         # Research projects (IA §3.1): `steer` queues guidance for an object's next run;
         # `take` and `reconsider` mark a ledger item.
         "steer",
@@ -186,6 +191,10 @@ ROOM_NA = {
     "following delete": "your follows are account-wide; a room's follows live on its own page",
     "feed list": "the server ranks your own follows; a room's follows are not part of it",
     "feed show": "the server ranks your own follows; a room's follows are not part of it",
+    "graph list": "the graph is your own, never a room's (D12 keeps a room's separate)",
+    "graph search": "the graph is your own, never a room's (D12 keeps a room's separate)",
+    "graph show": "the graph is your own, never a room's (D12 keeps a room's separate)",
+    "graph upcoming": "the graph is your own, never a room's (D12 keeps a room's separate)",
     "brief": "your own morning brief; the server exposes no room's brief to a PAT here",
     "artifacts show": "reads any artifact the viewer can see; the id carries the room",
     "artifacts download": "reads any artifact the viewer can see; the id carries the room",
@@ -697,6 +706,14 @@ ROUTES: dict[str, object] = {
         "days": [{**_DAY, "events": [], "meals": [], "deadlines": [], "travel": []}],
     },
     "/api/v1/calendars/environment": {},
+    "/api/v1/graph/people": {"status": "ok", "people": []},
+    "/api/v1/graph/meetings/brief": {
+        "status": "ok",
+        "found": False,
+        "event_id": "e1",
+        "attendees": [],
+    },
+    "/api/v1/graph/meetings/upcoming": {"status": "ok", "meetings": []},
     "/api/v1/calendars/schedule-plan": {
         "now": "2026-10-02T16:00:00+00:00",
         "active": "urgent",
@@ -1112,6 +1129,10 @@ JSON_CASES: dict[str, list[str]] = {
     "following delete": ["following", "delete", "example", "--yes"],
     "feed list": ["feed", "list"],
     "feed show": ["feed", "show", "1"],
+    "graph list": ["graph", "list"],
+    "graph search": ["graph", "search", "casey"],
+    "graph show": ["graph", "show", "e1"],
+    "graph upcoming": ["graph", "upcoming"],
     "todos list": ["todos", "list"],
     "rooms list": ["rooms", "list"],
     "rooms show": ["rooms", "show", _G],
