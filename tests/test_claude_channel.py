@@ -10,6 +10,7 @@ the real fd claim (``test_a_stray_print_...``).
 
 from __future__ import annotations
 
+import email.utils
 import functools
 import json
 import queue
@@ -183,9 +184,15 @@ class _Fake:
     """Plays the Pepper server: the rooms list, topics, a script of stream answers (an SSE body,
     or an HTTP status), message reads, posts and reactions. Records every request."""
 
-    def __init__(self, *streams: str | int, features: tuple[str, ...] = ("watch_scope",)) -> None:
+    def __init__(
+        self,
+        *streams: str | int,
+        features: tuple[str, ...] = ("watch_scope",),
+        server_time: datetime | None = None,
+    ) -> None:
         self.streams = list(streams)
         self.features = features
+        self.server_time = server_time
         self.requests: list[httpx.Request] = []
         self.messages: dict[str, dict] = {_MESSAGE: _message_json()}
         self.topics = {_TOPIC: "Dinner", _OTHER_TOPIC: "Chores"}
@@ -274,7 +281,10 @@ class _Fake:
             item = self.streams.pop(0)
             if isinstance(item, int):
                 return httpx.Response(item, json={"detail": "No such group."})
-            return httpx.Response(200, text=item, headers={"content-type": "text/event-stream"})
+            headers = {"content-type": "text/event-stream"}
+            if self.server_time is not None:
+                headers["date"] = email.utils.format_datetime(self.server_time, usegmt=True)
+            return httpx.Response(200, text=item, headers=headers)
         if path.endswith("/messages") and request.method == "GET":
             if self.unreachable:
                 raise httpx.ConnectError("refused")
@@ -904,6 +914,61 @@ def test_a_first_run_replay_of_old_room_events_owes_no_resync(monkeypatch):
     result = run_channel(monkeypatch, fake, ["--room", _ROOM])
 
     assert result.kinds() == ["backlog"]
+
+
+def test_a_first_run_replay_is_still_suppressed_with_the_server_clock(monkeypatch):
+    server_now = _now()
+    old = server_now - timedelta(days=3)
+    fake = _Fake(
+        _CONNECTED + _scope() + _event(7, kind="some.new.kind", created=old) + _PING,
+        server_time=server_now,
+    )
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    assert result.notifications == []
+
+
+def test_a_first_run_cutoff_uses_the_server_clock_when_the_local_clock_is_ahead(monkeypatch):
+    server_now = _now()
+    ahead = server_now + timedelta(hours=2)
+
+    class _AheadDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return ahead if tz is None else ahead.astimezone(tz)
+
+    monkeypatch.setattr(claude_channel, "datetime", _AheadDatetime)
+    live = server_now + timedelta(seconds=30)
+    fake = _Fake(
+        _CONNECTED + _scope() + _event(7, kind="some.new.kind", created=live) + _PING,
+        server_time=server_now,
+    )
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    assert result.kinds() == ["resync"]
+
+
+def test_a_first_run_live_message_is_not_backlog_when_the_local_clock_is_ahead(monkeypatch):
+    server_now = _now()
+    ahead = server_now + timedelta(hours=2)
+
+    class _AheadDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return ahead if tz is None else ahead.astimezone(tz)
+
+    monkeypatch.setattr(claude_channel, "datetime", _AheadDatetime)
+    live = server_now + timedelta(seconds=30)
+    fake = _Fake(
+        _CONNECTED + _scope() + _event(7, message=_MESSAGE, created=live) + _PING,
+        server_time=server_now,
+    )
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    assert result.kinds() == ["message"]
 
 
 def test_an_old_unknown_event_after_a_restart_still_owes_a_resync(monkeypatch, tmp_path):

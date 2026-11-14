@@ -496,11 +496,16 @@ class FeedFrame:
     ``id`` is the frame's SSE ``id:``: for an event frame the event id, for a
     ``cursor`` frame the cursor, ``None`` on ``error`` and ``scope``. Either
     of the first two is a valid ``Last-Event-ID`` to resume after.
+
+    ``server_time`` is the server's clock when the stream opened, read from
+    the response's HTTP ``Date`` header, or ``None`` when the server did not
+    send one. It is the same on every frame of a connection.
     """
 
     kind: str
     id: int | None
     payload: dict[str, Any]
+    server_time: dt.datetime | None = None
 
 
 # MIRROR: src/pepper/gateway/channels/groups_service/agent_feed.py::scope_frame
@@ -3434,8 +3439,9 @@ class ApiClient:
                 resp.read()
                 _raise_for_error(resp)
             cut = _DeadlineCut(resp, deadline)
+            server_time = _feed_server_time(resp.headers.get("Date"))
             try:
-                for frame in _iter_feed_frames(resp.iter_lines()):
+                for frame in _iter_feed_frames(resp.iter_lines(), server_time=server_time):
                     yield frame
                     # Whether or not the cut could be armed, a stream never outlasts its
                     # window by more than the frame in hand.
@@ -5263,13 +5269,29 @@ def _iter_sse_events(lines: Iterator[str]) -> Iterator[StreamEvent]:
             yield event
 
 
-def _iter_feed_frames(lines: Iterator[str]) -> Iterator[FeedFrame]:
+def _feed_server_time(value: str | None) -> dt.datetime | None:
+    """The server's clock from an HTTP ``Date`` header, or ``None`` when absent or unreadable."""
+    if not value:
+        return None
+    try:
+        parsed = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.UTC)
+    return parsed.astimezone(dt.UTC)
+
+
+def _iter_feed_frames(
+    lines: Iterator[str], *, server_time: dt.datetime | None = None
+) -> Iterator[FeedFrame]:
     r"""Parse a line-iterator into :class:`FeedFrame`s.
 
     Unlike :func:`_iter_sse_events` this keeps the ``id:`` field, because the
     feed's id *is* the resume cursor. A frame whose ``data:`` is not a JSON
     object, or whose ``id:`` is not an integer, is dropped rather than fatal;
-    a comment line (``: ping``) becomes a ``"comment"`` frame.
+    a comment line (``: ping``) becomes a ``"comment"`` frame. ``server_time``
+    is copied onto every frame.
     """
     event_type: str | None = None
     event_id: int | None = None
@@ -5284,7 +5306,9 @@ def _iter_feed_frames(lines: Iterator[str]) -> Iterator[FeedFrame]:
             return None
         if not isinstance(payload, dict):
             return None
-        return FeedFrame(kind=event_type or "message", id=event_id, payload=payload)
+        return FeedFrame(
+            kind=event_type or "message", id=event_id, payload=payload, server_time=server_time
+        )
 
     for line in lines:
         if not line:
@@ -5297,7 +5321,12 @@ def _iter_feed_frames(lines: Iterator[str]) -> Iterator[FeedFrame]:
             # ``: connected`` / ``: ping``: proof the connection is alive. The
             # text is kept so a caller can tell an accepted connection from one
             # that has stayed healthy long enough to send a heartbeat.
-            yield FeedFrame(kind="comment", id=None, payload={"comment": line[1:].strip()})
+            yield FeedFrame(
+                kind="comment",
+                id=None,
+                payload={"comment": line[1:].strip()},
+                server_time=server_time,
+            )
             continue
         field_name, _, value = line.partition(":")
         value = value.removeprefix(" ")

@@ -428,6 +428,8 @@ class ChannelWorker:
         # first run, or the messages posted while the channel was down would be summarised away.
         self.first_run = not resumed and stored is None and cursor == 0
         self.cutoff = config.started_at - BACKLOG_SLACK
+        # The stream's HTTP Date header, when present, replaces the local clock.
+        self.cutoff_from_server = False
         self.self_id = config.self_id
         self.bound: api_client.WatchScope | None = None
         self.scope: api_client.WatchScope | None = None
@@ -826,6 +828,9 @@ class ChannelWorker:
         if _watch_frame_shows_health(frame):
             self.delay = _WATCH_BACKOFF_START
             self.failures = 0
+        if not self.cutoff_from_server and frame.server_time is not None:
+            self.cutoff = frame.server_time - BACKLOG_SLACK
+            self.cutoff_from_server = True
         if frame.kind == "error":
             return self._frame_problem(frame)
         if frame.kind == "comment":

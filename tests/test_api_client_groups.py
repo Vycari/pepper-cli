@@ -10,6 +10,8 @@ server behaviour — the server's own behaviour is covered in
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import httpx
 import pytest
 
@@ -1028,3 +1030,36 @@ def test_the_streams_send_start_only_when_asked_and_never_with_a_position() -> N
     assert seen[2].url.path == "/api/v1/groups/r1/topics/t1/events/stream"
     assert all("last-event-id" not in r.headers for r in seen[:3])
     assert seen[3].headers["last-event-id"] == "4"
+
+
+def test_the_stream_carries_the_servers_date_on_every_frame() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=": connected\n\n: ping\n\n",
+            headers={
+                "content-type": "text/event-stream",
+                "date": "Sat, 14 Nov 2026 06:20:00 GMT",
+            },
+        )
+
+    with _agent_client(handler) as api:
+        frames = list(api.watch_agent_events(since=0))
+
+    expected = datetime(2026, 11, 14, 6, 20, tzinfo=UTC)
+    assert [frame.server_time for frame in frames] == [expected, expected]
+
+
+@pytest.mark.parametrize("date_header", [None, "not a date"])
+def test_the_stream_tolerates_a_missing_or_unreadable_date(date_header) -> None:
+    headers = {"content-type": "text/event-stream"}
+    if date_header is not None:
+        headers["date"] = date_header
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=": connected\n\n", headers=headers)
+
+    with _agent_client(handler) as api:
+        frames = list(api.watch_agent_events(since=0))
+
+    assert frames[0].server_time is None
