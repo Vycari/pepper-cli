@@ -390,10 +390,13 @@ one-paragraph `content` written for Claude ("Events between position 120 and 180
 not be replayed. Catch up with messages_list for each topic, from your checkpoints.").
 
 `messages_list` needs a `room_id`, so every per-topic entry in a `backlog` or `resync` `content`
-carries it: `<topic_id> (room_id <room_id>; <room name> › <topic name>)`. A `resync` lists every
-topic the channel knows (the first 40, then "and N more"), since it cannot say which topics are
-affected, and names what set it: the unrecognised event kinds, a message event with no ids, or a
-topic outside the known rooms (the first five, then "and N more"). A `resync` says "if you keep
+carries it: `<topic_id> (room_id <room_id>; <room name> › <topic name>)`. A `resync` lists the
+topics the channel knows, up to the first 40; past that it says how many of the total it listed
+and points at `topics_list` with `archived=true` for the rest, since it cannot say which topics
+are affected. The count includes archived topics, as the startup map does, so the recovery call
+must not fold them. It names
+what set it: the unrecognised event kinds, a message event with no ids, or a topic outside the
+known rooms (the first five, then "and N more"). A `resync` says "if you keep
 checkpoints", as the first-run `backlog` does. `message.link_previews_updated` joins the kinds
 consumed silently (§7.1).
 
@@ -444,7 +447,7 @@ Each tool is one command an agent token can already run (guide §8), with the sa
 | `messages_post` (`room_id`, `topic_id`, `text`, `reply_to?`, `on_behalf_of?`, `mentions?`, `idempotency_key?`) | `messages post` | P1 |
 | `messages_list` (`room_id`, `topic_id`, `since?` / `before?` / `at?`, `limit?`) | `messages list` (never `--mark`) | P1 |
 | `messages_react` (`room_id`, `message_id`, `emoji`) | `messages react` | P1 |
-| `topics_list` (no arguments; `room_id`, `topic_id`, `room_name`, `topic_name`, `is_default`, `archived`, `note_id`; archived topics folded as `topics list` folds them) | `topics list` | P2 |
+| `topics_list` (`archived?`; `room_id`, `topic_id`, `room_name`, `topic_name`, `is_default`, `archived`, `note_id`; archived topics folded as `topics list` folds them unless `archived` is true) | `topics list` | P2 |
 | `messages_unreact`, `members_list`, `rooms_list` | the matching commands | P2 |
 | `attachments_download` (`room_id`, `attachment_id`, `out`) | `attachments download` | P2 |
 
