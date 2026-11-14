@@ -584,6 +584,8 @@ def test_tools_list_names_the_four_p1_and_p2_tools(monkeypatch):
         "topics_list",
     ]
     assert all(t["inputSchema"]["type"] == "object" for t in tools)
+    topics = next(t for t in tools if t["name"] == "topics_list")
+    assert topics["inputSchema"]["properties"]["archived"]["type"] == "boolean"
 
 
 def test_crlf_line_endings_from_the_client_are_read(monkeypatch):
@@ -888,19 +890,23 @@ def test_a_resync_names_its_cause_gives_room_ids_and_is_safe_on_a_first_run(monk
     assert f"{_TOPIC} (room_id {_ROOM}; Kitchen › Dinner)" in note["content"]
 
 
-def test_a_resync_lists_the_first_forty_topics_and_points_at_topics_list(monkeypatch):
+def test_a_resync_lists_the_first_forty_topics_and_points_at_archived_topics(monkeypatch):
     """The notice cannot list every topic, so it must not read as if it did: past 40 it
-    says how many of the total it listed and names the tool that returns the rest."""
+    says how many of the total it listed and names the tool that returns the rest. The
+    startup map counts archived topics, but a default ``topics_list`` folds them, so the
+    pointer has to ask for them explicitly or the omitted rows stay unreachable."""
     fake = _Fake(_CONNECTED + _scope() + _event(7, kind="some.new.kind") + _PING)
     ids = [f"{_TOPIC}-{n}" for n in range(45)]
     fake.topics = {topic_id: f"Topic {n}" for n, topic_id in enumerate(ids)}
     fake.default_topic = ids[0]
+    # Every omitted topic is archived, which the default fold would hide.
+    fake.archived_topics = set(ids[40:])
 
     result = run_channel(monkeypatch, fake, ["--room", _ROOM])
 
     (note,) = result.notifications
     assert "the first 40 of 45" in note["content"]
-    assert "call topics_list for the rest" in note["content"]
+    assert "call topics_list with archived=true for the rest" in note["content"]
     assert "and 5 more" not in note["content"]
     assert f"{ids[39]} (room_id {_ROOM}; Kitchen › Topic 39)" in note["content"]
     assert ids[40] not in note["content"]
@@ -2002,6 +2008,26 @@ def test_topics_list_folds_archived_topics_but_keeps_the_default(monkeypatch):
         (_TOPIC, True),
         (_OTHER_TOPIC, False),
     ]
+
+
+def test_topics_list_can_include_archived_topics_on_request(monkeypatch):
+    # The resync notice's count includes archived topics, so the recovery call must be able
+    # to reach them; the default fold stays as it was.
+    fake = _Fake(_CONNECTED)
+    fake.topics[_MESSAGE_2] = "Old plans"
+    fake.archived_topics = {_MESSAGE_2}
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["default"] = s.call("topics_list", {})
+        out["all"] = s.call("topics_list", {"archived": True})
+
+    run_channel(monkeypatch, fake, script=script)
+
+    assert [t["topic_id"] for t in json.loads(out["default"][0])["items"]] == [_TOPIC, _OTHER_TOPIC]
+    all_topics = json.loads(out["all"][0])["items"]
+    assert [t["topic_id"] for t in all_topics] == [_TOPIC, _OTHER_TOPIC, _MESSAGE_2]
+    assert all_topics[2]["archived"] is True
 
 
 def test_topics_list_names_the_note_a_comment_topic_belongs_to(monkeypatch):

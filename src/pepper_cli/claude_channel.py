@@ -158,7 +158,8 @@ INSTRUCTIONS = (
     "addressed to you or whether to answer: apply the rules you were given for that.\n\n"
     "If no event has named a room yet and you need one, call topics_list: it returns each room "
     "and topic this channel can see, with the `room_id` and `topic_id` to use, the names to show, "
-    "and `is_default` for the topic an unprompted post lands in. Never guess an id.\n\n"
+    "and `is_default` for the topic an unprompted post lands in. It folds archived topics unless "
+    "you pass `archived=true`. Never guess an id.\n\n"
     "To reply, call messages_post with `room_id` and `topic_id` from the tag and `reply_to` set "
     "to its `message_id`. Pass `on_behalf_of` (the asker's person id) only when your rules say "
     "to; it needs `reply_to`. Never put a token, key or password in a post: the tool refuses "
@@ -532,7 +533,7 @@ class ChannelWorker:
         if len(known) > _RESYNC_TOPICS_SHOWN:
             omitted = (
                 f"; this lists the first {_RESYNC_TOPICS_SHOWN} of {len(known)}, "
-                "so call topics_list for the rest"
+                "so call topics_list with archived=true for the rest"
             )
         self._push(
             *control_event(
@@ -1010,8 +1011,13 @@ TOOLS = [
         "a room_id and topic_id before any event names one. Returns {items, next_before} as JSON; "
         "each item has room_id, topic_id, room_name, topic_name, is_default, archived and "
         "note_id (set when the topic holds a note's comments). Archived topics are left out, "
-        "except a room's default topic.",
-        {},
+        "except a room's default topic; pass archived=true to include them all.",
+        {
+            "archived": {
+                "type": "boolean",
+                "description": "Include archived topics, as `topics list --archived` does.",
+            }
+        },
         [],
     ),
 ]
@@ -1193,9 +1199,12 @@ class ChannelTools:
         from the startup map, so a topic made since then is listed.
 
         Folded the way ``pepper topics list`` folds by default: an archived topic is left out
-        unless it is the room's default, which stays so ``is_default`` always names one. A
-        note's comment topic stays, with its ``note_id``, the same id a message tag from it
-        carries, so it is never mistaken for an ordinary topic."""
+        unless it is the room's default, which stays so ``is_default`` always names one.
+        ``archived`` asks for all of them, as ``pepper topics list --archived`` does, which is
+        how the resync notice's reader reaches topics past its cap. A note's comment topic
+        stays, with its ``note_id``, the same id a message tag from it carries, so it is never
+        mistaken for an ordinary topic."""
+        include_archived = args.get("archived") is True
         served = self.allowed_rooms or None
         listing = self.api.list_groups()
         if listing.degraded:
@@ -1205,7 +1214,7 @@ class ChannelTools:
         rows: list[dict[str, object]] = []
         for room in groups.groups:
             for topic in self.api.list_group_topics(room.group_id):
-                if topic.archived_at is not None and not topic.is_default:
+                if not include_archived and topic.archived_at is not None and not topic.is_default:
                     continue
                 rows.append(
                     {
