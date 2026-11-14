@@ -831,7 +831,10 @@ class ChannelWorker:
         if frame.kind == "error":
             return self._frame_problem(frame)
         if frame.kind == "comment":
-            if frame.payload.get("comment") != "connected":
+            # ``: ping`` is the contract's replay boundary: the server sends one only while it
+            # has nothing past this position. ``: connected`` opens a connection, and any other
+            # comment (a proxy keepalive, a newer server's frame) says neither has happened.
+            if frame.payload.get("comment") == "ping":
                 self._caught_up()
             return None
         scoped = self.config.room is not None
