@@ -801,6 +801,14 @@ class ChannelWorker:
                 raise self._ended(
                     "the cursor file belongs to a different watch", stop.code
                 ) from stop
+            if self.self_id is None:
+                self.self_id = seen.agent_person_id
+            elif not _same_id(self.self_id, seen.agent_person_id):
+                raise self._ended(
+                    f"--self {sanitize_line(self.self_id)} does not match the scoped agent "
+                    f"person id {sanitize_line(seen.agent_person_id)}",
+                    2,
+                )
             self.bound = seen
             self.allowed_rooms.add(seen.room_id)
             if not _same_id(seen.room_id, seen.requested_room_id):
@@ -809,8 +817,6 @@ class ChannelWorker:
                     f"following {seen.room_id}.",
                     soft_wrap=True,
                 )
-            if self.self_id is None:
-                self.self_id = seen.agent_person_id
         elif not (
             _same_id(seen.room_id, self.bound.room_id)
             and _same_id(seen.topic_id, self.bound.topic_id)

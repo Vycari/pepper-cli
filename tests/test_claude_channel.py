@@ -864,6 +864,40 @@ def test_self_given_at_start_is_the_self_id_and_an_unknown_one_is_omitted(monkey
     assert "self_id" not in unknown.notifications[0]["meta"]
 
 
+def test_self_matching_the_scope_drops_the_agents_own_post(monkeypatch, tmp_path):
+    cursor_file = _scoped_cursor_file(tmp_path / "cursor", 3)
+    fake = _Fake(_CONNECTED + _scope() + _event(4, author=_AGENT) + _cursor(5))
+
+    result = run_channel(
+        monkeypatch,
+        fake,
+        ["--room", _ROOM, "--self", _AGENT, "--cursor-file", str(cursor_file)],
+    )
+
+    assert result.notifications == []
+    assert not [r for r in fake.requests if r.url.path.endswith("/messages")]
+    assert json.loads(cursor_file.read_text())["cursor"] == 5
+
+
+def test_a_scoped_self_that_does_not_match_the_scope_ends_the_channel(monkeypatch):
+    fake = _Fake(_CONNECTED + _scope() + _event(7))
+
+    result = run_channel(
+        monkeypatch,
+        fake,
+        ["--room", _ROOM, "--self", _BOB],
+        script=_ended,
+    )
+
+    (note,) = result.notifications
+    assert note["meta"] == {"kind": "ended"}
+    assert "--self" in note["content"]
+    assert _BOB in note["content"]
+    assert _AGENT in note["content"]
+    assert result.code == 2
+    assert not [r for r in fake.requests if r.url.path.endswith("/messages")]
+
+
 def test_an_unreadable_message_still_carries_the_self_id():
     _, meta = claude_channel.message_event(
         info=claude_channel.TopicInfo(_ROOM, "Kitchen", "Dinner"),
