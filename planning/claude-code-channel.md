@@ -390,10 +390,11 @@ one-paragraph `content` written for Claude ("Events between position 120 and 180
 not be replayed. Catch up with messages_list for each topic, from your checkpoints.").
 
 `messages_list` needs a `room_id`, so every per-topic entry in a `backlog` or `resync` `content`
-carries it: `<topic_id> (room_id <room_id>; <room name> › <topic name>)`. A `resync` lists every
-topic the channel knows (the first 40, then "and N more"), since it cannot say which topics are
-affected, and names what set it: the unrecognised event kinds, a message event with no ids, or a
-topic outside the known rooms (the first five, then "and N more"). A `resync` says "if you keep
+carries it: `<topic_id> (room_id <room_id>; <room name> › <topic name>)`. A `resync` lists the
+topics the channel knows, up to the first 40; past that it says how many of the total it listed
+and points at `topics_list` for the rest, since it cannot say which topics are affected. It names
+what set it: the unrecognised event kinds, a message event with no ids, or a topic outside the
+known rooms (the first five, then "and N more"). A `resync` says "if you keep
 checkpoints", as the first-run `backlog` does. `message.link_previews_updated` joins the kinds
 consumed silently (§7.1).
 
