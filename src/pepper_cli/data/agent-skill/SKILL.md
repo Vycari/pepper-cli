@@ -298,7 +298,7 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
   first run with no earlier position; with `live_edge="true"` the channel had no saved position
   and started at the live edge, so nothing was replayed. It is said once, when the head is
   learned), `resync` (the stream sent something the channel does not
-  recognise; the notice names it and lists each topic with its `room_id`), `gap` (events could not be replayed; the tag gives the positions) and `ended`.
+  recognise; the notice names it and lists the known topics with their `room_id`, up to the first 40, then points at `topics_list` for the rest), `gap` (events could not be replayed; the tag gives the positions) and `ended`.
   `ended` means the channel has stopped for the reason it gives (a refused token, a paused or
   retired agent, a removed membership, a scope the server would not confirm): do not restart it
   in a loop, tell your operator, and expect the tools to disappear within seconds. The process

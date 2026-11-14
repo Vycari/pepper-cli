@@ -101,7 +101,8 @@ _SILENT_KINDS = frozenset(
     }
 )
 
-#: How many causes and topics a ``resync`` notice lists before it says "and N more".
+#: How many causes a ``resync`` notice lists before it says "and N more", and how
+#: many topics it lists before it points at ``topics_list`` for the rest.
 _RESYNC_CAUSES_SHOWN = 5
 _RESYNC_TOPICS_SHOWN = 40
 
@@ -527,15 +528,19 @@ class ChannelWorker:
         self.resync_causes.clear()
         known = list(self.topics)
         topics = "; ".join(self._topic_words(topic_id) for topic_id in known[:_RESYNC_TOPICS_SHOWN])
+        omitted = ""
         if len(known) > _RESYNC_TOPICS_SHOWN:
-            topics += f"; and {len(known) - _RESYNC_TOPICS_SHOWN} more"
+            omitted = (
+                f"; this lists the first {_RESYNC_TOPICS_SHOWN} of {len(known)}, "
+                "so call topics_list for the rest"
+            )
         self._push(
             *control_event(
                 "resync",
                 "The stream sent something this channel does not recognise, or a message it "
                 f"could not place in a room: {causes}. If you keep checkpoints, run your "
-                "catch-up with messages_list for each topic (room_id and topic_id are given "
-                f"here). Topics: {topics or 'none known'}.",
+                "catch-up with messages_list for each topic, with room_id and topic_id from "
+                f"this notice{omitted}. Topics: {topics or 'none known'}.",
             )
         )
 

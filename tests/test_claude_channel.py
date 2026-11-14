@@ -888,6 +888,24 @@ def test_a_resync_names_its_cause_gives_room_ids_and_is_safe_on_a_first_run(monk
     assert f"{_TOPIC} (room_id {_ROOM}; Kitchen › Dinner)" in note["content"]
 
 
+def test_a_resync_lists_the_first_forty_topics_and_points_at_topics_list(monkeypatch):
+    """The notice cannot list every topic, so it must not read as if it did: past 40 it
+    says how many of the total it listed and names the tool that returns the rest."""
+    fake = _Fake(_CONNECTED + _scope() + _event(7, kind="some.new.kind") + _PING)
+    ids = [f"{_TOPIC}-{n}" for n in range(45)]
+    fake.topics = {topic_id: f"Topic {n}" for n, topic_id in enumerate(ids)}
+    fake.default_topic = ids[0]
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    (note,) = result.notifications
+    assert "the first 40 of 45" in note["content"]
+    assert "call topics_list for the rest" in note["content"]
+    assert "and 5 more" not in note["content"]
+    assert f"{ids[39]} (room_id {_ROOM}; Kitchen › Topic 39)" in note["content"]
+    assert ids[40] not in note["content"]
+
+
 def test_a_first_run_replay_of_old_room_events_owes_no_resync(monkeypatch):
     """The retained window on a first run holds old room events of every kind (a rename, an
     app install); none was missed, and the backlog already says to catch up."""
