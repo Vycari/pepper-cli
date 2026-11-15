@@ -1178,6 +1178,56 @@ def test_a_head_start_sends_start_head_and_tells_the_session_once(monkeypatch, t
     assert "Starting at the live edge" in " ".join(capsys.readouterr().err.split())
 
 
+def test_a_message_after_the_opening_head_ignores_the_local_clock(monkeypatch):
+    behind = _now() - timedelta(hours=1)
+    fake = _Fake(_CONNECTED + _scope() + _cursor(30) + _event(31, created=behind) + _PING)
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    live, message = result.notifications
+    assert live["meta"]["live_edge"] == "true"
+    assert message["meta"]["kind"] == "message"
+
+
+def test_a_message_after_a_zero_head_ignores_the_local_clock(monkeypatch):
+    behind = _now() - timedelta(hours=1)
+    fake = _Fake(_CONNECTED + _scope() + _cursor(0) + _event(1, created=behind) + _PING)
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    live, message = result.notifications
+    assert live["meta"]["live_edge"] == "true"
+    assert message["meta"]["kind"] == "message"
+
+
+def test_genuine_replay_history_is_still_suppressed(monkeypatch):
+    old = _now() - timedelta(hours=1)
+    fake = _Fake(
+        _CONNECTED + _scope() + _event(4, created=old) + _event(5, message=_MESSAGE_2) + _PING
+    )
+    fake.messages[_MESSAGE_2] = _message_json(_MESSAGE_2)
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM, "--start", "beginning"])
+
+    assert result.kinds() == ["backlog", "message"]
+
+
+def test_a_reconnect_after_the_head_does_not_treat_replay_as_live(monkeypatch):
+    behind = _now() - timedelta(hours=1)
+    fake = _Fake(
+        _CONNECTED + _scope() + _cursor(30),
+        _CONNECTED + _scope() + _event(31, created=behind) + _PING,
+    )
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    live, skipped = result.notifications
+    assert live["meta"]["live_edge"] == "true"
+    assert skipped["meta"]["kind"] == "backlog"
+    assert skipped["meta"]["count"] == "1"
+    assert fake.stream_requests()[1].headers["last-event-id"] == "30"
+
+
 def test_a_head_start_is_saved_even_when_no_event_follows(monkeypatch, tmp_path):
     cursor_file = tmp_path / "cursor"
     fake = _Fake(_CONNECTED + _scope() + _head_cursor(30))
