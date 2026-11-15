@@ -2154,6 +2154,142 @@
         ],
         "type": "object"
       },
+      "CatalogBriefOut": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "subtype": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "subtype",
+          "name"
+        ],
+        "type": "object"
+      },
+      "CatalogCardOut": {
+        "properties": {
+          "attrs": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "curated": {
+            "type": "boolean"
+          },
+          "external_ids": {
+            "items": {
+              "$ref": "#/components/schemas/ExternalIdOut"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "neighbours": {
+            "items": {
+              "$ref": "#/components/schemas/NeighbourOut"
+            },
+            "type": "array"
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderOut"
+            },
+            "type": "array"
+          },
+          "sensitive": {
+            "type": "boolean"
+          },
+          "subtype": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "subtype",
+          "name",
+          "curated",
+          "sensitive",
+          "attrs",
+          "external_ids",
+          "providers",
+          "neighbours"
+        ],
+        "type": "object"
+      },
+      "CatalogPageOut": {
+        "properties": {
+          "catalog": {
+            "$ref": "#/components/schemas/CatalogCardOut"
+          },
+          "entities": {
+            "items": {
+              "$ref": "#/components/schemas/LinkedEntityOut"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "catalog",
+          "entities"
+        ],
+        "type": "object"
+      },
+      "CatalogPageResponse": {
+        "properties": {
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogPageOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "page"
+        ],
+        "type": "object"
+      },
       "ChatDraftActionRequest": {
         "properties": {
           "account_id": {
@@ -2894,6 +3030,91 @@
         ],
         "type": "object"
       },
+      "EdgeOut": {
+        "properties": {
+          "confidence": {
+            "type": "number"
+          },
+          "direction": {
+            "type": "string"
+          },
+          "follow_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "other": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EntityBriefOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "type": "string"
+          },
+          "valid_from": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "valid_to": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "origin",
+          "direction",
+          "other",
+          "follow_ref",
+          "source",
+          "valid_from",
+          "valid_to",
+          "confidence"
+        ],
+        "type": "object"
+      },
       "EditMessageRequest": {
         "properties": {
           "body": {
@@ -3067,6 +3288,97 @@
         },
         "type": "object"
       },
+      "EntityBriefOut": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "subtype": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "subtype",
+          "name"
+        ],
+        "type": "object"
+      },
+      "EntityPageOut": {
+        "properties": {
+          "catalog": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogCardOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/EdgeOut"
+            },
+            "type": "array"
+          },
+          "entity": {
+            "$ref": "#/components/schemas/EntityBriefOut"
+          },
+          "requested_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "sensitive": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "entity",
+          "sensitive",
+          "requested_id",
+          "catalog",
+          "edges"
+        ],
+        "type": "object"
+      },
+      "EntityPageResponse": {
+        "properties": {
+          "entity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EntityPageOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "entity"
+        ],
+        "type": "object"
+      },
       "EntryIn": {
         "properties": {
           "body": {
@@ -3101,6 +3413,21 @@
           "found",
           "event_id",
           "attendees"
+        ],
+        "type": "object"
+      },
+      "ExternalIdOut": {
+        "properties": {
+          "scheme": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "scheme",
+          "value"
         ],
         "type": "object"
       },
@@ -3970,6 +4297,24 @@
         },
         "type": "object"
       },
+      "LinkedEntityOut": {
+        "properties": {
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/EdgeOut"
+            },
+            "type": "array"
+          },
+          "entity": {
+            "$ref": "#/components/schemas/EntityBriefOut"
+          }
+        },
+        "required": [
+          "entity",
+          "edges"
+        ],
+        "type": "object"
+      },
       "MatrixIn": {
         "properties": {
           "event_id": {
@@ -4135,6 +4480,25 @@
         },
         "required": [
           "notices"
+        ],
+        "type": "object"
+      },
+      "NeighbourOut": {
+        "properties": {
+          "direction": {
+            "type": "string"
+          },
+          "entry": {
+            "$ref": "#/components/schemas/CatalogBriefOut"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "direction",
+          "type",
+          "entry"
         ],
         "type": "object"
       },
@@ -4556,6 +4920,21 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "ProviderOut": {
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "ref"
+        ],
         "type": "object"
       },
       "ReadMarkRequest": {
@@ -17336,6 +17715,216 @@
         },
         "tags": [
           "client-api-feeds"
+        ]
+      }
+    },
+    "/api/v1/graph/catalog": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "scheme",
+            "required": true,
+            "schema": {
+              "enum": [
+                "espn",
+                "tvmaze",
+                "feed_url",
+                "site_host",
+                "domain",
+                "feeds_topic",
+                "wikidata"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "value",
+            "required": true,
+            "schema": {
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "history",
+            "required": false,
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogPageResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-graph"
+        ]
+      }
+    },
+    "/api/v1/graph/catalog/{catalog_id}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "catalog_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "history",
+            "required": false,
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogPageResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-graph"
+        ]
+      }
+    },
+    "/api/v1/graph/entities/{entity_id}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "history",
+            "required": false,
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EntityPageResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-graph"
         ]
       }
     },
