@@ -83,3 +83,97 @@ def upcoming(body: dict[str, Any]) -> None:
         )
         for row in m.get("attendees") or []:
             card(row, indent="  ")
+
+
+def _ref(e: object) -> str:
+    """``name (kind/subtype)`` for a ``{id, kind, subtype, name}`` entry."""
+    if not isinstance(e, dict):
+        return "?"
+    kind = "/".join(_s(e[k]) for k in ("kind", "subtype") if e.get(k))
+    return f"{_s(e.get('name'))} ({kind})" if kind else _s(e.get("name"))
+
+
+def _edge(e: dict[str, Any], *, history: bool) -> str:
+    other = e.get("other")
+    if isinstance(other, dict):
+        arrow = "<-" if e.get("direction") == "in" else "->"
+        who = f"{arrow} {_ref(other)}"
+    elif e.get("follow_ref"):
+        who = f"follow {_s(e.get('follow_ref'))}"
+    else:
+        who = "follow"
+    bits = [who]
+    if e.get("source"):
+        bits.append(f"source {_s(e.get('source'))}")
+    since = _stamp(e.get("valid_from"))
+    if since:
+        bits.append(f"since {since}")
+    if history and e.get("valid_to"):
+        bits.append(f"[red]closed {_stamp(e.get('valid_to'))}[/red]")
+    elif history:
+        bits.append("open")
+    return "  " + "  ·  ".join(bits)
+
+
+def _edges(edges: list[dict[str, Any]], *, history: bool, indent: str = "") -> None:
+    """Edges grouped by type, in the order the server sent them."""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for e in edges:
+        groups.setdefault(_s(e.get("type")), []).append(e)
+    for kind, rows in groups.items():
+        _line(f"{indent}[bold]{kind}[/bold]")
+        for e in rows:
+            _line(f"{indent}{_edge(e, history=history)}")
+
+
+def _catalog_card(c: dict[str, Any], *, indent: str = "") -> None:
+    sensitive = "  [yellow](sensitive)[/yellow]" if c.get("sensitive") else ""
+    _line(f"{indent}[bold]{_ref(c)}[/bold]  [dim]{_s(c.get('id'))}[/dim]{sensitive}")
+    ids = ", ".join(
+        f"{_s(i.get('scheme'))}:{_s(i.get('value'))}" for i in c.get("external_ids") or []
+    )
+    if ids:
+        _line(f"{indent}  external ids: {ids}")
+    provs = ", ".join(
+        f"{_s(p.get('provider'))}:{_s(p.get('ref'))}" for p in c.get("providers") or []
+    )
+    if provs:
+        _line(f"{indent}  providers: {provs}")
+    for n in c.get("neighbours") or []:
+        arrow = "<-" if n.get("direction") == "in" else "->"
+        _line(f"{indent}  {_s(n.get('type'))} {arrow} {_ref(n.get('entry'))}")
+
+
+def entity_page(body: dict[str, Any], *, history: bool) -> None:
+    """One of the caller's entities: header, catalog card, then its edges by type."""
+    page = body.get("entity") or {}
+    ent = page.get("entity") or {}
+    sens = "  [yellow](sensitive)[/yellow]" if page.get("sensitive") else ""
+    _line(f"[bold]{_ref(ent)}[/bold]  [dim]{_s(ent.get('id'))}[/dim]{sens}")
+    requested = page.get("requested_id")
+    if requested and requested != ent.get("id"):
+        _line(f"  [dim]merged: {_s(requested)} is now this entity[/dim]")
+    cat = page.get("catalog")
+    if isinstance(cat, dict):
+        _line(f"  catalog: {_ref(cat)}  [dim]{_s(cat.get('id'))}[/dim]")
+        _line(f"  [dim]pepper graph catalog {_s(cat.get('id'))}[/dim]")
+    edges = page.get("edges") or []
+    if not edges:
+        _line("[dim](no edges)[/dim]")
+        return
+    _edges(edges, history=history)
+
+
+def catalog_page(body: dict[str, Any], *, history: bool) -> None:
+    """A catalog entry, then the caller's own entities that point at it."""
+    page = body.get("page") or {}
+    _catalog_card(page.get("catalog") or {})
+    rows = page.get("entities") or []
+    if not rows:
+        _line("[dim](none of your entities link here)[/dim]")
+        return
+    _line("[bold]Your entities[/bold]")
+    for row in rows:
+        ent = row.get("entity") or {}
+        _line(f"  [bold]{_ref(ent)}[/bold]  [dim]{_s(ent.get('id'))}[/dim]")
+        _edges(row.get("edges") or [], history=history, indent="    ")

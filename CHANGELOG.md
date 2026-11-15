@@ -8,6 +8,10 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 
 ### Added
 
+- `pepper graph entity ID` and `pepper graph catalog ID | --scheme S --value V`: an entity's page (edges by
+  type, follows included, its catalog entry) and a catalog entry with the caller's linked entities, both
+  with `--history` and `--json`, over `GET /api/v1/graph/entities/{id}` and `/catalog` (Vycari/pepper#6407;
+  refs Vycari/pepper#6365). Needs that server change deployed.
 - `pepper graph list | search | show | upcoming`: read-only views of the entity graph (people, ties,
   last contact, past meetings, and attendee briefs for an event or the next meetings), over
   `GET /api/v1/graph/*` (Vycari/pepper#6321). 404 until the `entity-graph` rollout reaches the

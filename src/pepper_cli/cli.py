@@ -1082,6 +1082,36 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "--limit", type=int, default=5, metavar="N", help="How many meetings (default 5, max 50)."
     )
     p.set_defaults(handler=cmd_graph_upcoming)
+    p = sub_graph.add_parser(
+        "entity",
+        help="One of your entities: its edges by type, and its catalog entry.",
+        description=(
+            "An entity page: the entity, the shared catalog entry it points at, and its edges "
+            "grouped by type (follows included). A merged-away id shows the entity it became."
+        ),
+        parents=[_json_parent],
+    )
+    p.add_argument("entity_id", metavar="ID", help="An entity id (see 'graph list').")
+    p.add_argument(
+        "--history", action="store_true", help="Include closed edges, marked with when they closed."
+    )
+    p.set_defaults(handler=cmd_graph_entity)
+    p = sub_graph.add_parser(
+        "catalog",
+        help="A catalog entry and the entities of yours that link to it.",
+        description=(
+            "A catalog page by id, or by one external id with --scheme and --value. Only an "
+            "entry your own graph links to is readable."
+        ),
+        parents=[_json_parent],
+    )
+    p.add_argument("catalog_id", nargs="?", metavar="ID", help="A catalog entry id.")
+    p.add_argument("--scheme", choices=_GRAPH_SCHEMES, help="Look up by this kind of external id.")
+    p.add_argument("--value", help="The external id to look up (with --scheme).")
+    p.add_argument(
+        "--history", action="store_true", help="Include closed edges, marked with when they closed."
+    )
+    p.set_defaults(handler=cmd_graph_catalog)
 
     p_todos = sub.add_parser(
         "todos",
@@ -9631,7 +9661,8 @@ def _report_graph_error(args: argparse.Namespace, exc: api_client.ApiError) -> i
         _emit_error(
             args,
             "not_found",
-            "The entity graph is not available for your account (or this server is too old).",
+            "Not found: the entity or catalog entry is unknown, is not in your graph, or the "
+            "entity graph is not available for your account (or this server is too old).",
             status=404,
         )
         return 1
@@ -9677,6 +9708,64 @@ def cmd_graph_brief(args: argparse.Namespace) -> int:
         body = api.graph_event_brief(event)
         _emit(body, args, lambda: graph_view.brief(body))
         return 0
+
+    return _run_personal(args, run, _report_graph_error)
+
+
+#: The external-id schemes ``GET /api/v1/graph/catalog`` accepts.
+_GRAPH_SCHEMES = ("espn", "tvmaze", "feed_url", "site_host", "domain", "feeds_topic", "wikidata")
+
+
+def _graph_page(
+    args: argparse.Namespace, body: dict[str, Any], key: str, human: Callable[[], None]
+) -> int:
+    """Print a page read, or say plainly that a fail-soft read gave nothing (exit 1)."""
+    status = body.get("status")
+    if status != "ok" or not isinstance(body.get(key), dict):
+        what = "timed out" if status == "timeout" else "failed"
+        if _json_mode(args):
+            _print_json(body)
+        _emit_error(args, "server", f"The graph read {what}; nothing to show. Try again.")
+        return 1
+    _emit(body, args, human)
+    return 0
+
+
+def cmd_graph_entity(args: argparse.Namespace) -> int:
+    """``pepper graph entity ID [--history] [--json]``: ``GET /api/v1/graph/entities/{id}``."""
+    entity_id = args.entity_id.strip()
+    if not entity_id:
+        _emit_error(args, "usage", "ID must not be blank.")
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.graph_entity(entity_id, history=args.history)
+        return _graph_page(
+            args, body, "entity", lambda: graph_view.entity_page(body, history=args.history)
+        )
+
+    return _run_personal(args, run, _report_graph_error)
+
+
+def cmd_graph_catalog(args: argparse.Namespace) -> int:
+    """``pepper graph catalog ID | --scheme S --value V [--history] [--json]``."""
+    catalog_id = (args.catalog_id or "").strip()
+    scheme, value = args.scheme, (args.value or "").strip()
+    if catalog_id and (scheme or args.value is not None):
+        _emit_error(args, "usage", "Give a catalog ID, or --scheme with --value, not both.")
+        return 2
+    if not catalog_id and not (scheme and value):
+        _emit_error(args, "usage", "Give a catalog ID, or both --scheme and --value.")
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        if catalog_id:
+            body = api.graph_catalog(catalog_id, history=args.history)
+        else:
+            body = api.graph_catalog_lookup(scheme, value, history=args.history)
+        return _graph_page(
+            args, body, "page", lambda: graph_view.catalog_page(body, history=args.history)
+        )
 
     return _run_personal(args, run, _report_graph_error)
 

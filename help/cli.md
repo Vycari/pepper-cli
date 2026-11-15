@@ -148,6 +148,13 @@ ever want to look back at a specific conversation in detail.
   you have never mailed or met are marked "new to you". It only reads, and the
   data comes from the headers of your own mail and calendar attendees, never
   message text. If a read is slow it shows what it had and says so.
+- **One entity, or one catalog entry:** `pepper graph entity <id>` shows one of
+  your entities with what it is linked to, grouped by kind of link (a follow
+  shows what you follow), and the shared catalog entry it points at. `pepper
+  graph catalog <id>` shows a catalog entry and which of your entities link to
+  it; `pepper graph catalog --scheme espn --value <id>` finds one by an outside
+  id. Both take `--history` to include links that have ended. If one says it is
+  not found, the id is unknown or not in your own graph.
 <!-- /rollout -->
 - **What's next:** `pepper next` shows what's on now (with the time left) and
   what's after it, the rest of today's calendar, and your top ten open to-dos
