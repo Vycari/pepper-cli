@@ -1008,8 +1008,25 @@ def test_a_date_far_from_the_local_clock_does_not_move_the_cutoff():
     ):
         assert claude_channel._server_cutoff(started, server_time) is None
 
-    applied = claude_channel._server_cutoff(started, datetime.now(UTC) + timedelta(hours=2))
-    assert applied is not None and applied > started
+
+def test_the_cutoff_keeps_the_local_boundary_when_the_date_is_ahead(monkeypatch):
+    started = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
+    _MovableClock.current = started
+    monkeypatch.setattr(claude_channel, "datetime", _MovableClock)
+
+    cutoff = claude_channel._server_cutoff(started, started + timedelta(hours=2))
+
+    assert cutoff == started - claude_channel.BACKLOG_SLACK
+
+
+def test_the_cutoff_moves_earlier_by_exactly_the_measured_offset(monkeypatch):
+    started = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
+    _MovableClock.current = started
+    monkeypatch.setattr(claude_channel, "datetime", _MovableClock)
+
+    cutoff = claude_channel._server_cutoff(started, started - timedelta(hours=2))
+
+    assert cutoff == started - timedelta(hours=2) - claude_channel.BACKLOG_SLACK
 
 
 def test_a_far_future_date_does_not_swallow_a_first_run_live_message(monkeypatch):
@@ -1017,6 +1034,18 @@ def test_a_far_future_date_does_not_swallow_a_first_run_live_message(monkeypatch
     fake = _Fake(
         _CONNECTED + _scope() + _event(7, message=_MESSAGE, created=live) + _PING,
         server_time=datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC),
+    )
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    assert result.kinds() == ["message"]
+
+
+def test_a_date_ahead_of_the_local_clock_does_not_hide_a_first_run_live_message(monkeypatch):
+    live = _now()
+    fake = _Fake(
+        _CONNECTED + _scope() + _event(7, message=_MESSAGE, created=live) + _PING,
+        server_time=live + timedelta(hours=20),
     )
 
     result = run_channel(monkeypatch, fake, ["--room", _ROOM])

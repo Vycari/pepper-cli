@@ -385,7 +385,10 @@ def _server_cutoff(started_at: datetime, server_time: datetime) -> datetime | No
     offset = server_time - datetime.now(UTC)
     if abs(offset) > MAX_CLOCK_OFFSET:
         return None
-    return started_at + offset - BACKLOG_SLACK
+    # The HTTP Date can come from an intermediary, and nothing guarantees it shares the clock
+    # that stamps created_at. Apply it only when it moves the cutoff earlier: a later boundary
+    # can hide a live message, an earlier one can only show more history.
+    return started_at + min(offset, timedelta(0)) - BACKLOG_SLACK
 
 
 def _is_known_silent(kind: str) -> bool:
