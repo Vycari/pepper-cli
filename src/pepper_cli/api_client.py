@@ -36,7 +36,7 @@ import uuid
 from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field
 from typing import Any, NoReturn, Self, cast
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -2566,6 +2566,26 @@ class ApiClient:
     def graph_upcoming(self, *, limit: int = 5) -> dict[str, Any]:
         """``GET /api/v1/graph/meetings/upcoming``: the next meetings, each with attendee cards."""
         return self._get_object(f"/api/v1/graph/meetings/upcoming?{urlencode({'limit': limit})}")
+
+    def graph_entity(self, entity_id: str, *, history: bool = False) -> dict[str, Any]:
+        """``GET /api/v1/graph/entities/{id}``: one of the caller's entities with its edges.
+
+        404 for an unknown id, another owner's id, or the ``entity-graph`` rollout being off.
+        """
+        q = urlencode({"history": "true" if history else "false"})
+        return self._get_object(f"/api/v1/graph/entities/{quote(entity_id, safe='')}?{q}")
+
+    def graph_catalog(self, catalog_id: str, *, history: bool = False) -> dict[str, Any]:
+        """``GET /api/v1/graph/catalog/{id}``: a catalog entry and the caller's entities on it."""
+        q = urlencode({"history": "true" if history else "false"})
+        return self._get_object(f"/api/v1/graph/catalog/{quote(catalog_id, safe='')}?{q}")
+
+    def graph_catalog_lookup(
+        self, scheme: str, value: str, *, history: bool = False
+    ) -> dict[str, Any]:
+        """``GET /api/v1/graph/catalog?scheme=&value=``: the same page, by one external id."""
+        q = urlencode({"scheme": scheme, "value": value, "history": "true" if history else "false"})
+        return self._get_object(f"/api/v1/graph/catalog?{q}")
 
     def _get_object(self, path: str) -> dict[str, Any]:
         resp = self._request("GET", path)

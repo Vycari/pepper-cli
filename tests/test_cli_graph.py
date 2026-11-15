@@ -157,3 +157,156 @@ def test_a_blank_query_or_event_is_refused_before_any_request(server, capsys, ar
     assert cli.main(argv) == 2
     assert "must not be blank" in capsys.readouterr().err
     assert server.seen == []
+
+
+_ENTITY_PATH = "/api/v1/graph/entities/e-1"
+_CATALOG_PATH = "/api/v1/graph/catalog/c-1"
+_CATALOG_LOOKUP = "/api/v1/graph/catalog"
+_TEAM = {"id": "e-1", "kind": "topic", "subtype": "team", "name": "Seattle Kraken"}
+_CARD_C = {
+    "id": "c-1",
+    "kind": "topic",
+    "subtype": "team",
+    "name": "Seattle Kraken",
+    "curated": True,
+    "sensitive": False,
+    "attrs": {},
+    "external_ids": [{"scheme": "espn", "value": "nhl:26"}],
+    "providers": [{"provider": "espn", "ref": "nhl/26"}],
+    "neighbours": [
+        {
+            "direction": "out",
+            "type": "member_of",
+            "entry": {"id": "c-9", "kind": "topic", "subtype": "league", "name": "NHL"},
+        }
+    ],
+}
+_FOLLOW = {
+    "id": "x1",
+    "type": "follows",
+    "origin": "follow",
+    "direction": "in",
+    "other": None,
+    "follow_ref": "espn:nhl:26",
+    "source": "follow_sources",
+    "valid_from": "2026-11-01T00:00:00Z",
+    "valid_to": None,
+    "confidence": 1.0,
+}
+_CLOSED = {
+    **_FOLLOW,
+    "id": "x2",
+    "type": "mentions",
+    "direction": "out",
+    "other": {"id": "o1", "kind": "person", "subtype": None, "name": "Casey Close"},
+    "follow_ref": None,
+    "valid_to": "2026-11-05T00:00:00Z",
+}
+_ENTITY_BODY = {
+    "status": "ok",
+    "entity": {
+        "entity": _TEAM,
+        "sensitive": False,
+        "requested_id": "old-id",
+        "catalog": _CARD_C,
+        "edges": [_FOLLOW, _CLOSED],
+    },
+}
+
+
+def test_entity_page_groups_edges_and_shows_the_merge(server, capsys) -> None:
+    server.reply(_ENTITY_PATH, _ENTITY_BODY)
+    assert cli.main(["graph", "entity", "e-1"]) == 0
+    out = capsys.readouterr().out
+    assert "Seattle Kraken (topic/team)" in out and "catalog: Seattle Kraken" in out
+    assert "merged: old-id is now this entity" in out
+    assert "follows" in out and "follow espn:nhl:26" in out and "source follow_sources" in out
+    assert "mentions" in out and "-> Casey Close (person)" in out
+    assert "closed" not in out and "open" not in out
+    assert server.seen[0].url.params["history"] == "false"
+
+
+def test_entity_page_with_history_marks_closed_edges(server, capsys) -> None:
+    server.reply(_ENTITY_PATH, _ENTITY_BODY)
+    assert cli.main(["graph", "entity", "e-1", "--history"]) == 0
+    out = capsys.readouterr().out
+    assert "closed" in out and "open" in out
+    assert server.seen[0].url.params["history"] == "true"
+
+
+def test_catalog_page_by_id_shows_the_card_and_your_entities(server, capsys) -> None:
+    body = {
+        "status": "ok",
+        "page": {"catalog": _CARD_C, "entities": [{"entity": _TEAM, "edges": [_FOLLOW]}]},
+    }
+    server.reply(_CATALOG_PATH, body)
+    assert cli.main(["graph", "catalog", "c-1"]) == 0
+    out = capsys.readouterr().out
+    assert "external ids: espn:nhl:26" in out and "providers: espn:nhl/26" in out
+    assert "member_of -> NHL (topic/league)" in out
+    assert "Your entities" in out and "follow espn:nhl:26" in out
+
+
+def test_catalog_lookup_by_external_id(server, capsys) -> None:
+    body = {"status": "ok", "page": {"catalog": _CARD_C, "entities": []}}
+    server.reply(_CATALOG_LOOKUP, body)
+    assert cli.main(["graph", "catalog", "--scheme", "espn", "--value", "nhl:26"]) == 0
+    assert "none of your entities link here" in capsys.readouterr().out
+    params = server.seen[0].url.params
+    assert params["scheme"] == "espn" and params["value"] == "nhl:26"
+
+
+@pytest.mark.parametrize(
+    "argv,path",
+    [
+        (["graph", "entity", "e-1"], _ENTITY_PATH),
+        (["graph", "catalog", "c-1"], _CATALOG_PATH),
+    ],
+)
+def test_new_pages_json_is_the_body(server, capsys, argv, path) -> None:
+    body = {"status": "ok", "entity": {"entity": _TEAM, "edges": []}, "page": {"catalog": _CARD_C}}
+    server.reply(path, body)
+    assert cli.main([*argv, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == body
+
+
+@pytest.mark.parametrize("status", ["timeout", "error"])
+def test_a_fail_soft_page_exits_non_zero(server, capsys, status) -> None:
+    server.reply(_ENTITY_PATH, {"status": status, "entity": None})
+    assert cli.main(["graph", "entity", "e-1"]) == 1
+    err = capsys.readouterr().err
+    assert "nothing to show" in err and ("timed out" in err) == (status == "timeout")
+
+
+@pytest.mark.parametrize(
+    "argv,path",
+    [
+        (["graph", "entity", "e-1"], _ENTITY_PATH),
+        (["graph", "catalog", "c-1"], _CATALOG_PATH),
+        (["graph", "catalog", "--scheme", "espn", "--value", "v"], _CATALOG_LOOKUP),
+    ],
+)
+def test_new_pages_404_uses_one_message(server, capsys, argv, path) -> None:
+    server.reply(path, {"detail": "Not Found"}, status=404)
+    assert cli.main(argv) == 1
+    assert "unknown, is not in your graph" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["graph", "entity", " "],
+        ["graph", "catalog"],
+        ["graph", "catalog", "--scheme", "espn"],
+        ["graph", "catalog", "c-1", "--scheme", "espn", "--value", "v"],
+    ],
+)
+def test_bad_arguments_are_refused_before_any_request(server, capsys, argv) -> None:
+    assert cli.main(argv) == 2
+    assert server.seen == []
+
+
+def test_an_unknown_scheme_is_refused_by_the_parser(server, capsys) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["graph", "catalog", "--scheme", "nope", "--value", "v"])
+    assert server.seen == []
