@@ -114,6 +114,9 @@ CONTENT_CAP = 16_000
 #: An event older than the process start minus this is a pre-session backlog (design §7.4).
 BACKLOG_SLACK = timedelta(seconds=60)
 
+#: A Date header this far from the local clock cannot be trusted; the local cutoff stands.
+MAX_CLOCK_OFFSET = timedelta(days=1)
+
 #: How long ``serve`` waits for the worker's exit code once ``ended`` is out and stdin has closed.
 VERDICT_WAIT_SECONDS = 5.0
 #: How long the process stays up after pushing ``ended``, so the event is read before the tools go.
@@ -374,6 +377,15 @@ def _parse_time(value: object) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _server_cutoff(started_at: datetime, server_time: datetime) -> datetime | None:
+    """The first-run cutoff shifted by the server/local offset, or ``None`` when the Date header
+    is too far from the local clock to trust (a broken or hostile header, not skew)."""
+    offset = server_time - datetime.now(UTC)
+    if abs(offset) > MAX_CLOCK_OFFSET:
+        return None
+    return started_at + offset - BACKLOG_SLACK
 
 
 def _is_known_silent(kind: str) -> bool:
@@ -831,10 +843,12 @@ class ChannelWorker:
         if self.first_run and not self.cutoff_from_server and frame.server_time is not None:
             # The Date header times the connection, not process start, so apply the measured
             # clock offset to the local start rather than moving the boundary to connect time.
-            # A message posted while this process was starting stays after the cutoff.
-            offset = frame.server_time - datetime.now(UTC)
-            self.cutoff = self.config.started_at + offset - BACKLOG_SLACK
-            self.cutoff_from_server = True
+            # A message posted while this process was starting stays after the cutoff. An offset
+            # too large to be real is ignored, leaving the local cutoff in place.
+            cutoff = _server_cutoff(self.config.started_at, frame.server_time)
+            if cutoff is not None:
+                self.cutoff = cutoff
+                self.cutoff_from_server = True
         if frame.kind == "error":
             return self._frame_problem(frame)
         if frame.kind == "comment":

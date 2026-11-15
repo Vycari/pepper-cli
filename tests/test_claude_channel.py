@@ -999,6 +999,31 @@ def test_a_message_posted_while_a_first_run_was_connecting_is_still_pushed(monke
     assert result.kinds() == ["message"]
 
 
+def test_a_date_far_from_the_local_clock_does_not_move_the_cutoff():
+    started = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
+
+    for server_time in (
+        datetime(1, 1, 1, tzinfo=UTC),
+        datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC),
+    ):
+        assert claude_channel._server_cutoff(started, server_time) is None
+
+    applied = claude_channel._server_cutoff(started, datetime.now(UTC) + timedelta(hours=2))
+    assert applied is not None and applied > started
+
+
+def test_a_far_future_date_does_not_swallow_a_first_run_live_message(monkeypatch):
+    live = _now()
+    fake = _Fake(
+        _CONNECTED + _scope() + _event(7, message=_MESSAGE, created=live) + _PING,
+        server_time=datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC),
+    )
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    assert result.kinds() == ["message"]
+
+
 def test_a_resumed_cutoff_does_not_move_to_the_connect_time(monkeypatch, tmp_path):
     started = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
     _MovableClock.current = started
