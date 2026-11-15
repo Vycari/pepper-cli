@@ -1087,7 +1087,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         help="One of your entities: its edges by type, and its catalog entry.",
         description=(
             "An entity page: the entity, the shared catalog entry it points at, and its edges "
-            "grouped by type (follows included). A merged-away id shows the entity it became."
+            "listed by type (follows included). A merged-away id shows the entity it became."
         ),
         parents=[_json_parent],
     )

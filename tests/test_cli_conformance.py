@@ -143,6 +143,10 @@ VERBS = frozenset(
         # `graph upcoming` is the next meetings the graph holds: a bounded list, but of
         # meetings, which `graph list` (people) is not.
         "upcoming",
+        # `graph entity` and `graph catalog` read one page by id: the entity page and the shared
+        # catalog entry, which are the graph's two kinds of object (not a `show` of a list row).
+        "entity",
+        "catalog",
         # Research projects (IA §3.1): `steer` queues guidance for an object's next run;
         # `take` and `reconsider` mark a ledger item.
         "steer",
@@ -195,6 +199,8 @@ ROOM_NA = {
     "graph search": "the graph is your own, never a room's (D12 keeps a room's separate)",
     "graph show": "the graph is your own, never a room's (D12 keeps a room's separate)",
     "graph upcoming": "the graph is your own, never a room's (D12 keeps a room's separate)",
+    "graph entity": "the graph is your own, never a room's (D12 keeps a room's separate)",
+    "graph catalog": "the graph is your own, never a room's (D12 keeps a room's separate)",
     "brief": "your own morning brief; the server exposes no room's brief to a PAT here",
     "artifacts show": "reads any artifact the viewer can see; the id carries the room",
     "artifacts download": "reads any artifact the viewer can see; the id carries the room",
@@ -714,6 +720,23 @@ ROUTES: dict[str, object] = {
         "attendees": [],
     },
     "/api/v1/graph/meetings/upcoming": {"status": "ok", "meetings": []},
+    "/api/v1/graph/entities/e1": {
+        "status": "ok",
+        "entity": {
+            "entity": {"id": "e1", "kind": "topic", "subtype": "team", "name": "Kraken"},
+            "sensitive": False,
+            "requested_id": "e1",
+            "catalog": None,
+            "edges": [],
+        },
+    },
+    "/api/v1/graph/catalog/c1": {
+        "status": "ok",
+        "page": {
+            "catalog": {"id": "c1", "kind": "topic", "subtype": "team", "name": "Kraken"},
+            "entities": [],
+        },
+    },
     "/api/v1/calendars/schedule-plan": {
         "now": "2026-10-02T16:00:00+00:00",
         "active": "urgent",
@@ -1133,6 +1156,8 @@ JSON_CASES: dict[str, list[str]] = {
     "graph search": ["graph", "search", "casey"],
     "graph show": ["graph", "show", "e1"],
     "graph upcoming": ["graph", "upcoming"],
+    "graph entity": ["graph", "entity", "e1"],
+    "graph catalog": ["graph", "catalog", "c1"],
     "todos list": ["todos", "list"],
     "rooms list": ["rooms", "list"],
     "rooms show": ["rooms", "show", _G],
