@@ -1050,7 +1050,10 @@ def test_the_stream_carries_the_servers_date_on_every_frame() -> None:
     assert [frame.server_time for frame in frames] == [expected, expected]
 
 
-@pytest.mark.parametrize("date_header", [None, "not a date"])
+@pytest.mark.parametrize(
+    "date_header",
+    [None, "not a date", "Fri, 31 Dec 9999 23:59:59 -0500"],
+)
 def test_the_stream_tolerates_a_missing_or_unreadable_date(date_header) -> None:
     headers = {"content-type": "text/event-stream"}
     if date_header is not None:

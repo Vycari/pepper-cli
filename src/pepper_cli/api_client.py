@@ -5275,11 +5275,13 @@ def _feed_server_time(value: str | None) -> dt.datetime | None:
         return None
     try:
         parsed = email.utils.parsedate_to_datetime(value)
-    except (TypeError, ValueError):
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.UTC)
+        return parsed.astimezone(dt.UTC)
+    except (TypeError, ValueError, OverflowError):
+        # A parseable date can still overflow on conversion, for example a west-of-UTC
+        # offset at the top of the datetime range; that is unreadable, not fatal.
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=dt.UTC)
-    return parsed.astimezone(dt.UTC)
 
 
 def _iter_feed_frames(

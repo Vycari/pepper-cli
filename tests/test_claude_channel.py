@@ -85,6 +85,16 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+class _MovableClock(datetime):
+    """A datetime whose ``now()`` a test can move, to time a slow connect."""
+
+    current = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls.current if tz is None else cls.current.astimezone(tz)
+
+
 def _frame(event: str, data: dict, event_id: int | None = None) -> str:
     head = f"id: {event_id}\n" if event_id is not None else ""
     return f"{head}event: {event}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
@@ -967,6 +977,43 @@ def test_a_first_run_live_message_is_not_backlog_when_the_local_clock_is_ahead(m
     )
 
     result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    assert result.kinds() == ["message"]
+
+
+def test_a_message_posted_while_a_first_run_was_connecting_is_still_pushed(monkeypatch):
+    started = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
+    _MovableClock.current = started
+    monkeypatch.setattr(claude_channel, "datetime", _MovableClock)
+    fake = _Fake(
+        _CONNECTED
+        + _scope()
+        + _event(7, message=_MESSAGE, created=started + timedelta(seconds=10))
+        + _PING,
+        server_time=started + timedelta(seconds=90),
+    )
+    fake.on_stream = lambda: setattr(_MovableClock, "current", started + timedelta(seconds=90))
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    assert result.kinds() == ["message"]
+
+
+def test_a_resumed_cutoff_does_not_move_to_the_connect_time(monkeypatch, tmp_path):
+    started = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
+    _MovableClock.current = started
+    monkeypatch.setattr(claude_channel, "datetime", _MovableClock)
+    cursor_file = _scoped_cursor_file(tmp_path / "cursor", 3)
+    fake = _Fake(
+        _CONNECTED
+        + _scope()
+        + _event(4, message=_MESSAGE, created=started - timedelta(seconds=55))
+        + _PING,
+        server_time=started + timedelta(seconds=10),
+    )
+    fake.on_stream = lambda: setattr(_MovableClock, "current", started + timedelta(seconds=10))
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM, "--cursor-file", str(cursor_file)])
 
     assert result.kinds() == ["message"]
 
