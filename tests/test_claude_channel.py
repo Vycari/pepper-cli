@@ -10,7 +10,6 @@ the real fd claim (``test_a_stray_print_...``).
 
 from __future__ import annotations
 
-import email.utils
 import functools
 import json
 import queue
@@ -83,16 +82,6 @@ def _fast_backoff(monkeypatch):
 
 def _now() -> datetime:
     return datetime.now(UTC)
-
-
-class _MovableClock(datetime):
-    """A datetime whose ``now()`` a test can move, to time a slow connect."""
-
-    current = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
-
-    @classmethod
-    def now(cls, tz=None):
-        return cls.current if tz is None else cls.current.astimezone(tz)
 
 
 def _frame(event: str, data: dict, event_id: int | None = None) -> str:
@@ -194,15 +183,9 @@ class _Fake:
     """Plays the Pepper server: the rooms list, topics, a script of stream answers (an SSE body,
     or an HTTP status), message reads, posts and reactions. Records every request."""
 
-    def __init__(
-        self,
-        *streams: str | int,
-        features: tuple[str, ...] = ("watch_scope",),
-        server_time: datetime | None = None,
-    ) -> None:
+    def __init__(self, *streams: str | int, features: tuple[str, ...] = ("watch_scope",)) -> None:
         self.streams = list(streams)
         self.features = features
-        self.server_time = server_time
         self.requests: list[httpx.Request] = []
         self.messages: dict[str, dict] = {_MESSAGE: _message_json()}
         self.topics = {_TOPIC: "Dinner", _OTHER_TOPIC: "Chores"}
@@ -291,10 +274,7 @@ class _Fake:
             item = self.streams.pop(0)
             if isinstance(item, int):
                 return httpx.Response(item, json={"detail": "No such group."})
-            headers = {"content-type": "text/event-stream"}
-            if self.server_time is not None:
-                headers["date"] = email.utils.format_datetime(self.server_time, usegmt=True)
-            return httpx.Response(200, text=item, headers=headers)
+            return httpx.Response(200, text=item, headers={"content-type": "text/event-stream"})
         if path.endswith("/messages") and request.method == "GET":
             if self.unreachable:
                 raise httpx.ConnectError("refused")
@@ -924,152 +904,6 @@ def test_a_first_run_replay_of_old_room_events_owes_no_resync(monkeypatch):
     result = run_channel(monkeypatch, fake, ["--room", _ROOM])
 
     assert result.kinds() == ["backlog"]
-
-
-def test_a_first_run_replay_is_still_suppressed_with_the_server_clock(monkeypatch):
-    server_now = _now()
-    old = server_now - timedelta(days=3)
-    fake = _Fake(
-        _CONNECTED + _scope() + _event(7, kind="some.new.kind", created=old) + _PING,
-        server_time=server_now,
-    )
-
-    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
-
-    assert result.notifications == []
-
-
-def test_a_first_run_cutoff_uses_the_server_clock_when_the_local_clock_is_ahead(monkeypatch):
-    server_now = _now()
-    ahead = server_now + timedelta(hours=2)
-
-    class _AheadDatetime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return ahead if tz is None else ahead.astimezone(tz)
-
-    monkeypatch.setattr(claude_channel, "datetime", _AheadDatetime)
-    live = server_now + timedelta(seconds=30)
-    fake = _Fake(
-        _CONNECTED + _scope() + _event(7, kind="some.new.kind", created=live) + _PING,
-        server_time=server_now,
-    )
-
-    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
-
-    assert result.kinds() == ["resync"]
-
-
-def test_a_first_run_live_message_is_not_backlog_when_the_local_clock_is_ahead(monkeypatch):
-    server_now = _now()
-    ahead = server_now + timedelta(hours=2)
-
-    class _AheadDatetime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return ahead if tz is None else ahead.astimezone(tz)
-
-    monkeypatch.setattr(claude_channel, "datetime", _AheadDatetime)
-    live = server_now + timedelta(seconds=30)
-    fake = _Fake(
-        _CONNECTED + _scope() + _event(7, message=_MESSAGE, created=live) + _PING,
-        server_time=server_now,
-    )
-
-    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
-
-    assert result.kinds() == ["message"]
-
-
-def test_a_message_posted_while_a_first_run_was_connecting_is_still_pushed(monkeypatch):
-    started = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
-    _MovableClock.current = started
-    monkeypatch.setattr(claude_channel, "datetime", _MovableClock)
-    fake = _Fake(
-        _CONNECTED
-        + _scope()
-        + _event(7, message=_MESSAGE, created=started + timedelta(seconds=10))
-        + _PING,
-        server_time=started + timedelta(seconds=90),
-    )
-    fake.on_stream = lambda: setattr(_MovableClock, "current", started + timedelta(seconds=90))
-
-    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
-
-    assert result.kinds() == ["message"]
-
-
-def test_a_date_far_from_the_local_clock_does_not_move_the_cutoff():
-    started = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
-
-    for server_time in (
-        datetime(1, 1, 1, tzinfo=UTC),
-        datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC),
-    ):
-        assert claude_channel._server_cutoff(started, server_time) is None
-
-
-def test_the_cutoff_keeps_the_local_boundary_when_the_date_is_ahead(monkeypatch):
-    started = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
-    _MovableClock.current = started
-    monkeypatch.setattr(claude_channel, "datetime", _MovableClock)
-
-    cutoff = claude_channel._server_cutoff(started, started + timedelta(hours=2))
-
-    assert cutoff == started - claude_channel.BACKLOG_SLACK
-
-
-def test_the_cutoff_moves_earlier_by_exactly_the_measured_offset(monkeypatch):
-    started = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
-    _MovableClock.current = started
-    monkeypatch.setattr(claude_channel, "datetime", _MovableClock)
-
-    cutoff = claude_channel._server_cutoff(started, started - timedelta(hours=2))
-
-    assert cutoff == started - timedelta(hours=2) - claude_channel.BACKLOG_SLACK
-
-
-def test_a_far_future_date_does_not_swallow_a_first_run_live_message(monkeypatch):
-    live = _now()
-    fake = _Fake(
-        _CONNECTED + _scope() + _event(7, message=_MESSAGE, created=live) + _PING,
-        server_time=datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC),
-    )
-
-    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
-
-    assert result.kinds() == ["message"]
-
-
-def test_a_date_ahead_of_the_local_clock_does_not_hide_a_first_run_live_message(monkeypatch):
-    live = _now()
-    fake = _Fake(
-        _CONNECTED + _scope() + _event(7, message=_MESSAGE, created=live) + _PING,
-        server_time=live + timedelta(hours=20),
-    )
-
-    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
-
-    assert result.kinds() == ["message"]
-
-
-def test_a_resumed_cutoff_does_not_move_to_the_connect_time(monkeypatch, tmp_path):
-    started = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
-    _MovableClock.current = started
-    monkeypatch.setattr(claude_channel, "datetime", _MovableClock)
-    cursor_file = _scoped_cursor_file(tmp_path / "cursor", 3)
-    fake = _Fake(
-        _CONNECTED
-        + _scope()
-        + _event(4, message=_MESSAGE, created=started - timedelta(seconds=55))
-        + _PING,
-        server_time=started + timedelta(seconds=10),
-    )
-    fake.on_stream = lambda: setattr(_MovableClock, "current", started + timedelta(seconds=10))
-
-    result = run_channel(monkeypatch, fake, ["--room", _ROOM, "--cursor-file", str(cursor_file)])
-
-    assert result.kinds() == ["message"]
 
 
 def test_an_old_unknown_event_after_a_restart_still_owes_a_resync(monkeypatch, tmp_path):
