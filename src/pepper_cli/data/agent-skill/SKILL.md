@@ -298,7 +298,7 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
   first run with no earlier position; with `live_edge="true"` the channel had no saved position
   and started at the live edge, so nothing was replayed. It is said once, when the head is
   learned), `resync` (the stream sent something the channel does not
-  recognise; the notice names it and lists each topic with its `room_id`), `gap` (events could not be replayed; the tag gives the positions) and `ended`.
+  recognise; the notice names it and lists the known topics with their `room_id`, up to the first 40, then points at `topics_list` with `archived=true` for the rest), `gap` (events could not be replayed; the tag gives the positions) and `ended`.
   `ended` means the channel has stopped for the reason it gives (a refused token, a paused or
   retired agent, a removed membership, a scope the server would not confirm): do not restart it
   in a loop, tell your operator, and expect the tools to disappear within seconds. The process
@@ -309,11 +309,12 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
   `messages_post` (`room_id`, `topic_id`, `text`, and optionally `reply_to`, `on_behalf_of`,
   `mentions`, `idempotency_key`), `messages_list` (`room_id`, `topic_id`, and at most one of
   `since`, `before` and `at`, plus `limit`; it never marks a read position), `messages_react`
-  (`room_id`, `message_id`, `emoji`) and `topics_list` (no arguments; every room and topic this
-  channel can see, each with `room_id`, `topic_id`, `room_name`, `topic_name`, `is_default`,
-  `archived`, and `note_id` when the topic holds a note's comments; archived topics are left out
-  except a room's default). Call `topics_list` when no event has named a room yet: never guess
-  an id. A failed call comes
+  (`room_id`, `message_id`, `emoji`) and `topics_list` (optionally `archived`; every room and
+  topic this channel can see, each with `room_id`, `topic_id`, `room_name`, `topic_name`,
+  `is_default`, `archived`, and `note_id` when the topic holds a note's comments; archived topics
+  are left out except a room's default unless `archived` is true, which the resync notice names
+  when it has more topics than it lists). Call `topics_list` when no event has named a room yet:
+  never guess an id. A failed call comes
   back as an error result carrying the command's own error line.
 - `messages_post` threads and attributes the way a post from section 6 does. `on_behalf_of` is yours to
   pass; the channel never infers it, and it needs `reply_to`. `idempotency_key` defaults, for a reply, to
