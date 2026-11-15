@@ -3340,9 +3340,23 @@
           "entity": {
             "$ref": "#/components/schemas/EntityBriefOut"
           },
+          "interest": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/InterestOut"
+            },
+            "type": "array"
+          },
           "requested_id": {
             "format": "uuid",
             "type": "string"
+          },
+          "rooms": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RoomInterestOut"
+            },
+            "type": "array"
           },
           "sensitive": {
             "type": "boolean"
@@ -4257,6 +4271,26 @@
         },
         "required": [
           "app_key"
+        ],
+        "type": "object"
+      },
+      "InterestOut": {
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "last_mention_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "score": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "channel",
+          "score",
+          "last_mention_at"
         ],
         "type": "object"
       },
@@ -6552,6 +6586,29 @@
         },
         "required": [
           "rollouts"
+        ],
+        "type": "object"
+      },
+      "RoomInterestOut": {
+        "properties": {
+          "interest": {
+            "items": {
+              "$ref": "#/components/schemas/InterestOut"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "room_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "name",
+          "interest"
         ],
         "type": "object"
       },
