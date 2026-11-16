@@ -14,6 +14,9 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.widget import Widget
 
+#: Refreshes an older page's scroll-past waits through for the new rows to be measured.
+_KEEP_PLACE_TRIES = 5
+
 
 class ThreadScroll(VerticalScroll):
     """The scrolling body. ↑/↓ select a message (for ``r``) instead of scrolling a line;
@@ -142,8 +145,14 @@ class ThreadView(Vertical):
         self.query_one("#thread-body", Static).update(body)
         if prepended and not reset:
 
-            def keep_place() -> None:
+            def keep_place(tries: int = _KEEP_PLACE_TRIES) -> None:
                 grown = scroller.virtual_size.height - old_height
+                if grown <= 0 and tries > 1:
+                    # The refresh this waited for can land before the layout that measures
+                    # the new rows (a loaded loop); scrolling by 0 would leave the reader at
+                    # the top of the longer thread. Wait for the next one.
+                    scroller.call_after_refresh(keep_place, tries - 1)
+                    return
                 scroller.scroll_to(y=old_y + max(grown, 0), animate=False)
 
             scroller.call_after_refresh(keep_place)
