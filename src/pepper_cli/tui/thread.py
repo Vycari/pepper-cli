@@ -14,6 +14,9 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.widget import Widget
 
+#: Refreshes an older page's scroll-past waits through for the new rows to be measured.
+_KEEP_PLACE_TRIES = 5
+
 
 class ThreadScroll(VerticalScroll):
     """The scrolling body. ↑/↓ select a message (for ``r``) instead of scrolling a line;
@@ -102,6 +105,10 @@ class ThreadView(Vertical):
         super().__init__(id="thread")
         self._unseen = 0
         self._was_pinned = True
+        #: Bumped when a different conversation is shown, so a keep-place retry left over
+        #: from the previous one stands down. Not by every ``show``: a live refresh of the same
+        #: conversation must not cancel the scroll past an older page it has not reached yet.
+        self._conversation = 0
 
     def compose(self) -> ComposeResult:
         with ThreadScroll(id="thread-scroll"):
@@ -139,11 +146,24 @@ class ThreadView(Vertical):
         stick = reset or (self.pinned and not prepended)
         scroller = self.scroller
         old_height, old_y = scroller.virtual_size.height, scroller.scroll_y
+        if reset:
+            self._conversation += 1
+        conversation = self._conversation
         self.query_one("#thread-body", Static).update(body)
         if prepended and not reset:
 
-            def keep_place() -> None:
+            def keep_place(tries: int = _KEEP_PLACE_TRIES) -> None:
+                if self._conversation != conversation or scroller.scroll_y != old_y:
+                    # Another conversation was opened, or the reader scrolled, while this
+                    # waited: either one owns the position now.
+                    return
                 grown = scroller.virtual_size.height - old_height
+                if grown <= 0 and tries > 1:
+                    # The refresh this waited for can land before the layout that measures
+                    # the new rows (a loaded loop); scrolling by 0 would leave the reader at
+                    # the top of the longer thread. Wait for the next one.
+                    scroller.call_after_refresh(keep_place, tries - 1)
+                    return
                 scroller.scroll_to(y=old_y + max(grown, 0), animate=False)
 
             scroller.call_after_refresh(keep_place)

@@ -3,11 +3,14 @@ folds, new topic, room info, Ctrl+K and ``o``."""
 
 from __future__ import annotations
 
+import inspect
 import threading
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
+from textual.geometry import Size
+from textual.widget import Widget
 
 from pepper_cli.tui import app as tui_app
 from pepper_cli.tui import rows, state
@@ -327,6 +330,119 @@ async def test_older_rows_keep_the_view_where_it_was() -> None:
         # The rows land before the view moves: the scroll past them waits for the next
         # refresh, so poll for it rather than reading it after one pause.
         await until(pilot, lambda: scroller.scroll_y > 0)  # not left at the top
+
+
+def _older_thread_server() -> ts.FakeServer:
+    server = ts.standard_server()
+    _a1(
+        server,
+        *(
+            ts.message(f"m{i:02d}", f"2026-09-16T10:{i:02d}:00+00:00", f"body {i}")
+            for i in range(14)
+        ),
+    )
+    return server
+
+
+async def test_keep_place_retries_until_the_older_rows_are_measured(monkeypatch) -> None:
+    """The retry branch, driven by hand: the first callback runs before the layout that
+    measures the older rows, waits, and the next one scrolls past them. Out of tries, it
+    stops waiting."""
+    app = tui_app.PepperApp(_older_thread_server().client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        scroller.scroll_y = 0
+        await pilot.pause()
+        held: list = []
+        scrolled: list[float] = []
+
+        def hold(cb, *_a, **_k) -> None:
+            # Only keep-place's own callbacks: the app may schedule others meanwhile.
+            if getattr(cb, "__name__", "") == "keep_place":
+                held.append(cb)
+
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        monkeypatch.setattr(scroller, "scroll_to", lambda *, y, **_: scrolled.append(y))
+        # Hold the measured height where it was, as a loaded loop does until its next layout.
+        real = inspect.getattr_static(Widget, "virtual_size")
+        old = scroller.virtual_size
+        measured = [old]
+        monkeypatch.setattr(
+            type(scroller),
+            "virtual_size",
+            property(lambda _w: measured[0], lambda w, v: real.__set__(w, v)),
+            raising=False,
+        )
+        # Read here, not assumed 0: the app may itself have loaded an older page by now.
+        at = scroller.scroll_y
+        thread.show("\n".join(f"older {i}" for i in range(40)), prepended=True)
+        keep_place = held.pop()
+        keep_place()  # not measured yet: grown is 0
+        assert scrolled == []  # it did not scroll by 0
+        retry = held.pop()  # it waits for the next refresh instead
+        measured[0] = Size(old.width, old.height + 12)  # that layout measures the rows
+        retry()
+        assert scrolled == [at + 12]  # scrolled past exactly the rows added above
+        measured[0] = old
+        keep_place(1)  # out of tries with nothing measured: scrolls by 0, waits no longer
+        assert scrolled == [at + 12, at]
+        assert held == []
+
+
+async def test_a_reset_stands_down_a_pending_keep_place(monkeypatch) -> None:
+    """A keep-place retry from an older page must not move a conversation shown after it."""
+    app = tui_app.PepperApp(_older_thread_server().client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        scroller.scroll_y = 0
+        await pilot.pause()
+        held: list = []
+        monkeypatch.setattr(scroller, "call_after_refresh", lambda cb, *a, **k: held.append(cb))
+        # Read here, not assumed 0: the app may itself have loaded an older page by now.
+        at = scroller.scroll_y
+        longer = "\n".join(f"older {i}" for i in range(40)) + "\n" + body_text(app)
+        thread.show(longer, prepended=True)
+        stale = next(cb for cb in reversed(held) if getattr(cb, "__name__", "") == "keep_place")
+        monkeypatch.undo()
+        thread.show("\n".join(f"other {i}" for i in range(120)), reset=True)
+        await until(pilot, lambda: scroller.scroll_y == scroller.max_scroll_y > 0)
+        # Back where the stale one started, so only its conversation tells it apart; with no
+        # await in between, nothing else gets to move the view.
+        scroller.scroll_y = at
+        scrolled: list[float] = []
+        monkeypatch.setattr(scroller, "scroll_to", lambda *, y, **_: scrolled.append(y))
+        stale(1)  # its last try, where it would otherwise scroll whatever it measures
+        assert scrolled == []
+
+
+async def test_a_scroll_made_while_keep_place_waits_is_not_undone() -> None:
+    """VR-6b3a8f9f: the scroll past older rows waits a refresh or more; a reader who moves
+    in that window keeps the place they moved to."""
+    server = ts.standard_server()
+    _a1(
+        server,
+        *(
+            ts.message(f"m{i:02d}", f"2026-09-16T10:{i:02d}:00+00:00", f"body {i}")
+            for i in range(14)
+        ),
+    )
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        scroller.scroll_to(y=0, animate=False)
+        await pilot.pause()
+        longer = "\n".join(f"older {i}" for i in range(40)) + "\n" + body_text(app)
+        thread.show(longer, prepended=True)
+        scroller.scroll_y = 3  # the reader moves before keep_place runs
+        for _ in range(8):
+            await pilot.pause()
+        assert scroller.scroll_y == 3
 
 
 async def test_o_opens_the_first_link_and_never_a_non_web_url() -> None:
