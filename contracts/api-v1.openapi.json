@@ -3831,6 +3831,55 @@
         },
         "type": "object"
       },
+      "GenerateImageRequest": {
+        "properties": {
+          "aspect_ratio": {
+            "default": "1:1",
+            "type": "string"
+          },
+          "prompt": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "source_artifact_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 4,
+            "type": "array"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "GeneratedImageResponse": {
+        "properties": {
+          "byte_size": {
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "mime_type": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "mime_type",
+          "byte_size"
+        ],
+        "type": "object"
+      },
       "GoogleAccountView": {
         "properties": {
           "access_revoked": {
@@ -4227,6 +4276,206 @@
         },
         "required": [
           "delivered"
+        ],
+        "type": "object"
+      },
+      "ImageDescribeRun": {
+        "properties": {
+          "run": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ImageDetailSources": {
+        "properties": {
+          "alt_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "caption": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "long_description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "alt_text",
+          "title",
+          "caption",
+          "long_description"
+        ],
+        "type": "object"
+      },
+      "ImageDetailsBody": {
+        "additionalProperties": false,
+        "properties": {
+          "alt_text": {
+            "anyOf": [
+              {
+                "maxLength": 250,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "caption": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "long_description": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ImageDetailsResponse": {
+        "properties": {
+          "alt_text": {
+            "type": "string"
+          },
+          "caption": {
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "last_run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageDescribeRun"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "long_description": {
+            "type": "string"
+          },
+          "sources": {
+            "$ref": "#/components/schemas/ImageDetailSources"
+          },
+          "suggestions_enabled": {
+            "type": "boolean"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "alt_text",
+          "title",
+          "caption",
+          "long_description",
+          "sources",
+          "suggestions_enabled",
+          "last_run"
+        ],
+        "type": "object"
+      },
+      "ImageOptionsResponse": {
+        "properties": {
+          "generate": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "generate"
+        ],
+        "type": "object"
+      },
+      "ImageSuggestResponse": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "run": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "started": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "started"
         ],
         "type": "object"
       },
@@ -7715,6 +7964,16 @@
                 "type": "null"
               }
             ]
+          }
+        },
+        "type": "object"
+      },
+      "SuggestDetailsBody": {
+        "additionalProperties": false,
+        "properties": {
+          "all": {
+            "default": false,
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -12911,6 +13170,124 @@
         ]
       }
     },
+    "/api/v1/artifacts/generate-image": {
+      "post": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "principal",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateImageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedImageResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-artifacts"
+        ]
+      }
+    },
+    "/api/v1/artifacts/image-options": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageOptionsResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-artifacts"
+        ]
+      }
+    },
     "/api/v1/artifacts/new": {
       "post": {
         "parameters": [
@@ -13431,6 +13808,243 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ArtifactWriteResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-artifacts"
+        ]
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/image-details": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "principal",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageDetailsResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-artifacts"
+        ]
+      },
+      "put": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "principal",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImageDetailsBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageDetailsResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-artifacts"
+        ]
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/image-details/suggest": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "principal",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/SuggestDetailsBody"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageSuggestResponse"
                 }
               }
             },
