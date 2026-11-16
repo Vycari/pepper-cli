@@ -402,18 +402,21 @@ async def test_a_reset_stands_down_a_pending_keep_place(monkeypatch) -> None:
         await pilot.pause()
         held: list = []
         monkeypatch.setattr(scroller, "call_after_refresh", lambda cb, *a, **k: held.append(cb))
+        # Read here, not assumed 0: the app may itself have loaded an older page by now.
+        at = scroller.scroll_y
         longer = "\n".join(f"older {i}" for i in range(40)) + "\n" + body_text(app)
         thread.show(longer, prepended=True)
         stale = next(cb for cb in reversed(held) if getattr(cb, "__name__", "") == "keep_place")
         monkeypatch.undo()
         thread.show("\n".join(f"other {i}" for i in range(120)), reset=True)
         await until(pilot, lambda: scroller.scroll_y == scroller.max_scroll_y > 0)
-        # Back where the stale one started, so only its generation tells it apart.
-        scroller.scroll_y = 0
-        await pilot.pause()
-        stale()
-        await pilot.pause()
-        assert scroller.scroll_y == 0
+        # Back where the stale one started, so only its conversation tells it apart; with no
+        # await in between, nothing else gets to move the view.
+        scroller.scroll_y = at
+        scrolled: list[float] = []
+        monkeypatch.setattr(scroller, "scroll_to", lambda *, y, **_: scrolled.append(y))
+        stale(1)  # its last try, where it would otherwise scroll whatever it measures
+        assert scrolled == []
 
 
 async def test_a_scroll_made_while_keep_place_waits_is_not_undone() -> None:
