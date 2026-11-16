@@ -3030,6 +3030,51 @@
         ],
         "type": "object"
       },
+      "DuplicateOut": {
+        "properties": {
+          "a": {
+            "$ref": "#/components/schemas/DuplicateSideOut"
+          },
+          "b": {
+            "$ref": "#/components/schemas/DuplicateSideOut"
+          }
+        },
+        "required": [
+          "a",
+          "b"
+        ],
+        "type": "object"
+      },
+      "DuplicateSideOut": {
+        "properties": {
+          "entity_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "DuplicatesOut": {
+        "properties": {
+          "duplicates": {
+            "items": {
+              "$ref": "#/components/schemas/DuplicateOut"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "duplicates"
+        ],
+        "type": "object"
+      },
       "EdgeOut": {
         "properties": {
           "confidence": {
@@ -4669,6 +4714,128 @@
         ],
         "type": "object"
       },
+      "MergeEntryOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "from_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "from_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "into_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "into_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "log_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "undoable": {
+            "type": "boolean"
+          },
+          "undone_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "log_id",
+          "from_id",
+          "from_name",
+          "into_id",
+          "into_name",
+          "created_at",
+          "undone_at",
+          "undoable"
+        ],
+        "type": "object"
+      },
+      "MergeIn": {
+        "properties": {
+          "from_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "into_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_id",
+          "into_id"
+        ],
+        "type": "object"
+      },
+      "MergeOut": {
+        "properties": {
+          "aliases": {
+            "type": "integer"
+          },
+          "log_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "merged_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "survivor_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "log_id",
+          "survivor_id",
+          "merged_id",
+          "aliases"
+        ],
+        "type": "object"
+      },
+      "MergesOut": {
+        "properties": {
+          "merges": {
+            "items": {
+              "$ref": "#/components/schemas/MergeEntryOut"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "merges"
+        ],
+        "type": "object"
+      },
       "NativeClientTimings": {
         "properties": {
           "samples": {
@@ -4806,6 +4973,34 @@
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "NotSameIn": {
+        "properties": {
+          "a_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "b_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "a_id",
+          "b_id"
+        ],
+        "type": "object"
+      },
+      "NotSameOut": {
+        "properties": {
+          "marked": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "marked"
+        ],
         "type": "object"
       },
       "NoteIn": {
@@ -9491,6 +9686,32 @@
           "channel",
           "created_at",
           "closed_at"
+        ],
+        "type": "object"
+      },
+      "UndoOut": {
+        "properties": {
+          "aliases": {
+            "type": "integer"
+          },
+          "log_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "restored_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "survivor_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "log_id",
+          "survivor_id",
+          "restored_id",
+          "aliases"
         ],
         "type": "object"
       },
@@ -18535,6 +18756,52 @@
         ]
       }
     },
+    "/api/v1/graph/duplicates": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DuplicatesOut"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-graph"
+        ]
+      }
+    },
     "/api/v1/graph/entities/{entity_id}": {
       "get": {
         "parameters": [
@@ -18691,6 +18958,228 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UpcomingOut"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-graph"
+        ]
+      }
+    },
+    "/api/v1/graph/merge": {
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MergeOut"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-graph"
+        ]
+      }
+    },
+    "/api/v1/graph/merges": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "entity_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MergesOut"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-graph"
+        ]
+      }
+    },
+    "/api/v1/graph/merges/{log_id}/undo": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "log_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UndoOut"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-graph"
+        ]
+      }
+    },
+    "/api/v1/graph/not-same": {
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotSameIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotSameOut"
                 }
               }
             },
