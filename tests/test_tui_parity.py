@@ -329,6 +329,32 @@ async def test_older_rows_keep_the_view_where_it_was() -> None:
         await until(pilot, lambda: scroller.scroll_y > 0)  # not left at the top
 
 
+async def test_a_scroll_made_while_keep_place_waits_is_not_undone() -> None:
+    """VR-6b3a8f9f: the scroll past older rows waits a refresh or more; a reader who moves
+    in that window keeps the place they moved to."""
+    server = ts.standard_server()
+    _a1(
+        server,
+        *(
+            ts.message(f"m{i:02d}", f"2026-09-16T10:{i:02d}:00+00:00", f"body {i}")
+            for i in range(14)
+        ),
+    )
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        scroller.scroll_to(y=0, animate=False)
+        await pilot.pause()
+        longer = "\n".join(f"older {i}" for i in range(40)) + "\n" + body_text(app)
+        thread.show(longer, prepended=True)
+        scroller.scroll_y = 3  # the reader moves before keep_place runs
+        for _ in range(8):
+            await pilot.pause()
+        assert scroller.scroll_y == 3
+
+
 async def test_o_opens_the_first_link_and_never_a_non_web_url() -> None:
     server = ts.standard_server()
     opened: list[str] = []

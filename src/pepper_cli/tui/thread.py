@@ -146,6 +146,9 @@ class ThreadView(Vertical):
         if prepended and not reset:
 
             def keep_place(tries: int = _KEEP_PLACE_TRIES) -> None:
+                if scroller.scroll_y != old_y:
+                    # The reader scrolled while this waited: their position wins.
+                    return
                 grown = scroller.virtual_size.height - old_height
                 if grown <= 0 and tries > 1:
                     # The refresh this waited for can land before the layout that measures
