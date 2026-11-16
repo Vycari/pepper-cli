@@ -1212,7 +1212,7 @@ def test_genuine_replay_history_is_still_suppressed(monkeypatch):
     assert result.kinds() == ["backlog", "message"]
 
 
-def test_a_reconnect_after_the_head_does_not_treat_replay_as_live(monkeypatch):
+def test_a_reconnect_after_the_head_delivers_what_came_after_it(monkeypatch):
     behind = _now() - timedelta(hours=1)
     fake = _Fake(
         _CONNECTED + _scope() + _cursor(30),
@@ -1221,11 +1221,26 @@ def test_a_reconnect_after_the_head_does_not_treat_replay_as_live(monkeypatch):
 
     result = run_channel(monkeypatch, fake, ["--room", _ROOM])
 
-    live, skipped = result.notifications
+    live, message = result.notifications
     assert live["meta"]["live_edge"] == "true"
-    assert skipped["meta"]["kind"] == "backlog"
-    assert skipped["meta"]["count"] == "1"
+    assert message["meta"]["kind"] == "message"
     assert fake.stream_requests()[1].headers["last-event-id"] == "30"
+
+
+def test_a_reconnect_from_a_saved_cursor_keeps_the_local_cutoff(monkeypatch, tmp_path):
+    cursor_file = _scoped_cursor_file(tmp_path / "cursor", 3)
+    behind = _now() - timedelta(hours=1)
+    fake = _Fake(
+        _CONNECTED + _scope() + _PING,
+        503,
+        _CONNECTED + _scope() + _event(4, created=behind) + _PING,
+    )
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM, "--cursor-file", str(cursor_file)])
+
+    (note,) = result.notifications
+    assert note["meta"]["kind"] == "backlog"
+    assert note["meta"]["count"] == "1"
 
 
 def test_a_head_start_is_saved_even_when_no_event_follows(monkeypatch, tmp_path):

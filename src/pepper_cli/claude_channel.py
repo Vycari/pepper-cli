@@ -428,10 +428,10 @@ class ChannelWorker:
         # server that ignored ``start`` and replayed its window is still told apart from a
         # resume and gets the first-run summary, never a push of every old message.
         self.head_pending = at_head
-        # The opening head of this connection, once a ``start=head`` cursor names it. Event ids
-        # above it are live, not replayed history, so the local cutoff must not judge them. It is
-        # reset for every connection: a reconnect resumes from the saved cursor and may replay old
-        # messages.
+        # The opening head of this run, once a ``start=head`` cursor names it. Event ids above
+        # it are live, not replayed history, so the local cutoff must not judge them. It is kept
+        # for the life of the process: a reconnect resumes from the cursor, but still delivers
+        # what followed the head this run started from.
         self.live_from: int | None = None
         # ``resumed``: the cursor file held a position. A saved head of 0 is a resume, not a
         # first run, or the messages posted while the channel was down would be summarised away.
@@ -923,7 +923,6 @@ class ChannelWorker:
         while not self.stop.is_set():
             problem: str | None = None
             self.scope = None
-            self.live_from = None
             try:
                 with self._open(reconnecting) as frames:
                     for frame in frames:
