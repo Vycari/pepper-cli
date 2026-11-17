@@ -348,6 +348,18 @@ put that backlog into context on every Claude Code restart. Decided (§14 C):
   position" and gives no count, since the retained window is not a backlog this agent owes. Its
   wording is first-run safe ("if you keep checkpoints, run your catch-up"), and `resync` uses the
   same wording.
+- The cutoff stays local: `started_at` minus `BACKLOG_SLACK`, fixed for the life of the process.
+  The API has no server clock that shares a basis with `created_at`. The HTTP `Date` header is
+  generated at the HTTP layer and can be rewritten by an intermediary, so it cannot safely move
+  the boundary in either direction: a Date ahead hides live events, and a Date behind pushes
+  retained history as live. Where no head boundary applies, every event is judged against the
+  cutoff, replayed or live, and the first ping does not move it: the ping only ends the first-run
+  wording. If the local clock is more than the slack ahead of the message clock, a live message
+  stamped before the cutoff is held back as backlog after the ping too, and an unrecognised event
+  during the first run can be consumed as history. The exposure therefore lasts until the message
+  clock passes the fixed cutoff, not just the replay window. A server-provided timestamp generated
+  by the same clock as `created_at`, or a head position announced when the stream opens so history
+  can be classified by event id without clocks, would remove the exposure (#255).
 - The replayed window on a first run also holds old room events of kinds this channel does not
   push (`group.renamed`, `app.installed`, and so on). With no earlier position none of them was
   missed, so an unrecognised event older than the process start time minus 60 seconds owes no
