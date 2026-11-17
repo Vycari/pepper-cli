@@ -297,11 +297,13 @@ events were skipped, and persists the head (the stream's opening `cursor` frame,
 behaviour; `head` is the default and `beginning` restores the full replay (`since=0` /
 `after_id=0`). Precedence: a saved position, then `--since`, then `--start`. `--start beginning`
 with `--since` is a usage error (exit 2); `--start head` with `--since` is not, since `--since`
-wins. A reconnect never sends `start=head` once a position is known; until the head is learned (no
-cursor frame yet) it asks for the head again. A poll that fails with a 503 after reading the head
-gets that head back as `after_id` and saves it (forward-only) before exiting 1. The channel says
-it once, as a `backlog` event with `live_edge="true"`. A server older than the parameter ignores
-`start` and replays from 0.
+wins. A reconnect never sends `start=head` once a position is known; until a position is known it
+asks for the head again. Only a `cursor` frame carrying `"head": true`, which an honored
+`start=head` sends, is the live edge and earns the notice and the channel's `backlog` event with
+`live_edge="true"`; a plain `cursor` frame is a replay skip point and settles the position without
+claiming the head (pepper-cli#271). A poll that fails with a 503 after reading the head gets that
+head back as `after_id` and saves it (forward-only) before exiting 1. A server older than the
+parameter ignores `start` and replays from 0, sending no head marker.
 
 ### 5.4 Fill list (`--json` missing in 0.1.0; all client-only)
 

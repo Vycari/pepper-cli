@@ -244,7 +244,9 @@ def read_advanced(topic_id: str, last_read_at: str, event_id: int) -> bytes:
 
 
 HEARTBEAT = b"event: heartbeat\ndata: {}\n\n"
-CURSOR_HEAD = b'id: 1\nevent: cursor\ndata: {"cursor":1}\n\n'
+CURSOR_HEAD = b'id: 1\nevent: cursor\ndata: {"cursor":1,"head":true}\n\n'
+#: A replay skip point: a plain cursor, which names no live edge.
+CURSOR_SKIP = b'id: 1\nevent: cursor\ndata: {"cursor":1}\n\n'
 
 
 @dataclass
