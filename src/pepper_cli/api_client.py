@@ -477,12 +477,13 @@ class FeedFrame:
 
     ``kind`` is the frame's ``event:`` line: ``"cursor"`` (``payload`` is
     ``{"cursor": N}``, a resume point past events the agent was not in scope
-    for), ``"error"`` (``payload`` is ``{"error": slug, "retry": bool}`` and
-    the server closes after it), ``"scope"`` (scoped streams only: the first
-    data frame, see :class:`WatchScope`), or an event kind such as
-    ``"message.created"`` (``payload`` is the event: ``id``, ``kind``,
-    ``group_id``, ``person_id``, ``payload``, ``created_at``, and on a scoped
-    stream ``room_id``).
+    for, or ``{"cursor": N, "head": true}``, the live edge an honored
+    ``start=head`` reports), ``"error"`` (``payload`` is
+    ``{"error": slug, "retry": bool}`` and the server closes after it),
+    ``"scope"`` (scoped streams only: the first data frame, see
+    :class:`WatchScope`), or an event kind such as ``"message.created"``
+    (``payload`` is the event: ``id``, ``kind``, ``group_id``, ``person_id``,
+    ``payload``, ``created_at``, and on a scoped stream ``room_id``).
 
     ``"comment"`` (empty ``payload``) stands for an SSE comment line, the
     server's ``: connected`` / ``: ping`` heartbeat: it carries nothing to act
@@ -491,7 +492,8 @@ class FeedFrame:
     caller's position, so the first ping after connecting means the stream has
     caught up. A ``cursor`` frame is not a boundary: it can arrive mid-replay,
     or not at all. A ``start=head`` stream opens with its head ``cursor`` frame
-    (after ``scope``) before any event or ping.
+    (after ``scope``) before any event or ping, and that frame alone carries
+    ``"head": true``: replay skip cursors stay plain.
 
     ``id`` is the frame's SSE ``id:``: for an event frame the event id, for a
     ``cursor`` frame the cursor, ``None`` on ``error`` and ``scope``. Either
@@ -3415,7 +3417,8 @@ class ApiClient:
         Resumes after ``last_event_id`` (sent as ``Last-Event-ID``, what a
         reconnect uses) when given, else after ``since`` (a first connect). With neither and
         ``start="head"`` the stream begins at the feed's current head and opens with a
-        ``cursor`` frame naming it; a server that does not know ``start`` begins at 0 instead.
+        ``cursor`` frame naming it, carrying ``"head": true``; a server that does not know
+        ``start`` begins at 0 instead and sends no such marker.
         Agent-token only: a PAT is a 403 and a revoked token a 401, both
         raised as :class:`ApiError` before any frame is yielded.
 
@@ -3482,12 +3485,14 @@ class ApiClient:
 
         Resumes after ``last_event_id`` (what a reconnect sends), else after ``since``;
         with neither, the stream starts at the feed's current head and opens with a
-        ``cursor`` frame, so a caller catches up with one fetch of its own. Frames
-        beyond :meth:`watch_agent_events`' are ``"heartbeat"`` (``event: heartbeat``,
-        what a person's stream sends where an agent's sends ``: ping``) and
-        ``"chat.message"`` (Pepper wrote to your 1:1 thread; ``payload`` is
-        ``{"message_id": ...}``, no ``id``). A ``read_state.advanced`` frame's event
-        carries ``payload`` ``{topic_id, group_id, last_read_at, via_person_id}``.
+        ``cursor`` frame carrying ``"head": true``, so a caller catches up with one fetch
+        of its own. A server that predates the marker sends that first cursor plain; it
+        still names the head, because no position was given. Frames beyond
+        :meth:`watch_agent_events`' are ``"heartbeat"`` (``event: heartbeat``, what a
+        person's stream sends where an agent's sends ``: ping``) and ``"chat.message"``
+        (Pepper wrote to your 1:1 thread; ``payload`` is ``{"message_id": ...}``, no
+        ``id``). A ``read_state.advanced`` frame's event carries ``payload``
+        ``{topic_id, group_id, last_read_at, via_person_id}``.
         Unknown frame kinds are the caller's to ignore (``/api/v1`` is additive).
         """
         # Frames: pepper's ``gateway/channels/groups_service/person_feed.py`` wraps the agent

@@ -7344,7 +7344,7 @@ def cmd_rooms_watch(args: argparse.Namespace) -> int:
                 got_frame = False
                 try:
                     # A head start sends ``start=head`` and no position, on a reconnect too
-                    # while the head has not been learned (no cursor frame yet); after that
+                    # while the head has not been learned (no position frame yet); after that
                     # a reconnect resumes from the cursor like any other.
                     frames = api.watch_agent_events(
                         since=None if head_pending else cursor,
@@ -7391,9 +7391,14 @@ def cmd_rooms_watch(args: argparse.Namespace) -> int:
                                 )
                             )
                         cursor = max(cursor, new_cursor)
-                        if head_pending and frame.kind == "cursor":
-                            # The server confirmed the head; one that ignored ``start`` sent
-                            # no cursor frame first and replays, so it is not announced.
+                        if (
+                            head_pending
+                            and frame.kind == "cursor"
+                            and frame.payload.get("head") is True
+                        ):
+                            # Only the marker an honored ``start=head`` carries is the live
+                            # edge. A server that ignored ``start`` replays and its plain
+                            # cursor frames are skip points, so nothing is announced.
                             render.info(LIVE_EDGE_NOTICE, soft_wrap=True)
                         head_pending = False
                         if args.cursor_file:
@@ -7897,8 +7902,9 @@ def _follow_scoped_watch(
     allowed: frozenset[str] | None = args.kinds
     ignored: frozenset[str] = args.ignore_kinds or frozenset()
     bound: api_client.WatchScope | None = None
-    # A head start sends ``start=head`` and no position until the head is learned (the cursor
-    # frame), reconnects included; after that a reconnect resumes from the cursor.
+    # A head start sends ``start=head`` and no position until a frame names one (the cursor
+    # frame, whose ``"head": true`` marker is the live edge), reconnects included; after that
+    # a reconnect resumes from the cursor.
     head_pending = at_head
     reconnecting = False
     delay = _WATCH_BACKOFF_START
@@ -7991,7 +7997,11 @@ def _follow_scoped_watch(
                                 )
                             )
                     cursor = max(cursor, new_cursor)
-                    if head_pending and frame.kind == "cursor":
+                    if (
+                        head_pending
+                        and frame.kind == "cursor"
+                        and frame.payload.get("head") is True
+                    ):
                         render.info(LIVE_EDGE_NOTICE, soft_wrap=True)
                     head_pending = False
                     if args.cursor_file:

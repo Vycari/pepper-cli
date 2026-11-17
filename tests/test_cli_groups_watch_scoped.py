@@ -105,6 +105,10 @@ def _cursor(n: int) -> str:
     return _frame("cursor", {"cursor": n}, n)
 
 
+def _head_cursor(n: int) -> str:
+    return _frame("cursor", {"cursor": n, "head": True}, n)
+
+
 def _error(slug: str, *, retry: bool, **extra) -> str:
     return _frame("error", {"error": slug, "retry": retry, **extra})
 
@@ -923,7 +927,7 @@ def test_an_upper_case_room_id_is_canonical_before_the_topic_lookup(monkeypatch,
 
 def test_a_scoped_first_run_sends_start_head_and_no_position(monkeypatch, tmp_path, capsys):
     cursor_file = tmp_path / "cursor"
-    server = _Server(_CONNECTED + _scope() + _cursor(30))
+    server = _Server(_CONNECTED + _scope() + _head_cursor(30))
     _serve(monkeypatch, server)
 
     assert cli.main(["rooms", "watch", "--room", _ROOM, "--cursor-file", str(cursor_file)]) == 0
@@ -938,7 +942,7 @@ def test_a_scoped_first_run_sends_start_head_and_no_position(monkeypatch, tmp_pa
 
 
 def test_a_scoped_head_start_reconnects_from_the_head_it_learned(monkeypatch):
-    server = _Server(_CONNECTED + _scope() + _cursor(30), _CONNECTED + _scope() + _event(31))
+    server = _Server(_CONNECTED + _scope() + _head_cursor(30), _CONNECTED + _scope() + _event(31))
     _serve(monkeypatch, server)
 
     assert cli.main(["rooms", "watch", "--room", _ROOM]) == 0
@@ -950,8 +954,19 @@ def test_a_scoped_head_start_reconnects_from_the_head_it_learned(monkeypatch):
     assert second.url.params["since"] == "30"
 
 
+def test_a_scoped_plain_cursor_is_a_skip_point_not_the_live_edge(monkeypatch, capsys):
+    # A server that ignored ``start`` replays and may open with a plain cursor: it names a
+    # resume point, so no live edge is announced.
+    server = _Server(_CONNECTED + _scope() + _cursor(4) + _event(5))
+    _serve(monkeypatch, server)
+
+    assert cli.main(["rooms", "watch", "--room", _ROOM]) == 0
+
+    assert "live edge" not in capsys.readouterr().err
+
+
 def test_a_scoped_head_start_that_dropped_before_the_head_asks_again(monkeypatch):
-    server = _Server(_CONNECTED + _scope(), _CONNECTED + _scope() + _cursor(30))
+    server = _Server(_CONNECTED + _scope(), _CONNECTED + _scope() + _head_cursor(30))
     _serve(monkeypatch, server)
 
     assert cli.main(["rooms", "watch", "--room", _ROOM]) == 0

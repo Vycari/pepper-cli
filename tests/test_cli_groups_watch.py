@@ -51,6 +51,10 @@ def _cursor(n: int) -> FeedFrame:
     return FeedFrame(kind="cursor", id=n, payload={"cursor": n})
 
 
+def _head_cursor(n: int) -> FeedFrame:
+    return FeedFrame(kind="cursor", id=n, payload={"cursor": n, "head": True})
+
+
 def _error(slug: str, *, retry: bool) -> FeedFrame:
     return FeedFrame(kind="error", id=None, payload={"error": slug, "retry": retry})
 
@@ -164,7 +168,7 @@ def test_the_cursor_file_supplies_the_start_and_since_overrides_it(monkeypatch, 
 
 
 def test_a_missing_cursor_file_starts_at_the_live_edge(monkeypatch, tmp_path, capsys):
-    watch = _watch(monkeypatch, _Connection(_cursor(5)))
+    watch = _watch(monkeypatch, _Connection(_head_cursor(5)))
 
     cli.main(["rooms", "watch", "--cursor-file", str(tmp_path / "nope")])
 
@@ -177,6 +181,16 @@ def test_a_missing_cursor_file_starts_at_the_live_edge(monkeypatch, tmp_path, ca
 def test_a_server_that_ignores_start_is_not_announced_as_the_live_edge(monkeypatch, capsys):
     # It replays from the beginning and sends no cursor frame first.
     _watch(monkeypatch, _Connection(_event(1)))
+
+    cli.main(["rooms", "watch"])
+
+    assert "live edge" not in capsys.readouterr().err
+
+
+def test_a_plain_cursor_is_a_skip_point_not_the_live_edge(monkeypatch, capsys):
+    # A server that ignored ``start`` can open its replay with a plain cursor: it names a
+    # resume point, so no live edge is announced.
+    _watch(monkeypatch, _Connection(_cursor(1), _event(2)))
 
     cli.main(["rooms", "watch"])
 
@@ -230,7 +244,7 @@ def test_since_wins_over_start_head_and_conflicts_with_start_beginning(monkeypat
 
 def test_the_head_cursor_frame_is_saved_even_when_no_event_follows(monkeypatch, tmp_path):
     cursor_file = tmp_path / "cursor"
-    _watch(monkeypatch, _Connection(_cursor(42)))
+    _watch(monkeypatch, _Connection(_head_cursor(42)))
 
     cli.main(["rooms", "watch", "--cursor-file", str(cursor_file)])
 
@@ -241,7 +255,7 @@ def test_a_head_start_asks_for_the_head_again_until_it_is_learned(monkeypatch):
     watch = _watch(
         monkeypatch,
         _Connection(then=httpx.ReadError("dropped")),
-        _Connection(_cursor(42), then=httpx.ReadError("dropped")),
+        _Connection(_head_cursor(42), then=httpx.ReadError("dropped")),
     )
 
     cli.main(["rooms", "watch"])

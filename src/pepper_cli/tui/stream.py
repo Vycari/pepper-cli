@@ -8,9 +8,12 @@ no timers; the app decides what a frame means.
 The rules (``Vycari/groups`` ``docs/design/read-state-sync.md`` §9, and the web client's
 ``groups_stream.js`` that this mirrors):
 
-- A connection with no position starts at the feed's head and opens with a ``cursor`` frame.
-  Events committed between the app's last fetch and that head are in neither, so the app is told
-  to catch up once (:attr:`StreamHandler.on_resync`).
+- A connection with no position starts at the feed's head and opens with a ``cursor`` frame
+  carrying ``"head": true``. Events committed between the app's last fetch and that head are in
+  neither, so the app is told to catch up once (:attr:`StreamHandler.on_resync`). The first
+  cursor on such a connection names the head even without the marker, since a server that
+  predates it sends a plain cursor; the catch-up is a harmless repeat there. A ``cursor`` frame
+  on a connection that named a position is a replay skip point and gets no catch-up.
 - A drop reconnects with ``Last-Event-ID`` set to the last id seen, so nothing is missed or
   re-sent beyond what the server replays; the app tolerates a repeat.
 - The server's ``cursor_ahead`` error (``retry: false``, with ``next_after_id``) means the saved
@@ -159,6 +162,10 @@ class PersonStream:
         if kind == "cursor":
             if self._from_head:
                 self._from_head = False
+                # No position named, so the stream started at the head and this first cursor
+                # names it whether or not it carries the marker (older servers send a plain
+                # one). The catch-up fetch is idempotent, and skipping it on a legacy stream
+                # would leave changes made between the app's fetch and this cursor unseen.
                 self._handler.on_resync()
             return None
         self._handler.on_frame(frame)

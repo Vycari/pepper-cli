@@ -133,6 +133,10 @@ def _cursor(n: int) -> str:
     return _frame("cursor", {"cursor": n}, n)
 
 
+def _head_cursor(n: int) -> str:
+    return _frame("cursor", {"cursor": n, "head": True}, n)
+
+
 def _error(slug: str, *, retry: bool, **extra: Any) -> str:
     return _frame("error", {"error": slug, "retry": retry, **extra})
 
@@ -1153,7 +1157,7 @@ def test_a_first_run_says_so_and_gives_no_count(monkeypatch):
 def test_a_head_start_sends_start_head_and_tells_the_session_once(monkeypatch, tmp_path, capsys):
     cursor_file = tmp_path / "cursor"
     fake = _Fake(
-        _CONNECTED + _scope() + _cursor(30) + _PING,
+        _CONNECTED + _scope() + _head_cursor(30) + _PING,
         _CONNECTED + _scope() + _event(31),
     )
 
@@ -1176,7 +1180,7 @@ def test_a_head_start_sends_start_head_and_tells_the_session_once(monkeypatch, t
 
 def test_a_head_start_is_saved_even_when_no_event_follows(monkeypatch, tmp_path):
     cursor_file = tmp_path / "cursor"
-    fake = _Fake(_CONNECTED + _scope() + _cursor(30))
+    fake = _Fake(_CONNECTED + _scope() + _head_cursor(30))
 
     run_channel(monkeypatch, fake, ["--room", _ROOM, "--cursor-file", str(cursor_file)])
 
@@ -1187,7 +1191,7 @@ def test_a_head_of_zero_is_saved_and_the_restart_resumes_from_it(monkeypatch, tm
     cursor_file = tmp_path / "cursor"
     run_channel(
         monkeypatch,
-        _Fake(_CONNECTED + _scope() + _cursor(0)),
+        _Fake(_CONNECTED + _scope() + _head_cursor(0)),
         ["--room", _ROOM, "--cursor-file", str(cursor_file)],
     )
     assert json.loads(cursor_file.read_text())["cursor"] == 0
@@ -1223,7 +1227,7 @@ def test_nothing_is_saved_before_the_head_is_known(monkeypatch, tmp_path):
 
 
 def test_the_unscoped_channel_also_starts_at_the_head(monkeypatch):
-    fake = _Fake(_CONNECTED + _cursor(12))
+    fake = _Fake(_CONNECTED + _head_cursor(12))
 
     result = run_channel(monkeypatch, fake, [])
 
@@ -1283,6 +1287,32 @@ def test_a_server_that_ignores_start_still_gets_the_first_run_summary(monkeypatc
 
     (note,) = result.notifications
     assert note["meta"] == {"kind": "backlog", "first_run": "true"}
+
+
+def test_a_plain_cursor_is_a_resume_point_not_the_live_edge(monkeypatch, capsys):
+    # A replay skip cursor says where the stream is, not that it is at the head: the first-run
+    # cutoff stays, so the old message is summarised rather than announced as live.
+    old = _now() - timedelta(days=1)
+    fake = _Fake(_CONNECTED + _scope() + _cursor(4) + _event(5, created=old) + _PING)
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    (note,) = result.notifications
+    assert note["meta"] == {"kind": "backlog", "first_run": "true"}
+    assert "live edge" not in capsys.readouterr().err
+
+
+def test_a_plain_cursor_settles_the_position_so_a_reconnect_resumes(monkeypatch, capsys):
+    fake = _Fake(_CONNECTED + _scope() + _cursor(4), _CONNECTED + _scope() + _PING)
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    assert result.notifications == []
+    second = fake.stream_requests()[1]
+    assert "start" not in second.url.params
+    assert second.headers["last-event-id"] == "4"
+    assert second.url.params["since"] == "4"
+    assert "live edge" not in capsys.readouterr().err
 
 
 def test_nothing_is_pushed_for_a_quiet_restart(monkeypatch):

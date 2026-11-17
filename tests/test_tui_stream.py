@@ -166,6 +166,18 @@ def test_the_first_connection_starts_at_the_head_and_catches_up_once(sse) -> Non
     assert rec.resyncs == 1
 
 
+def test_a_plain_cursor_on_a_first_connection_still_catches_up(sse) -> None:
+    fake, api = sse
+    # Older servers predate the marker and send the first cursor plain. No position named
+    # still means the stream starts at the head, so the one catch-up fetch is correct and
+    # idempotent; skipping it would miss changes made before the cursor was selected.
+    fake.scripts = [Connection([ts.CURSOR_SKIP, advanced(2)])]
+    rec = Recorder()
+    run_until_done(fake, api, rec, frames=1)
+    assert [f.id for f in rec.frames] == [2]
+    assert rec.resyncs == 1
+
+
 def test_a_drop_reconnects_with_last_event_id_and_no_catch_up(sse) -> None:
     fake, api = sse
     fake.scripts = [

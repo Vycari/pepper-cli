@@ -422,8 +422,10 @@ class ChannelWorker:
         self.allowed_rooms = allowed_rooms
         self.stop = stop
         # ``at_head``: no saved position, so the stream is asked for ``start=head`` (and no
-        # position) until the cursor frame names the head. ``first_run`` stays true until then,
-        # so a server that ignored ``start`` and replayed its window is still told apart from a
+        # position) until a frame names one. The cursor frame that honors ``start`` carries
+        # ``"head": true`` and is the live edge; a plain cursor (a replay skip point) only
+        # settles the position. ``first_run`` stays true until the stream catches up, so a
+        # server that ignored ``start`` and replayed its window is still told apart from a
         # resume and gets the first-run summary, never a push of every old message.
         self.head_pending = at_head
         # ``resumed``: the cursor file held a position. A saved head of 0 is a resume, not a
@@ -863,7 +865,10 @@ class ChannelWorker:
             if scoped and self.scope is not None and not _event_in_scope(frame.payload, self.scope):
                 raise self._ended("the server sent an event from outside the requested scope", 1)
             self._handle_event(frame.kind, frame.payload)
-        elif self.head_pending:
+        elif self.head_pending and frame.payload.get("head") is True:
+            # Only the marker an honored ``start=head`` carries proves the position is the
+            # live edge. A skip cursor in a replay is a resume point, so a server that
+            # ignored ``start`` keeps the first-run cutoff and summary.
             self._live_edge()
         self.head_pending = False
         self._advance(new_cursor)
@@ -886,7 +891,7 @@ class ChannelWorker:
             return 1
 
     def _open(self, reconnecting: bool) -> contextlib.AbstractContextManager[Any]:
-        # While the head is unknown (a head start, no cursor frame yet) ask for it again, on a
+        # While the head is unknown (a head start, no position frame yet) ask for it again, on a
         # reconnect too; once known, a reconnect resumes from the cursor.
         head = self.head_pending
         since = None if head else self.cursor
