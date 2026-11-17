@@ -105,6 +105,10 @@ class ThreadView(Vertical):
             super().__init__()
             self.pinned = pinned
 
+    class Landed(Message):
+        """A view shown from scratch reached its last line: the rows just rendered are on
+        screen, so the topic can be marked read. Not sent when the reader moved first."""
+
     def __init__(self) -> None:
         super().__init__(id="thread")
         self._unseen = 0
@@ -181,6 +185,11 @@ class ThreadView(Vertical):
                     # mark follows the screen (a Windows merge-queue run of pepper-cli#274
                     # landed it after the reader had gone up). A reset clamps the old
                     # position to the new content, which is still the end.
+                    if not reset and new_rows:
+                        # The rows that arrived are below the screen now: count them, or
+                        # later polls deduplicate them and the cue is lost for good.
+                        self._unseen += new_rows
+                        self._paint_marker()
                     return
                 if tries > 1:
                     # This refresh can land before the layout that measures the new rows;
@@ -188,6 +197,10 @@ class ThreadView(Vertical):
                     scroller.call_after_refresh(stick_to_end, tries - 1)
                     return
                 scroller.scroll_end(animate=False, immediate=True)
+                if reset:
+                    # The app could not tell from the position whether this would land;
+                    # now that it has, the newest row is on screen.
+                    self.post_message(self.Landed())
 
             scroller.call_after_refresh(stick_to_end)
         else:

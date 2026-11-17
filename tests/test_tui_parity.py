@@ -522,6 +522,74 @@ async def test_a_stick_to_the_end_stands_down_if_the_reader_moves_between_refres
         assert scroller.scroll_y == moved
 
 
+async def test_rows_that_arrive_when_the_reader_moves_keep_their_cue(monkeypatch) -> None:
+    """Codex and Greptile on #279: rows that arrive while pinned, then a reader who moves
+    before the deferred scroll runs, are below the screen. They stay counted, or later polls
+    deduplicate them and the "N new" cue is never shown."""
+    app = tui_app.PepperApp(_older_thread_server().client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and thread.pinned)
+        held: list = []
+
+        def hold(cb, *_a, **_k) -> None:
+            if getattr(cb, "__name__", "") == "stick_to_end":
+                held.append(cb)
+
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        monkeypatch.setattr(scroller, "scroll_end", lambda **kw: None)
+        at = scroller.scroll_y
+        thread.show(body_text(app) + "\ntheir new row", new_rows=1)
+        assert not thread.query_one("#thread-new").display  # still at the end, nothing unseen
+        moved = at - 3
+        scroller.scroll_y = moved  # the reader moves before it runs
+        held.pop()()
+        assert thread._unseen == 1  # the row is below the screen: still counted
+        assert thread.query_one("#thread-new").display
+        assert "1 new" in plain(app, "#thread-new")
+        assert scroller.scroll_y == moved
+
+
+async def test_a_first_page_is_marked_read_only_once_its_scroll_lands(monkeypatch) -> None:
+    """Codex P2 on #279: the first page used to be marked read the moment the render
+    scheduled its scroll to the end, before the newest row was on screen. A reader who moves
+    in that window must leave the topic unread."""
+    server = ts.standard_server()
+    _a1(
+        server,
+        *(
+            ts.message(f"r{i:02d}", f"2026-09-16T17:{i:02d}:00+00:00", f"row {i}")
+            for i in range(40)
+        ),
+    )
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 20)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        scroller = app.thread.scroller
+        real = scroller.call_after_refresh
+        held: list = []
+
+        def hold(cb, *a, **k) -> None:
+            if getattr(cb, "__name__", "") == "stick_to_end":
+                held.append(cb)
+            else:
+                real(cb, *a, **k)
+
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: "row 39" in body_text(app))
+        await pilot.pause(0.4)  # a few polls while the scroll to the end has not run
+        assert server.puts == []  # nothing marked before the newest row is on screen
+        scroller.scroll_y = 5  # the reader moves before it runs
+        await pilot.pause()
+        while held:
+            held.pop(0)()
+        await pilot.pause(0.4)
+        assert server.puts == []  # it stood down: nothing was marked
+
+
 async def test_o_opens_the_first_link_and_never_a_non_web_url() -> None:
     server = ts.standard_server()
     opened: list[str] = []

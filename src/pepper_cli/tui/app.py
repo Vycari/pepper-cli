@@ -895,7 +895,10 @@ class PepperApp(App[None]):
         self.loaded_topic = True
         self._render_topic(new_rows=len(fresh), reset=first)
         if not self._blurred:
-            self._note_viewed(landed_at_end=first)
+            if not first:
+                # A first page is marked when its scroll to the end lands (``Landed``): the
+                # render only schedules that scroll, and the reader may move first.
+                self._note_viewed()
             self._run("publish")
 
     # ------------------------------------------------------------------ rendering
@@ -1059,7 +1062,6 @@ class PepperApp(App[None]):
                     self._render_dm(new_rows=0, reset=True)
                 else:
                     self._render_topic(new_rows=0, reset=True)
-                    self._note_viewed(landed_at_end=True)
                 self.refresh_chrome()
                 return
         if conv == self.current:
@@ -1238,15 +1240,14 @@ class PepperApp(App[None]):
         """The open topic's thread shows an earlier part of it: its newest rows are below."""
         return self.loaded_topic and not self.current.is_pepper and not self.thread.pinned
 
-    def _note_viewed(self, *, landed_at_end: bool = False) -> None:
+    def _note_viewed(self) -> None:
         """The open topic counts as read through its newest row, once that row has been on
         screen (§5.2): the terminal is focused and the thread is at its end. Scrolled up,
-        nothing is read. ``landed_at_end``: the thread was just shown from scratch and is on its
-        way to the end, which the scroll position does not say yet. Publishes the mark."""
+        nothing is read. Publishes the mark."""
         conv = self.current
         if conv.is_pepper or conv.topic_id is None or self._blurred or self.pane is not None:
             return  # an open Todos/Notes pane hides the thread: its rows are not on screen
-        if self._scrolled_up() and not landed_at_end:
+        if self._scrolled_up():
             return
         newest = self.store.newest_created_at()
         stamp = state.parse_ts(newest)
@@ -1812,6 +1813,16 @@ class PepperApp(App[None]):
         self._run("publish")
         self.refresh_chrome()
 
+    def on_thread_view_landed(self, _event: ThreadView.Landed) -> None:
+        """A thread shown from scratch reached its end: the newest row is on screen now, so
+        the topic is read. Nothing is marked if the reader moved before it landed."""
+        if not self.query(ThreadView):
+            # Same teardown window as ``PinChanged`` (#139).
+            return
+        self._note_viewed()
+        self._run("publish")
+        self.refresh_chrome()
+
     def _load_older(self) -> None:
         conv, before = self.current, self.store.older
         if conv.is_pepper or before is None or self._loops["older"].busy:
@@ -2073,7 +2084,6 @@ class PepperApp(App[None]):
             self.sidebar.select_key("pepper")
         else:
             self._render_topic(new_rows=0, reset=True)
-            self._note_viewed(landed_at_end=True)
         self.refresh_chrome()
         self.thread.focus_scroller()
         if notice:
