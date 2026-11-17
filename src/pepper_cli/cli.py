@@ -5506,6 +5506,8 @@ def _emit_error(
         sys.stderr.write(line + "\n")
     else:
         render.error(message, soft_wrap=soft_wrap)
+        if code == "network" and (hint := whimsy.network_hint(is_tty=sys.stderr.isatty())):
+            render.info(render.styled((hint, "dim")))
 
 
 def _creds_or_fail(args: argparse.Namespace) -> credentials.Credentials | None:
