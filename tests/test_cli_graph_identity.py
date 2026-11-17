@@ -160,7 +160,11 @@ def test_duplicates_lists_pairs_with_next_commands(server, capsys) -> None:
     assert cli.main(["graph", "duplicates"]) == 0
     out = capsys.readouterr().out
     assert "Casey" in out and "C. Close" in out
-    assert f"pepper graph merge {_A} {_B}" in out and f"pepper graph not-same {_A} {_B}" in out
+    lines = out.splitlines()
+    # Each suggestion is its own line, so copying one never runs the other.
+    assert any(line.strip() == f"pepper graph merge {_A} {_B}" for line in lines)
+    assert any(line.strip() == f"pepper graph not-same {_A} {_B}" for line in lines)
+    assert "|" not in out
 
 
 def test_no_duplicates_says_so(server, capsys) -> None:

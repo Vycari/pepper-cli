@@ -229,10 +229,11 @@ def duplicates(body: dict[str, Any]) -> None:
         a, b = d.get("a") or {}, d.get("b") or {}
         _line(f"{_name_id(a.get('name'), a.get('entity_id'))}")
         _line(f"{_name_id(b.get('name'), b.get('entity_id'))}")
-        _line(
-            f"  [dim]pepper graph merge {_s(a.get('entity_id'))} {_s(b.get('entity_id'))}"
-            f"  |  pepper graph not-same {_s(a.get('entity_id'))} {_s(b.get('entity_id'))}[/dim]"
-        )
+        a_id, b_id = _s(a.get("entity_id")), _s(b.get("entity_id"))
+        _line("  same person:")
+        _line(f"    [dim]pepper graph merge {a_id} {b_id}[/dim]")
+        _line("  different people:")
+        _line(f"    [dim]pepper graph not-same {a_id} {b_id}[/dim]")
 
 
 def not_same(body: dict[str, Any]) -> None:
