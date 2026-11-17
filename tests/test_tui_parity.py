@@ -457,6 +457,71 @@ async def test_a_scroll_made_while_keep_place_waits_is_not_undone(monkeypatch) -
         assert scroller.scroll_y == moved
 
 
+async def test_a_stick_to_the_end_stands_down_if_the_reader_moved(monkeypatch) -> None:
+    """#274: the scroll to the end a pinned render arms waits a refresh or more; a reader
+    who moves in that window keeps the place they moved to. Driven by hand for the same
+    reason as the keep-place test above."""
+    app = tui_app.PepperApp(_older_thread_server().client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and thread.pinned)
+        held: list = []
+
+        def hold(cb, *_a, **_k) -> None:
+            if getattr(cb, "__name__", "") == "stick_to_end":
+                held.append(cb)
+
+        scrolled: list[bool] = []
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        monkeypatch.setattr(
+            scroller, "scroll_end", lambda **kw: scrolled.append(kw.get("immediate", False))
+        )
+        at = scroller.scroll_y
+        thread.show(body_text(app))  # pinned: arms the scroll to the end
+        moved = at - 3
+        scroller.scroll_y = moved  # the reader moves before it runs
+        held.pop()()
+        assert scrolled == []  # it stood down
+        assert held == []
+        assert scroller.scroll_y == moved
+
+
+async def test_a_stick_to_the_end_stands_down_if_the_reader_moves_between_refreshes(
+    monkeypatch,
+) -> None:
+    """#274: the first refresh can come while the reader is still at the end and arm the last
+    try; a scroll before that one runs must still win, or it drags the reader back down."""
+    app = tui_app.PepperApp(_older_thread_server().client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and thread.pinned)
+        held: list = []
+
+        def hold(cb, *_a, **_k) -> None:
+            if getattr(cb, "__name__", "") == "stick_to_end":
+                held.append(cb)
+
+        scrolled: list[bool] = []
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        monkeypatch.setattr(
+            scroller, "scroll_end", lambda **kw: scrolled.append(kw.get("immediate", False))
+        )
+        at = scroller.scroll_y
+        thread.show(body_text(app))
+        held.pop()()  # still at the end: this one waits for the layout, and does not scroll
+        assert scrolled == []
+        assert len(held) == 1
+        moved = at - 3
+        scroller.scroll_y = moved
+        held.pop()()
+        assert scrolled == []  # the last try stood down too
+        assert scroller.scroll_y == moved
+
+
 async def test_o_opens_the_first_link_and_never_a_non_web_url() -> None:
     server = ts.standard_server()
     opened: list[str] = []

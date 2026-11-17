@@ -17,6 +17,10 @@ if TYPE_CHECKING:
 #: Refreshes an older page's scroll-past waits through for the new rows to be measured.
 _KEEP_PLACE_TRIES = 5
 
+#: Refreshes a stick-to-the-end waits through before it reads the end, as many as
+#: ``scroll_end`` itself defers, so the layout has measured the rows it scrolls past.
+_STICK_TRIES = 2
+
 
 class ThreadScroll(VerticalScroll):
     """The scrolling body. ↑/↓ select a message (for ``r``) instead of scrolling a line;
@@ -169,7 +173,23 @@ class ThreadView(Vertical):
             scroller.call_after_refresh(keep_place)
         if stick:
             self._unseen = 0
-            self.scroller.call_after_refresh(self.scroller.scroll_end, animate=False)
+
+            def stick_to_end(tries: int = _STICK_TRIES) -> None:
+                if scroller.scroll_y != old_y:
+                    # The reader scrolled while this waited: they own the position now.
+                    # Scrolling to the end here would drag them back down, and the read
+                    # mark follows the screen (a Windows merge-queue run of pepper-cli#274
+                    # landed it after the reader had gone up). A reset clamps the old
+                    # position to the new content, which is still the end.
+                    return
+                if tries > 1:
+                    # This refresh can land before the layout that measures the new rows;
+                    # read the end after one more, as ``scroll_end`` does, but guard it too.
+                    scroller.call_after_refresh(stick_to_end, tries - 1)
+                    return
+                scroller.scroll_end(animate=False, immediate=True)
+
+            scroller.call_after_refresh(stick_to_end)
         else:
             self._unseen += new_rows
         self._paint_marker()
