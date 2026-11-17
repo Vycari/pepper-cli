@@ -110,7 +110,8 @@ class ThreadView(Vertical):
         screen, so the topic can be marked read. Carries the render it landed for and the
         newest timestamp it rendered, so a message handled after another render replaced it,
         or after a poll appended rows, marks only what was on screen. Not sent when the
-        reader moved first, unless a reset clamped them onto the new end."""
+        reader moved first, unless they reached the new end themselves or a reset clamped
+        them onto it."""
 
         def __init__(self, render_id: int, through: str | None) -> None:
             super().__init__()
@@ -201,9 +202,11 @@ class ThreadView(Vertical):
                     # the position and the count, and this one's rows are not on screen.
                     return
                 if scroller.scroll_y != old_y:
-                    if reset and self.pinned:
-                        # A shorter page clamped the old position to the new end without the
-                        # reader moving. The newest row is on screen, so this render landed.
+                    if self.pinned:
+                        # The view is at the new end without this render's own scroll: either
+                        # the reader reached it (the End key, a wheel to the bottom) or a
+                        # shorter page clamped the old position there. The newest row is on
+                        # screen, so this render landed.
                         self.post_message(self.Landed(render_id, through))
                         return
                     # Someone moved while this waited: they own the position now. Scrolling
