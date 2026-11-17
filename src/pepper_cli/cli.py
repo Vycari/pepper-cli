@@ -1211,6 +1211,58 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         help="The person entity the address goes back to (default: the household becomes one).",
     )
     p.set_defaults(handler=cmd_graph_household_dissolve)
+    p = sub_graph.add_parser(
+        "me",
+        help="List the addresses you marked as your own; 'me mark' and 'me unmark' change them.",
+        description=(
+            "Addresses you mark as yours (an old work address, a second inbox) leave the graph: "
+            "an entity that had only those goes away, and mail to or from them makes no new "
+            "entity. Bare 'graph me' lists them."
+        ),
+    )
+    # ``--json`` may come before the verb or after it; the verbs' copy defaults to SUPPRESS so it
+    # cannot overwrite a flag given first (as in ``calendar publish``).
+    p.add_argument("--json", action="store_true", default=False, help="JSON out.")
+    p.set_defaults(handler=cmd_graph_me)
+    me_json = argparse.ArgumentParser(add_help=False)
+    me_json.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit JSON on stdout instead of text (also on when PEPPER_JSON=1).",
+    )
+    sub_me = p.add_subparsers(dest="graph_me_action", metavar="{mark,unmark}")
+    p = sub_me.add_parser(
+        "mark",
+        help="Mark an entity's addresses as yours.",
+        description=(
+            "Mark ENTITY_ID's email addresses as yours: --address (repeatable, up to 50) for "
+            "the ones you name, or --all for every one it has. An entity left with none of its "
+            "own addresses leaves the graph. A refusal prints its reason and exits 1."
+        ),
+        parents=[me_json],
+    )
+    p.add_argument("entity_id", metavar="ENTITY_ID", help="A person entity id (see 'graph list').")
+    which = p.add_mutually_exclusive_group(required=True)
+    which.add_argument(
+        "--address",
+        action="append",
+        metavar="ADDRESS",
+        help="An email address the entity has (repeatable, up to 50).",
+    )
+    which.add_argument("--all", action="store_true", help="Every email address the entity has.")
+    p.set_defaults(handler=cmd_graph_me_mark)
+    p = sub_me.add_parser(
+        "unmark",
+        help="Take one address off your marks.",
+        description=(
+            "Stop treating ADDRESS as yours. An entity the mark removed does not come back; the "
+            "next mail to or from the address makes a new one."
+        ),
+        parents=[me_json],
+    )
+    p.add_argument("address", metavar="ADDRESS", help="The email address to unmark.")
+    p.set_defaults(handler=cmd_graph_me_unmark)
 
     p_todos = sub.add_parser(
         "todos",
@@ -10081,6 +10133,84 @@ def cmd_graph_household_dissolve(args: argparse.Namespace) -> int:
         return 0
 
     return _run_personal(args, run, _report_graph_write_error)
+
+
+#: What each reason code in a refused ``graph me`` mark (409 ``detail``) means.
+_GRAPH_ME_REASONS = {
+    "not_a_person": "that entity is not a person",
+    "already_merged": "that entity is already merged into another; use the one it became",
+    "groups_linked": "that entity is linked to a person elsewhere, so it cannot be marked as you",
+    "household_address": "an address is a household's, shared with others, so it cannot be yours",
+    "address_not_on_entity": "an address you named is not on that entity",
+    "invalid_address": "that is not a usable email address",
+    "no_addresses": "that entity has no email address to mark",
+    "too_many_addresses": "too many addresses; mark up to 50 at a time",
+}
+
+
+def _report_graph_me_error(args: argparse.Namespace, exc: api_client.ApiError) -> int:
+    """409: a reason code with its meaning. 503 ``groups_unavailable``: say to retry. The rest is
+    :func:`_report_graph_error`."""
+    code = (exc.detail or "").strip()
+    if exc.status == 409:
+        meaning = _GRAPH_ME_REASONS.get(code)
+        message = f"Refused ({code}): {meaning}." if meaning else f"Refused: {code or 'conflict'}."
+        _emit_error(args, "conflict", message, status=409)
+        return 1
+    if exc.status == 503 and code == "groups_unavailable":
+        _emit_error(
+            args,
+            "server",
+            "Refused (groups_unavailable): the service that links people could not be reached "
+            "to check that entity. Try again in a moment.",
+            status=503,
+        )
+        return 1
+    return _report_graph_error(args, exc)
+
+
+def cmd_graph_me(args: argparse.Namespace) -> int:
+    """``pepper graph me [--json]``: ``GET /api/v1/graph/me``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.graph_me()
+        envelope = _list_envelope(body.get("marks") or [])
+        _emit(envelope, args, lambda: graph_view.me(body))
+        return 0
+
+    return _run_personal(args, run, _report_graph_me_error)
+
+
+def cmd_graph_me_mark(args: argparse.Namespace) -> int:
+    """``pepper graph me mark ENTITY_ID (--address A ... | --all) [--json]``."""
+    if (ids := _graph_ids(args, "entity_id")) is None:
+        return 2
+    addresses = None
+    if not args.all:
+        addresses = [a.strip() for a in args.address]
+        if not all(addresses):
+            _emit_error(args, "usage", "--address must not be blank.")
+            return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.graph_me_mark(ids[0], addresses, every=args.all)
+        _emit(body, args, lambda: graph_view.me_marked(body))
+        return 0
+
+    return _run_personal(args, run, _report_graph_me_error)
+
+
+def cmd_graph_me_unmark(args: argparse.Namespace) -> int:
+    """``pepper graph me unmark ADDRESS [--json]``: ``DELETE /api/v1/graph/me``."""
+    if (ids := _graph_ids(args, "address")) is None:
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.graph_me_unmark(ids[0])
+        _emit(body, args, lambda: graph_view.me_unmarked(body))
+        return 0
+
+    return _run_personal(args, run, _report_graph_me_error)
 
 
 def cmd_calendar_publish_show(args: argparse.Namespace) -> int:

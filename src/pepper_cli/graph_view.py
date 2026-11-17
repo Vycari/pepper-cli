@@ -281,3 +281,34 @@ def household_dissolved(body: dict[str, Any]) -> None:
         f"Dissolved household {_s(body.get('household_id'))}; its address went back to "
         f"{_s(body.get('person_id'))}  ·  {_s(body.get('aliases'))} alias(es)"
     )
+
+
+def me(body: dict[str, Any]) -> None:
+    """The addresses marked as the owner's own."""
+    rows = body.get("marks") or []
+    if not rows:
+        _line("[dim](no addresses marked as yours)[/dim]")
+        return
+    for m in rows:
+        _line(f"{_s(m.get('address'))}  [dim]marked {_stamp(m.get('created_at'))}[/dim]")
+
+
+def me_marked(body: dict[str, Any]) -> None:
+    """The result of marking addresses as the owner's."""
+    marked = body.get("marked") or 0
+    if not marked:
+        _line("Nothing to mark: those addresses were already yours.")
+        return
+    _line(f"Marked {marked} address(es) as yours.")
+    if body.get("deleted"):
+        _line(f"  {_s(body.get('deleted'))} entity(ies) left the graph")
+    if body.get("stripped"):
+        _line(f"  {_s(body.get('stripped'))} address(es) taken off an entity that keeps others")
+
+
+def me_unmarked(body: dict[str, Any]) -> None:
+    """The result of unmarking an address."""
+    if body.get("unmarked"):
+        _line("Unmarked. The next mail to or from it makes a new entity.")
+    else:
+        _line("That address was not marked; nothing changed.")
