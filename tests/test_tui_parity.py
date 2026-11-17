@@ -659,6 +659,54 @@ async def test_a_first_page_is_marked_read_only_once_its_scroll_lands(monkeypatc
         assert server.puts == []  # it stood down: nothing was marked
 
 
+@pytest.mark.parametrize("moves", [False, True])
+async def test_a_live_poll_marks_only_once_its_scroll_lands(moves, monkeypatch) -> None:
+    """Codex P2 on #279: a live poll used to mark its rows read the moment the render
+    scheduled the scroll to the end, before they were on screen. When the reader moves first
+    the scroll stands down, so nothing may have been claimed."""
+    for interval in ("ACTIVE_INTERVAL", "COOLING_INTERVAL", "IDLE_INTERVAL"):
+        monkeypatch.setattr(state, interval, 60.0)
+    server = _older_thread_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and thread.pinned)
+        await until(pilot, lambda: (ts.TOPIC_A1, "2026-09-16T10:13:00+00:00") in server.puts)
+        held: list = []
+        real = scroller.call_after_refresh
+
+        def hold(cb, *a, **k) -> None:
+            if getattr(cb, "__name__", "") == "stick_to_end":
+                held.append((cb, a, k))
+            else:
+                real(cb, *a, **k)
+
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        server.messages[ts.TOPIC_A1].append(
+            ts.message("m99", "2026-09-16T10:14:00+00:00", "late row")
+        )
+        app._run("topic")
+        await until(pilot, lambda: "late row" in body_text(app))
+        await pilot.pause()
+        # The row is rendered but below the viewport until the scroll lands.
+        assert (ts.TOPIC_A1, "2026-09-16T10:14:00+00:00") not in server.puts
+        at = scroller.scroll_y
+        if moves:
+            scroller.scroll_y = at - 3  # the reader moves before the scroll runs
+            await pilot.pause()
+        while held:
+            cb, a, k = held.pop(0)
+            cb(*a, **k)
+        await pilot.pause()
+        if moves:
+            assert thread._unseen == 1  # the row is below the screen, still counted
+            assert (ts.TOPIC_A1, "2026-09-16T10:14:00+00:00") not in server.puts
+        else:
+            await until(pilot, lambda: (ts.TOPIC_A1, "2026-09-16T10:14:00+00:00") in server.puts)
+
+
 async def test_a_landed_event_from_a_replaced_render_is_ignored(monkeypatch) -> None:
     """Codex P2 on #279: ``Landed`` is queued. One posted for a render that a later reset
     replaced must not mark the new screen read."""

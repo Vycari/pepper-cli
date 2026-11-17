@@ -895,10 +895,8 @@ class PepperApp(App[None]):
         self.loaded_topic = True
         self._render_topic(new_rows=len(fresh), reset=first)
         if not self._blurred:
-            if not first:
-                # A first page is marked when its scroll to the end lands (``Landed``): the
-                # render only schedules that scroll, and the reader may move first.
-                self._note_viewed()
+            # Every mark waits for its guarded scroll to land (``Landed``): a pinned poll
+            # the reader interrupts restores its cue, and those rows must stay unread.
             self._run("publish")
 
     # ------------------------------------------------------------------ rendering

@@ -106,7 +106,7 @@ class ThreadView(Vertical):
             self.pinned = pinned
 
     class Landed(Message):
-        """A view shown from scratch reached its last line: the rows just rendered are on
+        """A guarded scroll to the last line completed: the rows just rendered are on
         screen, so the topic can be marked read. Carries the render it landed for and the
         newest timestamp it rendered, so a message handled after another render replaced it,
         or after a poll appended rows, marks only what was on screen. Not sent when the
@@ -224,10 +224,10 @@ class ThreadView(Vertical):
                     scroller.call_after_refresh(stick_to_end, tries - 1)
                     return
                 scroller.scroll_end(animate=False, immediate=True)
-                if reset:
-                    # The app could not tell from the position whether this would land;
-                    # now that it has, the newest row is on screen.
-                    self.post_message(self.Landed(render_id, through))
+                # The newest row is on screen now. A first page is marked read from this,
+                # and so is a pinned poll: its own mark waits for this landing, so a reader
+                # who moves first keeps the rows unread.
+                self.post_message(self.Landed(render_id, through))
 
             scroller.call_after_refresh(stick_to_end)
         else:
