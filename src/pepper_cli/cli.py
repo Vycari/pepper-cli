@@ -10924,7 +10924,9 @@ def _register_research_commands(sub: Any) -> None:
 
     p = sub_items.add_parser(
         "take",
-        help="Mark a delivered item as taken (you went with it). Already taken is fine.",
+        help=(
+            "Mark an accepted or delivered item as taken (you went with it). Already taken is fine."
+        ),
         parents=[_research_room(), _project_parent(), _json_parent],
     )
     p.add_argument("item", metavar="ITEM", help=item_help)
@@ -12104,8 +12106,9 @@ def _research_item_mark(args: argparse.Namespace, *, take: bool) -> int:
 
 
 def cmd_research_items_take(args: argparse.Namespace) -> int:
-    """``pepper research-items take --project P ITEM [--json]``: a delivered item you went with.
-    Answers the item. A number is checked against the last listing of this project first."""
+    """``pepper research-items take --project P ITEM [--json]``: an accepted or delivered
+    item you went with. Answers the item. A number is checked against the last listing of this
+    project first."""
     return _research_item_mark(args, take=True)
 
 

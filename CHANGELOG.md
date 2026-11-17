@@ -45,6 +45,11 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
   the server's disclosure and asks, anything else must pass `--consent`. Declining any of these
   prompts (consent, `off`, `rotate`) exits 1.
 
+### Changed
+
+- `pepper research-items take` help and README now say an accepted item can be taken, not only a delivered
+  one, matching the server since Vycari/pepper#5470 (closes #137). No behavior change.
+
 ## 0.9.0 — 2026-11-08
 
 Agents can ask who they are, event feeds start at the live edge on a first run, a 426 names the
