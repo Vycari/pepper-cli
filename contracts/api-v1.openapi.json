@@ -4830,6 +4830,91 @@
         ],
         "type": "object"
       },
+      "MarkIn": {
+        "properties": {
+          "addresses": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "all": {
+            "default": false,
+            "type": "boolean"
+          },
+          "entity_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_id"
+        ],
+        "type": "object"
+      },
+      "MarkItemOut": {
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "address",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "MarkOut": {
+        "properties": {
+          "deleted": {
+            "type": "integer"
+          },
+          "marked": {
+            "type": "integer"
+          },
+          "stripped": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "marked",
+          "deleted",
+          "stripped"
+        ],
+        "type": "object"
+      },
+      "MarksOut": {
+        "properties": {
+          "marks": {
+            "items": {
+              "$ref": "#/components/schemas/MarkItemOut"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "marks"
+        ],
+        "type": "object"
+      },
       "MatrixIn": {
         "properties": {
           "event_id": {
@@ -9957,6 +10042,30 @@
           "survivor_id",
           "restored_id",
           "aliases"
+        ],
+        "type": "object"
+      },
+      "UnmarkIn": {
+        "properties": {
+          "address": {
+            "maxLength": 320,
+            "minLength": 3,
+            "type": "string"
+          }
+        },
+        "required": [
+          "address"
+        ],
+        "type": "object"
+      },
+      "UnmarkOut": {
+        "properties": {
+          "unmarked": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "unmarked"
         ],
         "type": "object"
       },
@@ -19449,6 +19558,160 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ChangedOut"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-graph"
+        ]
+      }
+    },
+    "/api/v1/graph/me": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UnmarkIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnmarkOut"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-graph"
+        ]
+      },
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarksOut"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-graph"
+        ]
+      },
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarkOut"
                 }
               }
             },
