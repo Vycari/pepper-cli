@@ -179,15 +179,21 @@ class ThreadView(Vertical):
             self._unseen = 0
 
             def stick_to_end(tries: int = _STICK_TRIES) -> None:
+                if self._conversation != conversation:
+                    # Another conversation was opened while this waited: its own render owns
+                    # the position and the count, and this one's rows are not on screen.
+                    return
                 if scroller.scroll_y != old_y:
-                    # The reader scrolled while this waited: they own the position now.
-                    # Scrolling to the end here would drag them back down, and the read
-                    # mark follows the screen (a Windows merge-queue run of pepper-cli#274
-                    # landed it after the reader had gone up). A reset clamps the old
-                    # position to the new content, which is still the end.
-                    if not reset and new_rows:
-                        # The rows that arrived are below the screen now: count them, or
-                        # later polls deduplicate them and the cue is lost for good.
+                    # Someone moved while this waited: they own the position now. Scrolling
+                    # to the end here would drag them back down, and the read mark follows
+                    # the screen (a Windows merge-queue run of pepper-cli#274 landed it after
+                    # the reader had gone up). A reset clamps the old position to the new
+                    # content, which is still the end.
+                    if not reset and new_rows and not self.pinned:
+                        # Away from the end, the rows that arrived are below the screen: count
+                        # them, or later polls deduplicate them and the cue is lost for good.
+                        # Pinned means a sibling callback for the same render already reached
+                        # the end: those rows are on screen and already counted as seen.
                         self._unseen += new_rows
                         self._paint_marker()
                     return

@@ -552,6 +552,75 @@ async def test_rows_that_arrive_when_the_reader_moves_keep_their_cue(monkeypatch
         assert scroller.scroll_y == moved
 
 
+async def test_overlapping_scrolls_do_not_restore_a_cue_for_rows_on_screen(monkeypatch) -> None:
+    """Greptile on #279: two deferred scrolls can capture the same position. The first
+    reaches the end; the second must not mistake that movement for a reader scroll and count
+    rows that are already on screen."""
+    for interval in ("ACTIVE_INTERVAL", "COOLING_INTERVAL", "IDLE_INTERVAL"):
+        monkeypatch.setattr(state, interval, 60.0)
+    app = tui_app.PepperApp(_older_thread_server().client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and thread.pinned)
+        held: list = []
+
+        def hold(cb, *a, **k) -> None:
+            if getattr(cb, "__name__", "") == "stick_to_end":
+                held.append((cb, a, k))
+
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        thread.show(body_text(app) + "\nfirst new row", new_rows=1)
+        # The second render, before the first callback ran: it captured the same position.
+        thread.show(body_text(app) + "\nfirst new row\nsecond new row", new_rows=2)
+        waiting = list(held)
+        held.clear()
+        assert len(waiting) == 2
+        for cb, a, k in waiting:  # each waits one more refresh
+            cb(*a, **k)
+        await pilot.pause(0.1)  # the layout measures the new rows
+        last = list(held)
+        held.clear()
+        assert len(last) == 2
+        for cb, a, k in last:  # the first reaches the end, the second must stand down
+            cb(*a, **k)
+        await pilot.pause()
+        assert thread.pinned  # the rows are on screen
+        assert thread._unseen == 0
+        assert not thread.query_one("#thread-new").display
+
+
+async def test_a_scroll_left_over_from_another_conversation_does_not_count_its_rows(
+    monkeypatch,
+) -> None:
+    """Greptile on #279: a callback can outlive a conversation switch. It must not add its
+    rows to the new conversation's cue, which the new render has already reset."""
+    app = tui_app.PepperApp(_older_thread_server().client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and thread.pinned)
+        held: list = []
+
+        def hold(cb, *a, **k) -> None:
+            if getattr(cb, "__name__", "") == "stick_to_end":
+                held.append((cb, a, k))
+
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        thread.show(body_text(app) + "\nstale row", new_rows=1)
+        stale = held.pop()  # the only callback so far: conversation A's
+        app.open_conversation(state.Conversation(ts.ROOM_B, ts.TOPIC_B1))
+        await until(pilot, lambda: "next book" in body_text(app))
+        scroller.scroll_y = 0  # the switch moved the view before the callback ran
+        cb, a, k = stale
+        cb(*a, **k)
+        # Before any poll can repaint: the new conversation starts with nothing counted.
+        assert thread._unseen == 0
+        assert not thread.query_one("#thread-new").display
+
+
 async def test_a_first_page_is_marked_read_only_once_its_scroll_lands(monkeypatch) -> None:
     """Codex P2 on #279: the first page used to be marked read the moment the render
     scheduled its scroll to the end, before the newest row was on screen. A reader who moves
