@@ -419,30 +419,42 @@ async def test_a_reset_stands_down_a_pending_keep_place(monkeypatch) -> None:
         assert scrolled == []
 
 
-async def test_a_scroll_made_while_keep_place_waits_is_not_undone() -> None:
+async def test_a_scroll_made_while_keep_place_waits_is_not_undone(monkeypatch) -> None:
     """VR-6b3a8f9f: the scroll past older rows waits a refresh or more; a reader who moves
-    in that window keeps the place they moved to."""
-    server = ts.standard_server()
-    _a1(
-        server,
-        *(
-            ts.message(f"m{i:02d}", f"2026-09-16T10:{i:02d}:00+00:00", f"body {i}")
-            for i in range(14)
-        ),
-    )
-    app = tui_app.PepperApp(server.client())
+    in that window keeps the place they moved to.
+
+    Driven by hand: run on the event loop, the app's own poll can re-render the pinned thread
+    and queue a scroll to the end that lands inside the window, which moves the view for a
+    reason this test is not about (a Windows run on pepper-cli#276 ended at 19).
+    """
+    app = tui_app.PepperApp(_older_thread_server().client())
     async with app.run_test(size=(100, 14)) as pilot:
         await _open_a1(app, pilot, "body 13")
         thread = app.thread
         scroller = thread.scroller
-        scroller.scroll_to(y=0, animate=False)
+        scroller.scroll_y = 0
         await pilot.pause()
+        held: list = []
+
+        def hold(cb, *_a, **_k) -> None:
+            if getattr(cb, "__name__", "") == "keep_place":
+                held.append(cb)
+
+        scrolled: list[float] = []
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        monkeypatch.setattr(scroller, "scroll_to", lambda *, y, **_: scrolled.append(y))
+        # Read here, not assumed 0: the app may itself have moved the view by now.
+        at = scroller.scroll_y
         longer = "\n".join(f"older {i}" for i in range(40)) + "\n" + body_text(app)
         thread.show(longer, prepended=True)
-        scroller.scroll_y = 3  # the reader moves before keep_place runs
-        for _ in range(8):
-            await pilot.pause()
-        assert scroller.scroll_y == 3
+        keep_place = held.pop()
+        moved = 3 if at != 3 else 4
+        scroller.scroll_y = moved  # the reader moves before keep_place runs
+        assert scroller.scroll_y == moved
+        keep_place()
+        assert scrolled == []  # it stood down rather than scroll past the older rows
+        assert held == []  # and did not wait to try again
+        assert scroller.scroll_y == moved
 
 
 async def test_o_opens_the_first_link_and_never_a_non_web_url() -> None:
