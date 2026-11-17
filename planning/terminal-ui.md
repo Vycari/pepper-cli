@@ -171,8 +171,11 @@ them:
   tombstone; a failed read is retried with backoff, and paused while the terminal is blurred.
   An event for a row not held asks the next poll to reconcile the newest page.
 - A connection that names no position starts at the feed's head and opens with a `cursor` frame
-  carrying `"head": true`; the app catches up with one fetch of everything. A plain `cursor` frame
-  is a replay skip point, so it does not trigger that catch-up (pepper-cli#271). A drop reconnects
+  carrying `"head": true`; the app catches up with one fetch of everything. The first cursor on
+  such a connection is the head whether or not it carries the marker, since a server that predates
+  it sends a plain cursor and the catch-up is a harmless repeat. A `cursor` frame on a connection
+  that named a position is a replay skip point, so it does not trigger that catch-up
+  (pepper-cli#271). A drop reconnects
   with `Last-Event-ID`. The server's `cursor_ahead` error (the saved position is past every id it
   issued) catches up and reopens with `?since=` the id it names. Unknown frame kinds are ignored.
 - While the stream is healthy the rail and open-topic polls run as a safety net (120s and 60s). When

@@ -3399,11 +3399,13 @@ class ApiClient:
         Resumes after ``last_event_id`` (what a reconnect sends), else after ``since``;
         with neither, the stream starts at the feed's current head and opens with a
         ``cursor`` frame carrying ``"head": true``, so a caller catches up with one fetch
-        of its own. Frames beyond :meth:`watch_agent_events`' are ``"heartbeat"``
-        (``event: heartbeat``, what a person's stream sends where an agent's sends
-        ``: ping``) and ``"chat.message"`` (Pepper wrote to your 1:1 thread; ``payload`` is
-        ``{"message_id": ...}``, no ``id``). A ``read_state.advanced`` frame's event
-        carries ``payload`` ``{topic_id, group_id, last_read_at, via_person_id}``.
+        of its own. A server that predates the marker sends that first cursor plain; it
+        still names the head, because no position was given. Frames beyond
+        :meth:`watch_agent_events`' are ``"heartbeat"`` (``event: heartbeat``, what a
+        person's stream sends where an agent's sends ``: ping``) and ``"chat.message"``
+        (Pepper wrote to your 1:1 thread; ``payload`` is ``{"message_id": ...}``, no
+        ``id``). A ``read_state.advanced`` frame's event carries ``payload``
+        ``{topic_id, group_id, last_read_at, via_person_id}``.
         Unknown frame kinds are the caller's to ignore (``/api/v1`` is additive).
         """
         # Frames: pepper's ``gateway/channels/groups_service/person_feed.py`` wraps the agent
