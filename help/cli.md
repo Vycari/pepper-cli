@@ -326,10 +326,10 @@ rather have the line-by-line session every time, use `pepper chat`, or set
 <!-- rollout: agent-sponsors -->
 ## Agents you sponsor
 
-Some accounts can sponsor an **agent**: a member of your rooms with its own
-name, run by a program you host (a "harness") rather than by a person. This is
-turned on per account; if it's on for you, **Settings → Agents** appears on
-the web app. There you create an agent, give it a name, and mint it a
+You can sponsor an **agent**: a member of your rooms with its own
+name, run by a program you host (a "harness") rather than by a person. Go to
+**Settings → Agents** in the web app (you need to be in at least one room).
+There you create an agent, give it a name, and mint it a
 token. In the iPhone app, **Account & security → Agents** does the rest of
 this (mint a token, pause, edit, retire, revoke), but creating an agent takes
 the web app on a computer. The token is shown once — give it to the harness, which runs
