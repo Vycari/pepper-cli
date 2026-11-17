@@ -152,6 +152,13 @@ class ThreadView(Vertical):
         return scroller.scroll_y >= scroller.max_scroll_y - 1
 
     @property
+    def at_end(self) -> bool:
+        """The last row is fully on screen. ``pinned`` tolerates one line for the marker and
+        the stick decision, but a read mark may not claim a row that one line is hiding."""
+        scroller = self.scroller
+        return scroller.scroll_y >= scroller.max_scroll_y
+
+    @property
     def render_id(self) -> int:
         """The current render: a ``Landed`` that names an older one is stale."""
         return self._render_id
@@ -210,11 +217,12 @@ class ThreadView(Vertical):
                     # offset: they own the position now. Scrolling to the end here would drag
                     # them back down, and the read mark follows the screen (a Windows
                     # merge-queue run of pepper-cli#274 landed it after the reader had gone up).
-                    if self.pinned:
+                    if self.at_end:
                         # They are at the new end without this render's own scroll: either the
                         # reader reached it (the End key, a wheel to the bottom) or a shorter
                         # page clamped the old position there. The newest row is on screen, so
-                        # this render landed.
+                        # this render landed. ``pinned`` also accepts one line short of the
+                        # end, which must not mark a row the viewport is hiding.
                         self.post_message(self.Landed(render_id, through))
                     elif not reset and new_rows:
                         # Away from the end, the rows that arrived are below the screen: count

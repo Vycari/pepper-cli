@@ -9,6 +9,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
+from rich.console import Group
+from rich.text import Text
 from textual.geometry import Size
 from textual.widget import Widget
 
@@ -718,6 +720,52 @@ async def test_a_live_poll_marks_only_once_its_scroll_lands(placement, monkeypat
             assert (ts.TOPIC_A1, "2026-09-16T10:14:00+00:00") not in server.puts
         else:
             await until(pilot, lambda: (ts.TOPIC_A1, "2026-09-16T10:14:00+00:00") in server.puts)
+
+
+async def test_scrolling_back_a_line_short_of_a_new_row_is_not_marked_read(monkeypatch) -> None:
+    """Codex P2 on #279: ``pinned`` accepts one line short of the end, so a one-line growth
+    plus a scroll away and back would have landed while the newest line was still hidden."""
+    for interval in ("ACTIVE_INTERVAL", "COOLING_INTERVAL", "IDLE_INTERVAL"):
+        monkeypatch.setattr(state, interval, 60.0)
+    server = _older_thread_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and thread.pinned)
+        await until(pilot, lambda: (ts.TOPIC_A1, "2026-09-16T10:13:00+00:00") in server.puts)
+        held: list = []
+        real = scroller.call_after_refresh
+
+        def hold(cb, *a, **k) -> None:
+            if getattr(cb, "__name__", "") == "stick_to_end":
+                held.append((cb, a, k))
+            else:
+                real(cb, *a, **k)
+
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        at = scroller.scroll_y
+        shown = thread.query_one("#thread-body").content
+        thread.show(
+            Group(shown, Text("late row")),
+            new_rows=1,
+            through="2026-09-16T10:14:00+00:00",
+        )
+        await pilot.pause(0.1)  # the layout measures the one added line
+        assert scroller.max_scroll_y - at == 1  # exactly the boundary this guards
+        scroller.scroll_y = at - 3
+        await pilot.pause()
+        scroller.scroll_y = at
+        await pilot.pause()
+        assert thread.pinned  # one line short, which ``pinned`` tolerates
+        assert not thread.at_end  # but the newest line is below the viewport
+        while held:
+            cb, a, k = held.pop(0)
+            cb(*a, **k)
+        await pilot.pause()
+        assert thread._unseen == 1
+        assert (ts.TOPIC_A1, "2026-09-16T10:14:00+00:00") not in server.puts
 
 
 async def test_a_landed_event_from_a_replaced_render_is_ignored(monkeypatch) -> None:
