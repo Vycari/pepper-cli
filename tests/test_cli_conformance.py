@@ -73,7 +73,8 @@ NOUNS = frozenset(
         # noun too (list/show): the server's ranked stream of what you follow.
         "following",
         "feed",
-        # `graph` is a read-only view of the entity graph (your own people and meetings).
+        # `graph` is a view of the entity graph (your own people and meetings), with the
+        # merge and household commands that fix its identities.
         "graph",
         "chat",
         # `run` sends a prompt file as one chat turn (a shebang interpreter).
@@ -147,6 +148,19 @@ VERBS = frozenset(
         # catalog entry, which are the graph's two kinds of object (not a `show` of a list row).
         "entity",
         "catalog",
+        # `graph` identity: `merge`/`undo` join and unjoin two entities (the merge log is
+        # `merges`), `duplicates` suggests pairs, `not-same` dismisses one, and a household is a
+        # shared address held off every person (`households` lists, `household-*` change them).
+        "merge",
+        "merges",
+        "undo",
+        "duplicates",
+        "not-same",
+        "households",
+        "household-create",
+        "household-add",
+        "household-remove",
+        "household-dissolve",
         # Research projects (IA §3.1): `steer` queues guidance for an object's next run;
         # `take` and `reconsider` mark a ledger item.
         "steer",
@@ -201,6 +215,21 @@ ROOM_NA = {
     "graph upcoming": "the graph is your own, never a room's (D12 keeps a room's separate)",
     "graph entity": "the graph is your own, never a room's (D12 keeps a room's separate)",
     "graph catalog": "the graph is your own, never a room's (D12 keeps a room's separate)",
+    **{
+        f"graph {verb}": "the graph is your own, never a room's (D12 keeps a room's separate)"
+        for verb in (
+            "merge",
+            "merges",
+            "undo",
+            "duplicates",
+            "not-same",
+            "households",
+            "household-create",
+            "household-add",
+            "household-remove",
+            "household-dissolve",
+        )
+    },
     "brief": "your own morning brief; the server exposes no room's brief to a PAT here",
     "artifacts show": "reads any artifact the viewer can see; the id carries the room",
     "artifacts download": "reads any artifact the viewer can see; the id carries the room",
@@ -720,6 +749,9 @@ ROUTES: dict[str, object] = {
         "attendees": [],
     },
     "/api/v1/graph/meetings/upcoming": {"status": "ok", "meetings": []},
+    "/api/v1/graph/merges": {"merges": []},
+    "/api/v1/graph/duplicates": {"duplicates": []},
+    "/api/v1/graph/households": {"households": []},
     "/api/v1/graph/entities/e1": {
         "status": "ok",
         "entity": {
@@ -942,6 +974,18 @@ ROUTES: dict[str, object] = {
 #: Non-GET routes (POST, DELETE): the room post answers ``{"message": {...}}``.
 POST_ROUTES: dict[str, object] = {
     "/api/v1/client/capabilities": {},
+    "/api/v1/graph/merge": {"log_id": "l1", "survivor_id": "e2", "merged_id": "e1", "aliases": 1},
+    "/api/v1/graph/merges/l1/undo": {
+        "log_id": "l1",
+        "survivor_id": "e2",
+        "restored_id": "e1",
+        "aliases": 1,
+    },
+    "/api/v1/graph/not-same": {"marked": True},
+    "/api/v1/graph/households": {"household_id": "h1", "rekinded": False, "members": 1},
+    "/api/v1/graph/households/h1/members": {"changed": True},
+    "/api/v1/graph/households/h1/members/remove": {"changed": True},
+    "/api/v1/graph/households/h1/dissolve": {"household_id": "h1", "person_id": "e1", "aliases": 1},
     "/api/v1/research-projects": _RESEARCH_DETAIL,
     f"/api/v1/research-projects/{_RP}": _RESEARCH_DETAIL,
     f"/api/v1/research-projects/{_RP}/filters": _RESEARCH_DETAIL,
@@ -1158,6 +1202,16 @@ JSON_CASES: dict[str, list[str]] = {
     "graph upcoming": ["graph", "upcoming"],
     "graph entity": ["graph", "entity", "e1"],
     "graph catalog": ["graph", "catalog", "c1"],
+    "graph merge": ["graph", "merge", "e1", "e2"],
+    "graph merges": ["graph", "merges", "e1"],
+    "graph undo": ["graph", "undo", "l1"],
+    "graph duplicates": ["graph", "duplicates"],
+    "graph not-same": ["graph", "not-same", "e1", "e2"],
+    "graph households": ["graph", "households"],
+    "graph household-create": ["graph", "household-create", "Home", "home@x.io"],
+    "graph household-add": ["graph", "household-add", "h1", "e1"],
+    "graph household-remove": ["graph", "household-remove", "h1"],
+    "graph household-dissolve": ["graph", "household-dissolve", "h1"],
     "todos list": ["todos", "list"],
     "rooms list": ["rooms", "list"],
     "rooms show": ["rooms", "show", _G],

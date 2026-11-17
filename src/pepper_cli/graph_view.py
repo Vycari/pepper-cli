@@ -177,3 +177,107 @@ def catalog_page(body: dict[str, Any], *, history: bool) -> None:
         ent = row.get("entity") or {}
         _line(f"  [bold]{_ref(ent)}[/bold]  [dim]{_s(ent.get('id'))}[/dim]")
         _edges(row.get("edges") or [], history=history, indent="    ")
+
+
+def _name_id(name: object, entity_id: object) -> str:
+    label = _s(name) if name else "(unnamed)"
+    return f"[bold]{label}[/bold]  [dim]{_s(entity_id)}[/dim]"
+
+
+def merged(body: dict[str, Any]) -> None:
+    """The result of a merge."""
+    _line(f"Merged {_s(body.get('merged_id'))} into {_s(body.get('survivor_id'))}.")
+    _line(f"  moved {_s(body.get('aliases'))} alias(es)  ·  log {_s(body.get('log_id'))}")
+    _line(f"  [dim]undo with: pepper graph undo {_s(body.get('log_id'))}[/dim]")
+
+
+def undone(body: dict[str, Any]) -> None:
+    """The result of an undo."""
+    _line(f"Undid the merge: {_s(body.get('restored_id'))} is its own entity again.")
+    _line(
+        f"  survivor {_s(body.get('survivor_id'))}  ·  {_s(body.get('aliases'))} alias(es) "
+        f"moved back  ·  log {_s(body.get('log_id'))}"
+    )
+
+
+def merges(body: dict[str, Any]) -> None:
+    """The merge history of one entity's merged group, newest first."""
+    rows = body.get("merges") or []
+    if not rows:
+        _line("[dim](no merges)[/dim]")
+        return
+    for m in rows:
+        state = (
+            f"[red]undone {_stamp(m.get('undone_at'))}[/red]"
+            if m.get("undone_at")
+            else ("undoable" if m.get("undoable") else "not undoable now")
+        )
+        _line(
+            f"{_stamp(m.get('created_at'))}  {_name_id(m.get('from_name'), m.get('from_id'))}"
+            f"  ->  {_name_id(m.get('into_name'), m.get('into_id'))}"
+        )
+        _line(f"  log {_s(m.get('log_id'))}  ·  {state}")
+
+
+def duplicates(body: dict[str, Any]) -> None:
+    """Likely duplicate people, a pair per entry."""
+    rows = body.get("duplicates") or []
+    if not rows:
+        _line("[dim](no likely duplicates)[/dim]")
+        return
+    for d in rows:
+        a, b = d.get("a") or {}, d.get("b") or {}
+        _line(f"{_name_id(a.get('name'), a.get('entity_id'))}")
+        _line(f"{_name_id(b.get('name'), b.get('entity_id'))}")
+        a_id, b_id = _s(a.get("entity_id")), _s(b.get("entity_id"))
+        _line("  same person:")
+        _line(f"    [dim]pepper graph merge {a_id} {b_id}[/dim]")
+        _line("  different people:")
+        _line(f"    [dim]pepper graph not-same {a_id} {b_id}[/dim]")
+
+
+def not_same(body: dict[str, Any]) -> None:
+    """The result of marking a pair as different people."""
+    if body.get("marked"):
+        _line("Marked as different people; they will not be joined automatically.")
+    else:
+        _line("Already marked as different people; nothing changed.")
+
+
+def households(body: dict[str, Any]) -> None:
+    """The caller's households with addresses and members."""
+    rows = body.get("households") or []
+    if not rows:
+        _line("[dim](no households)[/dim]")
+        return
+    for h in rows:
+        _line(f"[bold]{_s(h.get('name'))}[/bold]  [dim]{_s(h.get('household_id'))}[/dim]")
+        for addr in h.get("addresses") or []:
+            _line(f"  {_s(addr)}")
+        for m in h.get("members") or []:
+            if m.get("entity_id") is None:
+                _line("  member: you")
+            else:
+                _line(f"  member: {_name_id(m.get('name'), m.get('entity_id'))}")
+
+
+def household_created(body: dict[str, Any]) -> None:
+    """The result of creating a household."""
+    _line(
+        f"Created household {_s(body.get('household_id'))}  ·  {_s(body.get('members'))} member(s)"
+    )
+    if body.get("rekinded"):
+        _line("  [dim]the person the address sat on became the household[/dim]")
+
+
+def household_changed(body: dict[str, Any], *, done: str, unchanged: str) -> None:
+    """The result of adding or removing a member."""
+    _line(done if body.get("changed") else unchanged)
+
+
+def household_dissolved(body: dict[str, Any]) -> None:
+    """The result of dissolving a household."""
+    _line(
+        f"Dissolved household {_s(body.get('household_id'))}; its address went back to "
+        f"{_s(body.get('person_id'))}  ·  {_s(body.get('aliases'))} alias(es)"
+    )

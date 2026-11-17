@@ -2587,6 +2587,68 @@ class ApiClient:
         q = urlencode({"scheme": scheme, "value": value, "history": "true" if history else "false"})
         return self._get_object(f"/api/v1/graph/catalog?{q}")
 
+    def graph_merge(self, from_id: str, into_id: str) -> dict[str, Any]:
+        """``POST /api/v1/graph/merge``: merge two of the caller's entities.
+
+        409 carries the guard's reason code in ``detail``; 404 is an id that is not the caller's
+        or the rollout being off."""
+        return self._post_object("/api/v1/graph/merge", {"from_id": from_id, "into_id": into_id})
+
+    def graph_merges(self, entity_id: str) -> dict[str, Any]:
+        """``GET /api/v1/graph/merges?entity_id=``: merges into an entity's merged group."""
+        return self._get_object(f"/api/v1/graph/merges?{urlencode({'entity_id': entity_id})}")
+
+    def graph_undo_merge(self, log_id: str) -> dict[str, Any]:
+        """``POST /api/v1/graph/merges/{log_id}/undo``: undo one user merge."""
+        return self._post_object(f"/api/v1/graph/merges/{quote(log_id, safe='')}/undo", None)
+
+    def graph_duplicates(self) -> dict[str, Any]:
+        """``GET /api/v1/graph/duplicates``: likely duplicate people, computed on read."""
+        return self._get_object("/api/v1/graph/duplicates")
+
+    def graph_not_same(self, a_id: str, b_id: str) -> dict[str, Any]:
+        """``POST /api/v1/graph/not-same``: mark two entities as different people."""
+        return self._post_object("/api/v1/graph/not-same", {"a_id": a_id, "b_id": b_id})
+
+    def graph_households(self) -> dict[str, Any]:
+        """``GET /api/v1/graph/households``: the caller's households."""
+        return self._get_object("/api/v1/graph/households")
+
+    def graph_household_create(
+        self, name: str, address: str, member_ids: list[str]
+    ) -> dict[str, Any]:
+        """``POST /api/v1/graph/households``: a household of one address."""
+        body = {"name": name, "address": address, "member_ids": member_ids}
+        return self._post_object("/api/v1/graph/households", body)
+
+    def graph_household_add(self, household_id: str, entity_id: str) -> dict[str, Any]:
+        """``POST /api/v1/graph/households/{id}/members``."""
+        path = f"/api/v1/graph/households/{quote(household_id, safe='')}/members"
+        return self._post_object(path, {"entity_id": entity_id})
+
+    def graph_household_remove(
+        self, household_id: str, entity_id: str | None = None
+    ) -> dict[str, Any]:
+        """``POST /api/v1/graph/households/{id}/members/remove``; no ``entity_id`` removes the
+        caller."""
+        path = f"/api/v1/graph/households/{quote(household_id, safe='')}/members/remove"
+        return self._post_object(path, {"entity_id": entity_id})
+
+    def graph_household_dissolve(
+        self, household_id: str, into_id: str | None = None
+    ) -> dict[str, Any]:
+        """``POST /api/v1/graph/households/{id}/dissolve``: its address goes back to ``into_id``
+        (or the household turns back into a person in place)."""
+        path = f"/api/v1/graph/households/{quote(household_id, safe='')}/dissolve"
+        return self._post_object(path, {"into_id": into_id})
+
+    def _post_object(self, path: str, payload: dict[str, Any] | None) -> dict[str, Any]:
+        resp = self._request("POST", path, json=payload)
+        body = resp.json()
+        if not isinstance(body, dict):
+            raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
+        return body
+
     def _get_object(self, path: str) -> dict[str, Any]:
         resp = self._request("GET", path)
         body = resp.json()
