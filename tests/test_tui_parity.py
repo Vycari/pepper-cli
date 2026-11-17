@@ -659,12 +659,13 @@ async def test_a_first_page_is_marked_read_only_once_its_scroll_lands(monkeypatc
         assert server.puts == []  # it stood down: nothing was marked
 
 
-@pytest.mark.parametrize("placement", ["stay", "away", "end"])
+@pytest.mark.parametrize("placement", ["stay", "away", "back", "end"])
 async def test_a_live_poll_marks_only_once_its_scroll_lands(placement, monkeypatch) -> None:
     """Codex P2 on #279: a live poll used to mark its rows read the moment the render
     scheduled the scroll to the end, before they were on screen. When the reader moves first
-    the scroll stands down, so nothing may have been claimed. A reader who moves to the new
-    end has seen the rows, and that landing must still mark them."""
+    the scroll stands down, so nothing may have been claimed, and that holds even if they
+    return to the offset captured at render time. A reader who moves to the new end has seen
+    the rows, and that landing must still mark them."""
     for interval in ("ACTIVE_INTERVAL", "COOLING_INTERVAL", "IDLE_INTERVAL"):
         monkeypatch.setattr(state, interval, 60.0)
     server = _older_thread_server()
@@ -697,6 +698,13 @@ async def test_a_live_poll_marks_only_once_its_scroll_lands(placement, monkeypat
         if placement == "away":
             scroller.scroll_y = at - 3  # the reader moves before the scroll runs
             await pilot.pause()
+        elif placement == "back":
+            scroller.scroll_y = at - 3  # away, then back to the offset it captured
+            await pilot.pause()
+            scroller.scroll_y = at
+            await pilot.pause()
+            assert scroller.scroll_y == at
+            assert scroller.max_scroll_y - at >= 2  # the old end is not the new one
         elif placement == "end":
             scroller.scroll_end(animate=False)  # the reader reaches the new end themselves
             await pilot.pause()
@@ -705,7 +713,7 @@ async def test_a_live_poll_marks_only_once_its_scroll_lands(placement, monkeypat
             cb, a, k = held.pop(0)
             cb(*a, **k)
         await pilot.pause()
-        if placement == "away":
+        if placement in ("away", "back"):
             assert thread._unseen == 1  # the row is below the screen, still counted
             assert (ts.TOPIC_A1, "2026-09-16T10:14:00+00:00") not in server.puts
         else:

@@ -127,6 +127,9 @@ class ThreadView(Vertical):
         #: by every ``show``: a live refresh of the same conversation must not cancel the
         #: scroll past an older page it has not reached yet.
         self._render_id = 0
+        #: Bumped on every ``scroll_y`` change, so a deferred callback knows the reader moved
+        #: even if they scrolled away and back to the offset it captured.
+        self._scrolls = 0
 
     def compose(self) -> ComposeResult:
         with ThreadScroll(id="thread-scroll"):
@@ -172,6 +175,7 @@ class ThreadView(Vertical):
         stick = reset or (self.pinned and not prepended)
         scroller = self.scroller
         old_height, old_y = scroller.virtual_size.height, scroller.scroll_y
+        scrolls = self._scrolls
         if reset:
             self._render_id += 1
         render_id = self._render_id
@@ -179,7 +183,7 @@ class ThreadView(Vertical):
         if prepended and not reset:
 
             def keep_place(tries: int = _KEEP_PLACE_TRIES) -> None:
-                if self._render_id != render_id or scroller.scroll_y != old_y:
+                if self._render_id != render_id or self._scrolls != scrolls:
                     # Another conversation was opened, or the reader scrolled, while this
                     # waited: either one owns the position now.
                     return
@@ -201,19 +205,18 @@ class ThreadView(Vertical):
                     # Another conversation was opened while this waited: its own render owns
                     # the position and the count, and this one's rows are not on screen.
                     return
-                if scroller.scroll_y != old_y:
+                if self._scrolls != scrolls:
+                    # The reader moved while this waited, even if they came back to the same
+                    # offset: they own the position now. Scrolling to the end here would drag
+                    # them back down, and the read mark follows the screen (a Windows
+                    # merge-queue run of pepper-cli#274 landed it after the reader had gone up).
                     if self.pinned:
-                        # The view is at the new end without this render's own scroll: either
-                        # the reader reached it (the End key, a wheel to the bottom) or a
-                        # shorter page clamped the old position there. The newest row is on
-                        # screen, so this render landed.
+                        # They are at the new end without this render's own scroll: either the
+                        # reader reached it (the End key, a wheel to the bottom) or a shorter
+                        # page clamped the old position there. The newest row is on screen, so
+                        # this render landed.
                         self.post_message(self.Landed(render_id, through))
-                        return
-                    # Someone moved while this waited: they own the position now. Scrolling
-                    # to the end here would drag them back down, and the read mark follows
-                    # the screen (a Windows merge-queue run of pepper-cli#274 landed it after
-                    # the reader had gone up).
-                    if not reset and new_rows and not self.pinned:
+                    elif not reset and new_rows:
                         # Away from the end, the rows that arrived are below the screen: count
                         # them, or later polls deduplicate them and the cue is lost for good.
                         # Pinned means a sibling callback for the same render already reached
@@ -242,6 +245,7 @@ class ThreadView(Vertical):
         self.watch(self.scroller, "scroll_y", self._scrolled, init=False)
 
     def _scrolled(self, _old: float, new: float) -> None:
+        self._scrolls += 1
         if new <= 0 and self.scroller.max_scroll_y > 0:
             self.post_message(self.AtTop())
         pinned = self.pinned
