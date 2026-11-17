@@ -107,16 +107,25 @@ class ThreadView(Vertical):
 
     class Landed(Message):
         """A view shown from scratch reached its last line: the rows just rendered are on
-        screen, so the topic can be marked read. Not sent when the reader moved first."""
+        screen, so the topic can be marked read. Carries the render it landed for and the
+        newest timestamp it rendered, so a message handled after another render replaced it,
+        or after a poll appended rows, marks only what was on screen. Not sent when the
+        reader moved first, unless a reset clamped them onto the new end."""
+
+        def __init__(self, render_id: int, through: str | None) -> None:
+            super().__init__()
+            self.render_id = render_id
+            self.through = through
 
     def __init__(self) -> None:
         super().__init__(id="thread")
         self._unseen = 0
         self._was_pinned = True
-        #: Bumped when a different conversation is shown, so a keep-place retry left over
-        #: from the previous one stands down. Not by every ``show``: a live refresh of the same
-        #: conversation must not cancel the scroll past an older page it has not reached yet.
-        self._conversation = 0
+        #: Bumped when a different conversation is shown, so a keep-place retry, a stick
+        #: callback or a queued ``Landed`` left over from the previous one stands down. Not
+        #: by every ``show``: a live refresh of the same conversation must not cancel the
+        #: scroll past an older page it has not reached yet.
+        self._render_id = 0
 
     def compose(self) -> ComposeResult:
         with ThreadScroll(id="thread-scroll"):
@@ -138,6 +147,11 @@ class ThreadView(Vertical):
         scroller = self.scroller
         return scroller.scroll_y >= scroller.max_scroll_y - 1
 
+    @property
+    def render_id(self) -> int:
+        """The current render: a ``Landed`` that names an older one is stale."""
+        return self._render_id
+
     def show(
         self,
         body: RenderableType,
@@ -145,23 +159,26 @@ class ThreadView(Vertical):
         new_rows: int = 0,
         reset: bool = False,
         prepended: bool = False,
+        through: str | None = None,
     ) -> None:
         """Replace the content. ``reset`` (a different conversation) always lands at the end.
 
         ``prepended`` says rows were added above what was shown (an older page): the view
-        keeps showing the same lines, so the added height is scrolled past.
+        keeps showing the same lines, so the added height is scrolled past. ``through`` is
+        the newest timestamp ``body`` renders, carried on ``Landed`` so a mark published
+        after a later poll covers only the rows this render put on screen.
         """
         stick = reset or (self.pinned and not prepended)
         scroller = self.scroller
         old_height, old_y = scroller.virtual_size.height, scroller.scroll_y
         if reset:
-            self._conversation += 1
-        conversation = self._conversation
+            self._render_id += 1
+        render_id = self._render_id
         self.query_one("#thread-body", Static).update(body)
         if prepended and not reset:
 
             def keep_place(tries: int = _KEEP_PLACE_TRIES) -> None:
-                if self._conversation != conversation or scroller.scroll_y != old_y:
+                if self._render_id != render_id or scroller.scroll_y != old_y:
                     # Another conversation was opened, or the reader scrolled, while this
                     # waited: either one owns the position now.
                     return
@@ -179,16 +196,20 @@ class ThreadView(Vertical):
             self._unseen = 0
 
             def stick_to_end(tries: int = _STICK_TRIES) -> None:
-                if self._conversation != conversation:
+                if self._render_id != render_id:
                     # Another conversation was opened while this waited: its own render owns
                     # the position and the count, and this one's rows are not on screen.
                     return
                 if scroller.scroll_y != old_y:
+                    if reset and self.pinned:
+                        # A shorter page clamped the old position to the new end without the
+                        # reader moving. The newest row is on screen, so this render landed.
+                        self.post_message(self.Landed(render_id, through))
+                        return
                     # Someone moved while this waited: they own the position now. Scrolling
                     # to the end here would drag them back down, and the read mark follows
                     # the screen (a Windows merge-queue run of pepper-cli#274 landed it after
-                    # the reader had gone up). A reset clamps the old position to the new
-                    # content, which is still the end.
+                    # the reader had gone up).
                     if not reset and new_rows and not self.pinned:
                         # Away from the end, the rows that arrived are below the screen: count
                         # them, or later polls deduplicate them and the cue is lost for good.
@@ -206,7 +227,7 @@ class ThreadView(Vertical):
                 if reset:
                     # The app could not tell from the position whether this would land;
                     # now that it has, the newest row is on screen.
-                    self.post_message(self.Landed())
+                    self.post_message(self.Landed(render_id, through))
 
             scroller.call_after_refresh(stick_to_end)
         else:

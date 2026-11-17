@@ -659,6 +659,61 @@ async def test_a_first_page_is_marked_read_only_once_its_scroll_lands(monkeypatc
         assert server.puts == []  # it stood down: nothing was marked
 
 
+async def test_a_landed_event_from_a_replaced_render_is_ignored(monkeypatch) -> None:
+    """Codex P2 on #279: ``Landed`` is queued. One posted for a render that a later reset
+    replaced must not mark the new screen read."""
+    for interval in ("ACTIVE_INTERVAL", "COOLING_INTERVAL", "IDLE_INTERVAL"):
+        monkeypatch.setattr(state, interval, 60.0)
+    app = tui_app.PepperApp(_older_thread_server().client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        held: list = []
+        real = scroller.call_after_refresh
+
+        def hold(cb, *a, **k) -> None:
+            if getattr(cb, "__name__", "") == "stick_to_end":
+                held.append(cb)
+            else:
+                real(cb, *a, **k)
+
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        calls: list[str | None] = []
+        monkeypatch.setattr(app, "_note_viewed", lambda **kw: calls.append(kw.get("through")))
+        stale = thread.render_id
+        thread.show("a later screen", reset=True)
+        thread.post_message(tui_app.ThreadView.Landed(stale, "2026-09-16T10:00:00+00:00"))
+        await pilot.pause()
+        assert calls == []  # the landing names a render that is no longer shown
+        thread.post_message(
+            tui_app.ThreadView.Landed(thread.render_id, "2026-09-16T10:13:00+00:00")
+        )
+        await pilot.pause()
+        assert calls == ["2026-09-16T10:13:00+00:00"]  # the current render still lands
+
+
+async def test_a_reset_clamped_to_a_shorter_end_is_marked_read(monkeypatch) -> None:
+    """Codex P2 on #279: a shorter page clamps the old scroll position to the new end
+    without a reader move. That reset landed, so the topic must be marked read."""
+    for interval in ("ACTIVE_INTERVAL", "COOLING_INTERVAL", "IDLE_INTERVAL"):
+        monkeypatch.setattr(state, interval, 60.0)
+    app = tui_app.PepperApp(_older_thread_server().client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and thread.pinned)
+        calls: list[str | None] = []
+        monkeypatch.setattr(app, "_note_viewed", lambda **kw: calls.append(kw.get("through")))
+        old = scroller.scroll_y
+        thread.show("short page", reset=True, through="2026-09-16T10:13:00+00:00")
+        await pilot.pause(0.2)  # the layout clamps the old position to the shorter end
+        assert scroller.scroll_y != old  # clamped, not a reader scroll
+        assert thread.pinned
+        assert calls == ["2026-09-16T10:13:00+00:00"]  # the reset landed at the new end
+
+
 async def test_o_opens_the_first_link_and_never_a_non_web_url() -> None:
     server = ts.standard_server()
     opened: list[str] = []
