@@ -116,6 +116,21 @@ def startup_pepper(*, is_tty: bool, rng: random.Random | None = None) -> str | N
     return f"{PEPPER_ART}\n  {pick_fortune(rng)}"
 
 
+#: The second line under a "Couldn't reach" error (whimsy #6). The first line keeps the real cause.
+NETWORK_HINT = "Pepper might be napping, or your network is. Try again in a moment."
+
+
+def network_hint(*, is_tty: bool) -> str | None:
+    """The friendly line under a network error, or ``None`` off a terminal or with whimsy off.
+
+    Every network error gets it (no dice roll): it is a hint, not a surprise. Never in
+    ``--json`` mode either; the caller only asks on the text path.
+    """
+    if not is_tty or whimsy_disabled():
+        return None
+    return NETWORK_HINT
+
+
 def splash_fortune(*, rng: random.Random | None = None) -> str | None:
     """A fortune for the TUI's rare full-screen pepper, or ``None`` on almost every start.
 

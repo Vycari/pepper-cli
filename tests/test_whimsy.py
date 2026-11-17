@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import random
 
@@ -104,3 +105,54 @@ def test_splash_art_is_plain_ascii_that_fits_a_small_terminal() -> None:
     assert whimsy.SPLASH_ART.isascii()
     assert len(lines) <= 18
     assert max(len(line) for line in lines) <= 60
+
+
+# --- the network-error hint (whimsy #6) ---------------------------------
+
+
+def test_network_hint_shows_on_a_terminal() -> None:
+    assert whimsy.network_hint(is_tty=True) == whimsy.NETWORK_HINT
+
+
+def test_network_hint_never_off_a_terminal() -> None:
+    assert whimsy.network_hint(is_tty=False) is None
+
+
+def test_network_hint_off_with_the_switch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PEPPER_NO_WHIMSY", "1")
+    assert whimsy.network_hint(is_tty=True) is None
+
+
+def _text_mode() -> argparse.Namespace:
+    return argparse.Namespace(json=False)
+
+
+def test_a_network_error_keeps_its_cause_and_adds_the_hint(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli.sys.stderr, "isatty", lambda: True)
+    cli._emit_error(_text_mode(), "network", "Couldn't reach https://example.test: refused")
+
+    err = capsys.readouterr().err
+    assert "Couldn't reach https://example.test: refused" in err
+    assert whimsy.NETWORK_HINT in err
+
+
+def test_other_errors_get_no_hint(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli.sys.stderr, "isatty", lambda: True)
+    cli._emit_error(_text_mode(), "not_found", "no such room")
+
+    assert whimsy.NETWORK_HINT not in capsys.readouterr().err
+
+
+def test_json_mode_never_gets_the_hint(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli.sys.stderr, "isatty", lambda: True)
+    cli._emit_error(argparse.Namespace(json=True), "network", "Couldn't reach x: refused")
+
+    line = capsys.readouterr().err.strip()
+    assert json.loads(line)["error"]["code"] == "network"
+    assert whimsy.NETWORK_HINT not in line
