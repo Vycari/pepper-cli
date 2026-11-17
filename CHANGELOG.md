@@ -8,6 +8,12 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 
 ### Added
 
+- `pepper graph me`, `pepper graph me mark ENTITY_ID (--address A... | --all)` and `pepper graph me unmark
+  ADDRESS`: list, mark and unmark the addresses that are yours ("this is me"), so an old work address stops
+  showing up as a person in your graph, over `GET | POST | DELETE /api/v1/graph/me` (Vycari/pepper#6542; refs
+  Vycari/pepper#6370). A refused mark is a 409 whose reason code is shown as `Refused (<reason>)` with a
+  one-line meaning, exit 1; `groups_unavailable` (503) says to retry. 404 until the `entity-graph` rollout
+  reaches the caller.
 - `pepper graph merge | merges | undo | duplicates | not-same` and `pepper graph households |
   household-create | household-add | household-remove | household-dissolve`: join two entities, read the
   merge log, undo a merge, list likely duplicates, mark a pair as different people, and keep a shared

@@ -2642,6 +2642,31 @@ class ApiClient:
         path = f"/api/v1/graph/households/{quote(household_id, safe='')}/dissolve"
         return self._post_object(path, {"into_id": into_id})
 
+    def graph_me(self) -> dict[str, Any]:
+        """``GET /api/v1/graph/me``: the addresses the caller marked as their own."""
+        return self._get_object("/api/v1/graph/me")
+
+    def graph_me_mark(
+        self, entity_id: str, addresses: list[str] | None = None, *, every: bool = False
+    ) -> dict[str, Any]:
+        """``POST /api/v1/graph/me``: mark ``addresses`` of an entity (or ``every`` one it has)
+        as the caller's own. Exactly one of the two is sent. 409 carries the reason in
+        ``detail``; 503 is ``groups_unavailable`` or a busy server."""
+        body: dict[str, Any] = {"entity_id": entity_id}
+        if every:
+            body["all"] = True
+        else:
+            body["addresses"] = addresses
+        return self._post_object("/api/v1/graph/me", body)
+
+    def graph_me_unmark(self, address: str) -> dict[str, Any]:
+        """``DELETE /api/v1/graph/me``: take one address off the caller's marks."""
+        resp = self._request("DELETE", "/api/v1/graph/me", json={"address": address})
+        body = resp.json()
+        if not isinstance(body, dict):
+            raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
+        return body
+
     def _post_object(self, path: str, payload: dict[str, Any] | None) -> dict[str, Any]:
         resp = self._request("POST", path, json=payload)
         body = resp.json()

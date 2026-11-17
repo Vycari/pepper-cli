@@ -170,6 +170,13 @@ ever want to look back at a specific conversation in detail.
   makes one with you as a member (add others with `--member <id>`),
   `household-add` and `household-remove` change who is in it, and
   `household-dissolve` gives the address back to a person.
+- **Telling Pepper an address is yours:** an old work address or a second inbox
+  can show up as a person in your graph. `pepper graph me mark <id> --all` says
+  every address that person has is yours (or name some with `--address <email>`),
+  and they leave the graph; mail to or from them no longer makes a person.
+  `pepper graph me` lists what you marked and `pepper graph me unmark <email>`
+  takes one back. If Pepper refuses (for example the address belongs to a
+  household or is not on that person) it says why and changes nothing.
 <!-- /rollout -->
 - **What's next:** `pepper next` shows what's on now (with the time left) and
   what's after it, the rest of today's calendar, and your top ten open to-dos
