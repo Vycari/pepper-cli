@@ -155,6 +155,21 @@ ever want to look back at a specific conversation in detail.
   it; `pepper graph catalog --scheme espn --value <id>` finds one by an outside
   id. Both take `--history` to include links that have ended. If one says it is
   not found, the id is unknown or not in your own graph.
+- **Joining the same person twice:** `pepper graph duplicates` lists people who
+  look like one person. `pepper graph merge <from id> <into id>` joins two of
+  your entities, and says which one kept its place and gives the merge an id.
+  `pepper graph merges <id>` shows the merges behind an entity, newest first,
+  and `pepper graph undo <merge id>` takes one back, most recent first. Undoing
+  also marks the pair as different people so nothing joins them again on its
+  own; `pepper graph not-same <id> <id>` does the same without a merge. If
+  Pepper refuses a change it says why (for example the two are different kinds
+  of thing) and changes nothing.
+- **Households:** a household keeps a shared address, such as a home mailbox,
+  off any one person, so mail to it lands on the household. `pepper graph
+  households` lists yours. `pepper graph household-create <name> <address>`
+  makes one with you as a member (add others with `--member <id>`),
+  `household-add` and `household-remove` change who is in it, and
+  `household-dissolve` gives the address back to a person.
 <!-- /rollout -->
 - **What's next:** `pepper next` shows what's on now (with the time left) and
   what's after it, the rest of today's calendar, and your top ten open to-dos

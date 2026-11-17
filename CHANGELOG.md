@@ -8,6 +8,12 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 
 ### Added
 
+- `pepper graph merge | merges | undo | duplicates | not-same` and `pepper graph households |
+  household-create | household-add | household-remove | household-dissolve`: join two entities, read the
+  merge log, undo a merge, list likely duplicates, mark a pair as different people, and keep a shared
+  address in a household, over `/api/v1/graph/merge*`, `/duplicates`, `/not-same` and `/households*`
+  (Vycari/pepper#6465, #6469; closes #269). A refused write is a 409 whose reason code is shown as
+  `Refused (<reason>)`, with exit 1. 404 until the `entity-graph` rollout reaches the caller.
 - `pepper graph entity ID` and `pepper graph catalog ID | --scheme S --value V`: an entity's page (edges by
   type, follows included, its catalog entry) and a catalog entry with the caller's linked entities, both
   with `--history` and `--json`, over `GET /api/v1/graph/entities/{id}` and `/catalog` (Vycari/pepper#6407;

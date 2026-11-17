@@ -1037,12 +1037,12 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
 
     p_graph = sub.add_parser(
         "graph",
-        help="Inspect the people Pepper has seen in your mail and meetings (read-only).",
+        help="Inspect the people Pepper has seen in your mail and meetings; merge duplicates.",
         description=(
             "Read what Pepper's entity graph holds: who someone is to you, when you last spoke, "
-            "how close the tie is and your past meetings. Read-only. The graph is built from "
-            "mail headers and calendar attendees, and is only available once it is turned on "
-            "for your account."
+            "how close the tie is and your past meetings. The graph is built from mail headers and "
+            "calendar attendees, and is only available once it is turned on for your account. "
+            "Reads are read-only; merge, undo, not-same and household change the graph."
         ),
     )
     sub_graph = p_graph.add_subparsers(dest="graph_action", required=True)
@@ -1112,6 +1112,105 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "--history", action="store_true", help="Include closed edges, marked with when they closed."
     )
     p.set_defaults(handler=cmd_graph_catalog)
+    p = sub_graph.add_parser(
+        "merge",
+        help="Merge two of your entities into one.",
+        description=(
+            "Merge FROM_ID into INTO_ID. The server decides which of the two keeps its row; the "
+            "result names it. A refusal (different kind, two linked people, already merged) is "
+            "shown with its reason and exits 1."
+        ),
+        parents=[_json_parent],
+    )
+    p.add_argument("from_id", metavar="FROM_ID", help="The entity to merge away.")
+    p.add_argument("into_id", metavar="INTO_ID", help="The entity to merge it into.")
+    p.set_defaults(handler=cmd_graph_merge)
+    p = sub_graph.add_parser(
+        "merges",
+        help="The merge history of one entity (undone merges included).",
+        parents=[_json_parent],
+    )
+    p.add_argument("entity_id", metavar="ID", help="An entity id (see 'graph list').")
+    p.set_defaults(handler=cmd_graph_merges)
+    p = sub_graph.add_parser(
+        "undo",
+        help="Undo one of your merges (last in, first out).",
+        description=(
+            "Undo the merge with this log id (see 'graph merges'). Undoing also marks the pair "
+            "as not the same, so no automatic join redoes it."
+        ),
+        parents=[_json_parent],
+    )
+    p.add_argument("log_id", metavar="LOG_ID", help="A merge log id (see 'graph merges').")
+    p.set_defaults(handler=cmd_graph_undo)
+    p = sub_graph.add_parser(
+        "duplicates",
+        help="People who look like the same person.",
+        description="Likely duplicates, computed now. Act with 'graph merge' or 'graph not-same'.",
+        parents=[_json_parent],
+    )
+    p.set_defaults(handler=cmd_graph_duplicates)
+    p = sub_graph.add_parser(
+        "not-same",
+        help="Say two entities are different people.",
+        description="Mark a pair as different people so they are not joined automatically.",
+        parents=[_json_parent],
+    )
+    p.add_argument("a_id", metavar="A_ID", help="One entity id.")
+    p.add_argument("b_id", metavar="B_ID", help="The other entity id.")
+    p.set_defaults(handler=cmd_graph_not_same)
+    p = sub_graph.add_parser(
+        "households",
+        help="Your households: shared addresses kept off every person.",
+        parents=[_json_parent],
+    )
+    p.set_defaults(handler=cmd_graph_households)
+    p = sub_graph.add_parser(
+        "household-create",
+        help="Make a household from an address.",
+        description=(
+            "A household holds a shared address (a home mailbox) so mail to it lands on the "
+            "household rather than on one person. You are always a member; add others with "
+            "--member."
+        ),
+        parents=[_json_parent],
+    )
+    p.add_argument("name", metavar="NAME", help="The household's name.")
+    p.add_argument("address", metavar="ADDRESS", help="The shared address (an email address).")
+    p.add_argument(
+        "--member",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="Another member's person entity id (repeatable, up to 20).",
+    )
+    p.set_defaults(handler=cmd_graph_household_create)
+    p = sub_graph.add_parser(
+        "household-add", help="Add a person to a household.", parents=[_json_parent]
+    )
+    p.add_argument("household_id", metavar="HOUSEHOLD_ID", help="A household id.")
+    p.add_argument("entity_id", metavar="ID", help="The person entity to add.")
+    p.set_defaults(handler=cmd_graph_household_add)
+    p = sub_graph.add_parser(
+        "household-remove",
+        help="Remove a member from a household (you, unless --member is given).",
+        parents=[_json_parent],
+    )
+    p.add_argument("household_id", metavar="HOUSEHOLD_ID", help="A household id.")
+    p.add_argument("--member", metavar="ID", help="The person entity to remove (default: you).")
+    p.set_defaults(handler=cmd_graph_household_remove)
+    p = sub_graph.add_parser(
+        "household-dissolve",
+        help="Undo a household: its address goes back to a person.",
+        parents=[_json_parent],
+    )
+    p.add_argument("household_id", metavar="HOUSEHOLD_ID", help="A household id.")
+    p.add_argument(
+        "--into",
+        metavar="ID",
+        help="The person entity the address goes back to (default: the household becomes one).",
+    )
+    p.set_defaults(handler=cmd_graph_household_dissolve)
 
     p_todos = sub.add_parser(
         "todos",
@@ -9781,6 +9880,207 @@ def cmd_graph_upcoming(args: argparse.Namespace) -> int:
         return 0
 
     return _run_personal(args, run, _report_graph_error)
+
+
+#: What each reason code in a refused graph write (409 ``detail``) means.
+_GRAPH_REASONS = {
+    "same_entity": "those are the same entity",
+    "already_merged": "an entity involved is already merged into another",
+    "different_kind": "they are different kinds of entity",
+    "conflicting_person": "both are linked to a person elsewhere, so they cannot be joined",
+    "refused": "the server refused the merge",
+    "not_user_merge": "that merge was not made by you, so it cannot be undone here",
+    "already_undone": "that merge is already undone",
+    "not_live": "that merge is no longer in effect",
+    "later_merge": "a later merge covers the survivor; undo that one first",
+    "no_aliases": "that merge moved no aliases, so there is nothing to undo",
+    "invalid_address": "that is not a usable address for a household",
+    "not_a_person": "that entity is not a person",
+    "already_household": "that address is already a household",
+    "groups_linked": "the entity is linked to a person elsewhere, so it cannot be one",
+    "member_is_household": "a member is itself a household",
+    "not_a_household": "that id is not a household",
+    "too_many_members": "a household has too many members",
+    "no_target": "there is no person to give the address back to; pass --into",
+    "member_of_household": "the address sits on a member of a household, so it cannot become one",
+    "merge_undoable": "the address came in a merge that can still be undone; undo that first",
+}
+
+
+def _report_graph_write_error(args: argparse.Namespace, exc: api_client.ApiError) -> int:
+    """A 409 is the server refusing a write with a reason code in ``detail``: show the code and
+    what it means, and exit 1. Everything else is :func:`_report_graph_error`."""
+    if exc.status == 409:
+        code = (exc.detail or "").strip()
+        meaning = _GRAPH_REASONS.get(code)
+        message = f"Refused ({code}): {meaning}." if meaning else f"Refused: {code or 'conflict'}."
+        _emit_error(args, "conflict", message, status=409)
+        return 1
+    return _report_graph_error(args, exc)
+
+
+def _graph_ids(args: argparse.Namespace, *names: str) -> list[str] | None:
+    """The stripped id arguments named ``names``, or ``None`` after reporting a blank one."""
+    ids = [str(getattr(args, n) or "").strip() for n in names]
+    if not all(ids):
+        _emit_error(args, "usage", f"{' and '.join(n.upper() for n in names)} must not be blank.")
+        return None
+    return ids
+
+
+def cmd_graph_merge(args: argparse.Namespace) -> int:
+    """``pepper graph merge FROM_ID INTO_ID [--json]``: ``POST /api/v1/graph/merge``."""
+    if (ids := _graph_ids(args, "from_id", "into_id")) is None:
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.graph_merge(ids[0], ids[1])
+        _emit(body, args, lambda: graph_view.merged(body))
+        return 0
+
+    return _run_personal(args, run, _report_graph_write_error)
+
+
+def cmd_graph_merges(args: argparse.Namespace) -> int:
+    """``pepper graph merges ID [--json]``: ``GET /api/v1/graph/merges?entity_id=``."""
+    if (ids := _graph_ids(args, "entity_id")) is None:
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.graph_merges(ids[0])
+        envelope = _list_envelope(body.get("merges") or [])
+        _emit(envelope, args, lambda: graph_view.merges(body))
+        return 0
+
+    return _run_personal(args, run, _report_graph_error)
+
+
+def cmd_graph_undo(args: argparse.Namespace) -> int:
+    """``pepper graph undo LOG_ID [--json]``: ``POST /api/v1/graph/merges/{id}/undo``."""
+    if (ids := _graph_ids(args, "log_id")) is None:
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.graph_undo_merge(ids[0])
+        _emit(body, args, lambda: graph_view.undone(body))
+        return 0
+
+    return _run_personal(args, run, _report_graph_write_error)
+
+
+def cmd_graph_duplicates(args: argparse.Namespace) -> int:
+    """``pepper graph duplicates [--json]``: ``GET /api/v1/graph/duplicates``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.graph_duplicates()
+        envelope = _list_envelope(body.get("duplicates") or [])
+        _emit(envelope, args, lambda: graph_view.duplicates(body))
+        return 0
+
+    return _run_personal(args, run, _report_graph_error)
+
+
+def cmd_graph_not_same(args: argparse.Namespace) -> int:
+    """``pepper graph not-same A_ID B_ID [--json]``: ``POST /api/v1/graph/not-same``."""
+    if (ids := _graph_ids(args, "a_id", "b_id")) is None:
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.graph_not_same(ids[0], ids[1])
+        _emit(body, args, lambda: graph_view.not_same(body))
+        return 0
+
+    return _run_personal(args, run, _report_graph_write_error)
+
+
+def cmd_graph_households(args: argparse.Namespace) -> int:
+    """``pepper graph households [--json]``: ``GET /api/v1/graph/households``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.graph_households()
+        envelope = _list_envelope(body.get("households") or [])
+        _emit(envelope, args, lambda: graph_view.households(body))
+        return 0
+
+    return _run_personal(args, run, _report_graph_error)
+
+
+def cmd_graph_household_create(args: argparse.Namespace) -> int:
+    """``pepper graph household-create NAME ADDRESS [--member ID]... [--json]``."""
+    if (ids := _graph_ids(args, "name", "address")) is None:
+        return 2
+    members = [m.strip() for m in args.member]
+    if not all(members):
+        _emit_error(args, "usage", "--member must not be blank.")
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.graph_household_create(ids[0], ids[1], members)
+        _emit(body, args, lambda: graph_view.household_created(body))
+        return 0
+
+    return _run_personal(args, run, _report_graph_write_error)
+
+
+def cmd_graph_household_add(args: argparse.Namespace) -> int:
+    """``pepper graph household-add HOUSEHOLD_ID ID [--json]``."""
+    if (ids := _graph_ids(args, "household_id", "entity_id")) is None:
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.graph_household_add(ids[0], ids[1])
+        _emit(
+            body,
+            args,
+            lambda: graph_view.household_changed(
+                body, done="Added to the household.", unchanged="Already a member; nothing changed."
+            ),
+        )
+        return 0
+
+    return _run_personal(args, run, _report_graph_write_error)
+
+
+def cmd_graph_household_remove(args: argparse.Namespace) -> int:
+    """``pepper graph household-remove HOUSEHOLD_ID [--member ID] [--json]``."""
+    if (ids := _graph_ids(args, "household_id")) is None:
+        return 2
+    member = args.member.strip() if args.member is not None else None
+    if member == "":
+        _emit_error(args, "usage", "--member must not be blank.")
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.graph_household_remove(ids[0], member)
+        _emit(
+            body,
+            args,
+            lambda: graph_view.household_changed(
+                body,
+                done="Removed from the household.",
+                unchanged="Not a member; nothing changed.",
+            ),
+        )
+        return 0
+
+    return _run_personal(args, run, _report_graph_write_error)
+
+
+def cmd_graph_household_dissolve(args: argparse.Namespace) -> int:
+    """``pepper graph household-dissolve HOUSEHOLD_ID [--into ID] [--json]``."""
+    if (ids := _graph_ids(args, "household_id")) is None:
+        return 2
+    into = args.into.strip() if args.into is not None else None
+    if into == "":
+        _emit_error(args, "usage", "--into must not be blank.")
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.graph_household_dissolve(ids[0], into)
+        _emit(body, args, lambda: graph_view.household_dissolved(body))
+        return 0
+
+    return _run_personal(args, run, _report_graph_write_error)
 
 
 def cmd_calendar_publish_show(args: argparse.Namespace) -> int:
