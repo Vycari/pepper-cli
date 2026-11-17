@@ -117,7 +117,9 @@ def startup_pepper(*, is_tty: bool, rng: random.Random | None = None) -> str | N
 
 
 #: The second line under a "Couldn't reach" error (whimsy #6). The first line keeps the real cause.
-NETWORK_HINT = "Pepper might be napping, or your network is. Try again in a moment."
+#: It gives no advice: some of those errors say the request may already have gone through and how
+#: to check before resending, and a "try again" here would contradict them.
+NETWORK_HINT = "Pepper might be napping, or your network is."
 
 
 def network_hint(*, is_tty: bool) -> str | None:
