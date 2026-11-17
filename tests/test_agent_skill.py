@@ -213,7 +213,11 @@ def check_document(markdown: str) -> list[str]:
         else:
             choices = _subparsers(parser)
             elided = placeholder or "--help" in flags_seen
-            if choices is not None and parser is not root and not elided:
+            optional = any(
+                isinstance(a, argparse._SubParsersAction) and not a.required
+                for a in parser._actions
+            )  # `graph me` runs bare and takes `mark`/`unmark` too
+            if choices is not None and parser is not root and not elided and not optional:
                 problems.append(f"{shown!r}: incomplete, {parser.prog!r} needs a subcommand")
             known = _flags(parser) | root_flags
             problems.extend(

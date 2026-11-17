@@ -161,6 +161,8 @@ VERBS = frozenset(
         "household-add",
         "household-remove",
         "household-dissolve",
+        # `graph me` lists the addresses you marked as yours; `me mark`/`me unmark` change them.
+        "me",
         # Research projects (IA §3.1): `steer` queues guidance for an object's next run;
         # `take` and `reconsider` mark a ledger item.
         "steer",
@@ -228,6 +230,7 @@ ROOM_NA = {
             "household-add",
             "household-remove",
             "household-dissolve",
+            "me",
         )
     },
     "brief": "your own morning brief; the server exposes no room's brief to a PAT here",
@@ -752,6 +755,7 @@ ROUTES: dict[str, object] = {
     "/api/v1/graph/merges": {"merges": []},
     "/api/v1/graph/duplicates": {"duplicates": []},
     "/api/v1/graph/households": {"households": []},
+    "/api/v1/graph/me": {"marks": []},
     "/api/v1/graph/entities/e1": {
         "status": "ok",
         "entity": {
@@ -1212,6 +1216,7 @@ JSON_CASES: dict[str, list[str]] = {
     "graph household-add": ["graph", "household-add", "h1", "e1"],
     "graph household-remove": ["graph", "household-remove", "h1"],
     "graph household-dissolve": ["graph", "household-dissolve", "h1"],
+    "graph me": ["graph", "me"],
     "todos list": ["todos", "list"],
     "rooms list": ["rooms", "list"],
     "rooms show": ["rooms", "show", _G],
