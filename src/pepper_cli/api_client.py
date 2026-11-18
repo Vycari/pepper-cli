@@ -2577,6 +2577,19 @@ class ApiClient:
         q = urlencode({"history": "true" if history else "false"})
         return self._get_object(f"/api/v1/graph/entities/{quote(entity_id, safe='')}?{q}")
 
+    def graph_room_entity(
+        self, room_id: str, entity_id: str, *, history: bool = False
+    ) -> dict[str, Any]:
+        """``GET /api/v1/graph/rooms/{room}/entities/{id}``: one entity of a room's own graph.
+
+        The same page shape as :meth:`graph_entity`, read from the room's graph (its follows and
+        inferred interest), never the caller's. 404 for a non-member, a room off the
+        ``entity-graph-rooms`` rollout, or an id that is not the room's.
+        """
+        q = urlencode({"history": "true" if history else "false"})
+        room, entity = quote(room_id, safe=""), quote(entity_id, safe="")
+        return self._get_object(f"/api/v1/graph/rooms/{room}/entities/{entity}?{q}")
+
     def graph_catalog(self, catalog_id: str, *, history: bool = False) -> dict[str, Any]:
         """``GET /api/v1/graph/catalog/{id}``: a catalog entry and the caller's entities on it."""
         q = urlencode({"history": "true" if history else "false"})

@@ -310,3 +310,65 @@ def test_an_unknown_scheme_is_refused_by_the_parser(server, capsys) -> None:
     with pytest.raises(SystemExit):
         cli.main(["graph", "catalog", "--scheme", "nope", "--value", "v"])
     assert server.seen == []
+
+
+_ROOM = "5c2f6a50-0000-4000-8000-0000000000aa"
+_ROOM_ENTITY_PATH = f"/api/v1/graph/rooms/{_ROOM}/entities/e-1"
+
+
+def test_room_entity_page_reads_the_room_route_and_prints_the_same_page(server, capsys) -> None:
+    server.reply(_ROOM_ENTITY_PATH, _ENTITY_BODY)
+    assert cli.main(["graph", "entity", "--room", _ROOM, "e-1"]) == 0
+    out = capsys.readouterr().out
+    assert "Seattle Kraken (topic/team)" in out and "follow espn:nhl:26" in out
+    assert [r.url.path for r in server.seen] == [_ROOM_ENTITY_PATH]
+    assert server.seen[0].url.params["history"] == "false"
+
+
+def test_room_entity_page_history_and_json(server, capsys) -> None:
+    server.reply(_ROOM_ENTITY_PATH, _ENTITY_BODY)
+    assert cli.main(["graph", "entity", "--room", _ROOM, "e-1", "--history", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == _ENTITY_BODY
+    assert server.seen[0].url.params["history"] == "true"
+
+
+def test_room_entity_page_resolves_a_room_name(server, capsys) -> None:
+    server.reply(
+        "/api/v1/groups",
+        {
+            "enabled": True,
+            "degraded": False,
+            "total": 1,
+            "archived_total": 0,
+            "groups": [
+                {
+                    "group_id": _ROOM,
+                    "display_name": "Chef Steve",
+                    "color": "#fff",
+                    "sub": "",
+                    "member_count": 2,
+                    "archived": False,
+                }
+            ],
+        },
+    )
+    server.reply(_ROOM_ENTITY_PATH, _ENTITY_BODY)
+    assert cli.main(["graph", "entity", "--room", "chef", "e-1"]) == 0
+    assert server.seen[-1].url.path == _ROOM_ENTITY_PATH
+
+
+def test_room_entity_page_404_names_membership_and_rollout(server, capsys) -> None:
+    server.reply(_ROOM_ENTITY_PATH, {"detail": "Not Found"}, status=404)
+    assert cli.main(["graph", "entity", "--room", _ROOM, "e-1"]) == 1
+    err = capsys.readouterr().err
+    assert "not a member" in err and "rollout" in err
+
+
+def test_room_entity_page_fail_soft_status_exits_non_zero(server, capsys) -> None:
+    server.reply(_ROOM_ENTITY_PATH, {"status": "timeout", "entity": None})
+    assert cli.main(["graph", "entity", "--room", _ROOM, "e-1"]) == 1
+
+
+def test_a_blank_room_is_refused_before_any_request(server, capsys) -> None:
+    assert cli.main(["graph", "entity", "--room", " ", "e-1"]) == 2
+    assert server.seen == []

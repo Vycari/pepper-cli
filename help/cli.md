@@ -155,6 +155,16 @@ ever want to look back at a specific conversation in detail.
   it; `pepper graph catalog --scheme espn --value <id>` finds one by an outside
   id. Both take `--history` to include links that have ended. If one says it is
   not found, the id is unknown or not in your own graph.
+<!-- /rollout -->
+<!-- rollout: entity-graph-rooms -->
+- **A room's own page for one entity:** `pepper graph entity --room <room> <id>`
+  shows the same page from the room's side: what the room follows and what it
+  seems interested in, never your own follows. You must be a member, and the
+  room must be on this rollout. `--history` works here too. If it says it is not
+  found, you may not be in that room, the room may not have this yet, or the id
+  is not in the room's graph.
+<!-- /rollout -->
+<!-- rollout: entity-graph -->
 - **Joining the same person twice:** `pepper graph duplicates` lists people who
   look like one person. `pepper graph merge <from id> <into id>` joins two of
   your entities, and says which one kept its place and gives the merge an id.

@@ -215,7 +215,6 @@ ROOM_NA = {
     "graph search": "the graph is your own, never a room's (D12 keeps a room's separate)",
     "graph show": "the graph is your own, never a room's (D12 keeps a room's separate)",
     "graph upcoming": "the graph is your own, never a room's (D12 keeps a room's separate)",
-    "graph entity": "the graph is your own, never a room's (D12 keeps a room's separate)",
     "graph catalog": "the graph is your own, never a room's (D12 keeps a room's separate)",
     **{
         f"graph {verb}": "the graph is your own, never a room's (D12 keeps a room's separate)"
