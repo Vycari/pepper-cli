@@ -1091,6 +1091,15 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         ),
         parents=[_json_parent],
     )
+    p.add_argument(
+        "--room",
+        metavar="ROOM",
+        help=(
+            "Read the room's own entity page (its follows and inferred interest) instead of "
+            "yours. " + _ROOM_ARG_HELP + " Needs the room to be on the entity-graph-rooms "
+            "rollout."
+        ),
+    )
     p.add_argument("entity_id", metavar="ID", help="An entity id (see 'graph list').")
     p.add_argument(
         "--history", action="store_true", help="Include closed edges, marked with when they closed."
@@ -9894,20 +9903,50 @@ def _graph_page(
     return 0
 
 
+def _report_graph_room_error(args: argparse.Namespace, exc: api_client.ApiError) -> int:
+    """A room entity page 404s for a non-member, a room off the ``entity-graph-rooms`` rollout,
+    an id that is not the room's, or an older server; say which to check."""
+    if exc.status == 404:
+        _emit_error(
+            args,
+            "not_found",
+            "Not found: you are not a member of that room, the room is not on the entity "
+            "graph rollout, the entity is not in the room's graph, or this server is too old.",
+            status=404,
+        )
+        return 1
+    return _fail_api(args, exc)
+
+
 def cmd_graph_entity(args: argparse.Namespace) -> int:
-    """``pepper graph entity ID [--history] [--json]``: ``GET /api/v1/graph/entities/{id}``."""
+    """``pepper graph entity ID [--room R] [--history] [--json]``:
+    ``GET /api/v1/graph/entities/{id}``, or the room's page at
+    ``GET /api/v1/graph/rooms/{room}/entities/{id}`` with ``--room``."""
     entity_id = args.entity_id.strip()
     if not entity_id:
         _emit_error(args, "usage", "ID must not be blank.")
         return 2
+    room = (args.room or "").strip()
+    if args.room is not None and not room:
+        _emit_error(args, "usage", "--room must not be blank.")
+        return 2
 
     def run(api: api_client.ApiClient) -> int:
-        body = api.graph_entity(entity_id, history=args.history)
+        if not room:
+            body = api.graph_entity(entity_id, history=args.history)
+        else:
+            room_id: str | int = room
+            if not _valid_uuid(room):
+                # A UUID goes straight to the server so a non-member gets its 404 message.
+                room_id = _resolve_room_strict(api, args, room)
+                if isinstance(room_id, int):
+                    return room_id
+            body = api.graph_room_entity(room_id, entity_id, history=args.history)
         return _graph_page(
             args, body, "entity", lambda: graph_view.entity_page(body, history=args.history)
         )
 
-    return _run_personal(args, run, _report_graph_error)
+    return _run_personal(args, run, _report_graph_room_error if room else _report_graph_error)
 
 
 def cmd_graph_catalog(args: argparse.Namespace) -> int:
