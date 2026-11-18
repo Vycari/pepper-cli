@@ -6,6 +6,22 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 
 ## Unreleased
 
+## 0.10.0 — 2026-11-18
+
+The entity graph arrives (`pepper graph`), along with `pepper run FILE` shebang scripts, calendar
+publishing, note links, and a tighter first-run boundary for agent feeds. Every PR merged since 0.9.0
+is listed below.
+
+Upgrade notes:
+
+- `pepper graph` needs the `entity-graph` rollout; until it reaches you, its commands answer 404.
+  `graph entity --room` also needs `entity-graph-rooms` for that room.
+- `pepper agents claude-channel` with `--room` now exits 2 when `--self` disagrees with the scope
+  frame's agent id (#260).
+- `rooms watch` and `agents claude-channel` announce the live edge only on a cursor the server marks
+  `head: true`; an older server that ignores `start=head` keeps the first-run cutoff and summary
+  (#280).
+
 ### Added
 
 - `pepper graph me`, `pepper graph me mark ENTITY_ID (--address A... | --all)` and `pepper graph me unmark
@@ -44,11 +60,51 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
   calendar someone shared with you in Full details (`show` marks those `titles shown/hidden`). Adding a first Google calendar needs the person's consent: a terminal shows
   the server's disclosure and asks, anything else must pass `--consent`. Declining any of these
   prompts (consent, `off`, `rotate`) exits 1.
+- `pepper graph entity ID --room ROOM`: a room member reads the room's own entity page (its follows
+  and inferred interest), in the same shape as the personal page, over
+  `GET /api/v1/graph/rooms/{room}/entities/{id}` (#289, closes #265). 404 says to check membership
+  and the `entity-graph-rooms` rollout.
+- `pepper run FILE [ARGS...] [--root PATH] [--json]`: a prompt file that starts with
+  `#!/usr/bin/env -S pepper run` is an executable script. `{{1}}`…`{{N}}` and `{{@}}` take the
+  arguments, any argument the file does not reference is appended as context, the reply goes to
+  stdout, and the turn lands in your DM (#243, fixes #242).
+- `pepper notes links NOTE [--room ROOM] [--json]`: a note's outgoing wiki links with what each
+  resolved to, then the notes linking back to it (#229, refs #152).
+- `pepper rooms list --json` includes each room's `mascot_url` (#241).
+- On a terminal, a "Couldn't reach" network error gets a dim second line, "Pepper might be napping,
+  or your network is." Never in `--json`, never off a terminal, and `PEPPER_NO_WHIMSY=1` turns it
+  off (#288).
 
 ### Changed
 
-- `pepper research-items take` help and README now say an accepted item can be taken, not only a delivered
-  one, matching the server since Vycari/pepper#5470 (closes #137). No behavior change.
+- `pepper agents claude-channel`: on a `start=head` connection the opening head is the first-run
+  boundary for the life of the process, so a live event after it is pushed even when the local
+  clock is ahead of the server. A saved cursor, `--start beginning` and a server that sends no
+  marked head keep the local cutoff (#268, refs #255).
+- The live edge is announced only on a cursor marked `head: true`; a plain cursor is a replay skip
+  point. The TUI still catches up once on the first cursor of a connection that named no position
+  (#280, fixes #271).
+- A resync notice with more than 40 topics says how many of them it lists and points at `topics_list`,
+  which now takes `archived` (#258, fixes #253).
+- `pepper research-items take` help and README say an accepted item can be taken, not only a
+  delivered one (#286, closes #137). No behavior change.
+- The CLI help topic no longer says agents are turned on per account (#287).
+
+### Fixed
+
+- A scoped `pepper agents claude-channel` refuses a `--self` that disagrees with the scope frame's
+  `agent_person_id`, exit 2, before any message is handled (#260, fixes #254).
+- A quiet first run of `agents claude-channel` clears its first-run state when the catch-up
+  completes, so a reconnect no longer drops a missed old event as replayed history (#232).
+- The TUI keeps the view in place when an older page of messages is measured late, instead of
+  jumping to the top on a busy machine (#273).
+
+### Maintenance
+
+- Dependency bumps: pytest-asyncio 1.5.0, ruff 0.17.5, ty 0.0.104 (#233, #234, #281, #282).
+- Sixteen vendored `/api/v1` contract syncs from Vycari/pepper.
+- Docs: the CLI owns its help topic and pushes it to Pepper's guide (#249); a ping is the replay
+  boundary (#250); the first-run cutoff clock limitation is recorded (#261).
 
 ## 0.9.0 — 2026-11-08
 
