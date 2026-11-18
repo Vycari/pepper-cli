@@ -1180,7 +1180,7 @@ def test_a_head_start_sends_start_head_and_tells_the_session_once(monkeypatch, t
 
 def test_a_message_after_the_opening_head_ignores_the_local_clock(monkeypatch):
     behind = _now() - timedelta(hours=1)
-    fake = _Fake(_CONNECTED + _scope() + _cursor(30) + _event(31, created=behind) + _PING)
+    fake = _Fake(_CONNECTED + _scope() + _head_cursor(30) + _event(31, created=behind) + _PING)
 
     result = run_channel(monkeypatch, fake, ["--room", _ROOM])
 
@@ -1191,13 +1191,25 @@ def test_a_message_after_the_opening_head_ignores_the_local_clock(monkeypatch):
 
 def test_a_message_after_a_zero_head_ignores_the_local_clock(monkeypatch):
     behind = _now() - timedelta(hours=1)
-    fake = _Fake(_CONNECTED + _scope() + _cursor(0) + _event(1, created=behind) + _PING)
+    fake = _Fake(_CONNECTED + _scope() + _head_cursor(0) + _event(1, created=behind) + _PING)
 
     result = run_channel(monkeypatch, fake, ["--room", _ROOM])
 
     live, message = result.notifications
     assert live["meta"]["live_edge"] == "true"
     assert message["meta"]["kind"] == "message"
+
+
+def test_an_unmarked_opening_cursor_does_not_lift_the_local_cutoff(monkeypatch):
+    # A server that ignored ``start=head`` can open its replay with a skip cursor (#271). Only a
+    # ``head: true`` cursor names the live edge, so an event after a plain cursor is still judged
+    # by the local cutoff.
+    behind = _now() - timedelta(hours=1)
+    fake = _Fake(_CONNECTED + _scope() + _cursor(30) + _event(31, created=behind) + _PING)
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    assert result.kinds() == ["backlog"]
 
 
 def test_genuine_replay_history_is_still_suppressed(monkeypatch):
@@ -1215,7 +1227,7 @@ def test_genuine_replay_history_is_still_suppressed(monkeypatch):
 def test_a_reconnect_after_the_head_delivers_what_came_after_it(monkeypatch):
     behind = _now() - timedelta(hours=1)
     fake = _Fake(
-        _CONNECTED + _scope() + _cursor(30),
+        _CONNECTED + _scope() + _head_cursor(30),
         _CONNECTED + _scope() + _event(31, created=behind) + _PING,
     )
 
