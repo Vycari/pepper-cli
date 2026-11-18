@@ -766,11 +766,80 @@ async def test_scrolling_back_a_line_short_of_a_new_row_is_not_marked_read(monke
         await pilot.pause()
         assert thread._unseen == 1
         assert (ts.TOPIC_A1, "2026-09-16T10:14:00+00:00") not in server.puts
+        # The true end, one line further, still marks it: the scroll path reports the end
+        # itself rather than relying on ``pinned``, which was already true a line above.
+        scroller.scroll_end(animate=False)
+        await until(
+            pilot,
+            lambda: (ts.TOPIC_A1, "2026-09-16T10:14:00+00:00") in server.puts,
+        )
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("at_end", True),
+        ("scrolled_up", False),
+        ("stale_render", False),
+        ("clamped_reset", True),
+        ("event_was_short", False),
+        ("newer_than_rendered", False),
+        ("no_timestamp", False),
+    ],
+)
+async def test_the_read_mark_decision(case, expected, monkeypatch) -> None:
+    """The one decision every scroll and landing path calls: a mark needs the current
+    render, the true end, and a timestamp that render showed."""
+    for interval in ("ACTIVE_INTERVAL", "COOLING_INTERVAL", "IDLE_INTERVAL"):
+        monkeypatch.setattr(state, interval, 60.0)
+    server = _older_thread_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and thread.at_end)
+        await until(pilot, lambda: (ts.TOPIC_A1, "2026-09-16T10:13:00+00:00") in server.puts)
+        owed: list[str] = []
+        monkeypatch.setattr(app, "_owe", lambda _conv, through: owed.append(through))
+        if case == "scrolled_up":
+            scroller.scroll_home(animate=False)
+            await until(pilot, lambda: not thread.pinned)
+        elif case == "clamped_reset":
+            thread.show(
+                "short page",
+                reset=True,
+                through="2026-09-16T10:13:00+00:00",
+            )
+            await pilot.pause(0.2)  # the shorter page clamps the old position to its end
+            assert thread.at_end
+            owed.clear()
+        render_id, through = thread.render_id, thread.through
+        event_at_end = True
+        if case == "stale_render":
+            render_id -= 1
+        elif case == "event_was_short":
+            # The view is at the end now, but the scroll raised this event one line short.
+            event_at_end = False
+        elif case == "newer_than_rendered":
+            through = "2026-09-16T10:14:00+00:00"
+        elif case == "no_timestamp":
+            through = None
+        assert (
+            app._note_viewed(
+                render_id=render_id,
+                through=through,
+                at_end=event_at_end,
+            )
+            is expected
+        )
+        assert bool(owed) is expected
 
 
 async def test_a_landed_event_from_a_replaced_render_is_ignored(monkeypatch) -> None:
     """Codex P2 on #279: ``Landed`` is queued. One posted for a render that a later reset
-    replaced must not mark the new screen read."""
+    replaced must not mark the new screen read, while a landing for the current render
+    still does."""
     for interval in ("ACTIVE_INTERVAL", "COOLING_INTERVAL", "IDLE_INTERVAL"):
         monkeypatch.setattr(state, interval, 60.0)
     app = tui_app.PepperApp(_older_thread_server().client())
@@ -788,18 +857,24 @@ async def test_a_landed_event_from_a_replaced_render_is_ignored(monkeypatch) -> 
                 real(cb, *a, **k)
 
         monkeypatch.setattr(scroller, "call_after_refresh", hold)
-        calls: list[str | None] = []
-        monkeypatch.setattr(app, "_note_viewed", lambda **kw: calls.append(kw.get("through")))
+        owed: list[str] = []
+        monkeypatch.setattr(app, "_owe", lambda _conv, through: owed.append(through))
         stale = thread.render_id
-        thread.show("a later screen", reset=True)
+        thread.show(
+            "a later screen",
+            reset=True,
+            through="2026-09-16T10:13:00+00:00",
+        )
+        await pilot.pause(0.1)  # the shorter page clamps the old position to its end
         thread.post_message(tui_app.ThreadView.Landed(stale, "2026-09-16T10:00:00+00:00"))
         await pilot.pause()
-        assert calls == []  # the landing names a render that is no longer shown
+        assert "2026-09-16T10:00:00+00:00" not in owed  # a render no longer shown
+        owed.clear()  # the clamp itself may have landed the current render
         thread.post_message(
             tui_app.ThreadView.Landed(thread.render_id, "2026-09-16T10:13:00+00:00")
         )
         await pilot.pause()
-        assert calls == ["2026-09-16T10:13:00+00:00"]  # the current render still lands
+        assert owed == ["2026-09-16T10:13:00+00:00"]  # the current render still lands
 
 
 async def test_a_reset_clamped_to_a_shorter_end_is_marked_read(monkeypatch) -> None:

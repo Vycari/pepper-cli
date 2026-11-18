@@ -1070,8 +1070,12 @@ class PepperApp(App[None]):
                 return
         if conv == self.current:
             return
-        if not had_pane:
-            self._note_viewed()  # (a pane hid the thread: what arrived behind it was not seen)
+        if not had_pane and self.query(ThreadView):
+            # A pane hid the thread: what arrived behind it was not seen.
+            self._note_viewed(
+                render_id=self.thread.render_id,
+                through=self.thread.through,
+            )
         self._run("publish")
         self._end_edit()
         self._draft().text = self.composer.text
@@ -1244,23 +1248,33 @@ class PepperApp(App[None]):
         """The open topic's thread shows an earlier part of it: its newest rows are below."""
         return self.loaded_topic and not self.current.is_pepper and not self.thread.pinned
 
-    def _note_viewed(self, *, through: str | None = None) -> None:
-        """The open topic counts as read through its newest row, once that row has been on
-        screen (§5.2): the terminal is focused and the thread is at its end. Scrolled up,
-        nothing is read. Publishes the mark. ``through`` is the row a landing rendered; the
-        store may already hold rows a later poll added below it."""
+    def _note_viewed(self, *, render_id: int, through: str | None, at_end: bool = True) -> bool:
+        """Publish the open topic's read mark only if this event's rows were on screen.
+
+        One decision for every path that can mark (§5.2): the terminal is focused, no pane
+        hides the thread, ``render_id`` is the thread's current render (a queued event from a
+        replaced one describes a screen no longer showing), the scroll that raised the event
+        was at the true end (``at_end``; ``pinned``'s one-line tolerance would claim a row the
+        viewport hides, and a marker clear must not turn a one-line shortfall into a mark),
+        the view is still there, and ``through`` is a timestamp that render actually showed.
+        Returns whether a mark was published.
+        """
+        if not self.query(ThreadView) or self.thread.going:
+            return False  # torn down or mid-removal (#139, #177)
         conv = self.current
         if conv.is_pepper or conv.topic_id is None or self._blurred or self.pane is not None:
-            return  # an open Todos/Notes pane hides the thread: its rows are not on screen
-        if self._scrolled_up():
-            return
-        if through is None:
-            through = self.store.newest_created_at()
-        stamp = state.parse_ts(through)
-        if through is None or stamp is None:
-            return
+            return False  # an open Todos/Notes pane hides the thread: its rows are not on screen
+        if render_id != self.thread.render_id or not at_end or not self.thread.at_end:
+            return False
+        rendered = self.thread.through
+        if through is None or rendered is None:
+            return False  # a reset with nothing to show (the Loading screen): no row was seen
+        stamp, shown = state.parse_ts(through), state.parse_ts(rendered)
+        if stamp is None or shown is None or stamp > shown:
+            return False  # the event claims a row this render never put on screen
         self.marks.merge(conv.topic_id, stamp)
         self._owe(conv, through)
+        return True
 
     def _owe(self, conv: state.Conversation, through: str) -> None:
         """Queue ``through`` as ``conv``'s read mark unless a later one is already queued."""
@@ -1808,32 +1822,31 @@ class PepperApp(App[None]):
     def on_thread_view_at_top(self, _event: ThreadView.AtTop) -> None:
         self._load_older()
 
-    def on_thread_view_pin_changed(self, _event: ThreadView.PinChanged) -> None:
-        """Reached the end (the newest row is on screen, so it is read) or scrolled away from
-        it (rows below are unseen: the open topic shows as unread)."""
+    def on_thread_view_pin_changed(self, event: ThreadView.PinChanged) -> None:
+        """Reached the end (the newest row may be on screen, so it may be read) or scrolled
+        away from it (rows below are unseen: the open topic shows as unread). ``pinned``
+        tolerates one line for the marker; the decision function requires the true end, so
+        scrolling back to one line short does not mark the row that line hides."""
         if not self.query(ThreadView):
             # A message queued as the app tears down is dispatched after the screen's widgets
             # are gone; there is no thread left to read or mark (#139).
             return
-        self._note_viewed()
+        self._note_viewed(
+            render_id=event.render_id,
+            through=event.through,
+            at_end=event.at_end,
+        )
         self._run("publish")
         self.refresh_chrome()
 
     def on_thread_view_landed(self, event: ThreadView.Landed) -> None:
-        """A thread shown from scratch reached its end: the newest row is on screen now, so
-        the topic is read. Nothing is marked if the reader moved before it landed, or if a
-        later reset has replaced the render this landing belongs to."""
+        """A guarded scroll put the newest row of ``event``'s render on screen: the topic is
+        read through it. The decision function drops a landing whose render has been
+        replaced, whose timestamp is missing, or that the reader has since scrolled past."""
         if not self.query(ThreadView):
             # Same teardown window as ``PinChanged`` (#139).
             return
-        if event.render_id != self.thread.render_id:
-            # Textual queues messages: this landing was posted before a newer reset was
-            # installed, so it describes a screen that is no longer showing.
-            return
-        if event.through is None:
-            # A reset with nothing to show (the Loading screen): no row was on screen.
-            return
-        self._note_viewed(through=event.through)
+        self._note_viewed(render_id=event.render_id, through=event.through)
         self._run("publish")
         self.refresh_chrome()
 

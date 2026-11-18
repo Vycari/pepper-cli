@@ -368,7 +368,7 @@ async def test_a_pin_change_delivered_after_the_thread_is_gone_is_ignored(
         # is about (it flaked under a loaded parallel run).
         await _quiet(pilot, app, monkeypatch)
         await app.thread.remove()
-        app.on_thread_view_pin_changed(ThreadView.PinChanged(True))
+        app.on_thread_view_pin_changed(ThreadView.PinChanged(True, True, 0, None))
 
 
 async def test_a_topic_page_delivered_while_the_thread_is_being_removed_is_dropped() -> None:
@@ -413,6 +413,38 @@ async def test_reaching_the_end_marks_the_newest_row_read(monkeypatch: pytest.Mo
         assert (ts.TOPIC_A1, arrived) not in server.puts
         scroller.scroll_end(animate=False)
         await until(pilot, lambda: (ts.TOPIC_A1, arrived) in server.puts)
+
+
+async def test_a_scroll_back_to_one_line_short_does_not_mark_the_newest_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Vycari P2 on #279: ``pinned`` tolerates one line. A row that arrived while scrolled
+    up must stay unread when the reader scrolls back to ``max_scroll_y - 1``: the newest row
+    is still hidden behind that line, so no PUT may claim it."""
+    server = ts.standard_server()
+    _long_topic(server)
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 20)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: "row 39" in body_text(app))
+        scroller = app.thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and app.thread.at_end)
+        await _quiet(pilot, app, monkeypatch)
+        puts = len(server.puts)
+        scroller.scroll_y = 5  # up a few rows, not to the top: no older-page load to race
+        await until(pilot, lambda: not app.thread.pinned)
+        arrived = "2026-09-16T18:30:00+00:00"
+        server.messages[ts.TOPIC_A1].append(ts.message("r99", arrived, "fresh"))
+        app._run("topic")
+        await until(pilot, lambda: "r99" in app.store.rows and "fresh" in body_text(app))
+        await pilot.pause()
+        assert len(server.puts) == puts  # the row arrived below the screen
+        scroller.scroll_y = scroller.max_scroll_y - 1
+        await until(pilot, lambda: app.thread.pinned)
+        assert not app.thread.at_end
+        await pilot.pause(0.3)
+        assert len(server.puts) == puts  # one line short: the newest row is still hidden
 
 
 def _topic_reads(server: ts.FakeServer, topic_id: str) -> int:

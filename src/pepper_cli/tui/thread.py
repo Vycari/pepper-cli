@@ -99,11 +99,19 @@ class ThreadView(Vertical):
 
     class PinChanged(Message):
         """The view reached its last line (the newest row is on screen: the read cue, §5.2) or
-        left it (scrolled up: rows below are unseen)."""
+        left it (scrolled up: rows below are unseen). Also posted when a scroll reaches the
+        true end while the marker was already pinned: ``pinned`` tolerates a line for the
+        marker, but a mark may not claim a row that line is hiding. ``at_end`` is the true end
+        as this scroll left it, before a marker clear can give the viewport that line back;
+        ``render_id`` and ``through`` name the screen, so a handler can tell whether the end
+        it reached is still the end on show."""
 
-        def __init__(self, pinned: bool) -> None:
+        def __init__(self, pinned: bool, at_end: bool, render_id: int, through: str | None) -> None:
             super().__init__()
             self.pinned = pinned
+            self.at_end = at_end
+            self.render_id = render_id
+            self.through = through
 
     class Landed(Message):
         """A guarded scroll to the last line completed: the rows just rendered are on
@@ -122,11 +130,17 @@ class ThreadView(Vertical):
         super().__init__(id="thread")
         self._unseen = 0
         self._was_pinned = True
+        #: Whether the last scroll left the true end fully on screen, so a scroll onto it
+        #: posts ``PinChanged`` even though ``pinned`` was already true a line above.
+        self._was_at_end = True
         #: Bumped when a different conversation is shown, so a keep-place retry, a stick
         #: callback or a queued ``Landed`` left over from the previous one stands down. Not
         #: by every ``show``: a live refresh of the same conversation must not cancel the
         #: scroll past an older page it has not reached yet.
         self._render_id = 0
+        #: The newest timestamp the current render put on screen. A mark is only published
+        #: for rows this render actually showed, so a queued event cannot claim a newer one.
+        self._through: str | None = None
         #: Bumped on every ``scroll_y`` change, so a deferred callback knows the reader moved
         #: even if they scrolled away and back to the offset it captured.
         self._scrolls = 0
@@ -163,6 +177,11 @@ class ThreadView(Vertical):
         """The current render: a ``Landed`` that names an older one is stale."""
         return self._render_id
 
+    @property
+    def through(self) -> str | None:
+        """The newest timestamp the current render put on screen, or None for no rows."""
+        return self._through
+
     def show(
         self,
         body: RenderableType,
@@ -186,6 +205,7 @@ class ThreadView(Vertical):
         if reset:
             self._render_id += 1
         render_id = self._render_id
+        self._through = through
         self.query_one("#thread-body", Static).update(body)
         if prepended and not reset:
 
@@ -257,9 +277,14 @@ class ThreadView(Vertical):
         if new <= 0 and self.scroller.max_scroll_y > 0:
             self.post_message(self.AtTop())
         pinned = self.pinned
-        if pinned != self._was_pinned:
+        at_end = self.at_end
+        if pinned != self._was_pinned or (at_end and not self._was_at_end):
+            # The second case is a scroll onto the true end while ``pinned`` was already
+            # true a line above it: the marker may clear there, but only this true end may
+            # publish a mark, so the scroll path must report it too (pepper-cli#274).
             self._was_pinned = pinned
-            self.post_message(self.PinChanged(pinned))
+            self.post_message(self.PinChanged(pinned, at_end, self._render_id, self._through))
+        self._was_at_end = at_end
         if pinned and self._unseen:
             self._unseen = 0
             self._paint_marker()
