@@ -428,6 +428,11 @@ class ChannelWorker:
         # server that ignored ``start`` and replayed its window is still told apart from a
         # resume and gets the first-run summary, never a push of every old message.
         self.head_pending = at_head
+        # The opening head of this run, once a ``start=head`` cursor names it. Event ids above
+        # it are live, not replayed history, so the local cutoff must not judge them. It is kept
+        # for the life of the process: a reconnect resumes from the cursor, but still delivers
+        # what followed the head this run started from.
+        self.live_from: int | None = None
         # ``resumed``: the cursor file held a position. A saved head of 0 is a resume, not a
         # first run, or the messages posted while the channel was down would be summarised away.
         self.first_run = not resumed and stored is None and cursor == 0
@@ -663,11 +668,14 @@ class ChannelWorker:
         created = _parse_time(event.get("created_at"))
         return self.first_run and created is not None and created < self.cutoff
 
-    def _handle_event(self, kind: str, event: dict[str, Any]) -> None:
+    def _handle_event(self, kind: str, event: dict[str, Any], event_id: int | None) -> None:
+        after_head = (
+            self.live_from is not None and event_id is not None and event_id > self.live_from
+        )
         if _is_known_silent(kind):
             return
         if kind not in MESSAGE_KINDS:
-            if self._filtered_out(kind) or self._is_first_run_history(event):
+            if self._filtered_out(kind) or (not after_head and self._is_first_run_history(event)):
                 return
             self._resync(f"an event of kind {sanitize_line(kind)[:_CAUSE_CLIP]}")
             return
@@ -688,7 +696,7 @@ class ChannelWorker:
             self._remember(message_id)
             return
         created = _parse_time(event.get("created_at"))
-        if created is not None and created < self.cutoff:
+        if not after_head and created is not None and created < self.cutoff:
             self.skipped[topic_id] = self.skipped.get(topic_id, 0) + 1
             self.skipped_times.append(created)
             self._remember(message_id)
@@ -864,11 +872,12 @@ class ChannelWorker:
         if frame.kind != "cursor":
             if scoped and self.scope is not None and not _event_in_scope(frame.payload, self.scope):
                 raise self._ended("the server sent an event from outside the requested scope", 1)
-            self._handle_event(frame.kind, frame.payload)
+            self._handle_event(frame.kind, frame.payload, frame.id)
         elif self.head_pending and frame.payload.get("head") is True:
             # Only the marker an honored ``start=head`` carries proves the position is the
             # live edge. A skip cursor in a replay is a resume point, so a server that
             # ignored ``start`` keeps the first-run cutoff and summary.
+            self.live_from = new_cursor
             self._live_edge()
         self.head_pending = False
         self._advance(new_cursor)

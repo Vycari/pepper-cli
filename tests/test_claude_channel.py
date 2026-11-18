@@ -1178,6 +1178,83 @@ def test_a_head_start_sends_start_head_and_tells_the_session_once(monkeypatch, t
     assert "Starting at the live edge" in " ".join(capsys.readouterr().err.split())
 
 
+def test_a_message_after_the_opening_head_ignores_the_local_clock(monkeypatch):
+    behind = _now() - timedelta(hours=1)
+    fake = _Fake(_CONNECTED + _scope() + _head_cursor(30) + _event(31, created=behind) + _PING)
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    live, message = result.notifications
+    assert live["meta"]["live_edge"] == "true"
+    assert message["meta"]["kind"] == "message"
+
+
+def test_a_message_after_a_zero_head_ignores_the_local_clock(monkeypatch):
+    behind = _now() - timedelta(hours=1)
+    fake = _Fake(_CONNECTED + _scope() + _head_cursor(0) + _event(1, created=behind) + _PING)
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    live, message = result.notifications
+    assert live["meta"]["live_edge"] == "true"
+    assert message["meta"]["kind"] == "message"
+
+
+def test_an_unmarked_opening_cursor_does_not_lift_the_local_cutoff(monkeypatch):
+    # A server that ignored ``start=head`` can open its replay with a skip cursor (#271). Only a
+    # ``head: true`` cursor names the live edge, so an event after a plain cursor is still judged
+    # by the local cutoff.
+    behind = _now() - timedelta(hours=1)
+    fake = _Fake(_CONNECTED + _scope() + _cursor(30) + _event(31, created=behind) + _PING)
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    assert result.kinds() == ["backlog"]
+
+
+def test_genuine_replay_history_is_still_suppressed(monkeypatch):
+    old = _now() - timedelta(hours=1)
+    fake = _Fake(
+        _CONNECTED + _scope() + _event(4, created=old) + _event(5, message=_MESSAGE_2) + _PING
+    )
+    fake.messages[_MESSAGE_2] = _message_json(_MESSAGE_2)
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM, "--start", "beginning"])
+
+    assert result.kinds() == ["backlog", "message"]
+
+
+def test_a_reconnect_after_the_head_delivers_what_came_after_it(monkeypatch):
+    behind = _now() - timedelta(hours=1)
+    fake = _Fake(
+        _CONNECTED + _scope() + _head_cursor(30),
+        _CONNECTED + _scope() + _event(31, created=behind) + _PING,
+    )
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    live, message = result.notifications
+    assert live["meta"]["live_edge"] == "true"
+    assert message["meta"]["kind"] == "message"
+    assert fake.stream_requests()[1].headers["last-event-id"] == "30"
+
+
+def test_a_reconnect_from_a_saved_cursor_keeps_the_local_cutoff(monkeypatch, tmp_path):
+    cursor_file = _scoped_cursor_file(tmp_path / "cursor", 3)
+    behind = _now() - timedelta(hours=1)
+    fake = _Fake(
+        _CONNECTED + _scope() + _PING,
+        503,
+        _CONNECTED + _scope() + _event(4, created=behind) + _PING,
+    )
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM, "--cursor-file", str(cursor_file)])
+
+    (note,) = result.notifications
+    assert note["meta"]["kind"] == "backlog"
+    assert note["meta"]["count"] == "1"
+
+
 def test_a_head_start_is_saved_even_when_no_event_follows(monkeypatch, tmp_path):
     cursor_file = tmp_path / "cursor"
     fake = _Fake(_CONNECTED + _scope() + _head_cursor(30))
