@@ -163,6 +163,12 @@ VERBS = frozenset(
         "household-dissolve",
         # `graph me` lists the addresses you marked as yours; `me mark`/`me unmark` change them.
         "me",
+        # `notes image PICTURE` reads a picture's details (alt text, captions) and
+        # `image-set`/`image-suggest` change them: the picture is an object inside a note,
+        # named the way `household-*` names a graph household's verbs.
+        "image",
+        "image-set",
+        "image-suggest",
         # Research projects (IA §3.1): `steer` queues guidance for an object's next run;
         # `take` and `reconsider` mark a ledger item.
         "steer",
@@ -949,6 +955,16 @@ ROUTES: dict[str, object] = {
         "size_label": "2 KB",
     },
     f"/api/v1/artifacts/{_BLOB}/raw": {"png": "bytes"},
+    f"/api/v1/artifacts/{_BLOB}/image-details": {
+        "id": _BLOB,
+        "alt_text": "A receipt",
+        "title": "",
+        "caption": "",
+        "long_description": "",
+        "sources": {"alt_text": "user", "title": None, "caption": None, "long_description": None},
+        "suggestions_enabled": True,
+        "last_run": None,
+    },
     "/api/v1/calendars/preferences": {
         "timezones": ["UTC"],
         "maps": False,
@@ -1040,6 +1056,17 @@ POST_ROUTES: dict[str, object] = {
     },
     "/api/v1/apps/notes/actions/delete": {"result": {"name": "Runbook"}},
     "/api/v1/apps/artifacts/actions/delete": {"result": {"name": "Receipt"}},
+    f"/api/v1/artifacts/{_BLOB}/image-details": {
+        "id": _BLOB,
+        "alt_text": "A receipt",
+        "title": "",
+        "caption": "",
+        "long_description": "",
+        "sources": {"alt_text": "user", "title": None, "caption": None, "long_description": None},
+        "suggestions_enabled": True,
+        "last_run": None,
+    },
+    f"/api/v1/artifacts/{_BLOB}/image-details/suggest": {"id": _BLOB, "started": True, "run": 1},
     "/api/v1/artifacts/upload": {
         "id": _BLOB,
         "name": "pic.png",
@@ -1258,6 +1285,9 @@ JSON_CASES: dict[str, list[str]] = {
     "notes create": ["notes", "create", "Runbook", "--file", "body.md"],
     "notes edit": ["notes", "edit", _NOTE, "--file", "body.md"],
     "notes delete": ["notes", "delete", _NOTE, "--yes"],
+    "notes image": ["notes", "image", _BLOB],
+    "notes image-set": ["notes", "image-set", _BLOB, "--caption", "Lunch"],
+    "notes image-suggest": ["notes", "image-suggest", _BLOB],
     "comments list": ["comments", "list", "--note", _NOTE],
     "comments resolve": ["comments", "resolve", "--note", _NOTE, "m1"],
     "comments reopen": ["comments", "reopen", "--note", _NOTE, "m1"],
