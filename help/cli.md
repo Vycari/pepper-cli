@@ -297,6 +297,14 @@ ever want to look back at a specific conversation in detail.
   won't see: one saved outside the room, an Obsidian embed like
   `![[chart.png]]`, or a picture that points at a file on your computer. The
   note is saved either way, so fix the line and edit it again.
+- **Publishing a draft with pictures:** `pepper notes create "<name>" --room
+  <room> --file draft.md --image chart.svg --image photo.jpg` uploads each
+  picture to the room and points the draft's references to it at the upload,
+  whether they're written `![description](chart.svg)` or as an Obsidian embed
+  like `![[chart.svg]]` or `![[chart.svg|description]]`. A picture the draft
+  never mentions is added at the end. `notes edit` takes `--image` the same
+  way; for a room's note, give it `--room <room>` too. Each run uploads the pictures again, so the older copies stay in the
+  room's files until you delete them.
 - **A picture's alt text and captions:** `pepper notes image <picture>`
   prints the details Pepper keeps with a picture in a note: its alt text, title,
   caption and long description. `<picture>` is the picture's id, or its

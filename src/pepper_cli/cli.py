@@ -138,6 +138,7 @@ from pepper_cli import (
     graph_view,
     next_view,
     note_edit,
+    note_images,
     note_warnings,
     numbered_view,
     preferences_view,
@@ -2243,7 +2244,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "Pictures: a note shows one written as ![description](/artifacts/ID/raw) on a line "
         "of its own. Upload the file with `pepper artifacts create --file PATH` (add the "
         "note's --room for a room's note, or other members see a broken image); it prints "
-        "that line. PNG, JPEG, GIF, WebP, AVIF, BMP and SVG all work."
+        "that line. PNG, JPEG, GIF, WebP, AVIF, BMP and SVG all work. Or pass --image PATH "
+        "here: the file is uploaded to the same place as the note and the body's references "
+        "to it are rewritten, Obsidian ![[embeds]] included. Each run uploads again."
     )
     p_notes = sub.add_parser(
         "notes",
@@ -2305,6 +2308,16 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_notes_new.add_argument(
         "--file", help="Read the body from this path, or '-' to read stdin, instead of $EDITOR."
     )
+    p_notes_new.add_argument(
+        "--image",
+        action="append",
+        metavar="PATH",
+        help=(
+            "Upload this picture with the note and point the body's references to it "
+            "(![alt](PATH), ![[NAME]] or ![[NAME|alt]], matched by file name) at the "
+            "upload; added at the end if the body never names it. Repeatable."
+        ),
+    )
     p_notes_new.set_defaults(handler=cmd_notes_create)
 
     p_notes_edit = sub_notes.add_parser(
@@ -2328,6 +2341,16 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     )
     p_notes_edit_precondition.add_argument(
         "--force", action="store_true", help="Send no If-Match — last write wins."
+    )
+    p_notes_edit.add_argument(
+        "--image",
+        action="append",
+        metavar="PATH",
+        help=(
+            "Upload this picture with the note and point the body's references to it "
+            "(![alt](PATH), ![[NAME]] or ![[NAME|alt]], matched by file name) at the "
+            "upload; added at the end if the body never names it. Repeatable."
+        ),
     )
     p_notes_edit.set_defaults(handler=cmd_notes_edit)
 
@@ -5576,7 +5599,12 @@ def _emit_error(
     if code not in _ERROR_CODES:
         raise ValueError(f"unknown error code {code!r}")
     if args is not None and _json_mode(args):
-        line = json.dumps({"error": {"code": code, "status": status, "message": message}})
+        error: dict[str, object] = {"code": code, "status": status, "message": message}
+        # ``notes create/edit --image``: pictures uploaded before the save failed ride in
+        # the one error object rather than as text lines beside it.
+        if uploaded := getattr(args, "uploaded_pictures", None):
+            error["uploaded"] = uploaded
+        line = json.dumps({"error": error})
         sys.stderr.write(line + "\n")
     else:
         render.error(message, soft_wrap=soft_wrap)
@@ -8671,6 +8699,123 @@ def _emit_saved_note(
         render.warning(warning.message)
 
 
+def _read_note_images(args: argparse.Namespace) -> list[tuple[str, bytes, str]] | None:
+    """Read every ``--image`` file before any network call: ``(filename, bytes, mime)``.
+
+    Refuses (``None``, exit 2) a file that can't be read, is empty, is far over the upload
+    limit, or isn't a picture a note can show, so a typo never leaves half the pictures
+    uploaded and the note unwritten.
+    """
+    from pathlib import Path
+
+    out: list[tuple[str, bytes, str]] = []
+    seen: set[str] = set()
+    for raw in getattr(args, "image", None) or []:
+        path = Path(raw)
+        mime = artifacts_view.guess_mime(path.name)
+        if artifacts_view.note_image_markdown("x", mime) is None:
+            _emit_error(
+                args,
+                "usage",
+                f"{raw!r} isn't a picture a note can show (PNG, JPEG, GIF, WebP, AVIF, BMP or SVG)",
+            )
+            return None
+        if path.name.casefold() in seen:
+            _emit_error(args, "usage", f"two --image files are named {path.name!r}")
+            return None
+        try:
+            if path.stat().st_size > _UPLOAD_READ_LIMIT:
+                _emit_error(args, "usage", f"{raw!r} is far over the upload limit")
+                return None
+            content = path.read_bytes()
+        except OSError as exc:
+            _emit_error(args, "usage", f"couldn't read {raw!r}: {exc.strerror or exc}")
+            return None
+        if not content:
+            _emit_error(args, "usage", f"{raw!r} is empty")
+            return None
+        seen.add(path.name.casefold())
+        out.append((path.name, content, mime))
+    return out
+
+
+def _upload_note_images(
+    api: api_client.ApiClient,
+    images: list[tuple[str, bytes, str]],
+    *,
+    principal: str | None,
+    args: argparse.Namespace,
+) -> list[note_images.Uploaded]:
+    """Upload each ``--image`` file to the note's own place (the room, with ``--room``)."""
+    uploads: list[note_images.Uploaded] = []
+    for filename, content, mime in images:
+        try:
+            result = api.upload_artifact(
+                filename=filename, content=content, content_type=mime, principal=principal
+            )
+        except (api_client.ApiError, httpx.RequestError):
+            # The ones already uploaded would otherwise be left with no word of them.
+            _report_orphaned_uploads(uploads, args)
+            raise
+        uploads.append(note_images.Uploaded(filename=filename, artifact_id=str(result["id"])))
+    return uploads
+
+
+def _report_orphaned_uploads(uploads: list[note_images.Uploaded], args: argparse.Namespace) -> None:
+    """Name the pictures a failed save already uploaded, so they can be reused or deleted.
+
+    In JSON mode they go into the error object the failure is about to print (an
+    ``uploaded`` list), so stderr stays one J8 line; otherwise one info line each.
+    """
+    if not uploads:
+        return
+    if _json_mode(args):
+        args.uploaded_pictures = [
+            {"file": u.filename, "id": u.artifact_id, "markdown": f"![]({u.link})"} for u in uploads
+        ]
+        return
+    for upload in uploads:
+        render.info(
+            f"{upload.filename} was uploaded before the save failed: {upload.link}",
+            soft_wrap=True,
+        )
+
+
+def _apply_note_images(
+    body: str, uploads: list[note_images.Uploaded], args: argparse.Namespace
+) -> str:
+    """``body`` with its references to ``uploads`` rewritten, and any unnamed one appended."""
+    if not uploads:
+        return body
+    done = note_images.rewrite(body, uploads)
+    if not _json_mode(args):
+        for upload in uploads:
+            if upload not in done.unreferenced:
+                render.info(f"Uploaded {upload.filename!r} and linked it.", soft_wrap=True)
+        for upload in done.unreferenced:
+            render.info(
+                f"Uploaded {upload.filename!r}; the note never named it, so it is added at "
+                "the end.",
+                soft_wrap=True,
+            )
+    return note_images.append_unreferenced(done.body, done.unreferenced)
+
+
+def _with_note_images(result: object, uploads: list[note_images.Uploaded]) -> object:
+    """The ``--json`` answer: the note, plus ``images`` when ``--image`` uploaded any."""
+    if not uploads:
+        return result
+    plain = _to_plain(result)
+    if not isinstance(plain, dict):
+        return result
+    return {
+        **plain,
+        "images": [
+            {"file": u.filename, "id": u.artifact_id, "markdown": f"![]({u.link})"} for u in uploads
+        ],
+    }
+
+
 def cmd_notes_create(args: argparse.Namespace) -> int:
     """``pepper notes create <name> [--room ROOM] [--file PATH|-] [--json]``.
 
@@ -8691,6 +8836,9 @@ def cmd_notes_create(args: argparse.Namespace) -> int:
             return 2
     elif _notes_editor_refused(args):
         return 2
+    images = _read_note_images(args)
+    if images is None:
+        return 2
 
     def run(api: api_client.ApiClient) -> int:
         room_principal = _opt_group(api, args.room, args=args)
@@ -8704,12 +8852,18 @@ def cmd_notes_create(args: argparse.Namespace) -> int:
         if not body.strip():
             _emit_error(args, "usage", "note body is empty — aborting")
             return 2
-        result = api.create_artifact(name=args.name, body=body, principal=room_principal)
+        uploads = _upload_note_images(api, images, principal=room_principal, args=args)
+        body = _apply_note_images(body, uploads, args)
+        try:
+            result = api.create_artifact(name=args.name, body=body, principal=room_principal)
+        except (api_client.ApiError, httpx.RequestError):
+            _report_orphaned_uploads(uploads, args)
+            raise
         warnings = _note_picture_warnings(
             api, body, room_principal=room_principal, room_label=args.room
         )
         _emit_saved_note(
-            result,
+            _with_note_images(result, uploads),
             args,
             f"Created {result.name!r}.",
             warnings,
@@ -8781,6 +8935,9 @@ def cmd_notes_edit(args: argparse.Namespace) -> int:
             return 2
     elif _notes_editor_refused(args):
         return 2
+    images = _read_note_images(args)
+    if images is None:
+        return 2
 
     def run(api: api_client.ApiClient) -> int:
         room_principal = _opt_group(api, args.room, args=args)
@@ -8791,6 +8948,15 @@ def cmd_notes_edit(args: argparse.Namespace) -> int:
         if current.kind != _NOTES_KIND:
             _note_not_found(args)
             return 2
+        if images and current.shared and room_principal is None:
+            # A room's note read by its id: without --room the pictures would
+            # be saved in the editor's own files, which the room can't show.
+            _emit_error(
+                args,
+                "usage",
+                "this is a room's note; pass --room ROOM so its pictures are saved in that room",
+            )
+            return 2
 
         if file_body is not None:
             new_body = file_body
@@ -8799,6 +8965,8 @@ def cmd_notes_edit(args: argparse.Namespace) -> int:
             if edited is None:
                 return 2
             new_body = edited
+        uploads = _upload_note_images(api, images, principal=room_principal, args=args)
+        new_body = _apply_note_images(new_body, uploads, args)
 
         # The trailing-newline tolerance is for editors that append one
         # on save; ``--file``/stdin is byte-exact (the ``show > f.md``
@@ -8883,6 +9051,9 @@ def cmd_notes_edit(args: argparse.Namespace) -> int:
                     continue
                 render.info("Aborted.")
                 return 1
+            except (api_client.ApiError, httpx.RequestError):
+                _report_orphaned_uploads(uploads, args)
+                raise
             else:
                 break
         # The saved note's own body: after a lost race the text may be another writer's.
@@ -8892,7 +9063,9 @@ def cmd_notes_edit(args: argparse.Namespace) -> int:
         warnings = _note_picture_warnings(
             api, saved_body, room_principal=room_principal, room_label=args.room
         )
-        _emit_saved_note(updated, args, f"Updated {updated.name!r}.", warnings)
+        _emit_saved_note(
+            _with_note_images(updated, uploads), args, f"Updated {updated.name!r}.", warnings
+        )
         return 0
 
     return _with_api(run, _report_notes_api_error, args)
