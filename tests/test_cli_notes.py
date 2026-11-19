@@ -1787,3 +1787,50 @@ def test_notes_create_failure_after_upload_names_the_uploaded_pictures(
     assert rc == 1
     err = capsys.readouterr().err
     assert "chart.svg was uploaded before the save failed: /artifacts/img-chart.svg/raw" in err
+
+
+def test_notes_create_json_failure_lists_uploads_in_the_one_error_line(
+    tmp_home, patch_api, capsys, tmp_path, monkeypatch
+) -> None:
+    _login(tmp_home)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "chart.svg").write_bytes(b"<svg/>")
+    (tmp_path / "draft.md").write_text("![[chart.svg]]\n", encoding="utf-8")
+    patch_api(create=api_client.ApiError(status=500, body="", detail="boom"))
+    argv = ["notes", "create", "Post", "--file", "draft.md", "--image", "chart.svg", "--json"]
+    rc = cli.main(argv)
+    assert rc == 1
+    lines = capsys.readouterr().err.strip().splitlines()
+    assert len(lines) == 1
+    error = json.loads(lines[0])["error"]
+    assert error["uploaded"] == [
+        {
+            "file": "chart.svg",
+            "id": "img-chart.svg",
+            "markdown": "![](/artifacts/img-chart.svg/raw)",
+        }
+    ]
+
+
+def test_notes_create_failed_second_upload_names_the_first(
+    tmp_home, patch_api, capsys, tmp_path, monkeypatch
+) -> None:
+    _login(tmp_home)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.svg").write_bytes(b"<svg/>")
+    (tmp_path / "b.svg").write_bytes(b"<svg/>")
+    (tmp_path / "draft.md").write_text("x\n", encoding="utf-8")
+    patch_api(create=_create_result())
+    real = _FakeNotesApi.upload_artifact
+
+    def flaky(self, *, filename, **kw):
+        if filename == "b.svg":
+            raise api_client.ApiError(status=500, body="", detail="boom")
+        return real(self, filename=filename, **kw)
+
+    monkeypatch.setattr(_FakeNotesApi, "upload_artifact", flaky)
+    argv = ["notes", "create", "Post", "--file", "draft.md", "--image", "a.svg", "--image", "b.svg"]
+    rc = cli.main(argv)
+    assert rc == 1
+    assert "a.svg was uploaded before the save failed" in capsys.readouterr().err
+    assert not any(c[0] == "create_artifact" for c in _FakeNotesApi.instances[-1].calls)

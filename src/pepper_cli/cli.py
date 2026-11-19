@@ -5551,7 +5551,12 @@ def _emit_error(
     if code not in _ERROR_CODES:
         raise ValueError(f"unknown error code {code!r}")
     if args is not None and _json_mode(args):
-        line = json.dumps({"error": {"code": code, "status": status, "message": message}})
+        error: dict[str, object] = {"code": code, "status": status, "message": message}
+        # ``notes create/edit --image``: pictures uploaded before the save failed ride in
+        # the one error object rather than as text lines beside it.
+        if uploaded := getattr(args, "uploaded_pictures", None):
+            error["uploaded"] = uploaded
+        line = json.dumps({"error": error})
         sys.stderr.write(line + "\n")
     else:
         render.error(message, soft_wrap=soft_wrap)
@@ -8630,19 +8635,36 @@ def _upload_note_images(
     images: list[tuple[str, bytes, str]],
     *,
     principal: str | None,
+    args: argparse.Namespace,
 ) -> list[note_images.Uploaded]:
     """Upload each ``--image`` file to the note's own place (the room, with ``--room``)."""
     uploads: list[note_images.Uploaded] = []
     for filename, content, mime in images:
-        result = api.upload_artifact(
-            filename=filename, content=content, content_type=mime, principal=principal
-        )
+        try:
+            result = api.upload_artifact(
+                filename=filename, content=content, content_type=mime, principal=principal
+            )
+        except (api_client.ApiError, httpx.RequestError):
+            # The ones already uploaded would otherwise be left with no word of them.
+            _report_orphaned_uploads(uploads, args)
+            raise
         uploads.append(note_images.Uploaded(filename=filename, artifact_id=str(result["id"])))
     return uploads
 
 
-def _report_orphaned_uploads(uploads: list[note_images.Uploaded]) -> None:
-    """Name the pictures a failed save already uploaded, so they can be reused or deleted."""
+def _report_orphaned_uploads(uploads: list[note_images.Uploaded], args: argparse.Namespace) -> None:
+    """Name the pictures a failed save already uploaded, so they can be reused or deleted.
+
+    In JSON mode they go into the error object the failure is about to print (an
+    ``uploaded`` list), so stderr stays one J8 line; otherwise one info line each.
+    """
+    if not uploads:
+        return
+    if _json_mode(args):
+        args.uploaded_pictures = [
+            {"file": u.filename, "id": u.artifact_id, "markdown": f"![]({u.link})"} for u in uploads
+        ]
+        return
     for upload in uploads:
         render.info(
             f"{upload.filename} was uploaded before the save failed: {upload.link}",
@@ -8721,12 +8743,12 @@ def cmd_notes_create(args: argparse.Namespace) -> int:
         if not body.strip():
             _emit_error(args, "usage", "note body is empty — aborting")
             return 2
-        uploads = _upload_note_images(api, images, principal=room_principal)
+        uploads = _upload_note_images(api, images, principal=room_principal, args=args)
         body = _apply_note_images(body, uploads, args)
         try:
             result = api.create_artifact(name=args.name, body=body, principal=room_principal)
         except (api_client.ApiError, httpx.RequestError):
-            _report_orphaned_uploads(uploads)
+            _report_orphaned_uploads(uploads, args)
             raise
 
         def human() -> None:
@@ -8830,7 +8852,7 @@ def cmd_notes_edit(args: argparse.Namespace) -> int:
             if edited is None:
                 return 2
             new_body = edited
-        uploads = _upload_note_images(api, images, principal=room_principal)
+        uploads = _upload_note_images(api, images, principal=room_principal, args=args)
         new_body = _apply_note_images(new_body, uploads, args)
 
         # The trailing-newline tolerance is for editors that append one
@@ -8914,7 +8936,7 @@ def cmd_notes_edit(args: argparse.Namespace) -> int:
                 render.info("Aborted.")
                 return 1
             except (api_client.ApiError, httpx.RequestError):
-                _report_orphaned_uploads(uploads)
+                _report_orphaned_uploads(uploads, args)
                 raise
             else:
                 break

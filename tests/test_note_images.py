@@ -61,3 +61,18 @@ def test_append_unreferenced_puts_each_on_its_own_line() -> None:
     assert note_images.append_unreferenced("Text\n", (_U,)) == "Text\n\n![](/artifacts/abc/raw)\n"
     assert note_images.append_unreferenced("", (_U,)) == "![](/artifacts/abc/raw)\n"
     assert note_images.append_unreferenced("Text", ()) == "Text"
+
+
+def test_references_inside_code_are_examples_and_left_alone() -> None:
+    uploads = [note_images.Uploaded("chart.svg", "abc")]
+    body = "Write `![x](chart.svg)` like so.\n\n```md\n![[chart.svg]]\n```\n"
+    done = note_images.rewrite(body, uploads)
+    assert done.body == body
+    assert done.replaced == 0
+    assert done.unreferenced == tuple(uploads)
+
+
+def test_escaped_alt_and_parenthesised_target_are_matched() -> None:
+    uploads = [note_images.Uploaded("chart(1).svg", "abc")]
+    done = note_images.rewrite("![a\\]b](img/chart(1).svg)", uploads)
+    assert done.body == "![a\\]b](/artifacts/abc/raw)"

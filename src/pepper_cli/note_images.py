@@ -25,8 +25,17 @@ _EMBED = re.compile(r"!\[\[([^\]|\n]+?)(?:\|([^\]\n]*))?\]\]")
 #: ``![alt](target)`` or ``![alt](target "title")``, with an optional ``<...>`` around a
 #: target holding spaces. Only a target with no scheme and no leading ``/`` is local.
 _IMAGE = re.compile(
-    r"!\[(?P<alt>[^\]\n]*)\]\(\s*(?P<target><[^>\n]+>|[^)\s]+)(?P<title>\s+\"[^\"\n]*\")?\s*\)"
+    r"!\[(?P<alt>(?:\\.|[^\]\\\n])*)\]"
+    r"\(\s*(?P<target><[^>\n]+>|(?:[^\s()\\]|\\.|\([^\s()]*\))+)"
+    r"(?P<title>\s+\"[^\"\n]*\")?\s*\)"
 )
+
+#: Fenced blocks (closed by the same fence, or running to the end) and inline code spans.
+#: A reference inside code is an example, so :func:`rewrite` leaves it alone.
+_FENCE = re.compile(
+    r"^ {0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^ {0,3}\1[`~]*[ \t]*$|\Z)", re.MULTILINE | re.DOTALL
+)
+_INLINE_CODE = re.compile(r"(`+)(?!`).+?(?<!`)\1(?!`)", re.DOTALL)
 
 #: An Obsidian embed's ``|300`` or ``|300x200`` is a display size, not alt text.
 _SIZE = re.compile(r"\d+(?:x\d+)?")
@@ -77,6 +86,17 @@ def _key(name: str) -> str:
     return name.casefold()
 
 
+def _code_spans(text: str) -> list[tuple[int, int]]:
+    spans = [m.span() for m in _FENCE.finditer(text)]
+    rest = _FENCE.sub(lambda m: " " * len(m.group(0)), text)
+    spans += [m.span() for m in _INLINE_CODE.finditer(rest)]
+    return spans
+
+
+def _in_code(position: int, spans: list[tuple[int, int]]) -> bool:
+    return any(start <= position < end for start, end in spans)
+
+
 def rewrite(body: str, uploads: list[Uploaded]) -> Rewrite:
     """Point every local reference to an uploaded file at its link.
 
@@ -85,11 +105,14 @@ def rewrite(body: str, uploads: list[Uploaded]) -> Rewrite:
     uploaded is left as it is.
     """
     by_name = {_key(u.filename): u for u in uploads}
+    code = _code_spans(body)
     used: set[str] = set()
     count = 0
 
     def embed(match: re.Match[str]) -> str:
         nonlocal count
+        if _in_code(match.start(), code):
+            return match.group(0)
         target, label = match.group(1), match.group(2)
         name = _local_name(target.split("#", 1)[0])
         upload = by_name.get(_key(name)) if name else None
@@ -102,6 +125,8 @@ def rewrite(body: str, uploads: list[Uploaded]) -> Rewrite:
 
     def image(match: re.Match[str]) -> str:
         nonlocal count
+        if _in_code(match.start(), code):
+            return match.group(0)
         name = _local_name(match.group("target"))
         upload = by_name.get(_key(name)) if name else None
         if upload is None:
@@ -110,7 +135,11 @@ def rewrite(body: str, uploads: list[Uploaded]) -> Rewrite:
         count += 1
         return f"![{match.group('alt')}]({upload.link}{match.group('title') or ''})"
 
-    out = _IMAGE.sub(image, _EMBED.sub(embed, body))
+    # Embeds first, then images over the result, each against its own text's code
+    # spans: an embed's replacement is a different length, so offsets move.
+    out = _EMBED.sub(embed, body)
+    code = _code_spans(out)
+    out = _IMAGE.sub(image, out)
     missing = tuple(u for u in uploads if _key(u.filename) not in used)
     return Rewrite(body=out, replaced=count, unreferenced=missing)
 
