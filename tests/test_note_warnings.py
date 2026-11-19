@@ -88,3 +88,7 @@ def test_reference_images_are_checked_through_their_definitions() -> None:
     found = note_warnings.scan(body)
     assert [w.reference for w in found.warnings] == ["![chart][pic]", "![Shot][]"]
     assert found.picture_ids == (_ID,)
+
+
+def test_escaped_backticks_do_not_hide_a_picture() -> None:
+    assert _kinds("\\` ![](attachments/chart.png) \\` and `real`") == ["local_file"]
