@@ -557,9 +557,18 @@ def _register_account_commands(sub: Any) -> None:
         "create",
         help=(
             "Upload a file as a new artifact (pictures, PDFs, plain text, audio, MP4 video; "
-            "the server refuses other types and large files)."
+            "the server refuses other types and large files). For a picture it also prints "
+            "the line that shows it in a note (--json: `markdown`); for a room's note, upload "
+            "it with the same --room."
         ),
         parents=[_json_parent, _room_parent(omitted="Omit to save into your own artifacts.")],
+        epilog=(
+            "Pictures in notes: for a PNG, JPEG, GIF, WebP, AVIF, BMP or SVG this prints "
+            "![](/artifacts/ID/raw) on stdout, the line that shows it in a note (so "
+            "`pepper artifacts create --file chart.svg --room R >> draft.md` appends it). "
+            "Write a short description of the picture between the brackets. A room's note "
+            "shows only pictures saved in that room."
+        ),
     )
     p.add_argument("--file", required=True, metavar="PATH", help="The file to upload.")
     p.add_argument("--name", help="Name for the artifact. Default: the file's name.")
@@ -2229,6 +2238,12 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     )
     p.set_defaults(handler=cmd_apps_run)
 
+    note_images_epilog = (
+        "Pictures: a note shows one written as ![description](/artifacts/ID/raw) on a line "
+        "of its own. Upload the file with `pepper artifacts create --file PATH` (add the "
+        "note's --room for a room's note, or other members see a broken image); it prints "
+        "that line. PNG, JPEG, GIF, WebP, AVIF, BMP and SVG all work."
+    )
     p_notes = sub.add_parser(
         "notes",
         help=(
@@ -2280,6 +2295,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "create",
         help="Create a note. Body from $EDITOR, --file PATH, or --file - for stdin.",
         parents=[_json_parent],
+        epilog=note_images_epilog,
     )
     p_notes_new.add_argument("name", help="The new note's name.")
     p_notes_new.add_argument(
@@ -2294,6 +2310,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "edit",
         help="Edit a note. Body from $EDITOR, --file PATH, or --file - for stdin.",
         parents=[_json_parent],
+        epilog=note_images_epilog,
     )
     p_notes_edit.add_argument("note", help=_NOTE_ARG_HELP)
     p_notes_edit.add_argument("--room", help=_GROUP_ARG_HELP + " Omit for your own notes.")
@@ -9535,15 +9552,29 @@ def cmd_artifacts_create(args: argparse.Namespace) -> int:
             labels=",".join(args.label or []),
             principal=principal,
         )
-        _emit(
-            result,
-            args,
-            lambda: render.info(
+        markdown = artifacts_view.note_image_markdown(
+            str(result.get("id") or ""), result.get("mime_type")
+        )
+        if markdown is not None:
+            result = {**result, "markdown": markdown}
+
+        def human() -> None:
+            render.info(
                 f"Uploaded {result.get('name')!r} ({result.get('mime_type')}, "
                 f"{result.get('byte_size')} bytes): {result.get('id')}",
                 soft_wrap=True,
-            ),
-        )
+            )
+            if markdown is not None:
+                where = "this room's notes" if args.room else "your own notes"
+                render.info(
+                    f"To show it in a note, add this line (it shows in {where}; "
+                    "describe the picture between the brackets):",
+                    soft_wrap=True,
+                )
+                # On stdout, alone, so ``artifacts create … >> draft.md`` appends just it.
+                render.write_document(markdown + "\n")
+
+        _emit(result, args, human)
         return 0
 
     return _with_api(run, _report_artifacts_error, args)

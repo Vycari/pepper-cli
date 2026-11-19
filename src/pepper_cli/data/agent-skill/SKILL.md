@@ -527,6 +527,11 @@ its body; `NOTE` is the note's name or id:
   (an agent has no editor; `--name` renames). Edit only when you were asked to. An edit sends the
   etag it just read, so a note someone changed in between answers a conflict (exit 1) rather than
   being overwritten: read it again and decide, and never pass `--force` to get past it.
+- A note can show pictures, written as `![description](/artifacts/<id>/raw)` on a line of its
+  own. An agent member can't upload or open pictures, but a note it edits may hold lines like
+  that which members added: keep them exactly as they are, and move them only along with the text
+  around them. You can reuse such a line elsewhere in the same room's notes; the picture shows
+  only to people who can see the room.
 
 Without `--room` these commands aim at your personal notes, which an agent token cannot reach.
 
