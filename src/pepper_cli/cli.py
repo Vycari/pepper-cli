@@ -8898,9 +8898,12 @@ def cmd_notes_edit(args: argparse.Namespace) -> int:
     return _with_api(run, _report_notes_api_error, args)
 
 
-_PICTURE_ID = re.compile(
-    r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
-)
+_UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+#: A picture's link: its id, its ``/artifacts/<id>/raw`` path (with or without the site), or
+#: either in angle brackets. Matched whole, so nothing but the link can pick the picture.
+_PICTURE_LINK = re.compile(rf"<?(?:(?:https?://[^/\s]+)?/artifacts/)?({_UUID})(?:/raw)?>?")
+#: A note's picture line: the link is the target in the parentheses, never the description.
+_PICTURE_LINE = re.compile(r"!\[(?:\\.|[^\]\\\n])*\]\(\s*(\S+?)(?:\s+\"[^\"\n]*\")?\s*\)")
 
 #: The detail fields in display order: the API's name, the label shown, the ``set`` flag.
 _PICTURE_FIELDS = (
@@ -8915,9 +8918,10 @@ def _picture_id(args: argparse.Namespace) -> str | None:
     """The picture id in ``args.picture``: a bare id, a ``/artifacts/<id>/raw`` path or a
     note's picture line. ``None`` (after a usage error) when there is no id in it."""
     value = args.picture.strip()
-    if "/artifacts/" in value:
-        value = value.split("/artifacts/", 1)[1]
-    match = _PICTURE_ID.match(value)
+    line = _PICTURE_LINE.fullmatch(value)
+    if line is not None:
+        value = line.group(1)
+    match = _PICTURE_LINK.fullmatch(value)
     if match is None:
         _emit_error(
             args,

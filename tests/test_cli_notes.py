@@ -2002,3 +2002,37 @@ def test_notes_edit_rename_after_a_lost_race_warns_about_the_saved_text(
     err = capsys.readouterr().err
     assert "![[theirs.png]]" in err
     assert "![[old.png]]" not in err
+
+
+_OTHER_PIC = "11111111-2222-4333-8444-555555555555"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        f"![Compare /artifacts/{_OTHER_PIC}/raw](/artifacts/{_PIC}/raw)",
+        f'![chart](/artifacts/{_PIC}/raw "Title")',
+        f"https://pepper.example/artifacts/{_PIC}/raw",
+        f"/artifacts/{_PIC}/raw",
+        f"<{_PIC}>",
+    ],
+)
+def test_notes_image_takes_the_id_from_the_link_only(
+    tmp_home, patch_picture_api, capsys, value
+) -> None:
+    _login(tmp_home)
+    patch_picture_api(pictures={})
+    cli.main(["notes", "image", value])
+    calls = [c for c in _FakeNotesApi.instances[-1].calls if c[0] == "get_image_details"]
+    assert calls == [("get_image_details", _PIC, None)]
+
+
+@pytest.mark.parametrize("value", [f"{_PIC}-extra", f"/artifacts/{_PIC}/raw/more", f"x {_PIC}"])
+def test_notes_image_rejects_an_id_with_more_around_it(
+    tmp_home, patch_picture_api, capsys, value
+) -> None:
+    _login(tmp_home)
+    patch_picture_api()
+    rc = cli.main(["notes", "image", value])
+    assert rc == 2
+    assert not _FakeNotesApi.instances
