@@ -19,13 +19,14 @@ from pathlib import PurePosixPath
 from urllib.parse import unquote
 
 #: ``![[target]]`` or ``![[target|label]]``. ``target`` may carry a ``#heading`` part,
-#: which never applies to a picture and is dropped with it.
-_EMBED = re.compile(r"!\[\[([^\]|\n]+?)(?:\|([^\]\n]*))?\]\]")
+#: which never applies to a picture and is dropped with it. A ``\!`` is escaped text, never
+#: a picture, here and in ``_IMAGE``.
+_EMBED = re.compile(r"(?<!\\)!\[\[([^\]|\n]+?)(?:\|([^\]\n]*))?\]\]")
 
 #: ``![alt](target)`` or ``![alt](target "title")``, with an optional ``<...>`` around a
 #: target holding spaces. Only a target with no scheme and no leading ``/`` is local.
 _IMAGE = re.compile(
-    r"!\[(?P<alt>(?:\\.|[^\]\\\n])*)\]"
+    r"(?<!\\)!\[(?P<alt>(?:\\.|[^\]\\\n])*)\]"
     r"\(\s*(?P<target><[^>\n]+>|(?:[^\s()\\]|\\.|\([^\s()]*\))+)"
     r"(?P<title>\s+\"[^\"\n]*\")?\s*\)"
 )

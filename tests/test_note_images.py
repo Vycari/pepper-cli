@@ -85,3 +85,12 @@ def test_a_stray_backtick_does_not_hide_a_later_paragraph() -> None:
     assert done.replaced == 1
     assert "/artifacts/abc/raw" in done.body
     assert "![[chart.svg" not in done.body
+
+
+def test_escaped_picture_syntax_is_text_and_left_alone() -> None:
+    uploads = [note_images.Uploaded("chart.svg", "abc")]
+    body = "Write \\![x](chart.svg) or \\![[chart.svg]] to show it.\n"
+    done = note_images.rewrite(body, uploads)
+    assert done.body.startswith(body)
+    assert done.replaced == 0
+    assert done.unreferenced == tuple(uploads)
