@@ -1821,3 +1821,129 @@ def test_notes_edit_warns_after_saving(tmp_home, patch_api, capsys, tmp_path) ->
     assert doc["shared"] is True
     assert [w["kind"] for w in doc["warnings"]] == ["obsidian_embed"]
     assert any(c[0] == "edit_artifact" for c in _FakeNotesApi.instances[-1].calls)
+
+
+# ---------------------------------------------------------------------------
+# notes image (#319)
+
+_PIC = "33333333-3333-3333-3333-333333333333"
+
+
+class _FakePictureApi(_FakeNotesApi):
+    def put_image_details(self, artifact_id, *, principal=None, **values):
+        self.calls.append(("put_image_details", artifact_id, principal, values))
+        return self._result("put")
+
+    def suggest_image_details(self, artifact_id, *, principal=None, replace_all=False):
+        self.calls.append(("suggest_image_details", artifact_id, principal, replace_all))
+        return self._result("suggest")
+
+
+@pytest.fixture
+def patch_picture_api(monkeypatch):
+    _FakeNotesApi.instances.clear()
+
+    def install(**canned):
+        monkeypatch.setattr(
+            api_client, "ApiClient", lambda **kwargs: _FakePictureApi(**canned, **kwargs)
+        )
+
+    return install
+
+
+def test_notes_image_show_prints_each_detail(tmp_home, patch_picture_api, capsys) -> None:
+    _login(tmp_home)
+    details = api_client.ImageDetails(
+        id=_PIC,
+        alt_text="A bar chart",
+        title="",
+        caption="Revenue by month",
+        long_description="",
+        sources={"alt_text": "user", "caption": "model"},
+    )
+    patch_picture_api(groups=_group_list(_group()), pictures={_PIC: details})
+    rc = cli.main(
+        ["notes", "image", "show", f"![x](/artifacts/{_PIC.upper()}/raw)", "--room", "trip"]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Alt text: A bar chart" in out
+    assert "Title: (not set)" in out
+    assert "Caption (suggested by Pepper): Revenue by month" in out
+    assert ("get_image_details", _PIC, _GID_TRIP) in _FakeNotesApi.instances[-1].calls
+
+
+def test_notes_image_show_404_points_at_room(tmp_home, patch_picture_api, capsys) -> None:
+    _login(tmp_home)
+    patch_picture_api()
+    rc = cli.main(["notes", "image", "show", _PIC])
+    assert rc == 2
+    assert "pass --room" in capsys.readouterr().err
+
+
+def test_notes_image_rejects_a_value_with_no_id(tmp_home, patch_picture_api, capsys) -> None:
+    _login(tmp_home)
+    patch_picture_api()
+    rc = cli.main(["notes", "image", "show", "chart.png"])
+    assert rc == 2
+    assert not _FakeNotesApi.instances
+    assert "PICTURE must be" in capsys.readouterr().err
+
+
+def test_notes_image_set_sends_only_given_fields_and_empty_clears(
+    tmp_home, patch_picture_api, capsys
+) -> None:
+    _login(tmp_home)
+    patch_picture_api(
+        put=api_client.ImageDetails(
+            id=_PIC, alt_text="Chart", title="", caption="", long_description=""
+        )
+    )
+    rc = cli.main(["notes", "image", "set", _PIC, "--alt", "Chart", "--caption", "", "--json"])
+    assert rc == 0
+    call = next(c for c in _FakeNotesApi.instances[-1].calls if c[0] == "put_image_details")
+    assert call[3] == {
+        "alt_text": "Chart",
+        "title": None,
+        "caption": "",
+        "long_description": None,
+    }
+    assert json.loads(capsys.readouterr().out)["alt_text"] == "Chart"
+
+
+def test_notes_image_set_needs_a_field(tmp_home, patch_picture_api, capsys) -> None:
+    _login(tmp_home)
+    patch_picture_api()
+    rc = cli.main(["notes", "image", "set", _PIC])
+    assert rc == 2
+    assert "at least one of --alt" in capsys.readouterr().err
+
+
+def test_notes_image_suggest_started(tmp_home, patch_picture_api, capsys) -> None:
+    _login(tmp_home)
+    patch_picture_api(
+        groups=_group_list(_group()),
+        suggest=api_client.ImageSuggestion(id=_PIC, started=True, run=3),
+    )
+    rc = cli.main(["notes", "image", "suggest", _PIC, "--room", "trip", "--all"])
+    assert rc == 0
+    assert ("suggest_image_details", _PIC, _GID_TRIP, True) in _FakeNotesApi.instances[-1].calls
+    assert f"pepper notes image show {_PIC} --room trip" in capsys.readouterr().err
+
+
+def test_notes_image_suggest_nothing_new(tmp_home, patch_picture_api, capsys) -> None:
+    _login(tmp_home)
+    patch_picture_api(suggest=api_client.ImageSuggestion(id=_PIC, started=False))
+    rc = cli.main(["notes", "image", "suggest", _PIC])
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "Nothing new to suggest" in captured.err
+    assert f"pepper notes image show {_PIC}" in captured.out
+
+
+def test_notes_image_suggest_404_mentions_availability(tmp_home, patch_picture_api, capsys) -> None:
+    _login(tmp_home)
+    patch_picture_api(suggest=api_client.ApiError(status=404, body="", detail="not found"))
+    rc = cli.main(["notes", "image", "suggest", _PIC])
+    assert rc == 2
+    assert "aren't available for your account" in capsys.readouterr().err

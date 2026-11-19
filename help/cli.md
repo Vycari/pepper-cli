@@ -292,12 +292,21 @@ ever want to look back at a specific conversation in detail.
   upload the picture to the same room (`--room <room>`): a picture saved in
   your own files shows as a broken image for everyone else in the room. When a
   room's note is published as a blog post, its pictures are copied into the
-  post, so readers outside the room see them too. Captions and longer
-  descriptions are set from **Edit image** in the web editor. After
+  post, so readers outside the room see them too. After
   `notes create` or `notes edit` saves, it warns about any picture readers
   won't see: one saved outside the room, an Obsidian embed like
   `![[chart.png]]`, or a picture that points at a file on your computer. The
   note is saved either way, so fix the line and edit it again.
+- **A picture's alt text and captions:** `pepper notes image show <picture>`
+  prints the details Pepper keeps with a picture in a note: its alt text, title,
+  caption and long description. `<picture>` is the picture's id, or its
+  `![](/artifacts/<id>/raw)` line. `pepper notes image set <picture> --alt
+  "..." --caption "..."` sets the ones you give (`--title` and `--description`
+  too), and an empty value clears one. `pepper notes image suggest <picture>`
+  asks Pepper to suggest the details nobody has set, or every one with `--all`;
+  they arrive in a minute, so run `show` again to see them. For a picture in a
+  room's note, add `--room <room>`. These are the same details as **Edit
+  image** in the web editor.
 - **Comment on a room's note:** `pepper comments list --room <room> --note <note>`
   prints its comment threads; add `--all` to include resolved ones. `pepper
   comments create --room <room> --note <note> "<text>"` comments on the whole

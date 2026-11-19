@@ -2030,6 +2030,18 @@ def _image_details_from_dict(body: dict[str, Any]) -> ImageDetails:
     )
 
 
+# MIRROR: src/pepper/api/artifacts.py::ImageSuggestResponse
+@dataclass(frozen=True)
+class ImageSuggestion:
+    """``POST /api/v1/artifacts/{id}/image-details/suggest`` (202): whether Pepper
+    started writing suggestions, and the run number that does it (``None``
+    when nothing was left to suggest)."""
+
+    id: str
+    started: bool
+    run: int | None = None
+
+
 # MIRROR: src/pepper/agent/artifacts/applet.py::read_detail
 # (the detail route answers an untyped JSONResponse, no snapshot schema)
 @dataclass(frozen=True)
@@ -4626,6 +4638,67 @@ class ApiClient:
         if not isinstance(body, dict):
             raise ApiError(status=200, body=str(body), detail="malformed response")
         return _image_details_from_dict(body)
+
+    def put_image_details(
+        self,
+        artifact_id: str,
+        *,
+        principal: str | None = None,
+        alt_text: str | None = None,
+        title: str | None = None,
+        caption: str | None = None,
+        long_description: str | None = None,
+    ) -> ImageDetails:
+        """``PUT /api/v1/artifacts/{id}/image-details`` — set some of a picture's details.
+
+        Only the fields given are sent; ``""`` clears one, ``None`` leaves it
+        as it is. Same owner scoping and 404 as :meth:`get_image_details`.
+        """
+        payload = {
+            key: value
+            for key, value in (
+                ("alt_text", alt_text),
+                ("title", title),
+                ("caption", caption),
+                ("long_description", long_description),
+            )
+            if value is not None
+        }
+        params = {"principal": principal} if principal is not None else None
+        body = self._request(
+            "PUT",
+            f"/api/v1/artifacts/{artifact_id}/image-details",
+            json=payload,
+            params=params,
+        ).json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return _image_details_from_dict(body)
+
+    def suggest_image_details(
+        self, artifact_id: str, *, principal: str | None = None, replace_all: bool = False
+    ) -> ImageSuggestion:
+        """``POST /api/v1/artifacts/{id}/image-details/suggest`` — ask Pepper to suggest them.
+
+        ``replace_all`` false fills only the blank fields nobody set; true
+        replaces every field. A 404 also covers an account that doesn't have
+        suggestions.
+        """
+        params = {"principal": principal} if principal is not None else None
+        body = self._request(
+            "POST",
+            f"/api/v1/artifacts/{artifact_id}/image-details/suggest",
+            json={"all": replace_all},
+            params=params,
+        ).json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        run = body.get("run")
+        return ImageSuggestion(
+            id=str(body["id"]),
+            started=bool(body.get("started")),
+            run=run if isinstance(run, int) else None,
+        )
 
     def download_artifact(self, artifact_id: str) -> bytes:
         """``GET /api/v1/artifacts/{id}/raw``: a file artifact's bytes. 404 for a missing,

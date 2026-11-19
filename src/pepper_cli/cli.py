@@ -2338,6 +2338,57 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_notes_rm.add_argument("--room", help=_GROUP_ARG_HELP + " Omit for your own notes.")
     p_notes_rm.set_defaults(handler=cmd_notes_delete)
 
+    p_notes_image = sub_notes.add_parser(
+        "image",
+        help="A picture's alt text, title, caption and long description.",
+        description=(
+            "Read or set the details Pepper keeps with a picture in a note: its alt text "
+            "(for anyone who can't see it), title, caption and long description. PICTURE is "
+            "the picture's id, or its line from a note, like ![](/artifacts/<id>/raw). For a "
+            "picture in a room's note, pass --room."
+        ),
+    )
+    sub_notes_image = p_notes_image.add_subparsers(dest="notes_image_action", required=True)
+    _picture_help = "The picture's id, or its ![](/artifacts/<id>/raw) line."
+    _picture_room_help = _GROUP_ARG_HELP + " Omit for a picture in your own notes."
+
+    p_ni_show = sub_notes_image.add_parser(
+        "show", help="Print a picture's details.", parents=[_json_parent]
+    )
+    p_ni_show.add_argument("picture", metavar="PICTURE", help=_picture_help)
+    p_ni_show.add_argument("--room", help=_picture_room_help)
+    p_ni_show.set_defaults(handler=cmd_notes_image_show)
+
+    p_ni_set = sub_notes_image.add_parser(
+        "set",
+        help="Set some of a picture's details. An empty value clears one.",
+        parents=[_json_parent],
+    )
+    p_ni_set.add_argument("picture", metavar="PICTURE", help=_picture_help)
+    p_ni_set.add_argument("--room", help=_picture_room_help)
+    p_ni_set.add_argument("--alt", metavar="TEXT", help="Alt text (up to 250 characters).")
+    p_ni_set.add_argument("--title", metavar="TEXT", help="Title (up to 120 characters).")
+    p_ni_set.add_argument("--caption", metavar="TEXT", help="Caption (up to 500 characters).")
+    p_ni_set.add_argument(
+        "--description", metavar="TEXT", help="Long description (up to 4000 characters)."
+    )
+    p_ni_set.set_defaults(handler=cmd_notes_image_set)
+
+    p_ni_suggest = sub_notes_image.add_parser(
+        "suggest",
+        help="Ask Pepper to suggest the blank details (--all to replace every one).",
+        parents=[_json_parent],
+    )
+    p_ni_suggest.add_argument("picture", metavar="PICTURE", help=_picture_help)
+    p_ni_suggest.add_argument("--room", help=_picture_room_help)
+    p_ni_suggest.add_argument(
+        "--all",
+        action="store_true",
+        dest="replace_all",
+        help="Replace every detail, including ones you set yourself.",
+    )
+    p_ni_suggest.set_defaults(handler=cmd_notes_image_suggest)
+
     p_comments = sub.add_parser(
         "comments",
         help=(
@@ -8838,6 +8889,168 @@ def cmd_notes_edit(args: argparse.Namespace) -> int:
             api, saved_body, room_principal=room_principal, room_label=args.room
         )
         _emit_saved_note(updated, args, f"Updated {updated.name!r}.", warnings)
+        return 0
+
+    return _with_api(run, _report_notes_api_error, args)
+
+
+_PICTURE_ID = re.compile(
+    r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+)
+
+#: The detail fields in display order: the API's name, the label shown, the ``set`` flag.
+_PICTURE_FIELDS = (
+    ("alt_text", "Alt text", "alt"),
+    ("title", "Title", "title"),
+    ("caption", "Caption", "caption"),
+    ("long_description", "Description", "description"),
+)
+
+
+def _picture_id(args: argparse.Namespace) -> str | None:
+    """The picture id in ``args.picture``: a bare id, a ``/artifacts/<id>/raw`` path or a
+    note's picture line. ``None`` (after a usage error) when there is no id in it."""
+    value = args.picture.strip()
+    if "/artifacts/" in value:
+        value = value.split("/artifacts/", 1)[1]
+    match = _PICTURE_ID.match(value)
+    if match is None:
+        _emit_error(
+            args,
+            "usage",
+            "PICTURE must be a picture's id or its ![](/artifacts/<id>/raw) line",
+        )
+        return None
+    return match.group(1).lower()
+
+
+def _report_picture_error(exc: api_client.ApiError, args: argparse.Namespace | None) -> int:
+    """404 is one answer for a missing picture, one saved somewhere else, a room you are not
+    in and an artifact that isn't a picture; say all of it, and point at --room."""
+    if exc.status == 404:
+        _emit_error(
+            args,
+            "not_found",
+            "no such picture here: check the id, and pass --room for a picture in a room's note",
+            status=404,
+        )
+        return 2
+    return _report_notes_api_error(exc, args)
+
+
+def _render_image_details(details: api_client.ImageDetails) -> None:
+    for key, label, _flag in _PICTURE_FIELDS:
+        value = getattr(details, key)
+        if not value:
+            print(f"{label}: (not set)")
+            continue
+        by = " (suggested by Pepper)" if details.sources.get(key) == "model" else ""
+        print(f"{label}{by}: {sanitize_line(value)}")
+
+
+def cmd_notes_image_show(args: argparse.Namespace) -> int:
+    """``pepper notes image show PICTURE [--room ROOM] [--json]``: a picture's details.
+
+    Exit codes: 0 ok · 1 auth/API/transport · 2 bad input (not a picture id, or no such
+    picture here).
+    """
+    picture_id = _picture_id(args)
+    if picture_id is None:
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        room_principal = _opt_group(api, args.room, args=args)
+        try:
+            details = api.get_image_details(picture_id, principal=room_principal)
+        except api_client.ApiError as exc:
+            return _report_picture_error(exc, args)
+        _emit(details, args, lambda: _render_image_details(details))
+        return 0
+
+    return _with_api(run, _report_notes_api_error, args)
+
+
+def cmd_notes_image_set(args: argparse.Namespace) -> int:
+    """``pepper notes image set PICTURE [--room ROOM] [--alt T] [--title T] [--caption T]
+    [--description T] [--json]``: set the details given, leave the rest.
+
+    An empty value (``--caption ""``) clears that detail. Answers the picture's details as
+    they now stand. Exit codes as for ``show``, plus 2 when no detail flag is given.
+    """
+    values = {key: getattr(args, flag) for key, _label, flag in _PICTURE_FIELDS}
+    if all(value is None for value in values.values()):
+        _emit_error(args, "usage", "give at least one of --alt, --title, --caption, --description")
+        return 2
+    picture_id = _picture_id(args)
+    if picture_id is None:
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        room_principal = _opt_group(api, args.room, args=args)
+        try:
+            details = api.put_image_details(picture_id, principal=room_principal, **values)
+        except api_client.ApiError as exc:
+            return _report_picture_error(exc, args)
+
+        def human() -> None:
+            render.info("Saved the picture's details.")
+            _render_image_details(details)
+
+        _emit(details, args, human)
+        return 0
+
+    return _with_api(run, _report_notes_api_error, args)
+
+
+def cmd_notes_image_suggest(args: argparse.Namespace) -> int:
+    """``pepper notes image suggest PICTURE [--room ROOM] [--all] [--json]``.
+
+    Asks Pepper to write suggestions for the details nobody has set (``--all``: every
+    detail). The suggestions arrive in the background; ``show`` reads them. A 404 also
+    covers an account without picture suggestions.
+
+    Exit codes: 0 ok · 1 auth/API/transport, the usage limit, or suggestions unavailable ·
+    2 bad input.
+    """
+    picture_id = _picture_id(args)
+    if picture_id is None:
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        room_principal = _opt_group(api, args.room, args=args)
+        try:
+            result = api.suggest_image_details(
+                picture_id, principal=room_principal, replace_all=args.replace_all
+            )
+        except api_client.ApiError as exc:
+            if exc.status == 404:
+                _emit_error(
+                    args,
+                    "not_found",
+                    "no such picture here (pass --room for a picture in a room's note), or "
+                    "picture suggestions aren't available for your account",
+                    status=404,
+                )
+                return 2
+            return _report_api_error(exc, args)
+        room_flag = f" --room {shlex.quote(args.room)}" if args.room else ""
+        show = f"pepper notes image show {picture_id}{room_flag}"
+
+        def human() -> None:
+            if result.started:
+                render.info(
+                    f"Pepper is writing suggestions. Run '{show}' in a minute to see them.",
+                    soft_wrap=True,
+                )
+            else:
+                render.info(
+                    "Nothing new to suggest: the details are already set, or Pepper is "
+                    "already writing them. Add --all to replace set details. See them with:",
+                    soft_wrap=True,
+                )
+                print(show)
+
+        _emit(result, args, human)
         return 0
 
     return _with_api(run, _report_notes_api_error, args)

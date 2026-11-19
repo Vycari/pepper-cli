@@ -642,3 +642,70 @@ def test_get_note_links_rejects_a_non_object_detail() -> None:
             assert exc.status == 200
         else:
             raise AssertionError("a non-object detail must not parse as no links")
+
+
+_DETAILS = {
+    "id": _NID,
+    "alt_text": "A chart",
+    "title": "",
+    "caption": "",
+    "long_description": "",
+    "sources": {"alt_text": "user", "title": None, "caption": None, "long_description": None},
+    "suggestions_enabled": True,
+    "last_run": {"run": 2, "status": "done"},
+}
+
+
+def test_get_image_details_scopes_to_the_room() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(200, json=_DETAILS)
+
+    with _client(handler) as api:
+        details = api.get_image_details(_NID, principal=_GID)
+
+    assert seen == {
+        "method": "GET",
+        "path": f"/api/v1/artifacts/{_NID}/image-details",
+        "params": {"principal": _GID},
+    }
+    assert details.alt_text == "A chart"
+    assert details.sources["alt_text"] == "user"
+    assert details.last_run == {"run": 2, "status": "done"}
+
+
+def test_put_image_details_sends_only_given_fields() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["params"] = dict(request.url.params)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_DETAILS)
+
+    with _client(handler) as api:
+        api.put_image_details(_NID, alt_text="A chart", caption="")
+
+    assert seen == {"method": "PUT", "params": {}, "body": {"alt_text": "A chart", "caption": ""}}
+
+
+def test_suggest_image_details_sends_all_and_parses_the_run() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(202, json={"id": _NID, "started": True, "run": 4})
+
+    with _client(handler) as api:
+        result = api.suggest_image_details(_NID, replace_all=True)
+
+    assert seen == {
+        "path": f"/api/v1/artifacts/{_NID}/image-details/suggest",
+        "body": {"all": True},
+    }
+    assert result == api_client.ImageSuggestion(id=_NID, started=True, run=4)
