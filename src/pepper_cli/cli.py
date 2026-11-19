@@ -138,6 +138,7 @@ from pepper_cli import (
     graph_view,
     next_view,
     note_edit,
+    note_warnings,
     numbered_view,
     preferences_view,
     proctitle,
@@ -8562,6 +8563,65 @@ def _notes_editor_refused(args: argparse.Namespace) -> bool:
     return False
 
 
+def _note_picture_warnings(
+    api: api_client.ApiClient,
+    body: str | None,
+    *,
+    room_principal: str | None,
+    room_label: str | None,
+) -> list[note_warnings.NoteWarning]:
+    """Each picture reference in a saved note that readers won't see (#318).
+
+    The text checks come from :func:`note_warnings.scan`. A room note also
+    asks the server about each picture link, owner-scoped to the room: a 404
+    means the picture is saved somewhere else (usually your own notes), so
+    the room's other members see a broken image. A check the server can't
+    answer becomes an ``unchecked`` warning; the note is already saved, so
+    nothing here fails the command.
+    """
+    if not body:
+        return []
+    found = note_warnings.scan(body)
+    warnings = list(found.warnings)
+    if room_principal is None:
+        return warnings
+    for picture_id in found.picture_ids:
+        try:
+            api.get_image_details(picture_id, principal=room_principal)
+        except api_client.ApiError as exc:
+            if exc.status == 404:
+                warnings.append(note_warnings.not_in_room(picture_id, room_label or "this room"))
+            else:
+                warnings.append(note_warnings.unchecked(picture_id))
+        except httpx.RequestError:
+            warnings.append(note_warnings.unchecked(picture_id))
+    return warnings
+
+
+def _emit_saved_note(
+    result: object,
+    args: argparse.Namespace,
+    message: str,
+    warnings: list[note_warnings.NoteWarning],
+    *,
+    human_extra: Callable[[], None] | None = None,
+) -> None:
+    """Answer a saved note: under ``--json`` the note plus a ``warnings`` list
+    (empty when there is nothing to say), else the info line, anything
+    ``human_extra`` prints, and one ``warning:`` line per warning on stderr."""
+    if _json_mode(args):
+        plain = _to_plain(result)
+        doc = dict(plain) if isinstance(plain, dict) else {"result": plain}
+        doc["warnings"] = [_to_plain(w) for w in warnings]
+        _write_json(doc)
+        return
+    render.info(message)
+    if human_extra is not None:
+        human_extra()
+    for warning in warnings:
+        render.warning(warning.message)
+
+
 def cmd_notes_create(args: argparse.Namespace) -> int:
     """``pepper notes create <name> [--room ROOM] [--file PATH|-] [--json]``.
 
@@ -8596,12 +8656,16 @@ def cmd_notes_create(args: argparse.Namespace) -> int:
             _emit_error(args, "usage", "note body is empty — aborting")
             return 2
         result = api.create_artifact(name=args.name, body=body, principal=room_principal)
-
-        def human() -> None:
-            render.info(f"Created {result.name!r}.")
-            print(sanitize_line(result.id))
-
-        _emit(result, args, human)
+        warnings = _note_picture_warnings(
+            api, body, room_principal=room_principal, room_label=args.room
+        )
+        _emit_saved_note(
+            result,
+            args,
+            f"Created {result.name!r}.",
+            warnings,
+            human_extra=lambda: print(sanitize_line(result.id)),
+        )
         return 0
 
     return _with_api(run, _report_notes_api_error, args)
@@ -8769,7 +8833,11 @@ def cmd_notes_edit(args: argparse.Namespace) -> int:
                 return 1
             else:
                 break
-        _emit(updated, args, lambda: render.info(f"Updated {updated.name!r}."))
+        saved_body = body_to_send if body_to_send is not None else current.body
+        warnings = _note_picture_warnings(
+            api, saved_body, room_principal=room_principal, room_label=args.room
+        )
+        _emit_saved_note(updated, args, f"Updated {updated.name!r}.", warnings)
         return 0
 
     return _with_api(run, _report_notes_api_error, args)

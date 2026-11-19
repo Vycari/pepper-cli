@@ -1994,6 +1994,42 @@ def _note_comments_from_dict(body: dict[str, Any]) -> NoteComments:
     )
 
 
+# MIRROR: src/pepper/api/artifacts.py::ImageDetailsResponse
+@dataclass(frozen=True)
+class ImageDetails:
+    """One picture's alt text, title, caption and long description, from
+    ``GET``/``PUT /api/v1/artifacts/{id}/image-details``.
+
+    Each field is ``""`` when unset. ``sources`` says who set each field and
+    ``last_run`` is the last suggestion run (or ``None``); both are kept as
+    the server sent them.
+    """
+
+    id: str
+    alt_text: str
+    title: str
+    caption: str
+    long_description: str
+    sources: dict[str, Any] = field(default_factory=dict)
+    suggestions_enabled: bool = False
+    last_run: dict[str, Any] | None = None
+
+
+def _image_details_from_dict(body: dict[str, Any]) -> ImageDetails:
+    sources = body.get("sources")
+    last_run = body.get("last_run")
+    return ImageDetails(
+        id=str(body["id"]),
+        alt_text=body.get("alt_text") or "",
+        title=body.get("title") or "",
+        caption=body.get("caption") or "",
+        long_description=body.get("long_description") or "",
+        sources=sources if isinstance(sources, dict) else {},
+        suggestions_enabled=bool(body.get("suggestions_enabled")),
+        last_run=last_run if isinstance(last_run, dict) else None,
+    )
+
+
 # MIRROR: src/pepper/agent/artifacts/applet.py::read_detail
 # (the detail route answers an untyped JSONResponse, no snapshot schema)
 @dataclass(frozen=True)
@@ -4573,6 +4609,23 @@ class ApiClient:
         if not isinstance(body, dict):
             raise ApiError(status=200, body=str(body), detail="malformed response")
         return body
+
+    def get_image_details(self, artifact_id: str, *, principal: str | None = None) -> ImageDetails:
+        """``GET /api/v1/artifacts/{id}/image-details`` — a picture's alt text and captions.
+
+        Owner-scoped like the edit routes: ``principal`` names the room the
+        picture is saved in, omitted is the caller's own. A picture saved
+        somewhere else, a missing one and an artifact that is not a picture
+        are all the same 404, which is what lets ``notes create``/``edit``
+        ask "is this picture saved in this room?".
+        """
+        params = {"principal": principal} if principal is not None else None
+        body = self._request(
+            "GET", f"/api/v1/artifacts/{artifact_id}/image-details", params=params
+        ).json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return _image_details_from_dict(body)
 
     def download_artifact(self, artifact_id: str) -> bytes:
         """``GET /api/v1/artifacts/{id}/raw``: a file artifact's bytes. 404 for a missing,
