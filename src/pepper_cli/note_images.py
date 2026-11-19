@@ -19,14 +19,13 @@ from pathlib import PurePosixPath
 from urllib.parse import unquote
 
 #: ``![[target]]`` or ``![[target|label]]``. ``target`` may carry a ``#heading`` part,
-#: which never applies to a picture and is dropped with it. A ``\!`` is escaped text, never
-#: a picture, here and in ``_IMAGE``.
-_EMBED = re.compile(r"(?<!\\)!\[\[([^\]|\n]+?)(?:\|([^\]\n]*))?\]\]")
+#: which never applies to a picture and is dropped with it.
+_EMBED = re.compile(r"!\[\[([^\]|\n]+?)(?:\|([^\]\n]*))?\]\]")
 
 #: ``![alt](target)`` or ``![alt](target "title")``, with an optional ``<...>`` around a
 #: target holding spaces. Only a target with no scheme and no leading ``/`` is local.
 _IMAGE = re.compile(
-    r"(?<!\\)!\[(?P<alt>(?:\\.|[^\]\\\n])*)\]"
+    r"!\[(?P<alt>(?:\\.|[^\]\\\n])*)\]"
     r"\(\s*(?P<target><[^>\n]+>|(?:[^\s()\\]|\\.|\([^\s()]*\))+)"
     r"(?P<title>\s+\"[^\"\n]*\")?\s*\)"
 )
@@ -88,11 +87,31 @@ def _key(name: str) -> str:
     return name.casefold()
 
 
+def _escaped(text: str, position: int) -> bool:
+    """Whether the character at ``position`` follows an odd run of backslashes."""
+    run = 0
+    while position - run > 0 and text[position - run - 1] == "\\":
+        run += 1
+    return run % 2 == 1
+
+
 def _code_spans(text: str) -> list[tuple[int, int]]:
     spans = [m.span() for m in _FENCE.finditer(text)]
     rest = _FENCE.sub(lambda m: " " * len(m.group(0)), text)
-    spans += [m.span() for m in _INLINE_CODE.finditer(rest)]
+    # An escaped backtick opens no span; look again one character on.
+    position = 0
+    while (match := _INLINE_CODE.search(rest, position)) is not None:
+        if _escaped(rest, match.start()):
+            position = match.start() + 1
+            continue
+        spans.append(match.span())
+        position = match.end()
     return spans
+
+
+def _skip(match: re.Match[str], code: list[tuple[int, int]]) -> bool:
+    """A match inside code, or after an escaping backslash, is text, not a picture."""
+    return _in_code(match.start(), code) or _escaped(match.string, match.start())
 
 
 def _in_code(position: int, spans: list[tuple[int, int]]) -> bool:
@@ -113,7 +132,7 @@ def rewrite(body: str, uploads: list[Uploaded]) -> Rewrite:
 
     def embed(match: re.Match[str]) -> str:
         nonlocal count
-        if _in_code(match.start(), code):
+        if _skip(match, code):
             return match.group(0)
         target, label = match.group(1), match.group(2)
         name = _local_name(target.split("#", 1)[0])
@@ -127,7 +146,7 @@ def rewrite(body: str, uploads: list[Uploaded]) -> Rewrite:
 
     def image(match: re.Match[str]) -> str:
         nonlocal count
-        if _in_code(match.start(), code):
+        if _skip(match, code):
             return match.group(0)
         name = _local_name(match.group("target"))
         upload = by_name.get(_key(name)) if name else None

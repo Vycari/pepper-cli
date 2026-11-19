@@ -94,3 +94,17 @@ def test_escaped_picture_syntax_is_text_and_left_alone() -> None:
     assert done.body.startswith(body)
     assert done.replaced == 0
     assert done.unreferenced == tuple(uploads)
+
+
+def test_an_escaped_backslash_before_a_picture_leaves_it_a_picture() -> None:
+    uploads = [note_images.Uploaded("chart.svg", "abc")]
+    done = note_images.rewrite("\\\\![Revenue](chart.svg)", uploads)
+    assert done.body == "\\\\![Revenue](/artifacts/abc/raw)"
+    assert done.replaced == 1
+
+
+def test_escaped_backticks_open_no_code_span() -> None:
+    uploads = [note_images.Uploaded("chart.svg", "abc")]
+    done = note_images.rewrite("\\` ![x](chart.svg) \\` and `real`", uploads)
+    assert "![x](/artifacts/abc/raw)" in done.body
+    assert done.replaced == 1
