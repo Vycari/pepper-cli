@@ -293,7 +293,11 @@ ever want to look back at a specific conversation in detail.
   your own files shows as a broken image for everyone else in the room. When a
   room's note is published as a blog post, its pictures are copied into the
   post, so readers outside the room see them too. Captions and longer
-  descriptions are set from **Edit image** in the web editor.
+  descriptions are set from **Edit image** in the web editor. After
+  `notes create` or `notes edit` saves, it warns about any picture readers
+  won't see: one saved outside the room, an Obsidian embed like
+  `![[chart.png]]`, or a picture that points at a file on your computer. The
+  note is saved either way, so fix the line and edit it again.
 - **Publishing a draft with pictures:** `pepper notes create "<name>" --room
   <room> --file draft.md --image chart.svg --image photo.jpg` uploads each
   picture to the room and points the draft's references to it at the upload,

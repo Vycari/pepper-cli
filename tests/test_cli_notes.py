@@ -181,6 +181,17 @@ class _FakeNotesApi:
         self.calls.append(("delete_artifact", artifact_id, principal))
         return self._result("delete")
 
+    def get_image_details(self, artifact_id, *, principal=None):
+        self.calls.append(("get_image_details", artifact_id, principal))
+        # ``pictures`` maps a picture id to its answer; an id it doesn't
+        # name is the server's 404 (not saved for that owner).
+        value = (self._canned.get("pictures") or {}).get(artifact_id)
+        if value is None:
+            raise api_client.ApiError(status=404, body="", detail="not found")
+        if isinstance(value, Exception):
+            raise value
+        return value
+
 
 @pytest.fixture
 def patch_api(monkeypatch):
@@ -1684,6 +1695,193 @@ def test_notes_edit_conflict_dir_env_unknown_user_falls_back_to_the_temp_dir(
     assert cli.main(["notes", "edit", _NID_PACKING]) == 1
     saved = fallback / "packing-list.newetag1.mine.md"
     assert saved.read_text(encoding="utf-8") == "mine text\n"
+
+
+# ---------------------------------------------------------------------------
+# warnings about pictures readers won't see (#318)
+
+_PIC_IN_ROOM = "11111111-1111-1111-1111-111111111111"
+_PIC_MINE = "22222222-2222-2222-2222-222222222222"
+
+
+def _image_details(picture_id: str) -> api_client.ImageDetails:
+    return api_client.ImageDetails(
+        id=picture_id, alt_text="", title="", caption="", long_description=""
+    )
+
+
+def test_notes_create_room_note_warns_about_a_picture_saved_elsewhere(
+    tmp_home, patch_api, capsys, tmp_path
+) -> None:
+    _login(tmp_home)
+    patch_api(
+        groups=_group_list(_group()),
+        create=_create_result(),
+        pictures={_PIC_IN_ROOM: _image_details(_PIC_IN_ROOM)},
+    )
+    body = tmp_path / "note.md"
+    body.write_text(f"![a](/artifacts/{_PIC_IN_ROOM}/raw)\n\n![b](/artifacts/{_PIC_MINE}/raw)\n")
+    rc = cli.main(
+        ["notes", "create", "Packing list", "--room", "Trip planning", "--file", str(body)]
+    )
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert f"picture {_PIC_MINE} isn't saved in Trip planning" in err
+    assert _PIC_IN_ROOM not in err
+    checks = [c for c in _FakeNotesApi.instances[-1].calls if c[0] == "get_image_details"]
+    assert checks == [
+        ("get_image_details", _PIC_IN_ROOM, _GID_TRIP),
+        ("get_image_details", _PIC_MINE, _GID_TRIP),
+    ]
+
+
+def test_notes_create_json_lists_warnings_and_still_saves(tmp_home, patch_api, capsys, tmp_path):
+    _login(tmp_home)
+    patch_api(groups=_group_list(_group()), create=_create_result())
+    body = tmp_path / "note.md"
+    body.write_text(f"![[chart.svg]]\n\n![](/artifacts/{_PIC_MINE}/raw)\n")
+    rc = cli.main(
+        [
+            "notes",
+            "create",
+            "Packing list",
+            "--room",
+            "Trip planning",
+            "--file",
+            str(body),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["id"] == _NID_PACKING
+    assert [w["kind"] for w in doc["warnings"]] == ["obsidian_embed", "not_in_room"]
+    assert doc["warnings"][0]["reference"] == "![[chart.svg]]"
+    assert doc["warnings"][1]["reference"] == f"/artifacts/{_PIC_MINE}/raw"
+
+
+def test_notes_create_json_has_an_empty_warnings_list_when_all_is_well(
+    tmp_home, patch_api, capsys, tmp_path
+) -> None:
+    _login(tmp_home)
+    patch_api(create=_create_result())
+    body = tmp_path / "note.md"
+    body.write_text("- sunscreen\n")
+    rc = cli.main(["notes", "create", "Packing list", "--file", str(body), "--json"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["warnings"] == []
+
+
+def test_notes_create_personal_note_does_not_check_pictures(
+    tmp_home, patch_api, capsys, tmp_path
+) -> None:
+    """A note in your own notes is read only by you, so where its pictures are
+    saved isn't checked; the text checks still run."""
+    _login(tmp_home)
+    patch_api(create=_create_result())
+    body = tmp_path / "note.md"
+    body.write_text(f"![](/artifacts/{_PIC_MINE}/raw)\n![](attachments/chart.png)\n")
+    rc = cli.main(["notes", "create", "Packing list", "--file", str(body)])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "warning:" in err
+    assert "points at a file on your computer" in err
+    assert not any(c[0] == "get_image_details" for c in _FakeNotesApi.instances[-1].calls)
+
+
+def test_notes_create_unanswered_picture_check_is_a_warning_not_a_failure(
+    tmp_home, patch_api, capsys, tmp_path
+) -> None:
+    _login(tmp_home)
+    patch_api(
+        groups=_group_list(_group()),
+        create=_create_result(),
+        pictures={_PIC_MINE: api_client.ApiError(status=503, body="", detail="unavailable")},
+    )
+    body = tmp_path / "note.md"
+    body.write_text(f"![](/artifacts/{_PIC_MINE}/raw)\n")
+    rc = cli.main(
+        ["notes", "create", "Packing list", "--room", "Trip planning", "--file", str(body)]
+    )
+    assert rc == 0
+    assert f"couldn't check whether picture {_PIC_MINE}" in capsys.readouterr().err
+
+
+def test_notes_edit_warns_after_saving(tmp_home, patch_api, capsys, tmp_path) -> None:
+    _login(tmp_home)
+    patch_api(
+        groups=_group_list(_group()),
+        notes=_note_list(_note()),
+        detail=_detail(body="old\n", shared=True),
+        edit=_detail(body="![[chart.svg|300]]\n", shared=True),
+    )
+    body = tmp_path / "note.md"
+    body.write_text("![[chart.svg|300]]\n")
+    rc = cli.main(
+        ["notes", "edit", _NID_PACKING, "--room", "Trip planning", "--file", str(body), "--json"]
+    )
+    assert rc == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["shared"] is True
+    assert [w["kind"] for w in doc["warnings"]] == ["obsidian_embed"]
+    assert any(c[0] == "edit_artifact" for c in _FakeNotesApi.instances[-1].calls)
+
+
+def test_notes_create_malformed_picture_check_is_a_warning_not_a_crash(
+    tmp_home, patch_api, capsys, tmp_path
+) -> None:
+    _login(tmp_home)
+    patch_api(
+        groups=_group_list(_group()),
+        create=_create_result(),
+        pictures={_PIC_MINE: ValueError("Expecting value")},
+    )
+    body = tmp_path / "note.md"
+    body.write_text(f"![](/artifacts/{_PIC_MINE}/raw)\n")
+    rc = cli.main(
+        ["notes", "create", "Packing list", "--room", "Trip planning", "--file", str(body)]
+    )
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "Created 'Packing list'" in err
+    assert f"couldn't check whether picture {_PIC_MINE}" in err
+
+
+def test_notes_edit_json_with_nothing_to_change_still_lists_warnings(
+    tmp_home, patch_api, capsys, tmp_path
+) -> None:
+    _login(tmp_home)
+    patch_api(detail=_detail(body="![[chart.svg]]\n"))
+    body = tmp_path / "note.md"
+    body.write_text("![[chart.svg]]\n")
+    rc = cli.main(["notes", "edit", _NID_PACKING, "--file", str(body), "--json"])
+    assert rc == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert [w["kind"] for w in doc["warnings"]] == ["obsidian_embed"]
+    assert not any(c[0] == "edit_artifact" for c in _FakeNotesApi.instances[-1].calls)
+
+
+def test_notes_edit_rename_after_a_lost_race_warns_about_the_saved_text(
+    tmp_home, patch_api, capsys, monkeypatch, tmp_path
+) -> None:
+    """The warnings scan the body the server saved, not the copy read before the race."""
+    monkeypatch.chdir(tmp_path)
+    _login(tmp_home)
+    patch_api(
+        detail=_detail(name="Packing list", body="![[old.png]]\n", etag="stale1"),
+        edit=[
+            _conflict(body="![[theirs.png]]\n"),
+            _detail(name="Renamed", body="![[theirs.png]]\n"),
+        ],
+    )
+    monkeypatch.setattr(cli, "_open_in_editor", lambda initial: initial)
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_prompt", lambda prompt: "o")
+    rc = cli.main(["notes", "edit", _NID_PACKING, "--name", "Renamed"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "![[theirs.png]]" in err
+    assert "![[old.png]]" not in err
 
 
 # ---------------------------------------------------------------------------

@@ -307,6 +307,19 @@ def error(message: str, *, soft_wrap: bool = True) -> None:
     )
 
 
+def warning(message: str, *, soft_wrap: bool = True) -> None:
+    """Print a warning line to stderr in yellow: something worth fixing that
+    did not stop the command (it still exits 0). Printed literally, like
+    :func:`error`, and soft-wrapped for the same reason: warnings carry a
+    command to copy back."""
+    _stderr.print(
+        Text("warning:", style="yellow"),
+        sanitize_text(message),
+        markup=False,
+        soft_wrap=soft_wrap,
+    )
+
+
 def render_thought_delta(text: str, *, first: bool) -> None:
     """Append one ``model_thought`` fragment to the thought being rendered.
 
