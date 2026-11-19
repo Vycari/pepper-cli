@@ -173,6 +173,10 @@ class _FakeNotesApi:
             return value
         return self._result("edit")
 
+    def upload_artifact(self, *, filename, content, content_type, principal=None, **_):
+        self.calls.append(("upload_artifact", filename, content_type, principal))
+        return {"id": f"img-{filename}", "name": filename, "mime_type": content_type}
+
     def delete_artifact(self, artifact_id, *, principal=None):
         self.calls.append(("delete_artifact", artifact_id, principal))
         return self._result("delete")
@@ -1680,3 +1684,153 @@ def test_notes_edit_conflict_dir_env_unknown_user_falls_back_to_the_temp_dir(
     assert cli.main(["notes", "edit", _NID_PACKING]) == 1
     saved = fallback / "packing-list.newetag1.mine.md"
     assert saved.read_text(encoding="utf-8") == "mine text\n"
+
+
+# ---------------------------------------------------------------------------
+# --image
+
+
+def test_notes_create_image_uploads_to_the_room_and_rewrites_the_embed(
+    tmp_home, patch_api, capsys, tmp_path, monkeypatch
+) -> None:
+    _login(tmp_home)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "chart.svg").write_bytes(b"<svg/>")
+    (tmp_path / "draft.md").write_text("Intro\n\n![[chart.svg|Revenue]]\n", encoding="utf-8")
+    patch_api(groups=_group_list(_group()), create=_create_result())
+    argv = ["notes", "create", "Post", "--room", "trip", "--file", "draft.md"]
+    rc = cli.main([*argv, "--image", "chart.svg", "--json"])
+    assert rc == 0
+    calls = _FakeNotesApi.instances[-1].calls
+    assert ("upload_artifact", "chart.svg", "image/svg+xml", _GID_TRIP) in calls
+    create = next(c for c in calls if c[0] == "create_artifact")
+    assert create[2] == "Intro\n\n![Revenue](/artifacts/img-chart.svg/raw)\n"
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["images"] == [
+        {
+            "file": "chart.svg",
+            "id": "img-chart.svg",
+            "markdown": "![](/artifacts/img-chart.svg/raw)",
+        }
+    ]
+
+
+def test_notes_create_image_never_named_is_appended(
+    tmp_home, patch_api, capsys, tmp_path, monkeypatch
+) -> None:
+    _login(tmp_home)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pic.png").write_bytes(b"\x89PNG")
+    (tmp_path / "draft.md").write_text("Just text\n", encoding="utf-8")
+    patch_api(create=_create_result())
+    rc = cli.main(["notes", "create", "Post", "--file", "draft.md", "--image", "pic.png"])
+    assert rc == 0
+    create = next(c for c in _FakeNotesApi.instances[-1].calls if c[0] == "create_artifact")
+    assert create[2] == "Just text\n\n![](/artifacts/img-pic.png/raw)\n"
+    assert "added at the end" in capsys.readouterr().err
+
+
+def test_notes_image_refuses_a_non_picture_before_any_call(
+    tmp_home, patch_api, capsys, tmp_path, monkeypatch
+) -> None:
+    _login(tmp_home)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.pdf").write_bytes(b"%PDF")
+    (tmp_path / "draft.md").write_text("x\n", encoding="utf-8")
+    patch_api(create=_create_result())
+    rc = cli.main(["notes", "create", "Post", "--file", "draft.md", "--image", "a.pdf"])
+    assert rc == 2
+    assert not _FakeNotesApi.instances
+    assert "isn't a picture" in capsys.readouterr().err
+
+
+def test_notes_edit_image_rewrites_before_sending(
+    tmp_home, patch_api, tmp_path, monkeypatch
+) -> None:
+    _login(tmp_home)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "chart.svg").write_bytes(b"<svg/>")
+    (tmp_path / "draft.md").write_text("![](attachments/chart.svg)\n", encoding="utf-8")
+    patch_api(notes=_note_list(_note()), detail=_detail(), edit=_detail())
+    argv = ["notes", "edit", "Packing list", "--file", "draft.md", "--image", "chart.svg"]
+    assert cli.main(argv) == 0
+    edit = next(c for c in _FakeNotesApi.instances[-1].calls if c[0] == "edit_artifact")
+    assert edit[3] == "![](/artifacts/img-chart.svg/raw)\n"
+
+
+def test_notes_edit_image_on_a_room_note_without_room_refuses_before_uploading(
+    tmp_home, patch_api, capsys, tmp_path, monkeypatch
+) -> None:
+    """Without --room the picture would land in the editor's own files, which the
+    room's other members can't see."""
+    _login(tmp_home)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "chart.svg").write_bytes(b"<svg/>")
+    (tmp_path / "draft.md").write_text("![[chart.svg]]\n", encoding="utf-8")
+    patch_api(detail=_detail(body="old\n", shared=True), edit=_detail())
+    rc = cli.main(["notes", "edit", _NID_PACKING, "--file", "draft.md", "--image", "chart.svg"])
+    assert rc == 2
+    assert "pass --room ROOM" in capsys.readouterr().err
+    calls = _FakeNotesApi.instances[-1].calls
+    assert not any(c[0] in ("upload_artifact", "edit_artifact") for c in calls)
+
+
+def test_notes_create_failure_after_upload_names_the_uploaded_pictures(
+    tmp_home, patch_api, capsys, tmp_path, monkeypatch
+) -> None:
+    _login(tmp_home)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "chart.svg").write_bytes(b"<svg/>")
+    (tmp_path / "draft.md").write_text("![[chart.svg]]\n", encoding="utf-8")
+    patch_api(create=api_client.ApiError(status=500, body="", detail="boom"))
+    rc = cli.main(["notes", "create", "Post", "--file", "draft.md", "--image", "chart.svg"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "chart.svg was uploaded before the save failed: /artifacts/img-chart.svg/raw" in err
+
+
+def test_notes_create_json_failure_lists_uploads_in_the_one_error_line(
+    tmp_home, patch_api, capsys, tmp_path, monkeypatch
+) -> None:
+    _login(tmp_home)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "chart.svg").write_bytes(b"<svg/>")
+    (tmp_path / "draft.md").write_text("![[chart.svg]]\n", encoding="utf-8")
+    patch_api(create=api_client.ApiError(status=500, body="", detail="boom"))
+    argv = ["notes", "create", "Post", "--file", "draft.md", "--image", "chart.svg", "--json"]
+    rc = cli.main(argv)
+    assert rc == 1
+    lines = capsys.readouterr().err.strip().splitlines()
+    assert len(lines) == 1
+    error = json.loads(lines[0])["error"]
+    assert error["uploaded"] == [
+        {
+            "file": "chart.svg",
+            "id": "img-chart.svg",
+            "markdown": "![](/artifacts/img-chart.svg/raw)",
+        }
+    ]
+
+
+def test_notes_create_failed_second_upload_names_the_first(
+    tmp_home, patch_api, capsys, tmp_path, monkeypatch
+) -> None:
+    _login(tmp_home)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.svg").write_bytes(b"<svg/>")
+    (tmp_path / "b.svg").write_bytes(b"<svg/>")
+    (tmp_path / "draft.md").write_text("x\n", encoding="utf-8")
+    patch_api(create=_create_result())
+    real = _FakeNotesApi.upload_artifact
+
+    def flaky(self, *, filename, **kw):
+        if filename == "b.svg":
+            raise api_client.ApiError(status=500, body="", detail="boom")
+        return real(self, filename=filename, **kw)
+
+    monkeypatch.setattr(_FakeNotesApi, "upload_artifact", flaky)
+    argv = ["notes", "create", "Post", "--file", "draft.md", "--image", "a.svg", "--image", "b.svg"]
+    rc = cli.main(argv)
+    assert rc == 1
+    assert "a.svg was uploaded before the save failed" in capsys.readouterr().err
+    assert not any(c[0] == "create_artifact" for c in _FakeNotesApi.instances[-1].calls)
