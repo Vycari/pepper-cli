@@ -57,9 +57,34 @@ def test_room_warning_names_the_room_and_the_fix() -> None:
     warning = note_warnings.not_in_room(_ID, "Trip planning")
     assert warning.reference == f"/artifacts/{_ID}/raw"
     assert "isn't saved in Trip planning" in warning.message
-    assert "--room Trip planning" in warning.message
+    assert "--room 'Trip planning'" in warning.message
 
 
 def test_file_urls_and_drive_paths_are_local_files() -> None:
     body = "![](file:///Users/me/chart.png) ![](C:\\Users\\me\\chart.png) ![](d:/pics/a.png)"
     assert _kinds(body) == ["local_file", "local_file", "local_file"]
+
+
+def test_room_warning_without_a_room_name_shows_a_placeholder() -> None:
+    warning = note_warnings.not_in_room(_ID, None)
+    assert "isn't saved in this room" in warning.message
+    assert "--room ROOM" in warning.message
+
+
+def test_stray_backticks_in_separate_paragraphs_do_not_hide_a_picture() -> None:
+    body = "A stray ` here.\n\n![](attachments/chart.png)\n\nAnother ` here."
+    assert _kinds(body) == ["local_file"]
+
+
+def test_reference_images_are_checked_through_their_definitions() -> None:
+    body = (
+        "![chart][pic] and ![Shot][] and ![ok][web]\n\n"
+        "[pic]: attachments/chart.png\n"
+        "[shot]: <shots/one two.png>\n"
+        "[web]: https://example.com/a.png\n"
+        f"[room]: /artifacts/{_ID}/raw\n\n"
+        "![in room][ROOM]\n"
+    )
+    found = note_warnings.scan(body)
+    assert [w.reference for w in found.warnings] == ["![chart][pic]", "![Shot][]"]
+    assert found.picture_ids == (_ID,)
