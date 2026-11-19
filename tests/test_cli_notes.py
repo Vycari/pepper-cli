@@ -1756,3 +1756,34 @@ def test_notes_edit_image_rewrites_before_sending(
     assert cli.main(argv) == 0
     edit = next(c for c in _FakeNotesApi.instances[-1].calls if c[0] == "edit_artifact")
     assert edit[3] == "![](/artifacts/img-chart.svg/raw)\n"
+
+
+def test_notes_edit_image_on_a_room_note_without_room_refuses_before_uploading(
+    tmp_home, patch_api, capsys, tmp_path, monkeypatch
+) -> None:
+    """Without --room the picture would land in the editor's own files, which the
+    room's other members can't see."""
+    _login(tmp_home)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "chart.svg").write_bytes(b"<svg/>")
+    (tmp_path / "draft.md").write_text("![[chart.svg]]\n", encoding="utf-8")
+    patch_api(detail=_detail(body="old\n", shared=True), edit=_detail())
+    rc = cli.main(["notes", "edit", _NID_PACKING, "--file", "draft.md", "--image", "chart.svg"])
+    assert rc == 2
+    assert "pass --room ROOM" in capsys.readouterr().err
+    calls = _FakeNotesApi.instances[-1].calls
+    assert not any(c[0] in ("upload_artifact", "edit_artifact") for c in calls)
+
+
+def test_notes_create_failure_after_upload_names_the_uploaded_pictures(
+    tmp_home, patch_api, capsys, tmp_path, monkeypatch
+) -> None:
+    _login(tmp_home)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "chart.svg").write_bytes(b"<svg/>")
+    (tmp_path / "draft.md").write_text("![[chart.svg]]\n", encoding="utf-8")
+    patch_api(create=api_client.ApiError(status=500, body="", detail="boom"))
+    rc = cli.main(["notes", "create", "Post", "--file", "draft.md", "--image", "chart.svg"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "chart.svg was uploaded before the save failed: /artifacts/img-chart.svg/raw" in err

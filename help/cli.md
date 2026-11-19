@@ -300,7 +300,7 @@ ever want to look back at a specific conversation in detail.
   whether they're written `![description](chart.svg)` or as an Obsidian embed
   like `![[chart.svg]]` or `![[chart.svg|description]]`. A picture the draft
   never mentions is added at the end. `notes edit` takes `--image` the same
-  way. Each run uploads the pictures again, so the older copies stay in the
+  way; for a room's note, give it `--room <room>` too. Each run uploads the pictures again, so the older copies stay in the
   room's files until you delete them.
 - **Comment on a room's note:** `pepper comments list --room <room> --note <note>`
   prints its comment threads; add `--all` to include resolved ones. `pepper

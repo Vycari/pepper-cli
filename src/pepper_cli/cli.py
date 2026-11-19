@@ -8641,6 +8641,15 @@ def _upload_note_images(
     return uploads
 
 
+def _report_orphaned_uploads(uploads: list[note_images.Uploaded]) -> None:
+    """Name the pictures a failed save already uploaded, so they can be reused or deleted."""
+    for upload in uploads:
+        render.info(
+            f"{upload.filename} was uploaded before the save failed: {upload.link}",
+            soft_wrap=True,
+        )
+
+
 def _apply_note_images(
     body: str, uploads: list[note_images.Uploaded], args: argparse.Namespace
 ) -> str:
@@ -8714,7 +8723,11 @@ def cmd_notes_create(args: argparse.Namespace) -> int:
             return 2
         uploads = _upload_note_images(api, images, principal=room_principal)
         body = _apply_note_images(body, uploads, args)
-        result = api.create_artifact(name=args.name, body=body, principal=room_principal)
+        try:
+            result = api.create_artifact(name=args.name, body=body, principal=room_principal)
+        except (api_client.ApiError, httpx.RequestError):
+            _report_orphaned_uploads(uploads)
+            raise
 
         def human() -> None:
             render.info(f"Created {result.name!r}.")
@@ -8799,6 +8812,15 @@ def cmd_notes_edit(args: argparse.Namespace) -> int:
         current = api.get_artifact_detail(note_id)
         if current.kind != _NOTES_KIND:
             _note_not_found(args)
+            return 2
+        if images and current.shared and room_principal is None:
+            # A room's note read by its id: without --room the pictures would
+            # be saved in the editor's own files, which the room can't show.
+            _emit_error(
+                args,
+                "usage",
+                "this is a room's note; pass --room ROOM so its pictures are saved in that room",
+            )
             return 2
 
         if file_body is not None:
@@ -8891,6 +8913,9 @@ def cmd_notes_edit(args: argparse.Namespace) -> int:
                     continue
                 render.info("Aborted.")
                 return 1
+            except (api_client.ApiError, httpx.RequestError):
+                _report_orphaned_uploads(uploads)
+                raise
             else:
                 break
         _emit(
