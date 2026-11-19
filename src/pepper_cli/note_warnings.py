@@ -73,11 +73,30 @@ class Scan:
     picture_ids: tuple[str, ...]
 
 
-def _without_code(body: str) -> str:
-    def blank(match: re.Match[str]) -> str:
-        return re.sub(r"[^\n]", " ", match.group(0))
+def _escaped(text: str, position: int) -> bool:
+    """Whether the character at ``position`` follows an odd run of backslashes."""
+    run = 0
+    while position - run > 0 and text[position - run - 1] == "\\":
+        run += 1
+    return run % 2 == 1
 
-    return _INLINE_CODE.sub(blank, _FENCE.sub(blank, body))
+
+def _without_code(body: str) -> str:
+    def blank(text: str) -> str:
+        return re.sub(r"[^\n]", " ", text)
+
+    text = _FENCE.sub(lambda m: blank(m.group(0)), body)
+    # An escaped backtick opens no span; look again one character on.
+    out: list[str] = []
+    done = position = 0
+    while (match := _INLINE_CODE.search(text, position)) is not None:
+        if _escaped(text, match.start()):
+            position = match.start() + 1
+            continue
+        out += [text[done : match.start()], blank(match.group(0))]
+        done = position = match.end()
+    out.append(text[done:])
+    return "".join(out)
 
 
 def _is_picture_file(target: str) -> bool:
