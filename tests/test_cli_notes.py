@@ -1821,3 +1821,37 @@ def test_notes_edit_warns_after_saving(tmp_home, patch_api, capsys, tmp_path) ->
     assert doc["shared"] is True
     assert [w["kind"] for w in doc["warnings"]] == ["obsidian_embed"]
     assert any(c[0] == "edit_artifact" for c in _FakeNotesApi.instances[-1].calls)
+
+
+def test_notes_create_malformed_picture_check_is_a_warning_not_a_crash(
+    tmp_home, patch_api, capsys, tmp_path
+) -> None:
+    _login(tmp_home)
+    patch_api(
+        groups=_group_list(_group()),
+        create=_create_result(),
+        pictures={_PIC_MINE: ValueError("Expecting value")},
+    )
+    body = tmp_path / "note.md"
+    body.write_text(f"![](/artifacts/{_PIC_MINE}/raw)\n")
+    rc = cli.main(
+        ["notes", "create", "Packing list", "--room", "Trip planning", "--file", str(body)]
+    )
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "Created 'Packing list'" in err
+    assert f"couldn't check whether picture {_PIC_MINE}" in err
+
+
+def test_notes_edit_json_with_nothing_to_change_still_lists_warnings(
+    tmp_home, patch_api, capsys, tmp_path
+) -> None:
+    _login(tmp_home)
+    patch_api(detail=_detail(body="![[chart.svg]]\n"))
+    body = tmp_path / "note.md"
+    body.write_text("![[chart.svg]]\n")
+    rc = cli.main(["notes", "edit", _NID_PACKING, "--file", str(body), "--json"])
+    assert rc == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert [w["kind"] for w in doc["warnings"]] == ["obsidian_embed"]
+    assert not any(c[0] == "edit_artifact" for c in _FakeNotesApi.instances[-1].calls)

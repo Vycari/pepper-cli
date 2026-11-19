@@ -8593,7 +8593,9 @@ def _note_picture_warnings(
                 warnings.append(note_warnings.not_in_room(picture_id, room_label or "this room"))
             else:
                 warnings.append(note_warnings.unchecked(picture_id))
-        except httpx.RequestError:
+        except (httpx.RequestError, ValueError, KeyError, TypeError):
+            # A transport failure, or a 200 that isn't the details shape (a proxy page,
+            # say): the note is saved, so this stays a warning rather than a crash.
             warnings.append(note_warnings.unchecked(picture_id))
     return warnings
 
@@ -8760,7 +8762,10 @@ def cmd_notes_edit(args: argparse.Namespace) -> int:
             unchanged = _texts_match(current.body or "", new_body)
         rename = args.name if args.name and args.name != current.name else None
         if unchanged and rename is None:
-            _emit(current, args, lambda: render.info("Nothing to change."))
+            warnings = _note_picture_warnings(
+                api, current.body, room_principal=room_principal, room_label=args.room
+            )
+            _emit_saved_note(current, args, "Nothing to change.", warnings)
             return 0
         body_to_send = None if unchanged else new_body
         if body_to_send is not None and not body_to_send.strip():
