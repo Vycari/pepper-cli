@@ -57,6 +57,35 @@ _MIME_BY_EXT = {
 UPLOAD_TYPES_HINT = "pictures, PDFs, plain text, audio clips and MP4 video"
 
 
+#: The picture types a note can show inline: the ones a browser draws in an ``<img>``.
+#: An iPhone photo (``image/heic``) is a picture too, but no browser draws it, so a note
+#: pointing at one shows a broken image.
+#: Kept in step with the types the server serves as an inline picture.
+NOTE_IMAGE_MIMES = frozenset(
+    {
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "image/avif",
+        "image/bmp",
+        "image/svg+xml",
+    }
+)
+
+
+def note_image_markdown(artifact_id: str, mime_type: str | None) -> str | None:
+    """The line that shows an uploaded picture in a note, or ``None`` for anything else.
+
+    The alt text is left empty, as the web editor leaves it when a picture is dropped in:
+    the person fills in a description between the brackets.
+    """
+    mime = (mime_type or "").split(";", 1)[0].strip().lower()
+    if mime not in NOTE_IMAGE_MIMES or not artifact_id:
+        return None
+    return f"![](/artifacts/{artifact_id}/raw)"
+
+
 def guess_mime(filename: str) -> str:
     ext = PurePath(filename).suffix.lower()
     if ext in _MIME_BY_EXT:

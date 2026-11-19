@@ -133,7 +133,13 @@ def server(monkeypatch, tmp_path):
             return httpx.Response(200, content=b"\x89PNG")
         if key == ("POST", "/api/v1/artifacts/upload"):
             return httpx.Response(
-                200, json={"id": FILE, "name": "pic.png", "mime_type": "image/png", "byte_size": 4}
+                200,
+                json={
+                    "id": FILE,
+                    "name": "pic.png",
+                    "mime_type": getattr(calls, "upload_mime", "image/png"),
+                    "byte_size": 4,
+                },
             )
         if key == ("POST", "/api/v1/apps/artifacts/actions/delete"):
             return httpx.Response(200, json={"result": {"name": "Receipt"}})
@@ -658,3 +664,37 @@ def test_preference_parsers() -> None:
     assert preferences_view.parse_days("sat,sun") == [5, 6]
     assert preferences_view.parse_days("fri-mon") == [0, 4, 5, 6]
     assert preferences_view.parse_meal("lunch=,45") == ("lunch", None, 45)
+
+
+def test_artifacts_create_prints_the_note_image_line(server, capsys, tmp_path) -> None:
+    (tmp_path / "pic.png").write_bytes(b"\x89PNG")
+    assert cli.main(["artifacts", "create", "--file", "pic.png", "--json"]) == 0
+    assert _json(capsys)["markdown"] == f"![](/artifacts/{FILE}/raw)"
+    assert cli.main(["artifacts", "create", "--file", "pic.png", "--room", "trip"]) == 0
+    out = capsys.readouterr()
+    assert out.out == f"![](/artifacts/{FILE}/raw)\n"
+    assert "this room's notes" in out.err
+
+
+@pytest.mark.parametrize(
+    ("mime", "expected"),
+    [
+        ("image/png", True),
+        ("image/svg+xml", True),
+        ("IMAGE/JPEG; charset=binary", True),
+        ("image/heic", False),
+        ("application/pdf", False),
+        (None, False),
+    ],
+)
+def test_note_image_markdown_only_for_pictures_a_browser_draws(mime, expected) -> None:
+    line = artifacts_view.note_image_markdown("abc", mime)
+    assert (line == "![](/artifacts/abc/raw)") is expected
+    assert (line is None) is not expected
+
+
+def test_artifacts_create_prints_no_image_line_for_a_pdf(server, capsys, tmp_path) -> None:
+    (tmp_path / "a.pdf").write_bytes(b"%PDF")
+    server.upload_mime = "application/pdf"
+    assert cli.main(["artifacts", "create", "--file", "a.pdf"]) == 0
+    assert capsys.readouterr().out == ""

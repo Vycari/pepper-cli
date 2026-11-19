@@ -283,6 +283,17 @@ ever want to look back at a specific conversation in detail.
   overwrite, or quit if someone else changed the note first. `pepper notes
   delete <note>` deletes one (asks first, unless `--yes`). Same notes as the
   **Notes** app on the web — see [Notes](#artifacts).
+- **Pictures in a note:** upload the picture with `pepper artifacts create
+  --file chart.png` and it prints a line like `![](/artifacts/<id>/raw)`. Put
+  that line in the note, on a line of its own, and write a short description
+  of the picture between the square brackets for anyone who can't see it.
+  PNG, JPEG, GIF, WebP, AVIF, BMP and SVG pictures all work; an iPhone's HEIC
+  photo doesn't show in a browser, so convert it first. For a room's note,
+  upload the picture to the same room (`--room <room>`): a picture saved in
+  your own files shows as a broken image for everyone else in the room. When a
+  room's note is published as a blog post, its pictures are copied into the
+  post, so readers outside the room see them too. Captions and longer
+  descriptions are set from **Edit image** in the web editor.
 - **Comment on a room's note:** `pepper comments list --room <room> --note <note>`
   prints its comment threads; add `--all` to include resolved ones. `pepper
   comments create --room <room> --note <note> "<text>"` comments on the whole
