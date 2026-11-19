@@ -58,3 +58,8 @@ def test_room_warning_names_the_room_and_the_fix() -> None:
     assert warning.reference == f"/artifacts/{_ID}/raw"
     assert "isn't saved in Trip planning" in warning.message
     assert "--room Trip planning" in warning.message
+
+
+def test_file_urls_and_drive_paths_are_local_files() -> None:
+    body = "![](file:///Users/me/chart.png) ![](C:\\Users\\me\\chart.png) ![](d:/pics/a.png)"
+    assert _kinds(body) == ["local_file", "local_file", "local_file"]

@@ -1862,9 +1862,7 @@ def test_notes_image_show_prints_each_detail(tmp_home, patch_picture_api, capsys
         sources={"alt_text": "user", "caption": "model"},
     )
     patch_picture_api(groups=_group_list(_group()), pictures={_PIC: details})
-    rc = cli.main(
-        ["notes", "image", "show", f"![x](/artifacts/{_PIC.upper()}/raw)", "--room", "trip"]
-    )
+    rc = cli.main(["notes", "image", f"![x](/artifacts/{_PIC.upper()}/raw)", "--room", "trip"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "Alt text: A bar chart" in out
@@ -1876,7 +1874,7 @@ def test_notes_image_show_prints_each_detail(tmp_home, patch_picture_api, capsys
 def test_notes_image_show_404_points_at_room(tmp_home, patch_picture_api, capsys) -> None:
     _login(tmp_home)
     patch_picture_api()
-    rc = cli.main(["notes", "image", "show", _PIC])
+    rc = cli.main(["notes", "image", _PIC])
     assert rc == 2
     assert "pass --room" in capsys.readouterr().err
 
@@ -1884,7 +1882,7 @@ def test_notes_image_show_404_points_at_room(tmp_home, patch_picture_api, capsys
 def test_notes_image_rejects_a_value_with_no_id(tmp_home, patch_picture_api, capsys) -> None:
     _login(tmp_home)
     patch_picture_api()
-    rc = cli.main(["notes", "image", "show", "chart.png"])
+    rc = cli.main(["notes", "image", "chart.png"])
     assert rc == 2
     assert not _FakeNotesApi.instances
     assert "PICTURE must be" in capsys.readouterr().err
@@ -1899,7 +1897,7 @@ def test_notes_image_set_sends_only_given_fields_and_empty_clears(
             id=_PIC, alt_text="Chart", title="", caption="", long_description=""
         )
     )
-    rc = cli.main(["notes", "image", "set", _PIC, "--alt", "Chart", "--caption", "", "--json"])
+    rc = cli.main(["notes", "image-set", _PIC, "--alt", "Chart", "--caption", "", "--json"])
     assert rc == 0
     call = next(c for c in _FakeNotesApi.instances[-1].calls if c[0] == "put_image_details")
     assert call[3] == {
@@ -1914,7 +1912,7 @@ def test_notes_image_set_sends_only_given_fields_and_empty_clears(
 def test_notes_image_set_needs_a_field(tmp_home, patch_picture_api, capsys) -> None:
     _login(tmp_home)
     patch_picture_api()
-    rc = cli.main(["notes", "image", "set", _PIC])
+    rc = cli.main(["notes", "image-set", _PIC])
     assert rc == 2
     assert "at least one of --alt" in capsys.readouterr().err
 
@@ -1925,25 +1923,59 @@ def test_notes_image_suggest_started(tmp_home, patch_picture_api, capsys) -> Non
         groups=_group_list(_group()),
         suggest=api_client.ImageSuggestion(id=_PIC, started=True, run=3),
     )
-    rc = cli.main(["notes", "image", "suggest", _PIC, "--room", "trip", "--all"])
+    rc = cli.main(["notes", "image-suggest", _PIC, "--room", "trip", "--all"])
     assert rc == 0
     assert ("suggest_image_details", _PIC, _GID_TRIP, True) in _FakeNotesApi.instances[-1].calls
-    assert f"pepper notes image show {_PIC} --room trip" in capsys.readouterr().err
+    assert f"pepper notes image {_PIC} --room trip" in capsys.readouterr().err
 
 
 def test_notes_image_suggest_nothing_new(tmp_home, patch_picture_api, capsys) -> None:
     _login(tmp_home)
     patch_picture_api(suggest=api_client.ImageSuggestion(id=_PIC, started=False))
-    rc = cli.main(["notes", "image", "suggest", _PIC])
+    rc = cli.main(["notes", "image-suggest", _PIC])
     assert rc == 0
     captured = capsys.readouterr()
     assert "Nothing new to suggest" in captured.err
-    assert f"pepper notes image show {_PIC}" in captured.out
+    assert f"pepper notes image {_PIC}" in captured.out
 
 
 def test_notes_image_suggest_404_mentions_availability(tmp_home, patch_picture_api, capsys) -> None:
     _login(tmp_home)
     patch_picture_api(suggest=api_client.ApiError(status=404, body="", detail="not found"))
-    rc = cli.main(["notes", "image", "suggest", _PIC])
+    rc = cli.main(["notes", "image-suggest", _PIC])
     assert rc == 2
     assert "aren't available for your account" in capsys.readouterr().err
+
+
+def test_notes_create_malformed_picture_check_is_a_warning_not_a_crash(
+    tmp_home, patch_api, capsys, tmp_path
+) -> None:
+    _login(tmp_home)
+    patch_api(
+        groups=_group_list(_group()),
+        create=_create_result(),
+        pictures={_PIC_MINE: ValueError("Expecting value")},
+    )
+    body = tmp_path / "note.md"
+    body.write_text(f"![](/artifacts/{_PIC_MINE}/raw)\n")
+    rc = cli.main(
+        ["notes", "create", "Packing list", "--room", "Trip planning", "--file", str(body)]
+    )
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "Created 'Packing list'" in err
+    assert f"couldn't check whether picture {_PIC_MINE}" in err
+
+
+def test_notes_edit_json_with_nothing_to_change_still_lists_warnings(
+    tmp_home, patch_api, capsys, tmp_path
+) -> None:
+    _login(tmp_home)
+    patch_api(detail=_detail(body="![[chart.svg]]\n"))
+    body = tmp_path / "note.md"
+    body.write_text("![[chart.svg]]\n")
+    rc = cli.main(["notes", "edit", _NID_PACKING, "--file", str(body), "--json"])
+    assert rc == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert [w["kind"] for w in doc["warnings"]] == ["obsidian_embed"]
+    assert not any(c[0] == "edit_artifact" for c in _FakeNotesApi.instances[-1].calls)

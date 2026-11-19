@@ -32,6 +32,9 @@ _EMBED = re.compile(r"!\[\[[^\]\n]+\]\]")
 _WIKILINK = re.compile(r"(?<!!)\[\[([^\]|#\n]+)(?:[#|][^\]\n]*)?\]\]")
 _IMAGE = re.compile(r"!\[[^\]\n]*\]\(\s*(<[^>\n]+>|[^)\s]+)[^)\n]*\)")
 _SCHEME = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
+#: A Windows drive path (``C:\\Users\\...`` or ``C:/Users/...``), which ``_SCHEME`` would
+#: otherwise read as a URL scheme.
+_DRIVE = re.compile(r"^[a-zA-Z]:[\\/]")
 _PICTURE_LINK = re.compile(
     r"^(?:https?://[^/\s]+)?/artifacts/"
     r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/raw(?:[?#].*)?$"
@@ -119,7 +122,8 @@ def scan(body: str) -> Scan:
         if picture is not None:
             ids.append(picture.group(1).lower())
             continue
-        if target.startswith(("/", "#")) or _SCHEME.match(target):
+        local = target.lower().startswith("file:") or _DRIVE.match(target) is not None
+        if not local and (target.startswith(("/", "#")) or _SCHEME.match(target)):
             continue
         ref = match.group(0)
         found.append(

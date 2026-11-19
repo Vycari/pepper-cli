@@ -2338,29 +2338,25 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_notes_rm.add_argument("--room", help=_GROUP_ARG_HELP + " Omit for your own notes.")
     p_notes_rm.set_defaults(handler=cmd_notes_delete)
 
-    p_notes_image = sub_notes.add_parser(
+    _picture_help = "The picture's id, or its ![](/artifacts/<id>/raw) line."
+    _picture_room_help = _ROOM_ARG_HELP + " Omit for a picture in your own notes."
+
+    p_ni_show = sub_notes.add_parser(
         "image",
         help="A picture's alt text, title, caption and long description.",
         description=(
-            "Read or set the details Pepper keeps with a picture in a note: its alt text "
-            "(for anyone who can't see it), title, caption and long description. PICTURE is "
-            "the picture's id, or its line from a note, like ![](/artifacts/<id>/raw). For a "
-            "picture in a room's note, pass --room."
+            "Print the details Pepper keeps with a picture in a note: its alt text (for anyone "
+            "who can't see it), title, caption and long description. 'image-set' changes them "
+            "and 'image-suggest' asks Pepper to suggest them."
         ),
-    )
-    sub_notes_image = p_notes_image.add_subparsers(dest="notes_image_action", required=True)
-    _picture_help = "The picture's id, or its ![](/artifacts/<id>/raw) line."
-    _picture_room_help = _GROUP_ARG_HELP + " Omit for a picture in your own notes."
-
-    p_ni_show = sub_notes_image.add_parser(
-        "show", help="Print a picture's details.", parents=[_json_parent]
+        parents=[_json_parent],
     )
     p_ni_show.add_argument("picture", metavar="PICTURE", help=_picture_help)
     p_ni_show.add_argument("--room", help=_picture_room_help)
     p_ni_show.set_defaults(handler=cmd_notes_image_show)
 
-    p_ni_set = sub_notes_image.add_parser(
-        "set",
+    p_ni_set = sub_notes.add_parser(
+        "image-set",
         help="Set some of a picture's details. An empty value clears one.",
         parents=[_json_parent],
     )
@@ -2374,8 +2370,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     )
     p_ni_set.set_defaults(handler=cmd_notes_image_set)
 
-    p_ni_suggest = sub_notes_image.add_parser(
-        "suggest",
+    p_ni_suggest = sub_notes.add_parser(
+        "image-suggest",
         help="Ask Pepper to suggest the blank details (--all to replace every one).",
         parents=[_json_parent],
     )
@@ -8644,7 +8640,9 @@ def _note_picture_warnings(
                 warnings.append(note_warnings.not_in_room(picture_id, room_label or "this room"))
             else:
                 warnings.append(note_warnings.unchecked(picture_id))
-        except httpx.RequestError:
+        except (httpx.RequestError, ValueError, KeyError, TypeError):
+            # A transport failure, or a 200 that isn't the details shape (a proxy page,
+            # say): the note is saved, so this stays a warning rather than a crash.
             warnings.append(note_warnings.unchecked(picture_id))
     return warnings
 
@@ -8811,7 +8809,10 @@ def cmd_notes_edit(args: argparse.Namespace) -> int:
             unchanged = _texts_match(current.body or "", new_body)
         rename = args.name if args.name and args.name != current.name else None
         if unchanged and rename is None:
-            _emit(current, args, lambda: render.info("Nothing to change."))
+            warnings = _note_picture_warnings(
+                api, current.body, room_principal=room_principal, room_label=args.room
+            )
+            _emit_saved_note(current, args, "Nothing to change.", warnings)
             return 0
         body_to_send = None if unchanged else new_body
         if body_to_send is not None and not body_to_send.strip():
@@ -8949,7 +8950,7 @@ def _render_image_details(details: api_client.ImageDetails) -> None:
 
 
 def cmd_notes_image_show(args: argparse.Namespace) -> int:
-    """``pepper notes image show PICTURE [--room ROOM] [--json]``: a picture's details.
+    """``pepper notes image PICTURE [--room ROOM] [--json]``: a picture's details.
 
     Exit codes: 0 ok · 1 auth/API/transport · 2 bad input (not a picture id, or no such
     picture here).
@@ -8971,11 +8972,11 @@ def cmd_notes_image_show(args: argparse.Namespace) -> int:
 
 
 def cmd_notes_image_set(args: argparse.Namespace) -> int:
-    """``pepper notes image set PICTURE [--room ROOM] [--alt T] [--title T] [--caption T]
+    """``pepper notes image-set PICTURE [--room ROOM] [--alt T] [--title T] [--caption T]
     [--description T] [--json]``: set the details given, leave the rest.
 
     An empty value (``--caption ""``) clears that detail. Answers the picture's details as
-    they now stand. Exit codes as for ``show``, plus 2 when no detail flag is given.
+    they now stand. Exit codes as for ``image``, plus 2 when no detail flag is given.
     """
     values = {key: getattr(args, flag) for key, _label, flag in _PICTURE_FIELDS}
     if all(value is None for value in values.values()):
@@ -9003,10 +9004,10 @@ def cmd_notes_image_set(args: argparse.Namespace) -> int:
 
 
 def cmd_notes_image_suggest(args: argparse.Namespace) -> int:
-    """``pepper notes image suggest PICTURE [--room ROOM] [--all] [--json]``.
+    """``pepper notes image-suggest PICTURE [--room ROOM] [--all] [--json]``.
 
     Asks Pepper to write suggestions for the details nobody has set (``--all``: every
-    detail). The suggestions arrive in the background; ``show`` reads them. A 404 also
+    detail). The suggestions arrive in the background; ``image`` reads them. A 404 also
     covers an account without picture suggestions.
 
     Exit codes: 0 ok · 1 auth/API/transport, the usage limit, or suggestions unavailable ·
@@ -9034,7 +9035,7 @@ def cmd_notes_image_suggest(args: argparse.Namespace) -> int:
                 return 2
             return _report_api_error(exc, args)
         room_flag = f" --room {shlex.quote(args.room)}" if args.room else ""
-        show = f"pepper notes image show {picture_id}{room_flag}"
+        show = f"pepper notes image {picture_id}{room_flag}"
 
         def human() -> None:
             if result.started:
