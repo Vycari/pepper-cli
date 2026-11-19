@@ -6,8 +6,8 @@ show. Three shapes, all easy to write by accident in a draft from elsewhere:
 
 - an Obsidian embed (``![[chart.svg]]``), or a ``[[chart.svg]]`` link to a
   picture file, which a note does not show;
-- a markdown image whose target is a file on your computer
-  (``![](attachments/chart.svg)``);
+- a markdown image, inline or by reference, whose target is a file on your
+  computer (``![](attachments/chart.svg)``);
 - a picture link (``![](/artifacts/<id>/raw)``), returned by :func:`scan` for
   the caller to check against the room, since only the server knows where a
   picture is saved.
@@ -19,6 +19,7 @@ shows the syntax as an example is not warned about. Pure text work, no I/O.
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass
 
 #: Fenced blocks (```` ``` ```` or ``~~~``, closed by the same fence or the end of the
@@ -26,11 +27,16 @@ from dataclasses import dataclass
 _FENCE = re.compile(
     r"^ {0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^ {0,3}\1[`~]*[ \t]*$|\Z)", re.MULTILINE | re.DOTALL
 )
-_INLINE_CODE = re.compile(r"(`+)(?!`).+?(?<!`)\1(?!`)", re.DOTALL)
+#: A code span never crosses a blank line (a paragraph break ends it).
+_INLINE_CODE = re.compile(r"(`+)(?!`)(?:(?!\n[ \t]*\n).)+?(?<!`)\1(?!`)", re.DOTALL)
 
 _EMBED = re.compile(r"!\[\[[^\]\n]+\]\]")
 _WIKILINK = re.compile(r"(?<!!)\[\[([^\]|#\n]+)(?:[#|][^\]\n]*)?\]\]")
 _IMAGE = re.compile(r"!\[[^\]\n]*\]\(\s*(<[^>\n]+>|[^)\s]+)[^)\n]*\)")
+#: A reference-style image (``![alt][label]``, ``![alt][]`` or ``![alt]``) and the
+#: definitions its label points at (``[label]: target``).
+_REF_IMAGE = re.compile(r"!\[([^\]\n]*)\](?:\[([^\]\n]*)\])?(?![(\[])")
+_REF_DEF = re.compile(r"^ {0,3}\[([^\]\n]+)\]:[ \t]*(<[^>\n]+>|\S+)", re.MULTILINE)
 _SCHEME = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
 #: A Windows drive path (``C:\\Users\\...`` or ``C:/Users/...``), which ``_SCHEME`` would
 #: otherwise read as a URL scheme.
@@ -79,6 +85,10 @@ def _is_picture_file(target: str) -> bool:
     return any(name.endswith(ext) for ext in _PICTURE_EXTENSIONS)
 
 
+def _label(label: str) -> str:
+    return " ".join(label.split()).casefold()
+
+
 def scan(body: str) -> Scan:
     """The references in ``body`` that won't show, in the order they appear."""
     text = _without_code(body)
@@ -114,21 +124,20 @@ def scan(body: str) -> Scan:
                 ),
             )
         )
-    for match in _IMAGE.finditer(text):
-        target = match.group(1)
+
+    def check_target(start: int, ref: str, target: str) -> None:
         if target.startswith("<") and target.endswith(">"):
             target = target[1:-1]
         picture = _PICTURE_LINK.match(target)
         if picture is not None:
             ids.append(picture.group(1).lower())
-            continue
+            return
         local = target.lower().startswith("file:") or _DRIVE.match(target) is not None
         if not local and (target.startswith(("/", "#")) or _SCHEME.match(target)):
-            continue
-        ref = match.group(0)
+            return
         found.append(
             (
-                match.start(),
+                start,
                 NoteWarning(
                     kind="local_file",
                     reference=ref,
@@ -139,20 +148,35 @@ def scan(body: str) -> Scan:
             )
         )
 
+    for match in _IMAGE.finditer(text):
+        check_target(match.start(), match.group(0), match.group(1))
+
+    # Labels match case-insensitively with runs of whitespace folded; the first wins.
+    definitions: dict[str, str] = {}
+    for match in _REF_DEF.finditer(text):
+        definitions.setdefault(_label(match.group(1)), match.group(2))
+    for match in _REF_IMAGE.finditer(text):
+        label = match.group(2) or match.group(1)
+        target = definitions.get(_label(label))
+        if target is not None:
+            check_target(match.start(), match.group(0), target)
+
     found.sort(key=lambda pair: pair[0])
     unique_ids = tuple(dict.fromkeys(ids))
     return Scan(warnings=tuple(w for _, w in found), picture_ids=unique_ids)
 
 
-def not_in_room(picture_id: str, room: str) -> NoteWarning:
+def not_in_room(picture_id: str, room: str | None) -> NoteWarning:
     """The warning for a picture link that the room can't show."""
+    where = room or "this room"
+    flag = shlex.quote(room) if room else "ROOM"
     return NoteWarning(
         kind="not_in_room",
         reference=f"/artifacts/{picture_id}/raw",
         message=(
-            f"picture {picture_id} isn't saved in {room}, so other members see a broken "
-            f"image. Upload it with 'pepper artifacts create --file FILE --room {room}' and use "
-            "the line it prints."
+            f"picture {picture_id} isn't saved in {where}, so other members see a broken "
+            f"image. Upload it with 'pepper artifacts create --file FILE --room {flag}' and "
+            "use the line it prints."
         ),
     )
 

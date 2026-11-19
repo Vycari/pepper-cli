@@ -8637,7 +8637,7 @@ def _note_picture_warnings(
             api.get_image_details(picture_id, principal=room_principal)
         except api_client.ApiError as exc:
             if exc.status == 404:
-                warnings.append(note_warnings.not_in_room(picture_id, room_label or "this room"))
+                warnings.append(note_warnings.not_in_room(picture_id, room_label))
             else:
                 warnings.append(note_warnings.unchecked(picture_id))
         except (httpx.RequestError, ValueError, KeyError, TypeError):
@@ -8885,7 +8885,10 @@ def cmd_notes_edit(args: argparse.Namespace) -> int:
                 return 1
             else:
                 break
-        saved_body = body_to_send if body_to_send is not None else current.body
+        # The saved note's own body: after a lost race the text may be another writer's.
+        saved_body = updated.body
+        if saved_body is None:
+            saved_body = body_to_send if body_to_send is not None else current.body
         warnings = _note_picture_warnings(
             api, saved_body, room_principal=room_principal, room_label=args.room
         )

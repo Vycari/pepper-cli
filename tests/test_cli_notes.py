@@ -1979,3 +1979,26 @@ def test_notes_edit_json_with_nothing_to_change_still_lists_warnings(
     doc = json.loads(capsys.readouterr().out)
     assert [w["kind"] for w in doc["warnings"]] == ["obsidian_embed"]
     assert not any(c[0] == "edit_artifact" for c in _FakeNotesApi.instances[-1].calls)
+
+
+def test_notes_edit_rename_after_a_lost_race_warns_about_the_saved_text(
+    tmp_home, patch_api, capsys, monkeypatch, tmp_path
+) -> None:
+    """The warnings scan the body the server saved, not the copy read before the race."""
+    monkeypatch.chdir(tmp_path)
+    _login(tmp_home)
+    patch_api(
+        detail=_detail(name="Packing list", body="![[old.png]]\n", etag="stale1"),
+        edit=[
+            _conflict(body="![[theirs.png]]\n"),
+            _detail(name="Renamed", body="![[theirs.png]]\n"),
+        ],
+    )
+    monkeypatch.setattr(cli, "_open_in_editor", lambda initial: initial)
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_prompt", lambda prompt: "o")
+    rc = cli.main(["notes", "edit", _NID_PACKING, "--name", "Renamed"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "![[theirs.png]]" in err
+    assert "![[old.png]]" not in err
