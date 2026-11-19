@@ -76,3 +76,12 @@ def test_escaped_alt_and_parenthesised_target_are_matched() -> None:
     uploads = [note_images.Uploaded("chart(1).svg", "abc")]
     done = note_images.rewrite("![a\\]b](img/chart(1).svg)", uploads)
     assert done.body == "![a\\]b](/artifacts/abc/raw)"
+
+
+def test_a_stray_backtick_does_not_hide_a_later_paragraph() -> None:
+    uploads = [note_images.Uploaded("chart.svg", "abc")]
+    body = "Use a lone ` here.\n\n![[chart.svg|Revenue]]\n\nSee `x`.\n"
+    done = note_images.rewrite(body, uploads)
+    assert done.replaced == 1
+    assert "/artifacts/abc/raw" in done.body
+    assert "![[chart.svg" not in done.body

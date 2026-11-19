@@ -35,7 +35,8 @@ _IMAGE = re.compile(
 _FENCE = re.compile(
     r"^ {0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^ {0,3}\1[`~]*[ \t]*$|\Z)", re.MULTILINE | re.DOTALL
 )
-_INLINE_CODE = re.compile(r"(`+)(?!`).+?(?<!`)\1(?!`)", re.DOTALL)
+#: A code span never crosses a blank line (a paragraph break ends it).
+_INLINE_CODE = re.compile(r"(`+)(?!`)(?:(?!\n[ \t]*\n).)+?(?<!`)\1(?!`)", re.DOTALL)
 
 #: An Obsidian embed's ``|300`` or ``|300x200`` is a display size, not alt text.
 _SIZE = re.compile(r"\d+(?:x\d+)?")
