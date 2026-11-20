@@ -2838,6 +2838,28 @@
               }
             ]
           },
+          "image_index": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "image_src": {
+            "anyOf": [
+              {
+                "maxLength": 1936,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "mentions": {
             "items": {
               "format": "uuid",
