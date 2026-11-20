@@ -305,6 +305,16 @@ ever want to look back at a specific conversation in detail.
   never mentions is added at the end. `notes edit` takes `--image` the same
   way; for a room's note, give it `--room <room>` too. Each run uploads the pictures again, so the older copies stay in the
   room's files until you delete them.
+<!-- rollout: blog -->
+- **Blog posts:** a room's Blog app publishes the room's notes, so a post
+  starts as a room note: `pepper notes create "<title>" --room <room> --file
+  post.md`, where the note's name is the post's title and the file is the
+  post's text, with no title heading at the top. Don't post an article as a
+  chat message: the Blog app only sees notes. Publishing it is a room owner's
+  step in the Blog app, on the web or in the app; the CLI can't publish,
+  withdraw or list posts yet. `pepper rooms show <room>` notes this under the
+  Blog app.
+<!-- /rollout -->
 - **A picture's alt text and captions:** `pepper notes image <picture>`
   prints the details Pepper keeps with a picture in a note: its alt text, title,
   caption and long description. `<picture>` is the picture's id, or its

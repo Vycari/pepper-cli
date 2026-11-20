@@ -2253,7 +2253,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         help=(
             "Your text artifacts. ``list``/``search`` to find one, ``show`` "
             "to print it, ``create``/``edit``/``delete`` to write it. ``--room`` "
-            "scopes to a room's shared notes instead of your own."
+            "scopes to a room's shared notes instead of your own. A room's Notes and Blog "
+            "apps are built on its notes: a blog post is a room note an owner publishes."
         ),
     )
     sub_notes = p_notes.add_subparsers(dest="notes_action", required=True)
@@ -6839,10 +6840,17 @@ def cmd_apps_run(args: argparse.Namespace) -> int:
             def human() -> None:
                 for name in names:
                     print(sanitize_line(name))
-                render.info(
-                    "(owner-scoped actions only: the server does not list the rest; "
-                    "name an action to run it)"
-                )
+                if names:
+                    render.info(
+                        "(owner-scoped actions only: the server does not list the rest; "
+                        "name an action to run it)"
+                    )
+                else:
+                    render.info(
+                        f"(the server names no actions for {args.slug!r}. It lists only "
+                        "owner-scoped ones, and some apps, like Blog, have none the CLI "
+                        "can run: don't guess a name)"
+                    )
 
             _emit({"slug": args.slug, "owner_scoped_actions": names}, args, human)
             return 0

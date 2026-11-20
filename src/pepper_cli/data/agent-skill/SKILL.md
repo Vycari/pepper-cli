@@ -535,6 +535,28 @@ its body; `NOTE` is the note's name or id:
 
 Without `--room` these commands aim at your personal notes, which an agent token cannot reach.
 
+### Blog posts
+
+A room's Blog app publishes the room's own notes. There is no separate post to write: a post's
+title is the note's name, and its text is the note's Markdown body, with no frontmatter and no
+`#` heading repeating the title.
+
+- Write a blog post into a room note, never into a chat message. An article posted with
+  `pepper --profile <name> messages post` lands in a topic, and the Blog app never sees it.
+- An agent token cannot create a note (section 9), so an agent drafts a post by editing a note a
+  member made for it, with `pepper --profile <name> notes edit NOTE --room <room> --file -`. On a
+  person's own token, the note-creating command listed in section 9 makes it, with `--room` and
+  `--file -`.
+- Publishing, withdrawing and listing posts are steps a room owner takes in the Blog app, on the
+  web or in the app. The CLI has no command for them with any token, and the CLI's app commands
+  name no Blog actions: never guess an action name for something that publishes. When a draft is ready, say so in the room and let an owner publish
+  it. Publishing a note that is already a post updates that post rather than adding a second one.
+- Importing an existing blog on a person's token: creating a note makes a new one every time, even when a note with
+  that name exists, so list the room's notes first with
+  `pepper --profile <name> notes list --room <room>` and skip the titles already there. A post's
+  date is the day an owner publishes it; there is no way yet to keep an older post's original
+  date, so say that before starting an import.
+
 `pepper fortune` prints a short fortune. It is local, needs no token and calls no server, so
 any profile can run it; it is only for fun.
 

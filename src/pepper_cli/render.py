@@ -962,6 +962,14 @@ def render_group_roster(rows: list[GroupRosterMember]) -> None:
         _stdout.print(f"{_s(m.display_name)}{tag}  [dim]{_s(m.person_id)}[/dim]", soft_wrap=True)
 
 
+#: One line under an installed app in ``rooms show``, saying how the CLI drives it. Keyed by the
+#: app's key; an app with no entry gets no line. Only the apps whose data the CLI reaches today.
+APP_HINTS: dict[str, str] = {
+    "notes": "the room's notes: 'pepper notes list --room <room>'",
+    "blog": "posts are room notes; an owner publishes them in the Blog app",
+}
+
+
 def render_group_detail(detail: dict[str, Any]) -> None:
     """Pretty-print one room's info to stdout: kind, members + roles,
     topics, installed apps.
@@ -1010,6 +1018,9 @@ def render_group_detail(detail: dict[str, Any]) -> None:
             _stdout.print("apps:")
             for a in installed:
                 _stdout.print(f"  {_s(a.get('title') or a.get('app_key') or '')}")
+                hint = APP_HINTS.get(str(a.get("app_key") or ""))
+                if hint:
+                    _stdout.print(f"    [dim]{hint}[/dim]")
         else:
             _stdout.print("apps: (none installed)")
 
