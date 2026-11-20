@@ -3488,6 +3488,17 @@
             },
             "type": "array"
           },
+          "mentions": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MentionOut"
+            },
+            "type": "array"
+          },
+          "mentions_total": {
+            "default": 0,
+            "type": "integer"
+          },
           "requested_id": {
             "format": "uuid",
             "type": "string"
@@ -5042,6 +5053,43 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "MentionOut": {
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "source_kind": {
+            "type": "string"
+          },
+          "source_ref": {
+            "type": "string"
+          },
+          "weight": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "source_kind",
+          "source_ref",
+          "channel",
+          "role",
+          "occurred_at",
+          "weight"
+        ],
         "type": "object"
       },
       "MergeEntryOut": {
@@ -10307,6 +10355,10 @@
                 "type": "null"
               }
             ]
+          },
+          "plan_tier": {
+            "default": "free",
+            "type": "string"
           },
           "time_format": {
             "type": "string"
