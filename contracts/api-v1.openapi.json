@@ -3111,6 +3111,69 @@
         ],
         "type": "object"
       },
+      "DiscussionEntry": {
+        "properties": {
+          "href": {
+            "type": "string"
+          },
+          "linked_at": {
+            "type": "string"
+          },
+          "room_id": {
+            "type": "string"
+          },
+          "room_name": {
+            "type": "string"
+          },
+          "root_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "topic_id": {
+            "type": "string"
+          },
+          "topic_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "room_name",
+          "topic_id",
+          "topic_name",
+          "root_id",
+          "title",
+          "href",
+          "linked_at"
+        ],
+        "type": "object"
+      },
+      "DiscussionsResponse": {
+        "properties": {
+          "conversations": {
+            "items": {
+              "$ref": "#/components/schemas/DiscussionEntry"
+            },
+            "type": "array"
+          },
+          "next": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "conversations"
+        ],
+        "type": "object"
+      },
       "DissolveIn": {
         "properties": {
           "into_id": {
@@ -3502,6 +3565,13 @@
           },
           "entity": {
             "$ref": "#/components/schemas/EntityBriefOut"
+          },
+          "follows": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/FollowSourceOut"
+            },
+            "type": "array"
           },
           "interest": {
             "default": [],
@@ -4003,6 +4073,67 @@
             "type": "array"
           }
         },
+        "type": "object"
+      },
+      "FollowSourceOut": {
+        "properties": {
+          "follow_ref": {
+            "type": "string"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "settings": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "updates": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/UpdateOut"
+            },
+            "type": "array"
+          },
+          "updates_total": {
+            "default": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "follow_ref",
+          "source",
+          "status"
+        ],
         "type": "object"
       },
       "GenerateImageRequest": {
@@ -10204,6 +10335,59 @@
         "required": [
           "status",
           "meetings"
+        ],
+        "type": "object"
+      },
+      "UpdateOut": {
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "live": {
+            "type": "boolean"
+          },
+          "title": {
+            "type": "string"
+          },
+          "upcoming": {
+            "type": "boolean"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "when_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "title",
+          "when_label",
+          "url",
+          "at",
+          "live",
+          "upcoming"
         ],
         "type": "object"
       },
@@ -20464,6 +20648,70 @@
         ]
       }
     },
+    "/api/v1/groups/discussions": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "url",
+            "required": false,
+            "schema": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscussionsResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-groups"
+        ]
+      }
+    },
     "/api/v1/groups/dm": {
       "post": {
         "parameters": [
@@ -27607,6 +27855,22 @@
           {
             "in": "query",
             "name": "at",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "conversation",
             "required": false,
             "schema": {
               "anyOf": [
