@@ -4619,6 +4619,52 @@ class ApiClient:
             raise ApiError(status=200, body=str(body), detail="malformed response")
         return [row for row in body if isinstance(row, dict)]
 
+    def check_blog_note(self, group_id: str, note_id: str) -> dict[str, Any]:
+        """``GET /api/v1/groups/{group_id}/blog/notes/{note_id}/check`` — what publishing a room
+        note to the room's blog would do, with the ``source`` token the publish must hand back.
+
+        A person's token only (an agent token is a 401) and a room owner's (403 otherwise). The
+        body is the server's own dict: the schema is open in the contract, so the CLI renders what
+        it finds and passes the rest through untouched.
+        """
+        body = self._request("GET", f"/api/v1/groups/{group_id}/blog/notes/{note_id}/check").json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return body
+
+    def publish_blog_note(
+        self,
+        group_id: str,
+        note_id: str,
+        *,
+        source: str,
+        acknowledge: bool = False,
+        slug: str | None = None,
+        summary: str | None = None,
+    ) -> dict[str, Any]:
+        """``POST /api/v1/groups/{group_id}/blog/notes/{note_id}/publish`` — publish (or
+        republish) the note as the check that returned ``source`` saw it.
+
+        ``slug`` is a bare name, honoured on a first publish only; the server puts a
+        ``YYYY/MM/DD/`` prefix in front. ``summary`` is validated server-side (at most 280
+        characters). Both are left out of the body when ``None``; ``acknowledge`` is sent only
+        when true. 409 when the note changed since the check, or the check had findings and
+        ``acknowledge`` is not true.
+        """
+        payload: dict[str, Any] = {"source": source}
+        if acknowledge:
+            payload["acknowledge"] = True
+        if slug is not None:
+            payload["slug"] = slug
+        if summary is not None:
+            payload["summary"] = summary
+        body = self._request(
+            "POST", f"/api/v1/groups/{group_id}/blog/notes/{note_id}/publish", json=payload
+        ).json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return body
+
     def get_artifact_detail_raw(self, artifact_id: str) -> dict[str, Any]:
         """``GET /api/v1/artifacts/{id}/detail`` as the server's own dict (``kind_label``,
         ``mime_type``, ``size_label``, ``text_body``, ``link``, ``viewer``, ... for every kind),

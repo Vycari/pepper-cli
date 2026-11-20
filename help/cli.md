@@ -283,6 +283,16 @@ ever want to look back at a specific conversation in detail.
   overwrite, or quit if someone else changed the note first. `pepper notes
   delete <note>` deletes one (asks first, unless `--yes`). Same notes as the
   **Notes** app on the web — see [Notes](#artifacts).
+<!-- rollout: blog -->
+- **Publishing a note to a room's blog:** if you own the room and its blog is
+  set up, `pepper blog check --room <room> <note>` shows what publishing would
+  do (the address, anything to look over first) without changing anything, and
+  `pepper blog publish --room <room> <note>` shows the same, asks, and then
+  publishes. `--yes` skips the question. `--slug my-post` picks the address on a
+  first publish (the date is put in front of it), and `--summary "…"` sets a
+  summary of up to 280 characters. If the note changed after the check, nothing
+  is published; run it again. It needs your own login, not an agent's.
+<!-- /rollout -->
 - **Pictures in a note:** upload the picture with `pepper artifacts create
   --file chart.png` and it prints a line like `![](/artifacts/<id>/raw)`. Put
   that line in the note, on a line of its own, and write a short description

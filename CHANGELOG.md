@@ -6,6 +6,8 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 
 ## Unreleased
 
+- `pepper blog check --room ROOM NOTE` shows what publishing a room note to the room's blog would do, and `pepper blog publish --room ROOM NOTE [--slug NAME] [--summary TEXT] [--yes]` runs that check, asks, and publishes exactly what it showed. Needs a person's own token and a server with the blog routes.
+
 ## 0.10.0 — 2026-11-18
 
 The entity graph arrives (`pepper graph`), along with `pepper run FILE` shebang scripts, calendar

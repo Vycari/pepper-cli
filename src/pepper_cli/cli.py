@@ -66,6 +66,9 @@ Subcommands:
   ``edit`` sends nothing when the text is unchanged and runs the
   conflict flow (save + diff + re-open/overwrite/quit) on a stale
   ``If-Match``. ``delete`` asks before deleting unless ``--yes``.
+- ``pepper blog check | publish --room ROOM NOTE`` — publish a room note to the room's blog.
+  ``check`` prints what publishing would do; ``publish`` runs the check, shows it, asks y/N
+  (``--yes`` skips it) and publishes with the check's ``source`` token. A person's token only.
 - ``pepper brief [--date YYYY-MM-DD | --now]`` — your morning brief, read from the server's
   Brief document in the order it sends; ``--now`` runs a fresh one.
 - ``pepper feed list | show`` and ``pepper following list | show | search | create | delete`` — the
@@ -127,6 +130,7 @@ from pepper_cli import (
     api_client,
     article_reader,
     artifacts_view,
+    blog_view,
     brief_view,
     calendar_publish_view,
     credentials,
@@ -2406,6 +2410,52 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         help="Replace every detail, including ones you set yourself.",
     )
     p_ni_suggest.set_defaults(handler=cmd_notes_image_suggest)
+    p_blog = sub.add_parser(
+        "blog",
+        help="Publish a room note to the room's blog. ``check`` first, then ``publish``.",
+        description=(
+            "Publish a note of a room you own to that room's blog. `check` says what publishing "
+            "would do and what to review first; `publish` runs the check, shows it, asks, and "
+            "publishes exactly what it showed. Needs your own token (an agent token is refused), "
+            "the blog app installed in the room, and the blog rollout."
+        ),
+    )
+    sub_blog = p_blog.add_subparsers(dest="blog_action", required=True)
+
+    p_blog_check = sub_blog.add_parser(
+        "check",
+        help="Show what publishing a room note to its blog would do. Changes nothing.",
+        parents=[_json_parent],
+    )
+    p_blog_check.add_argument("note", help=_NOTE_ARG_HELP)
+    p_blog_check.add_argument("--room", required=True, help=_ROOM_ARG_HELP)
+    p_blog_check.set_defaults(handler=cmd_blog_check)
+
+    p_blog_publish = sub_blog.add_parser(
+        "publish",
+        help="Publish (or republish) a room note to its blog, after showing the check.",
+        parents=[_yes_parent, _json_parent],
+    )
+    p_blog_publish.add_argument("note", help=_NOTE_ARG_HELP)
+    p_blog_publish.add_argument("--room", required=True, help=_ROOM_ARG_HELP)
+    p_blog_publish.add_argument(
+        "--slug",
+        metavar="NAME",
+        help=(
+            "The post's address, on a first publish only (a republish keeps its address). The "
+            "server puts the publish date in front, so --slug my-post becomes "
+            "YYYY/MM/DD/my-post. Omitted, it is made from the title."
+        ),
+    )
+    p_blog_publish.add_argument(
+        "--summary",
+        metavar="TEXT",
+        help=(
+            "The post's summary, at most 280 characters (the server checks). Omitted, the post "
+            "keeps its summary; --summary '' publishes with none, so readers get an excerpt."
+        ),
+    )
+    p_blog_publish.set_defaults(handler=cmd_blog_publish)
 
     p_comments = sub.add_parser(
         "comments",
@@ -9298,6 +9348,143 @@ def cmd_notes_delete(args: argparse.Namespace) -> int:
         return 0
 
     return _with_api(run, _report_notes_api_error, args)
+
+
+def _report_blog_api_error(exc: api_client.ApiError, args: argparse.Namespace | None = None) -> int:
+    """One line for the statuses ``blog check``/``blog publish`` meet.
+
+    401 is the person's token: an agent token is refused with it, so the line says these commands
+    need a person's own. 404 is the server's "no such room or note, or you are not a member"
+    and also its "publishing is not available yet", so the server's own words are shown (exit 2).
+    A 422 from request validation carries a list instead of a string; its first message is
+    shown. Everything else (403 not an owner, 409 changed since the check or not acknowledged,
+    400 for a bad slug or summary) is the generic ``Server returned N: detail`` (exit 1).
+    """
+    if exc.status == 401:
+        _emit_error(
+            args,
+            "auth",
+            "Authentication failed (401). Blog commands need your own token, not an agent's; "
+            "run 'pepper login' to refresh it.",
+            status=401,
+        )
+        return 1
+    if exc.status == 404:
+        _emit_error(
+            args,
+            "not_found",
+            exc.detail or "no such room or note, or you are not a member",
+            status=404,
+        )
+        return 2
+    if exc.status == 422 and not exc.detail:
+        try:
+            body = json.loads(exc.body)
+            first = body["detail"][0]
+            message = f"{first['msg']} ({'.'.join(str(p) for p in first['loc'])})"
+        except (ValueError, KeyError, IndexError, TypeError):
+            message = ""
+        _emit_error(
+            args,
+            "validation",
+            f"Server returned 422: {message}" if message else "Server returned 422.",
+            status=422,
+        )
+        return 1
+    return _report_api_error(exc, args)
+
+
+def _blog_note(api: api_client.ApiClient, args: argparse.Namespace) -> tuple[str, str] | None:
+    """The room's id and the note's id for a blog command; ``None`` once a name did not resolve."""
+    group_id = _need_group(api, args.room, args=args)
+    note_id = _resolve_note(api, room_principal=group_id, value=args.note, args=args)
+    if note_id is None:
+        return None
+    return group_id, note_id
+
+
+def cmd_blog_check(args: argparse.Namespace) -> int:
+    """``pepper blog check --room ROOM NOTE [--json]``: what publishing would do.
+
+    ``GET /api/v1/groups/{room}/blog/notes/{note}/check``. A read: nothing is published or
+    changed. Human output lists the title, address, summary, anything the owner must review
+    (links turned into words, images left as they are, a diff against the last version a person
+    saved) and warnings; ``--json`` prints the server's answer unchanged, ``source`` token
+    included. Exit 0 ok, 1 auth/API (not an owner, blog not available), 2 no such room or note.
+    """
+
+    def run(api: api_client.ApiClient) -> int:
+        target = _blog_note(api, args)
+        if target is None:
+            return 2
+        check = api.check_blog_note(*target)
+
+        def human() -> None:
+            for line in blog_view.check_lines(check):
+                render.out_text(line, soft_wrap=True)
+
+        _emit(check, args, human)
+        return 0
+
+    return _with_api(run, _report_blog_api_error, args)
+
+
+def cmd_blog_publish(args: argparse.Namespace) -> int:
+    """``pepper blog publish --room ROOM NOTE [--slug NAME] [--summary TEXT] [--yes] [--json]``.
+
+    Runs the check, shows it (on stderr, so stdout stays the result), asks y/N, then publishes
+    with the ``source`` the check returned, so what goes public is what the person just read.
+    ``--yes`` skips the question; without a terminal, or under ``--json``, it is required.
+    ``acknowledge: true`` is sent only after that confirmation (a question answered yes, or
+    ``--yes``), whether or not the check had findings; the server decides when it matters. A
+    check the server marks refused is shown and the command stops without publishing. A declined
+    question exits 0 with ``Aborted.``, like ``notes delete``. ``--json`` prints the server's
+    publish answer unchanged. Exit 0 ok, 1 auth/API (409 when the note changed since the check),
+    2 bad input (no such room or note, no ``--yes`` where it is needed).
+    """
+
+    def run(api: api_client.ApiClient) -> int:
+        target = _blog_note(api, args)
+        if target is None:
+            return 2
+        check = api.check_blog_note(*target)
+        if not _json_mode(args):
+            for line in blog_view.check_lines(check):
+                render.info(line, soft_wrap=True)
+        if check.get("refusal"):
+            _emit_error(args, "conflict", str(check["refusal"]), status=409)
+            return 1
+        source = check.get("source")
+        if not isinstance(source, str) or not source:
+            _emit_error(args, "server", "the server's check carried no source to publish")
+            return 1
+        title = sanitize_line(str(check.get("title") or "this note"))
+        verb = "Republish" if check.get("republish") else "Publish"
+        if (
+            code := _confirm_destructive(
+                args,
+                f"{verb} {title!r} to the blog? Anyone who can read the blog will see it.",
+                yes=args.yes,
+                refusal="publishing is public; pass --yes to publish without a prompt",
+            )
+        ) is not None:
+            return code
+        result = api.publish_blog_note(
+            *target,
+            source=source,
+            acknowledge=True,
+            slug=args.slug,
+            summary=args.summary,
+        )
+
+        def human() -> None:
+            for line in blog_view.published_lines(result):
+                render.out_text(line, soft_wrap=True)
+
+        _emit(result, args, human)
+        return 0
+
+    return _with_api(run, _report_blog_api_error, args)
 
 
 def cmd_takeout(args: argparse.Namespace) -> int:
