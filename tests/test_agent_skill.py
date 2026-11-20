@@ -375,7 +375,9 @@ def test_document_names_the_tempting_commands_as_unavailable() -> None:
         "rooms show",
         "notes create",
         "notes delete",
-        "blog check",
+        "blog stage",
+        "blog unschedule",
+        "blog unstage",
         "blog publish",
     ):
         assert f"`pepper --profile <name> {needle}`" in cannot, needle

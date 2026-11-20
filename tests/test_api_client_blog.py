@@ -1,4 +1,4 @@
-"""Wire shape of ``ApiClient.check_blog_note`` / ``publish_blog_note`` (``httpx.MockTransport``)."""
+"""Wire shape of the ``ApiClient`` blog stage and publish methods (``httpx.MockTransport``)."""
 
 from __future__ import annotations
 
@@ -22,23 +22,28 @@ def _client(handler) -> api_client.ApiClient:
     )
 
 
-def test_check_is_a_get_on_the_note_check_route_and_returns_the_server_dict() -> None:
-    seen: dict[str, object] = {}
+def test_stage_get_patch_delete_wire_shapes() -> None:
+    seen: list[tuple] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        seen["method"], seen["path"] = request.method, request.url.path
-        seen["auth"] = request.headers["Authorization"]
-        return httpx.Response(200, json={"title": "Hi", "source": "a.b.c", "future": 1})
+        body = json.loads(request.content) if request.content else None
+        seen.append((request.method, request.url.path, body))
+        if request.method == "DELETE":
+            return httpx.Response(204)
+        return httpx.Response(200, json={"slug": "s", "check": {"source": "a.b.c"}, "future": 1})
 
+    path = f"/api/v1/groups/{_GID}/blog/notes/{_NID}/stage"
     with _client(handler) as api:
-        body = api.check_blog_note(_GID, _NID)
+        got = api.get_blog_stage(_GID, _NID)
+        api.update_blog_stage(_GID, _NID, {"publish_at": None})
+        api.delete_blog_stage(_GID, _NID)
 
-    assert seen == {
-        "method": "GET",
-        "path": f"/api/v1/groups/{_GID}/blog/notes/{_NID}/check",
-        "auth": "Bearer pep_pat_abc",
-    }
-    assert body == {"title": "Hi", "source": "a.b.c", "future": 1}
+    assert got["check"] == {"source": "a.b.c"} and got["future"] == 1
+    assert seen == [
+        ("GET", path, None),
+        ("PATCH", path, {"publish_at": None}),
+        ("DELETE", path, None),
+    ]
 
 
 def test_publish_sends_only_the_source_by_default() -> None:
@@ -83,7 +88,7 @@ def test_error_statuses_raise_api_error_with_the_detail(status: int) -> None:
         return httpx.Response(status, json={"detail": "nope"})
 
     with _client(handler) as api, pytest.raises(api_client.ApiError) as ei:
-        api.check_blog_note(_GID, _NID)
+        api.get_blog_stage(_GID, _NID)
     assert ei.value.status == status
     assert ei.value.detail == "nope"
 
@@ -91,6 +96,6 @@ def test_error_statuses_raise_api_error_with_the_detail(status: int) -> None:
 def test_a_non_object_answer_is_a_malformed_response() -> None:
     with _client(lambda r: httpx.Response(200, json=[1])) as api:
         with pytest.raises(api_client.ApiError):
-            api.check_blog_note(_GID, _NID)
+            api.get_blog_stage(_GID, _NID)
         with pytest.raises(api_client.ApiError):
             api.publish_blog_note(_GID, _NID, source="s")

@@ -285,13 +285,18 @@ ever want to look back at a specific conversation in detail.
   **Notes** app on the web — see [Notes](#artifacts).
 <!-- rollout: blog -->
 - **Publishing a note to a room's blog:** if you own the room and its blog is
-  set up, `pepper blog check --room <room> <note>` shows what publishing would
-  do (the address, anything to look over first) without changing anything, and
-  `pepper blog publish --room <room> <note>` shows the same, asks, and then
-  publishes. `--yes` skips the question. `--slug my-post` picks the address on a
-  first publish (the date is put in front of it), and `--summary "…"` sets a
-  summary of up to 280 characters. If the note changed after the check, nothing
-  is published; run it again. It needs your own login, not an agent's.
+  set up, `pepper blog stage --room <room> <note>` shows what publishing would
+  do (the address, anything to look over first) and what is saved for the post so
+  far, without changing anything. `--slug my-post` saves the address (the date is
+  put in front of it), `--summary "…"` saves a summary of up to 280 characters,
+  and `--at "2026-11-21 09:00"` schedules the post: it shows the same look-over,
+  asks, and then publishes by itself at that time (a time without a zone is read
+  in the blog's timezone; `--yes` skips the question). `pepper blog unschedule`
+  stops a scheduled post and keeps what you saved, and `pepper blog unstage`
+  throws it away. `pepper blog publish --room <room> <note>` publishes now, using
+  what you saved unless you give `--slug` or `--summary` again; it shows the
+  look-over, asks, and publishes. If the note changed after the check, nothing is
+  published; run it again. It needs your own login, not an agent's.
 <!-- /rollout -->
 - **Pictures in a note:** upload the picture with `pepper artifacts create
   --file chart.png` and it prints a line like `![](/artifacts/<id>/raw)`. Put

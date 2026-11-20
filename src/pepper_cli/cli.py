@@ -66,9 +66,10 @@ Subcommands:
   ``edit`` sends nothing when the text is unchanged and runs the
   conflict flow (save + diff + re-open/overwrite/quit) on a stale
   ``If-Match``. ``delete`` asks before deleting unless ``--yes``.
-- ``pepper blog check | publish --room ROOM NOTE`` — publish a room note to the room's blog.
-  ``check`` prints what publishing would do; ``publish`` runs the check, shows it, asks y/N
-  (``--yes`` skips it) and publishes with the check's ``source`` token. A person's token only.
+- ``pepper blog stage | unschedule | unstage | publish --room ROOM NOTE`` — publish a room note to
+  the room's blog. ``stage`` shows the publish check and the saved stage, or saves a slug, summary
+  or ``--at`` time; ``publish`` shows the check, asks y/N (``--yes`` skips it) and publishes with
+  the check's ``source`` token. A person's token only.
 - ``pepper brief [--date YYYY-MM-DD | --now]`` — your morning brief, read from the server's
   Brief document in the order it sends; ``--now`` runs a fresh one.
 - ``pepper feed list | show`` and ``pepper following list | show | search | create | delete`` — the
@@ -2412,24 +2413,56 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p_ni_suggest.set_defaults(handler=cmd_notes_image_suggest)
     p_blog = sub.add_parser(
         "blog",
-        help="Publish a room note to the room's blog. ``check`` first, then ``publish``.",
+        help="Publish a room note to the room's blog. ``stage`` it, then ``publish``.",
         description=(
-            "Publish a note of a room you own to that room's blog. `check` says what publishing "
-            "would do and what to review first; `publish` runs the check, shows it, asks, and "
-            "publishes exactly what it showed. Needs your own token (an agent token is refused), "
-            "the blog app installed in the room, and the blog rollout."
+            "Publish a note of a room you own to that room's blog. `stage` shows what publishing "
+            "would do and what to review first, and saves the address, summary and a time to "
+            "publish; `publish` shows the check, asks, and publishes exactly what it showed. "
+            "Needs your own token (an agent token is refused), the blog app installed in the "
+            "room, and the blog rollout."
         ),
     )
     sub_blog = p_blog.add_subparsers(dest="blog_action", required=True)
 
-    p_blog_check = sub_blog.add_parser(
-        "check",
-        help="Show what publishing a room note to its blog would do. Changes nothing.",
+    p_blog_stage = sub_blog.add_parser(
+        "stage",
+        help="Show a room note's publish check and saved stage, or save a slug, summary or time.",
+        parents=[_yes_parent, _json_parent],
+    )
+    p_blog_stage.add_argument("note", help=_NOTE_ARG_HELP)
+    p_blog_stage.add_argument("--room", required=True, help=_ROOM_ARG_HELP)
+    p_blog_stage.add_argument("--slug", metavar="NAME", help="Save the post's address.")
+    p_blog_stage.add_argument(
+        "--summary", metavar="TEXT", help="Save the post's summary (--summary '' clears it)."
+    )
+    p_blog_stage.add_argument(
+        "--at",
+        metavar="TIME",
+        help=(
+            "Schedule the post, e.g. --at '2026-11-21 09:00'. Sent to the server exactly as "
+            "typed; it reads a time without a zone in the blog's timezone. Shows the check and "
+            "asks first (--yes skips the question)."
+        ),
+    )
+    p_blog_stage.set_defaults(handler=cmd_blog_stage)
+
+    p_blog_unschedule = sub_blog.add_parser(
+        "unschedule",
+        help="Stop a room note from publishing at its scheduled time (the stage is kept).",
         parents=[_json_parent],
     )
-    p_blog_check.add_argument("note", help=_NOTE_ARG_HELP)
-    p_blog_check.add_argument("--room", required=True, help=_ROOM_ARG_HELP)
-    p_blog_check.set_defaults(handler=cmd_blog_check)
+    p_blog_unschedule.add_argument("note", help=_NOTE_ARG_HELP)
+    p_blog_unschedule.add_argument("--room", required=True, help=_ROOM_ARG_HELP)
+    p_blog_unschedule.set_defaults(handler=cmd_blog_unschedule)
+
+    p_blog_unstage = sub_blog.add_parser(
+        "unstage",
+        help="Remove a room note's saved stage (address, summary and time).",
+        parents=[_json_parent],
+    )
+    p_blog_unstage.add_argument("note", help=_NOTE_ARG_HELP)
+    p_blog_unstage.add_argument("--room", required=True, help=_ROOM_ARG_HELP)
+    p_blog_unstage.set_defaults(handler=cmd_blog_unstage)
 
     p_blog_publish = sub_blog.add_parser(
         "publish",
@@ -2444,15 +2477,16 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         help=(
             "The post's address, on a first publish only (a republish keeps its address). The "
             "server puts the publish date in front, so --slug my-post becomes "
-            "YYYY/MM/DD/my-post. Omitted, it is made from the title."
+            "YYYY/MM/DD/my-post. Omitted, the saved stage's address, else one made from the title."
         ),
     )
     p_blog_publish.add_argument(
         "--summary",
         metavar="TEXT",
         help=(
-            "The post's summary, at most 280 characters (the server checks). Omitted, the post "
-            "keeps its summary; --summary '' publishes with none, so readers get an excerpt."
+            "The post's summary, at most 280 characters (the server checks). Omitted, the saved "
+            "stage's summary, else the post keeps its own; --summary '' publishes with none, so "
+            "readers get an excerpt."
         ),
     )
     p_blog_publish.set_defaults(handler=cmd_blog_publish)
@@ -9351,7 +9385,7 @@ def cmd_notes_delete(args: argparse.Namespace) -> int:
 
 
 def _report_blog_api_error(exc: api_client.ApiError, args: argparse.Namespace | None = None) -> int:
-    """One line for the statuses ``blog check``/``blog publish`` meet.
+    """One line for the statuses ``blog stage``/``blog publish`` meet.
 
     401 is the person's token: an agent token is refused with it, so the line says these commands
     need a person's own. 404 is the server's "no such room or note, or you are not a member"
@@ -9403,27 +9437,99 @@ def _blog_note(api: api_client.ApiClient, args: argparse.Namespace) -> tuple[str
     return group_id, note_id
 
 
-def cmd_blog_check(args: argparse.Namespace) -> int:
-    """``pepper blog check --room ROOM NOTE [--json]``: what publishing would do.
+def _print_blog_stage(stage: dict[str, Any], args: argparse.Namespace) -> None:
+    """The saved stage as text, or the server's stage unchanged under ``--json``."""
 
-    ``GET /api/v1/groups/{room}/blog/notes/{note}/check``. A read: nothing is published or
-    changed. Human output lists the title, address, summary, anything the owner must review
-    (links turned into words, images left as they are, a diff against the last version a person
-    saved) and warnings; ``--json`` prints the server's answer unchanged, ``source`` token
-    included. Exit 0 ok, 1 auth/API (not an owner, blog not available), 2 no such room or note.
+    def human() -> None:
+        for line in blog_view.stage_lines(stage):
+            render.out_text(line, soft_wrap=True)
+
+    _emit(stage, args, human)
+
+
+def cmd_blog_stage(args: argparse.Namespace) -> int:
+    """``pepper blog stage --room ROOM NOTE [--slug S] [--summary T] [--at TIME] [--yes] [--json]``.
+
+    No flags: ``GET .../stage``, which carries the publish check, and print the check followed by
+    the saved stage (a read; nothing changes). With flags: the same read, the check shown on
+    stderr, then ``PATCH .../stage`` with only the flags given. ``--at`` is sent exactly as typed;
+    the server parses it. Scheduling is a public act, so ``--at`` stops on a refused check (exit
+    1, nothing saved), asks y/N (``--yes`` skips it; required off a terminal and under
+    ``--json``) and sends ``acknowledge: true`` only after that yes. A declined question exits 0
+    with ``Aborted.``. Exit 0 ok, 1 auth/API (409 refusal, 422 bad time), 2 bad input.
     """
+    changes: dict[str, Any] = {}
+    if args.slug is not None:
+        changes["slug"] = args.slug
+    if args.summary is not None:
+        changes["summary"] = args.summary
+    if args.at is not None:
+        changes["publish_at"] = args.at
 
     def run(api: api_client.ApiClient) -> int:
         target = _blog_note(api, args)
         if target is None:
             return 2
-        check = api.check_blog_note(*target)
+        stage = api.get_blog_stage(*target)
+        check = stage.get("check")
+        if not changes:
+            if _json_mode(args):
+                _emit(stage, args, lambda: None)
+                return 0
+            if isinstance(check, dict):
+                for line in blog_view.check_lines(check):
+                    render.out_text(line, soft_wrap=True)
+            _print_blog_stage(stage, args)
+            return 0
+        if isinstance(check, dict) and not _json_mode(args):
+            for line in blog_view.check_lines(check):
+                render.info(line, soft_wrap=True)
+        if args.at is not None:
+            if isinstance(check, dict) and check.get("refusal"):
+                _emit_error(args, "conflict", str(check["refusal"]), status=409)
+                return 1
+            if (
+                code := _confirm_destructive(
+                    args,
+                    "Schedule this post to go public at that time?",
+                    yes=args.yes,
+                    refusal="scheduling a public post; pass --yes to schedule without a prompt",
+                )
+            ) is not None:
+                return code
+            changes["acknowledge"] = True
+        _print_blog_stage(api.update_blog_stage(*target, changes), args)
+        return 0
+
+    return _with_api(run, _report_blog_api_error, args)
+
+
+def cmd_blog_unschedule(args: argparse.Namespace) -> int:
+    """``pepper blog unschedule --room ROOM NOTE``: ``PATCH .../stage`` ``{"publish_at": null}``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        target = _blog_note(api, args)
+        if target is None:
+            return 2
+        _print_blog_stage(api.update_blog_stage(*target, {"publish_at": None}), args)
+        return 0
+
+    return _with_api(run, _report_blog_api_error, args)
+
+
+def cmd_blog_unstage(args: argparse.Namespace) -> int:
+    """``pepper blog unstage --room ROOM NOTE``: ``DELETE .../stage``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        target = _blog_note(api, args)
+        if target is None:
+            return 2
+        api.delete_blog_stage(*target)
 
         def human() -> None:
-            for line in blog_view.check_lines(check):
-                render.out_text(line, soft_wrap=True)
+            render.out_text("Stage removed.", soft_wrap=True)
 
-        _emit(check, args, human)
+        _emit({"removed": True}, args, human)
         return 0
 
     return _with_api(run, _report_blog_api_error, args)
@@ -9447,7 +9553,11 @@ def cmd_blog_publish(args: argparse.Namespace) -> int:
         target = _blog_note(api, args)
         if target is None:
             return 2
-        check = api.check_blog_note(*target)
+        stage = api.get_blog_stage(*target)
+        check = stage.get("check")
+        if not isinstance(check, dict):
+            _emit_error(args, "server", "the server's stage carried no check to publish")
+            return 1
         if not _json_mode(args):
             for line in blog_view.check_lines(check):
                 render.info(line, soft_wrap=True)

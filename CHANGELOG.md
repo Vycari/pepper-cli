@@ -6,7 +6,7 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 
 ## Unreleased
 
-- `pepper blog check --room ROOM NOTE` shows what publishing a room note to the room's blog would do, and `pepper blog publish --room ROOM NOTE [--slug NAME] [--summary TEXT] [--yes]` runs that check, asks, and publishes exactly what it showed. Needs a person's own token and a server with the blog routes.
+- `pepper blog stage --room ROOM NOTE [--slug NAME] [--summary TEXT] [--at TIME] [--yes]` shows what publishing a room note to the room's blog would do and its saved stage, or saves a slug, summary or scheduled time (`--at` goes to the server as typed); `pepper blog unschedule` and `pepper blog unstage` undo it. `pepper blog publish --room ROOM NOTE [--slug NAME] [--summary TEXT] [--yes]` shows the check, asks, and publishes exactly what it showed, using the saved stage unless a flag overrides it. Needs a person's own token and a server with the blog routes.
 
 ## 0.10.0 — 2026-11-18
 

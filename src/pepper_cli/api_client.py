@@ -4619,18 +4619,40 @@ class ApiClient:
             raise ApiError(status=200, body=str(body), detail="malformed response")
         return [row for row in body if isinstance(row, dict)]
 
-    def check_blog_note(self, group_id: str, note_id: str) -> dict[str, Any]:
-        """``GET /api/v1/groups/{group_id}/blog/notes/{note_id}/check`` — what publishing a room
-        note to the room's blog would do, with the ``source`` token the publish must hand back.
+    def get_blog_stage(self, group_id: str, note_id: str) -> dict[str, Any]:
+        """``GET /api/v1/groups/{group_id}/blog/notes/{note_id}/stage`` — the note's saved stage
+        (``slug``, ``summary``, ``publish_at``, ``publish_at_display``, ``timezone``, ...; all
+        null when nothing is staged) with the publish check under ``check`` (including the
+        ``source`` token a publish must hand back).
 
         A person's token only (an agent token is a 401) and a room owner's (403 otherwise). The
-        body is the server's own dict: the schema is open in the contract, so the CLI renders what
-        it finds and passes the rest through untouched.
+        schema is open in the contract: the CLI renders what it finds and passes the rest through.
         """
-        body = self._request("GET", f"/api/v1/groups/{group_id}/blog/notes/{note_id}/check").json()
+        body = self._request("GET", self._blog_stage_path(group_id, note_id)).json()
         if not isinstance(body, dict):
             raise ApiError(status=200, body=str(body), detail="malformed response")
         return body
+
+    def update_blog_stage(
+        self, group_id: str, note_id: str, fields: dict[str, Any]
+    ) -> dict[str, Any]:
+        """``PATCH .../blog/notes/{note_id}/stage`` — change only the keys in ``fields``
+        (``slug``, ``summary``, ``publish_at``, ``acknowledge``); an explicit ``None`` clears.
+        ``publish_at`` is sent exactly as given: the server parses it. 409 on a refusal or when
+        findings need ``acknowledge``; 422 for an unparseable or past time. Returns the stage.
+        """
+        body = self._request("PATCH", self._blog_stage_path(group_id, note_id), json=fields).json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return body
+
+    def delete_blog_stage(self, group_id: str, note_id: str) -> None:
+        """``DELETE .../blog/notes/{note_id}/stage`` — remove the saved stage."""
+        self._request("DELETE", self._blog_stage_path(group_id, note_id))
+
+    @staticmethod
+    def _blog_stage_path(group_id: str, note_id: str) -> str:
+        return f"/api/v1/groups/{group_id}/blog/notes/{note_id}/stage"
 
     def publish_blog_note(
         self,
@@ -4643,7 +4665,8 @@ class ApiClient:
         summary: str | None = None,
     ) -> dict[str, Any]:
         """``POST /api/v1/groups/{group_id}/blog/notes/{note_id}/publish`` — publish (or
-        republish) the note as the check that returned ``source`` saw it.
+        republish) the note as the check (``GET .../stage``, under ``check``) that returned
+        ``source`` saw it.
 
         ``slug`` is a bare name, honoured on a first publish only; the server puts a
         ``YYYY/MM/DD/`` prefix in front. ``summary`` is validated server-side (at most 280

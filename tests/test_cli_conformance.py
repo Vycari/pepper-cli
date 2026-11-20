@@ -103,8 +103,11 @@ VERBS = frozenset(
         # `links NOTE` lists a note's wiki links and backlinks: a read of one
         # note, like `show`, but a different view than its body.
         "links",
-        # `blog check NOTE` reads what publishing would do; `blog publish NOTE` does it.
-        "check",
+        # `blog stage NOTE` saves/shows what will be published and when; `blog publish NOTE`
+        # does it now; `unschedule` and `unstage` undo the time and the whole stage.
+        "stage",
+        "unschedule",
+        "unstage",
         "publish",
         "search",
         "watch",
@@ -678,6 +681,16 @@ _BLOG_CHECK = {
     "warnings": [],
     "review": {"human_version_found": True, "diff": "", "body": ""},
 }
+_BLOG_STAGE = {
+    "slug": None,
+    "summary": None,
+    "publish_at": None,
+    "publish_at_display": None,
+    "timezone": "UTC",
+    "updated_at": None,
+    "staged_by": None,
+    "check": _BLOG_CHECK,
+}
 _TODO = "00000000-0000-0000-0000-0000000000a7"
 _GRANT = "00000000-0000-0000-0000-0000000000a6"
 _TODO_ROW = {
@@ -813,7 +826,7 @@ ROUTES: dict[str, object] = {
     "/api/v1/todos": [_TODO_ROW],
     "/api/v1/skills": [_SKILL],
     "/api/v1/skills/triage": _SKILL_FULL,
-    f"/api/v1/groups/{_G}/blog/notes/{_NOTE}/check": _BLOG_CHECK,
+    f"/api/v1/groups/{_G}/blog/notes/{_NOTE}/stage": _BLOG_STAGE,
     f"/api/v1/groups/{_G}/skills": [_GRANT_ROW],
     f"/api/v1/groups/{_G}/skills/{_GRANT}": {**_GRANT_ROW, "skill": _SKILL_FULL},
     "/api/v1/scheduled-tasks": [_TASK_ROW],
@@ -1016,6 +1029,9 @@ ROUTES: dict[str, object] = {
 
 #: Non-GET routes (POST, DELETE): the room post answers ``{"message": {...}}``.
 POST_ROUTES: dict[str, object] = {
+    f"/api/v1/groups/{_G}/blog/notes/{_NOTE}/stage": {
+        k: v for k, v in _BLOG_STAGE.items() if k != "check"
+    },
     "/api/v1/client/capabilities": {},
     f"/api/v1/groups/{_G}/blog/notes/{_NOTE}/publish": {
         "post_id": _P,
@@ -1319,7 +1335,9 @@ JSON_CASES: dict[str, list[str]] = {
     "notes image": ["notes", "image", _BLOB],
     "notes image-set": ["notes", "image-set", _BLOB, "--caption", "Lunch"],
     "notes image-suggest": ["notes", "image-suggest", _BLOB],
-    "blog check": ["blog", "check", _NOTE, "--room", _G],
+    "blog stage": ["blog", "stage", _NOTE, "--room", _G],
+    "blog unschedule": ["blog", "unschedule", _NOTE, "--room", _G],
+    "blog unstage": ["blog", "unstage", _NOTE, "--room", _G],
     "blog publish": ["blog", "publish", _NOTE, "--room", _G, "--yes"],
     "comments list": ["comments", "list", "--note", _NOTE],
     "comments resolve": ["comments", "resolve", "--note", _NOTE, "m1"],

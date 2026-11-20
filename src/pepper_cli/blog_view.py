@@ -1,4 +1,4 @@
-"""``pepper blog check`` / ``pepper blog publish``: turn the server's check into lines of text.
+"""``pepper blog stage`` / ``pepper blog publish``: turn the server's stage and check into lines.
 
 The CLI only fetches and renders. Whether a note can be published, what needs the owner's
 review, and what the address will be are the server's answers; this module prints the fields it
@@ -62,6 +62,19 @@ def check_lines(check: dict[str, Any]) -> list[str]:
             lines.extend(_block(review.get("diff")))
     if check.get("findings"):
         lines.append("The check found things above to review before this goes public.")
+    return lines
+
+
+def stage_lines(stage: dict[str, Any]) -> list[str]:
+    """The saved stage: its address, summary and schedule, as the server sent them."""
+    slug = sanitize_line(str(stage.get("slug") or "")) or "\u2014"
+    summary = sanitize_line(str(stage.get("summary") or ""))
+    lines = [f"Staged: {slug}", f"Summary: {summary or '\u2014'}"]
+    when = stage.get("publish_at_display")
+    if when:
+        lines.append(f"Scheduled: {sanitize_line(str(when))}")
+    else:
+        lines.append("Not scheduled \u2014 publish with `pepper blog publish NOTE`")
     return lines
 
 
