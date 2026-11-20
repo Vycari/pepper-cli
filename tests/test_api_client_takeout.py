@@ -8,6 +8,7 @@ supply one.
 
 from __future__ import annotations
 
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -223,6 +224,31 @@ def test_download_takeout_leaves_a_sibling_part_file_alone(tmp_path) -> None:
     assert out_path.read_bytes() == _ZIP_BYTES
     assert sibling.read_bytes() == b"someone else's partial download"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["out.zip", "out.zip.part"]
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the pytest temp path plus a 250-byte name can exceed MAX_PATH",
+)
+def test_download_takeout_stages_a_name_near_the_filename_limit(tmp_path) -> None:
+    """A 250-byte destination fits beside the old five-byte ``.part`` suffix.
+    The staging name must not add the full destination name."""
+    out_name = "a" * 246 + ".zip"
+    out_path = tmp_path / out_name
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_ZIP_BYTES)
+
+    with api_client.ApiClient(
+        server_url="http://example.com",
+        token=SecretStr("pep_pat_abc"),
+        client=_mock(handler),
+    ) as api:
+        result = api.download_takeout(out_path=str(out_path))
+
+    assert result == str(out_path)
+    assert out_path.read_bytes() == _ZIP_BYTES
+    assert [p.name for p in tmp_path.iterdir()] == [out_name]
 
 
 def test_concurrent_downloads_use_separate_staging_files(tmp_path) -> None:

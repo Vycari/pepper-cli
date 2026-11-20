@@ -4848,7 +4848,9 @@ class ApiClient:
             # downloads to the same destination share, truncate or delete each
             # other's staging file.
             target_dir = os.path.dirname(resolved_path) or "."
-            prefix = f".{os.path.basename(resolved_path)}."
+            # Keep the staging name short: folding in the destination basename
+            # can push a name that the filesystem accepts past NAME_MAX.
+            prefix = ".pepper-takeout."
             fd, part_path = tempfile.mkstemp(dir=target_dir, prefix=prefix, suffix=".part")
             try:
                 with os.fdopen(fd, "wb") as fh:
