@@ -2248,15 +2248,13 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "here: the file is uploaded to the same place as the note and the body's references "
         "to it are rewritten, Obsidian ![[embeds]] included. Each run uploads again."
     )
-    p_notes = sub.add_parser(
-        "notes",
-        help=(
-            "Your text artifacts. ``list``/``search`` to find one, ``show`` "
-            "to print it, ``create``/``edit``/``delete`` to write it. ``--room`` "
-            "scopes to a room's shared notes instead of your own. A room's Notes and Blog "
-            "apps are built on its notes: a blog post is a room note an owner publishes."
-        ),
+    notes_help = (
+        "Your text artifacts. ``list``/``search`` to find one, ``show`` "
+        "to print it, ``create``/``edit``/``delete`` to write it. ``--room`` "
+        "scopes to a room's shared notes instead of your own. A room's Notes and Blog "
+        "apps are built on its notes: a blog post is a room note an owner publishes."
     )
+    p_notes = sub.add_parser("notes", help=notes_help, description=notes_help)
     sub_notes = p_notes.add_subparsers(dest="notes_action", required=True)
 
     p_notes_list = sub_notes.add_parser(

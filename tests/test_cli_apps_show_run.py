@@ -165,3 +165,10 @@ def test_run_forbidden_is_a_json_error(server, capsys) -> None:
     )
     assert cli.main(["apps", "run", "notes", "delete", "--json"]) == 1
     assert json.loads(capsys.readouterr().err)["error"]["code"] == "forbidden"
+
+
+def test_notes_help_says_blog_posts_are_room_notes(capsys) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["notes", "--help"])
+    out = " ".join(capsys.readouterr().out.split())
+    assert "a blog post is a room note an owner publishes" in out
