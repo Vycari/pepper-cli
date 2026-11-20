@@ -30,6 +30,7 @@ import os
 import re as _re
 import socket
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -4807,6 +4808,11 @@ class ApiClient:
         written to, so a caller that didn't pass ``out_path`` still
         knows where the file landed.
 
+        The archive streams into a uniquely named temporary file in the
+        destination directory and replaces the destination only after the
+        whole body arrives. A failed or interrupted download leaves an
+        existing archive untouched.
+
         The archive holds your data but none of your credentials — the
         server excludes OAuth tokens and API-token hashes, listing the
         accounts to reconnect in the manifest instead.
@@ -4835,19 +4841,23 @@ class ApiClient:
                 or _filename_from_content_disposition(resp.headers.get("content-disposition"))
                 or DEFAULT_TAKEOUT_FILENAME
             )
-            # Stream into a sibling .part file and rename into place only
-            # once the body is fully written — a connection dropped
-            # mid-download must not leave a truncated archive at the final
-            # path where it could later pass for a complete backup.
-            part_path = f"{resolved_path}.part"
+            # Stream into a uniquely named sibling and rename into place only
+            # once the body is fully written. A connection dropped mid-download
+            # must not leave a truncated archive at the final path where it could
+            # later pass for a complete backup. A fixed .part name would let two
+            # downloads to the same destination share, truncate or delete each
+            # other's staging file.
+            target_dir = os.path.dirname(resolved_path) or "."
+            prefix = f".{os.path.basename(resolved_path)}."
+            fd, part_path = tempfile.mkstemp(dir=target_dir, prefix=prefix, suffix=".part")
             try:
-                with open(part_path, "wb") as fh:
+                with os.fdopen(fd, "wb") as fh:
                     fh.writelines(resp.iter_bytes())
+                os.replace(part_path, resolved_path)
             except BaseException:
                 with contextlib.suppress(OSError):
                     os.unlink(part_path)
                 raise
-            os.replace(part_path, resolved_path)
         return resolved_path
 
     # ------------------------------------------------------------------
