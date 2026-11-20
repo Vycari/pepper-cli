@@ -9477,12 +9477,12 @@ def cmd_blog_stage(args: argparse.Namespace) -> int:
                 _emit(stage, args, lambda: None)
                 return 0
             if isinstance(check, dict):
-                for line in blog_view.check_lines(check):
+                for line in blog_view.check_lines(check, with_address=False):
                     render.out_text(line, soft_wrap=True)
             _print_blog_stage(stage, args)
             return 0
         if isinstance(check, dict) and not _json_mode(args):
-            for line in blog_view.check_lines(check):
+            for line in blog_view.check_lines(check, with_address=False):
                 render.info(line, soft_wrap=True)
         if args.at is not None:
             if isinstance(check, dict) and check.get("refusal"):

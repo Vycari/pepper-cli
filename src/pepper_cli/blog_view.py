@@ -17,15 +17,21 @@ def _strings(value: object) -> list[str]:
     return [sanitize_line(str(item)) for item in value] if isinstance(value, list) else []
 
 
-def check_lines(check: dict[str, Any]) -> list[str]:
-    """What publishing would do, one line per entry; indented lines belong to the one above."""
+def check_lines(check: dict[str, Any], *, with_address: bool = True) -> list[str]:
+    """What publishing would do, one line per entry; indented lines belong to the one above.
+
+    ``with_address=False`` leaves out the address and summary, for when the saved stage's own
+    (:func:`stage_lines`) follow: the stage's are the ones a publish would use.
+    """
     title = sanitize_line(str(check.get("title") or "(untitled)"))
     kind = "Republish" if check.get("republish") else "First publish"
-    lines = [f"{kind}: {title}", f"Address: {sanitize_line(str(check.get('slug') or ''))}"]
-    summary = sanitize_line(str(check.get("summary") or ""))
-    limit = check.get("max_summary")
-    suffix = f" (up to {limit} characters)" if isinstance(limit, int) else ""
-    lines.append(f"Summary{suffix}: {summary or '(none; readers get an excerpt)'}")
+    lines = [f"{kind}: {title}"]
+    if with_address:
+        lines.append(f"Address: {sanitize_line(str(check.get('slug') or ''))}")
+        summary = sanitize_line(str(check.get("summary") or ""))
+        limit = check.get("max_summary")
+        suffix = f" (up to {limit} characters)" if isinstance(limit, int) else ""
+        lines.append(f"Summary{suffix}: {summary or '(none; readers get an excerpt)'}")
 
     refusal = check.get("refusal")
     if refusal:
@@ -66,10 +72,21 @@ def check_lines(check: dict[str, Any]) -> list[str]:
 
 
 def stage_lines(stage: dict[str, Any]) -> list[str]:
-    """The saved stage: its address, summary and schedule, as the server sent them."""
-    slug = sanitize_line(str(stage.get("slug") or "")) or "\u2014"
-    summary = sanitize_line(str(stage.get("summary") or ""))
-    lines = [f"Staged: {slug}", f"Summary: {summary or '\u2014'}"]
+    """The address a publish would use, the saved summary and the schedule, as the server sent them.
+
+    ``address`` is the server's whole address (the date the post will carry and the saved name);
+    a server too old to send it leaves the saved name alone.
+    """
+    raw = stage.get("check")
+    check: dict[str, Any] = raw if isinstance(raw, dict) else {}
+    address = (
+        sanitize_line(str(stage.get("address") or stage.get("slug") or check.get("slug") or ""))
+        or "\u2014"
+    )
+    saved = stage.get("summary")
+    summary = sanitize_line(str(saved if saved is not None else check.get("summary") or ""))
+    excerpt = "(none; readers get an excerpt)"
+    lines = [f"Address: {address}", f"Summary: {summary or excerpt}"]
     when = stage.get("publish_at_display")
     if when:
         lines.append(f"Scheduled: {sanitize_line(str(when))}")

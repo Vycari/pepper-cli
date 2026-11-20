@@ -189,7 +189,7 @@ def test_stage_show_renders_what_publishing_would_do(tmp_home, patch_api, capsys
     out = capsys.readouterr().out
     assert "First publish: Hello World" in out
     assert "Address: 2026/11/19/hello-world" in out
-    assert "Summary (up to 280 characters): A greeting." in out
+    assert "Summary: A greeting." in out
     assert "Nowhere" in out
     assert "https://example.com/a.png" in out
     assert "Images copied into the blog: 2" in out
@@ -280,8 +280,9 @@ def test_stage_show_empty_prints_check_then_no_stage(tmp_home, patch_api, capsys
     patch_api()
     assert cli.main(["blog", "stage", "--room", _GID, _NID]) == 0
     out = capsys.readouterr().out
-    assert out.index("First publish: Hello World") < out.index("Staged:")
-    assert "Staged: \u2014" in out
+    assert out.index("First publish: Hello World") < out.index("Address:")
+    assert "Address: 2026/11/19/hello-world" in out
+    assert out.count("Address:") == 1
     assert "Not scheduled \u2014 publish with `pepper blog publish NOTE`" in out
     assert [c[0] for c in _api().calls] == ["get_stage"]
 
@@ -291,7 +292,7 @@ def test_stage_show_set_prints_slug_summary_and_schedule(tmp_home, patch_api, ca
     patch_api(stage=_SCHEDULED)
     assert cli.main(["blog", "stage", "--room", _GID, _NID]) == 0
     out = capsys.readouterr().out
-    assert "Staged: my-post" in out
+    assert "Address: my-post" in out
     assert "Summary: A greeting." in out
     assert "Scheduled: Sat, Nov 21, 9:00 AM \u00b7 America/Los_Angeles" in out
     assert "Not scheduled" not in out
@@ -307,7 +308,7 @@ def test_stage_patches_only_the_given_fields(tmp_home, patch_api, capsys) -> Non
     assert cli.main(["blog", "stage", "--room", _GID, _NID, "--slug", "my-post"]) == 0
     assert _api().sent("update_stage")[0][3] == {"slug": "my-post"}
     captured = capsys.readouterr()
-    assert "Staged: my-post" in captured.out
+    assert "Address: my-post" in captured.out
     assert "First publish: Hello World" in captured.err
     assert cli.main(["blog", "stage", "--room", _GID, _NID, "--summary", ""]) == 0
     assert _api().sent("update_stage")[0][3] == {"summary": ""}
@@ -667,3 +668,13 @@ def test_publish_names_only_the_members_page_while_the_blog_is_not_public() -> N
     lines = published_lines({**_PUBLISHED, "post_url": members, "public_url": None})
     assert f"Members: {members}" in lines
     assert not any(line.startswith("Public:") for line in lines)
+
+
+def test_stage_show_prints_the_one_address_the_server_names(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(stage={**_SCHEDULED, "address": "2026/11/21/my-post"})
+    assert cli.main(["blog", "stage", "--room", _GID, _NID]) == 0
+    out = capsys.readouterr().out
+    # The check's own address (today's date, the title's name) is not shown beside it.
+    assert "Address: 2026/11/21/my-post" in out
+    assert out.count("Address:") == 1 and "hello-world" not in out
