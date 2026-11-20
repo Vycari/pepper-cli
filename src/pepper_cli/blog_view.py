@@ -74,7 +74,13 @@ def published_lines(result: dict[str, Any]) -> list[str]:
     """The result of a publish: the address, and whether it was a first publish."""
     verb = "Republished" if result.get("republished") else "Published"
     lines = [f"{verb}."]
-    if result.get("url"):
+    # The server names the full addresses (``public_url`` only while the blog is public);
+    # ``url`` is the bare path, shown only by a server too old to send them.
+    if result.get("public_url"):
+        lines.append(f"Public: {sanitize_line(str(result['public_url']))}")
+    if result.get("post_url"):
+        lines.append(f"Members: {sanitize_line(str(result['post_url']))}")
+    elif result.get("url"):
         lines.append(sanitize_line(str(result["url"])))
     # The card and the public copy are written after the post is saved; when one could not be,
     # the post still stands and the next republish tries again (the server's own words).

@@ -460,3 +460,27 @@ def test_errors_are_json_on_stderr_under_json(tmp_home, patch_api, capsys) -> No
     assert captured.out == ""
     error = json.loads(captured.err)["error"]
     assert error["code"] == "forbidden" and error["status"] == 403
+
+
+def test_publish_prints_the_full_addresses_the_server_names() -> None:
+    from pepper_cli.blog_view import published_lines
+
+    lines = published_lines(
+        {
+            **_PUBLISHED,
+            "post_url": f"https://pepper.vycari.ai/blog/{_GID}/2026/11/19/hello-world",
+            "public_url": "https://blog.vycari.ai/2026/11/19/hello-world",
+        }
+    )
+    assert "Public: https://blog.vycari.ai/2026/11/19/hello-world" in lines
+    assert f"Members: https://pepper.vycari.ai/blog/{_GID}/2026/11/19/hello-world" in lines
+    assert f"/blog/{_GID}/2026/11/19/hello-world" not in lines
+
+
+def test_publish_names_only_the_members_page_while_the_blog_is_not_public() -> None:
+    from pepper_cli.blog_view import published_lines
+
+    members = f"https://pepper.vycari.ai/blog/{_GID}/2026/11/19/hello-world"
+    lines = published_lines({**_PUBLISHED, "post_url": members, "public_url": None})
+    assert f"Members: {members}" in lines
+    assert not any(line.startswith("Public:") for line in lines)
