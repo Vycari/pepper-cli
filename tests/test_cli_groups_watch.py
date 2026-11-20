@@ -547,6 +547,34 @@ def test_a_refusal_is_an_api_error_before_any_frame():
     assert raised.value.status == 401
 
 
+@pytest.mark.parametrize("status", [301, 302, 303, 304, 307, 308])
+def test_a_redirect_is_an_api_error_before_any_frame(status: int):
+    seen: list[httpx.Request] = []
+    body = "" if status == 304 else "moved"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            status,
+            text=body,
+            headers={"location": "https://elsewhere.example/events/stream"},
+        )
+
+    with _api(handler) as api, pytest.raises(api_client.ApiError) as raised:
+        list(api.watch_agent_events())
+
+    assert (raised.value.status, raised.value.body) == (status, body)
+    assert len(seen) == 1
+
+
+def test_a_204_is_an_empty_feed():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(204)
+
+    with _api(handler) as api:
+        assert list(api.watch_agent_events()) == []
+
+
 def test_malformed_frames_are_dropped_not_fatal():
     body = (
         'id: nope\nevent: x\ndata: {"a":1}\n\n'
