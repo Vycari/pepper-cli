@@ -444,8 +444,11 @@ class PepperApp(App[None]):
         try:
             if not self.query(Sidebar):
                 return False
-            # A thread on its way out (#177) still answers a query but has no children to paint.
-            return not any(thread.going for thread in self.query(ThreadView))
+            # The thread is mounted for the app's whole run, so no thread means teardown has
+            # already removed it (#324). One on its way out (#177) still answers a query but
+            # has no children to paint.
+            threads = self.query(ThreadView)
+            return bool(threads) and not any(thread.going for thread in threads)
         except ScreenStackError:
             return False
 

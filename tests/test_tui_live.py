@@ -393,6 +393,24 @@ async def test_a_topic_page_delivered_while_the_thread_is_being_removed_is_dropp
         assert delivered == []  # dropped, not painted into the half-removed thread
 
 
+async def test_a_topic_page_delivered_after_the_thread_is_removed_is_dropped() -> None:
+    """The removal can also finish before the poll result lands (#324): no thread is left to
+    query, and ``self.thread`` raised ``NoMatches`` inside the worker."""
+    server = ts.standard_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 20)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: app.loaded_topic)
+        loop = app._loops["topic"]
+        await app.thread.remove()
+        assert not app.query(ThreadView)
+        delivered: list[object] = []
+        loop.in_flight = loop.generation
+        app._delivered("topic", delivered.append, "page", loop.generation)
+        assert delivered == []
+
+
 async def test_reaching_the_end_marks_the_newest_row_read(monkeypatch: pytest.MonkeyPatch) -> None:
     server = ts.standard_server()
     _long_topic(server)
