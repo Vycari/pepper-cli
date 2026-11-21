@@ -1154,7 +1154,8 @@ def _download_name(out: str) -> str:
     if name in {"", ".", ".."} or name == "-":
         msg = "out must be a file name, such as recipe.pdf (stdout carries the channel)."
         raise ToolError(msg)
-    if "/" in name or "\\" in name or "\x00" in name or name.startswith("."):
+    # ":" too: on Windows "D:x" is drive-relative and would leave the download folder.
+    if any(c in name for c in "/\\:\x00") or name.startswith("."):
         msg = (
             f"out must be a plain file name with no path, such as recipe.pdf; it is saved under "
             f"{DOWNLOAD_DIR}/ in the channel's working directory."
@@ -1391,8 +1392,14 @@ class ChannelTools:
         except OSError as exc:
             msg = f"couldn't write {DOWNLOAD_DIR}/{name}: {exc.strerror or exc}"
             raise ToolError(msg) from exc
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(content)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(content)
+        except OSError as exc:
+            # A half-written file would make a retry under the same name "already exist".
+            target.unlink(missing_ok=True)
+            msg = f"couldn't write {DOWNLOAD_DIR}/{name}: {exc.strerror or exc}"
+            raise ToolError(msg) from exc
         return {"path": str(target), "bytes": len(content)}
 
     def _topics(self, args: dict[str, Any]) -> object:

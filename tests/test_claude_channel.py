@@ -2969,6 +2969,41 @@ def test_attachments_download_writes_a_new_file_under_the_download_dir(monkeypat
     assert "already exists" in out["again"][0]
 
 
+def test_attachments_download_removes_a_half_written_file(monkeypatch, tmp_path):
+    attachment = "00000000-0000-0000-0000-0000000000aa"
+    fake = _Fake(_CONNECTED)
+    fake.attachments[attachment] = b"x"
+    monkeypatch.chdir(tmp_path)
+    real_fdopen = claude_channel.os.fdopen
+
+    class _Full:
+        def __init__(self, fd: int) -> None:
+            self._fh = real_fdopen(fd, "wb")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            self._fh.close()
+
+        def write(self, _data: bytes) -> int:
+            raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(claude_channel.os, "fdopen", lambda fd, _mode: _Full(fd))
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["full"] = s.call(
+            "attachments_download", {"room_id": _ROOM, "attachment_id": attachment, "out": "a.bin"}
+        )
+
+    run_channel(monkeypatch, fake, ["--room", _ROOM], script=script)
+
+    assert out["full"][1] is True
+    assert "No space left on device" in out["full"][0]
+    assert not (tmp_path / "pepper-attachments" / "a.bin").exists()
+
+
 def test_attachments_download_refuses_paths_devices_and_existing_files(monkeypatch, tmp_path):
     attachment = "00000000-0000-0000-0000-0000000000aa"
     fake = _Fake(_CONNECTED)
@@ -2990,6 +3025,7 @@ def test_attachments_download_refuses_paths_devices_and_existing_files(monkeypat
             "up": "../victim",
             "dot": ".bashrc",
             "sub": "a/b",
+            "drive": "D:payload.bin",
             "link": "link",
         }.items():
             out[key] = s.call("attachments_download", {**base, "out": name})
@@ -3003,7 +3039,7 @@ def test_attachments_download_refuses_paths_devices_and_existing_files(monkeypat
 
     assert all(is_error for _, is_error in out.values())
     assert "stdout carries the channel" in out["stdout"][0]
-    for key in ("dev", "abs", "up", "dot", "sub"):
+    for key in ("dev", "abs", "up", "dot", "sub", "drive"):
         assert "plain file name" in out[key][0], key
     assert "already exists" in out["link"][0]
     assert out["missing"][0] == "not found, or you are not a member of that room"
