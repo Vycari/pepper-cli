@@ -96,6 +96,7 @@ _AGENT_COMMANDS = frozenset(
         "notes show",
         "notes links",
         "notes edit",
+        "notes create",
     }
 )
 _AGENT_REFUSED_FLAGS = frozenset({"--mark", "--attach"})
@@ -373,7 +374,6 @@ def test_document_names_the_tempting_commands_as_unavailable() -> None:
         "messages edit",
         "messages delete",
         "rooms show",
-        "notes create",
         "notes delete",
     ):
         assert f"`pepper --profile <name> {needle}`" in cannot, needle
