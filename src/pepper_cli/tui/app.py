@@ -314,6 +314,11 @@ class PepperApp(App[None]):
         #: there lands on them and ends the opening. ``_open_pages`` counts the older pages
         #: read to reach the cursor.
         self._opening = False
+        #: The rail has answered once, so its unread rows and cursors are known. A topic whose
+        #: first page lands before that cannot tell if it is unread: it marks nothing until the
+        #: answer arrives (``_opening_deferred``), then decides.
+        self._rail_seen = False
+        self._opening_deferred = False
         self._open_cursor: datetime | None = None
         self._open_pages = 0
         #: Id of the first message after the cursor: the ``new messages`` divider sits above it
@@ -843,6 +848,9 @@ class PepperApp(App[None]):
             snapshot=update.unread_answered,
         )
         self.marks.settle(self.rooms)
+        self._rail_seen = True
+        if self._opening_deferred:
+            self._resume_opening()
         if self._bell and (self.marks.mentioned_topics(self.rooms) - had - {self.current.topic_id}):
             self.bell()
 
@@ -971,12 +979,29 @@ class PepperApp(App[None]):
         """
         self._opening, self._open_cursor, self._open_pages = False, None, 0
         self._new_from = None
+        self._opening_deferred = False
         topic_id = self.current.topic_id
         if self.current.is_pepper or topic_id is None:
+            return
+        if not self._rail_seen:
+            self._opening_deferred = True  # decided when the rail's unread answer lands
             return
         row, cursor = self.marks.unread.get(topic_id), self.marks.marks.get(topic_id)
         if row is not None and row.unread_count > 0 and cursor is not None:
             self._opening, self._open_cursor = True, cursor
+
+    def _resume_opening(self) -> None:
+        """The rail's unread answer landed for a topic whose first page came first: decide now,
+        before any mark (every mark path stands down while it was deferred)."""
+        self._opening_deferred = False
+        if not self.loaded_topic or not self.query(ThreadView):
+            return
+        self._begin_opening()
+        if self._opening:
+            self._render_topic(new_rows=0, reset=True)
+        else:
+            self._note_viewed(render_id=self.thread.render_id, through=self.thread.through)
+            self._run("publish")
 
     def _cursor_gap(self, cursor: datetime | None) -> bool:
         """Messages between ``cursor`` and the oldest row held may exist: an older page is
@@ -1089,7 +1114,7 @@ class PepperApp(App[None]):
         conv = self.current
         if conv.is_pepper or conv.topic_id is None or self._blurred or self.pane is not None:
             return
-        if render_id != self.thread.render_id or self._opening:
+        if render_id != self.thread.render_id or self._opening or self._opening_deferred:
             return
         cursor = self.marks.marks.get(conv.topic_id)
         if cursor is None or self._cursor_gap(cursor):
@@ -1240,6 +1265,7 @@ class PepperApp(App[None]):
         self.loaded_topic = False
         self._opening, self._open_cursor, self._open_pages = False, None, 0
         self._new_from = None
+        self._opening_deferred = False
         self._rendered_items, self._rendered_stamps, self._spans_cache = [], {}, None
         self._topic_error = None
         # A new subject for the topic and refresh loops: cancel their timers, clear the
@@ -1423,7 +1449,7 @@ class PepperApp(App[None]):
             return False  # an open Todos/Notes pane hides the thread: its rows are not on screen
         if render_id != self.thread.render_id or not at_end or not self.thread.at_end:
             return False
-        if self._opening:
+        if self._opening or self._opening_deferred:
             return False  # still reading older pages to reach the cursor: nothing landed yet
         rendered = self.thread.through
         if through is None or rendered is None:
@@ -2021,8 +2047,18 @@ class PepperApp(App[None]):
             "older",
             lambda: poller.fetch_older(self._api, conv, before=before, limit=state.OLDER_PAGE),
             self._got_older,
-            on_error=lambda exc: self._action_failed("load older messages", exc),
+            on_error=self._older_failed,
         )
+
+    def _older_failed(self, exc: Exception) -> bool:
+        """A failed older page. While a topic is being opened at its cursor nothing else would
+        retry it, and the hold would never end (no mark, even at the end): so the opening ends
+        here, landing as it does at the page cap, with the gap rule still keeping progressive
+        marks off the rows that were never shown."""
+        if self._opening:
+            self._open_pages = _OPEN_PAGES_MAX
+            self._render_topic(new_rows=0, reset=True)
+        return self._action_failed("load older messages", exc)
 
     def _got_older(self, page: GroupMessagePage) -> None:
         self._learn_from_messages(page.messages)

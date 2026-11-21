@@ -8,11 +8,13 @@ visible region, a PUT at a time, and each PUT carries that message's own ``creat
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 from textual import events
 
 from pepper_cli.tui import app as tui_app
-from pepper_cli.tui import state, stream
+from pepper_cli.tui import poller, state, stream
 from tests import tui_support as ts
 from tests.tui_support import body_text, until
 
@@ -260,3 +262,60 @@ async def test_a_topic_with_no_cursor_is_not_marked_from_the_rows_on_screen() ->
         app._note_seen(app.thread.render_id)
         assert ts.TOPIC_A1 not in app._owed
         assert ts.TOPIC_A1 not in app.marks.marks
+
+
+async def test_a_failed_older_page_while_opening_ends_the_hold_and_the_end_still_marks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """VR-cc3e4d41: nothing retries an older page that failed during the opening, so the hold
+    must end there. The topic lands on the oldest loaded row, and reaching the end marks it."""
+    monkeypatch.setattr(state, "OLDER_PAGE", 5)
+    server = ts.standard_server()
+    server.page_size = 10
+    _backlog(server, rows=60, read_through=10)
+    path = f"/api/v1/groups/{ts.ROOM_A}/topics/{ts.TOPIC_A1}/messages"
+    real, failed = poller.fetch_older, []
+
+    def flaky(api, conv, *, before, limit):
+        if not failed:
+            failed.append(before)
+            server.fail[path] = 500
+            try:
+                return real(api, conv, before=before, limit=limit)
+            finally:
+                del server.fail[path]
+        return real(api, conv, before=before, limit=limit)
+
+    monkeypatch.setattr(poller, "fetch_older", flaky)
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 20)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2 and app.marks.unread)
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: bool(failed) and not app._opening and app.loaded_topic)
+        await pilot.pause(0.3)
+        scroller = app.thread.scroller
+        scroller.scroll_end(animate=False)
+        await until(pilot, lambda: 59 in _put_rows(server))
+
+
+async def test_a_first_page_that_beats_the_rail_marks_nothing_until_the_unread_answer() -> None:
+    """VR-a6d198ad: with no unread answer yet, the foot cannot be told from a backlog, so
+    nothing is marked; once it lands the topic opens at the cursor and only that is read."""
+    server = ts.standard_server()
+    _backlog(server)
+    gate = threading.Event()
+    server.gates["/api/v1/groups/unread"] = gate
+    app = tui_app.PepperApp(server.client())
+    try:
+        async with app.run_test(size=(120, 20)) as pilot:
+            await pilot.pause(0.2)
+            app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+            await until(pilot, lambda: app.loaded_topic and "row 39" in body_text(app))
+            await pilot.pause(0.5)
+            assert _put_rows(server) == []
+            gate.set()
+            await until(pilot, lambda: "new messages" in body_text(app))
+            await until(pilot, lambda: bool(_put_rows(server)))
+            assert max(_put_rows(server)) < 39
+    finally:
+        gate.set()
