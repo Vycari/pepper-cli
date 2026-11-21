@@ -377,6 +377,26 @@ def test_rooms_show_renders_kind_members_topics_apps(tmp_home, patch_api, capsys
     assert "To-do" in out
 
 
+def test_rooms_show_hints_how_the_cli_drives_blog_and_notes(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    installed = [
+        {"install_id": "i-1", "app_key": "blog", "title": "Blog"},
+        {"install_id": "i-2", "app_key": "notes", "title": "Notes"},
+        {"install_id": "i-3", "app_key": "todo", "title": "To-do"},
+    ]
+    patch_api(group_detail=_room_detail(apps={"installed": installed, "unavailable": False}))
+    assert cli.main(["rooms", "show", _GID_TRIP]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    blog = lines.index("  Blog")
+    assert "posts are room notes" in lines[blog + 1]
+    assert "publishes them in the Blog app" in lines[blog + 1]
+    notes = lines.index("  Notes")
+    assert "pepper notes list --room <room>" in lines[notes + 1]
+    todo = lines.index("  To-do")
+    # An app with no hint gets no extra line: the next line is not indented under it.
+    assert todo == len(lines) - 1 or not lines[todo + 1].startswith("    ")
+
+
 def test_rooms_show_json_passes_the_mascot_url_through(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
     patch_api(group_detail=_room_detail(mascot_url=_MASCOT))

@@ -142,6 +142,17 @@ def test_run_without_an_action_lists_the_owner_scoped_ones(server, capsys) -> No
     assert "owner-scoped actions only" in captured.err
 
 
+def test_run_without_an_action_says_when_the_app_names_none(server, capsys) -> None:
+    server.routes[("GET", "/api/v1/apps")] = httpx.Response(
+        200, json=[{"slug": "blog", "title": "Blog", "description": "", "owner_scoped_actions": []}]
+    )
+    assert cli.main(["apps", "run", "blog"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == ""
+    assert "names no actions for 'blog'" in captured.err
+    assert "don't guess" in captured.err
+
+
 def test_run_without_an_action_on_an_unknown_app(server, capsys) -> None:
     server.routes[("GET", "/api/v1/apps")] = httpx.Response(200, json=[])
     assert cli.main(["apps", "run", "ghost", "--json"]) == 2
@@ -154,3 +165,10 @@ def test_run_forbidden_is_a_json_error(server, capsys) -> None:
     )
     assert cli.main(["apps", "run", "notes", "delete", "--json"]) == 1
     assert json.loads(capsys.readouterr().err)["error"]["code"] == "forbidden"
+
+
+def test_notes_help_says_blog_posts_are_room_notes(capsys) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["notes", "--help"])
+    out = " ".join(capsys.readouterr().out.split())
+    assert "a blog post is a room note an owner publishes" in out
