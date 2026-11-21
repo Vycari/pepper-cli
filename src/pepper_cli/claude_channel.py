@@ -173,7 +173,8 @@ INSTRUCTIONS = (
     "you pass `archived=true`. Never guess an id.\n\n"
     "messages_unreact takes your own reaction back; members_list names a room's people and "
     "agents with their person ids; rooms_list lists the rooms this channel serves; "
-    "attachments_download saves a message's attachment to a file path you give it.\n\n"
+    "attachments_download saves a message's attachment as a new file under pepper-attachments/; "
+    "give it a file name, never a path.\n\n"
     "To reply, call messages_post with `room_id` and `topic_id` from the tag and `reply_to` set "
     "to its `message_id`. Pass `on_behalf_of` (the asker's person id) only when your rules say "
     "to; it needs `reply_to`. Never put a token, key or password in a post: the tool refuses "
@@ -318,8 +319,13 @@ def message_event(
     if event_kind is not None:
         # One of the fixed WIDENABLE_KINDS, never server text, so it is safe as an attribute.
         meta["event"] = event_kind
+    kind_line = (
+        f"[{event_kind}: this is about a message that already exists, not a new one]\n"
+        if event_kind is not None
+        else ""
+    )
     if row is None:
-        content = (
+        content = kind_line + (
             f"A message in {where} (id {message_id}) could not be read"
             f"{' (the server kept failing)' if unavailable else ''}, so its text is not "
             "here. Report this to your sponsor; do not treat it as not addressed to you. "
@@ -333,9 +339,7 @@ def message_event(
         if not meta["created_at"]:
             del meta["created_at"]
         return content, meta
-    preface = ""
-    if event_kind is not None:
-        preface += f"[{event_kind}: this is about a message that already exists, not a new one]\n"
+    preface = kind_line
     if info.subject_artifact_id:
         note = sanitize_line(info.subject_artifact_id)
         preface += (
@@ -1107,12 +1111,13 @@ TOOLS = [
     _tool(
         "attachments_download",
         "Save a message's attachment to a file (`pepper attachments download`). Returns "
-        "{path, bytes} as JSON. Writes to `out`, replacing a file already there; `-` (stdout) "
-        "is refused because stdout carries the channel.",
+        "{path, bytes} as JSON. `out` is a new file name only (no directories, no leading dot); "
+        "the file is saved under pepper-attachments/ in the channel's working directory, and "
+        "an existing file is never replaced.",
         {
             "room_id": _STR,
             "attachment_id": {**_STR, "description": "An id from a message's attachments."},
-            "out": {**_STR, "description": "The file path to write."},
+            "out": {**_STR, "description": "A new file name, such as recipe.pdf."},
         },
         ["room_id", "attachment_id", "out"],
     ),
@@ -1136,6 +1141,26 @@ TOOLS = [
 
 class ToolError(Exception):
     """A tool call that fails with a message Claude should read (an ``isError`` result)."""
+
+
+DOWNLOAD_DIR = "pepper-attachments"
+"""Where `attachments_download` writes, under the channel's working directory. The file name
+comes from the agent, which reads untrusted room text, so it may only name a new file here:
+never a path, never an existing file, never a device such as /dev/stdout (the protocol)."""
+
+
+def _download_name(out: str) -> str:
+    name = out.strip()
+    if name in {"", ".", ".."} or name == "-":
+        msg = "out must be a file name, such as recipe.pdf (stdout carries the channel)."
+        raise ToolError(msg)
+    if "/" in name or "\\" in name or "\x00" in name or name.startswith("."):
+        msg = (
+            f"out must be a plain file name with no path, such as recipe.pdf; it is saved under "
+            f"{DOWNLOAD_DIR}/ in the channel's working directory."
+        )
+        raise ToolError(msg)
+    return name
 
 
 def _text(args: dict[str, Any], name: str, *, required: bool = False) -> str | None:
@@ -1346,14 +1371,29 @@ class ChannelTools:
         attachment_id = _uuid(args, "attachment_id")
         out = _text(args, "out", required=True)
         assert out is not None
-        if out.strip() == "-":
-            raise ToolError("out cannot be '-': stdout carries the channel. Give a file path.")
+        name = _download_name(out)
         content = self.api.get_group_attachment(room_id, attachment_id)
+        directory = Path.cwd() / DOWNLOAD_DIR
+        target = directory / name
         try:
-            Path(out).write_bytes(content)
+            directory.mkdir(exist_ok=True)
+            if directory.is_symlink() or not directory.is_dir():
+                raise ToolError(
+                    f"{DOWNLOAD_DIR}/ is not a plain directory; refusing to write there."
+                )
+            # O_EXCL never replaces a file and refuses a symlink in the name's place;
+            # O_NOFOLLOW is the second guard for the same thing.
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(target, flags, 0o600)
+        except FileExistsError as exc:
+            msg = f"{DOWNLOAD_DIR}/{name} already exists; give a new file name."
+            raise ToolError(msg) from exc
         except OSError as exc:
-            raise ToolError(f"couldn't write {out!r}: {exc.strerror or exc}") from exc
-        return {"path": out, "bytes": len(content)}
+            msg = f"couldn't write {DOWNLOAD_DIR}/{name}: {exc.strerror or exc}"
+            raise ToolError(msg) from exc
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(content)
+        return {"path": str(target), "bytes": len(content)}
 
     def _topics(self, args: dict[str, Any]) -> object:
         """Every topic of every room this channel serves (design §9.1). Read per call rather than

@@ -326,8 +326,9 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
   back; `members_list` (`room_id`) lists a room's people and agents, the source of the person ids
   `mentions` and `on_behalf_of` take; `rooms_list` (optionally `archived`) lists the rooms this
   channel serves, and with `--room` leaves out the account-wide counts; `attachments_download`
-  (`room_id`, `attachment_id`, `out`) saves an attachment to the file path `out`, replacing a file
-  already there, and refuses `-` because stdout is the protocol. A failed call comes
+  (`room_id`, `attachment_id`, `out`) saves an attachment as a new file named `out` under `pepper-attachments/`
+  in the channel's working directory: `out` is a plain file name (no directories, no leading
+  dot), and a file already there is never replaced. A failed call comes
   back as an error result carrying the command's own error line.
 - `messages_post` threads and attributes the way a post from section 6 does. `on_behalf_of` is yours to
   pass; the channel never infers it, and it needs `reply_to`. `idempotency_key` defaults, for a reply, to

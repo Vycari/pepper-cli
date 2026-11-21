@@ -956,6 +956,20 @@ def test_an_unreadable_message_still_carries_the_self_id():
     assert meta["self_id"] == _AGENT
 
 
+def test_an_unreadable_widened_event_still_says_the_message_already_exists():
+    content, meta = claude_channel.message_event(
+        info=claude_channel.TopicInfo(_ROOM, "Kitchen", "Dinner"),
+        topic_id=_TOPIC,
+        message_id=_MESSAGE,
+        row=None,
+        event={},
+        event_kind="message.deleted",
+    )
+    assert content.startswith("[message.deleted: this is about a message that already exists")
+    assert meta["event"] == "message.deleted"
+    assert meta["body"] == "missing"
+
+
 def test_a_resync_names_its_cause_gives_room_ids_and_is_safe_on_a_first_run(monkeypatch):
     fake = _Fake(_CONNECTED + _scope() + _event(7, kind="some.new.kind") + _PING)
 
@@ -2927,57 +2941,74 @@ def test_rooms_list_archived_asks_for_the_archived_list(monkeypatch):
     assert [g["group_id"] for g in json.loads(out["archived"][0])["items"]] == [_ROOM]
 
 
-def test_attachments_download_writes_the_file_and_reports_it(monkeypatch, tmp_path):
+def test_attachments_download_writes_a_new_file_under_the_download_dir(monkeypatch, tmp_path):
     attachment = "00000000-0000-0000-0000-0000000000aa"
     fake = _Fake(_CONNECTED)
     fake.attachments[attachment] = b"\x00recipe\xff"
-    target = tmp_path / "recipe.bin"
+    monkeypatch.chdir(tmp_path)
     out: dict = {}
 
     def script(s: _Session) -> None:
         out["ok"] = s.call(
             "attachments_download",
-            {"room_id": _ROOM, "attachment_id": attachment, "out": str(target)},
+            {"room_id": _ROOM, "attachment_id": attachment, "out": "recipe.bin"},
+        )
+        out["again"] = s.call(
+            "attachments_download",
+            {"room_id": _ROOM, "attachment_id": attachment, "out": "recipe.bin"},
         )
 
     run_channel(monkeypatch, fake, ["--room", _ROOM], script=script)
 
+    target = tmp_path / "pepper-attachments" / "recipe.bin"
     assert out["ok"][1] is False
     assert json.loads(out["ok"][0]) == {"path": str(target), "bytes": 8}
     assert target.read_bytes() == b"\x00recipe\xff"
+    # A second download never replaces the first.
+    assert out["again"][1] is True
+    assert "already exists" in out["again"][0]
 
 
-def test_attachments_download_refuses_stdout_other_rooms_and_bad_paths(monkeypatch, tmp_path):
+def test_attachments_download_refuses_paths_devices_and_existing_files(monkeypatch, tmp_path):
     attachment = "00000000-0000-0000-0000-0000000000aa"
     fake = _Fake(_CONNECTED)
     fake.attachments[attachment] = b"x"
+    monkeypatch.chdir(tmp_path)
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"keep")
+    downloads = tmp_path / "pepper-attachments"
+    downloads.mkdir()
+    (downloads / "link").symlink_to(victim)
     out: dict = {}
 
     def script(s: _Session) -> None:
         base = {"room_id": _ROOM, "attachment_id": attachment}
-        out["stdout"] = s.call("attachments_download", {**base, "out": "-"})
-        out["room"] = s.call(
-            "attachments_download",
-            {**base, "room_id": _OTHER_ROOM, "out": str(tmp_path / "a")},
-        )
-        out["id"] = s.call(
-            "attachments_download", {**base, "attachment_id": "../x", "out": str(tmp_path / "a")}
-        )
-        out["dir"] = s.call(
-            "attachments_download", {**base, "out": str(tmp_path / "no" / "such" / "file")}
-        )
+        for key, name in {
+            "stdout": "-",
+            "dev": "/dev/stdout",
+            "abs": str(victim),
+            "up": "../victim",
+            "dot": ".bashrc",
+            "sub": "a/b",
+            "link": "link",
+        }.items():
+            out[key] = s.call("attachments_download", {**base, "out": name})
+        out["room"] = s.call("attachments_download", {**base, "room_id": _OTHER_ROOM, "out": "a"})
+        out["id"] = s.call("attachments_download", {**base, "attachment_id": "../x", "out": "a"})
         out["missing"] = s.call(
-            "attachments_download",
-            {**base, "attachment_id": _MESSAGE, "out": str(tmp_path / "b")},
+            "attachments_download", {**base, "attachment_id": _MESSAGE, "out": "b"}
         )
 
     result = run_channel(monkeypatch, fake, ["--room", _ROOM], script=script)
 
     assert all(is_error for _, is_error in out.values())
     assert "stdout carries the channel" in out["stdout"][0]
-    assert "couldn't write" in out["dir"][0]
+    for key in ("dev", "abs", "up", "dot", "sub"):
+        assert "plain file name" in out[key][0], key
+    assert "already exists" in out["link"][0]
     assert out["missing"][0] == "not found, or you are not a member of that room"
-    assert not (tmp_path / "a").exists()
+    assert victim.read_bytes() == b"keep"
+    assert sorted(p.name for p in downloads.iterdir()) == ["link"]
     assert result.stdout.messages(), "stdout still holds only JSON-RPC"
 
 
