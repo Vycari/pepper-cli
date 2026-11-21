@@ -54,6 +54,8 @@ def _server() -> ts.FakeServer:
         ),
         ts.message("m2", "2026-09-16T17:31:00+00:00", "notes are here", cards=[CARD]),
     ]
+    # Read through the newest row: the thread opens at its foot, with no divider.
+    server.marks[ts.TOPIC_A1] = "2026-09-16T17:31:00+00:00"
     return server
 
 
@@ -77,6 +79,24 @@ def test_thread_with_markdown_reactions_preview_and_card(snap_compare) -> None:
         await until(pilot, lambda: "notes are here" in body_text(app))
         await _cursor_settled(pilot, app, "pepper")
         await pilot.pause()
+
+    assert snap_compare(app, terminal_size=SIZE, run_before=run_before)
+
+
+def test_thread_opened_at_the_read_cursor(snap_compare) -> None:
+    """A topic with unread messages opens on the first one after the cursor, under the
+    ``new messages`` divider (read-state-sync §5.1)."""
+    server = _server()
+    server.marks[ts.TOPIC_A1] = "2026-09-16T17:30:00+00:00"  # m1 read, m2 not
+    app = tui_app.PepperApp(server.client())
+
+    async def run_before(pilot: Pilot) -> None:
+        await until(pilot, lambda: len(app.rooms) == 2 and app.marks.unread)
+        await _cursor_settled(pilot, app, "pepper")
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: "new messages" in body_text(app))
+        await _cursor_settled(pilot, app, "pepper")
+        await pilot.pause(0.3)
 
     assert snap_compare(app, terminal_size=SIZE, run_before=run_before)
 

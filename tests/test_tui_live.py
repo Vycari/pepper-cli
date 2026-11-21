@@ -310,6 +310,9 @@ def _long_topic(server: ts.FakeServer) -> None:
     server.messages[ts.TOPIC_A1] = [
         ts.message(f"r{i:02d}", f"2026-09-16T17:{i:02d}:00+00:00", f"row {i}") for i in range(40)
     ]
+    # Read through the newest row: these tests open a topic at its foot. (With the cursor part
+    # way up, as ``standard_server`` leaves it, the topic would open at the cursor instead.)
+    server.marks[ts.TOPIC_A1] = "2026-09-16T17:39:00+00:00"
 
 
 async def test_nothing_is_marked_read_while_the_thread_is_scrolled_up(
@@ -340,7 +343,9 @@ async def test_nothing_is_marked_read_while_the_thread_is_scrolled_up(
         await until(pilot, lambda: "r99" in app.store.rows)
         await until(pilot, lambda: bool(app.query_one("#thread-new", Static).display))
         await pilot.pause(0.4)
-        assert len(server.puts) == puts  # no PUT while scrolled up
+        # Rows already read stay on screen up there and move nothing; the arrived row was never
+        # on screen, so no PUT reaches it (progressive marking, read-state-sync §5.1 (b)).
+        assert len(server.puts) == puts
         assert app.marks.marks[ts.TOPIC_A1] < _at(arrived)
         # Open, but with rows below the screen it is unread: the marker stays.
         assert _room_unread(app, ts.ROOM_A)

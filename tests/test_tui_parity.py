@@ -635,6 +635,8 @@ async def test_a_first_page_is_marked_read_only_once_its_scroll_lands(monkeypatc
             for i in range(40)
         ),
     )
+    # Read through the newest row, so the topic opens at its foot rather than at its cursor.
+    server.marks[ts.TOPIC_A1] = "2026-09-16T17:39:00+00:00"
     app = tui_app.PepperApp(server.client())
     async with app.run_test(size=(120, 20)) as pilot:
         await until(pilot, lambda: len(app.rooms) == 2)
