@@ -127,6 +127,7 @@ from pepper_cli import (
     api_client,
     article_reader,
     artifacts_view,
+    blog_view,
     brief_view,
     calendar_publish_view,
     credentials,
@@ -2406,6 +2407,59 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         help="Replace every detail, including ones you set yourself.",
     )
     p_ni_suggest.set_defaults(handler=cmd_notes_image_suggest)
+
+    blog_help = (
+        "A room's blog: ``list`` its posts and the notes not yet published, ``check`` what "
+        "publishing a note would do, ``publish`` it, ``withdraw`` a post. Room owners only, "
+        "with your own token."
+    )
+    p_blog = sub.add_parser("blog", help=blog_help, description=blog_help)
+    sub_blog: Any = p_blog.add_subparsers(dest="blog_action", required=True)
+    p_blog_list = sub_blog.add_parser(
+        "list",
+        help="The blog's posts, newest first, and the room's notes not yet published.",
+        parents=[_json_parent],
+    )
+    p_blog_list.add_argument("--room", required=True, help=_ROOM_ARG_HELP)
+    p_blog_list.set_defaults(handler=cmd_blog_list)
+    _published_at_help = (
+        "Date the post in the past, for an imported archive: ISO 8601 with a time zone "
+        "(2014-03-02T09:00:00-08:00). The address takes that day. First publish only."
+    )
+    p_blog_check = sub_blog.add_parser(
+        "check",
+        help="What publishing a note would do: its address, what to read first, the review.",
+        parents=[_json_parent],
+    )
+    p_blog_check.add_argument("--room", required=True, help=_ROOM_ARG_HELP)
+    p_blog_check.add_argument("note", help=_NOTE_ARG_HELP)
+    p_blog_check.add_argument("--published-at", metavar="WHEN", help=_published_at_help)
+    p_blog_check.set_defaults(handler=cmd_blog_check)
+    p_blog_publish = sub_blog.add_parser(
+        "publish",
+        help="Publish a note (or republish it): checks it, shows what it found, then asks.",
+        parents=[_yes_parent, _json_parent],
+    )
+    p_blog_publish.add_argument("--room", required=True, help=_ROOM_ARG_HELP)
+    p_blog_publish.add_argument("note", help=_NOTE_ARG_HELP)
+    p_blog_publish.add_argument(
+        "--slug",
+        help="The post's address name, on a first publish. Omit to make it from the title.",
+    )
+    p_blog_publish.add_argument(
+        "--summary",
+        help="A summary readers see. Empty clears it. Omit to keep the post's summary.",
+    )
+    p_blog_publish.add_argument("--published-at", metavar="WHEN", help=_published_at_help)
+    p_blog_publish.set_defaults(handler=cmd_blog_publish)
+    p_blog_withdraw = sub_blog.add_parser(
+        "withdraw",
+        help="Take a post down. Publishing its note again puts it back.",
+        parents=[_yes_parent, _json_parent],
+    )
+    p_blog_withdraw.add_argument("--room", required=True, help=_ROOM_ARG_HELP)
+    p_blog_withdraw.add_argument("post", help="The post's id (from 'pepper blog list').")
+    p_blog_withdraw.set_defaults(handler=cmd_blog_withdraw)
 
     p_comments = sub.add_parser(
         "comments",
@@ -9298,6 +9352,153 @@ def cmd_notes_delete(args: argparse.Namespace) -> int:
         return 0
 
     return _with_api(run, _report_notes_api_error, args)
+
+
+# ---------------------------------------------------------------------------
+# blog
+
+
+def _report_blog_error(exc: api_client.ApiError, args: argparse.Namespace | None = None) -> int:
+    """404 is one answer for a missing room, note or post, a room you are not in, and a room
+    whose blog is not on; 403 is a member who is not an owner."""
+    if exc.status == 404:
+        _emit_error(
+            args,
+            "not_found",
+            "not found: no such room, note or post, you are not a member, or the room has no blog",
+            status=404,
+        )
+        return 2
+    if exc.status == 403:
+        _emit_error(
+            args,
+            "forbidden",
+            f"not allowed: {exc.detail or 'only a room owner can do this'}",
+            status=403,
+        )
+        return 1
+    if exc.status in (409, 422) and exc.detail:
+        _emit_error(args, _error_code_for_status(exc.status), exc.detail, status=exc.status)
+        return 2
+    return _report_api_error(exc, args)
+
+
+def cmd_blog_list(args: argparse.Namespace) -> int:
+    """``pepper blog list --room ROOM [--json]``: the posts, then the notes not yet published.
+
+    ``--json`` is the list envelope over the posts, with the server's ``unpublished``,
+    ``may_publish`` and ``may_withdraw`` beside it."""
+
+    def run(api: api_client.ApiClient) -> int:
+        room_id = _need_group(api, args.room, args=args)
+        body = api.blog_posts(room_id)
+        rows = [p for p in body.get("posts") or [] if isinstance(p, dict)]
+        meta = {
+            key: body.get(key)
+            for key in ("room_id", "enabled", "may_publish", "may_withdraw", "unpublished")
+        }
+        _emit(_list_envelope(rows, None, **meta), args, lambda: blog_view.posts(body))
+        return 0
+
+    return _with_api(run, _report_blog_error, args)
+
+
+def _blog_note(api: api_client.ApiClient, args: argparse.Namespace) -> tuple[str, str] | None:
+    room_id = _need_group(api, args.room, args=args)
+    note_id = _resolve_note(api, room_principal=room_id, value=args.note, args=args)
+    return None if note_id is None else (room_id, note_id)
+
+
+def cmd_blog_check(args: argparse.Namespace) -> int:
+    """``pepper blog check --room ROOM NOTE [--published-at WHEN] [--json]``.
+
+    Reads only. ``--json`` is the server's check as it came, ``source`` included."""
+
+    def run(api: api_client.ApiClient) -> int:
+        found = _blog_note(api, args)
+        if found is None:
+            return 2
+        checked = api.blog_check(*found, published_at=args.published_at)
+        _emit(checked, args, lambda: blog_view.check(checked))
+        return 0
+
+    return _with_api(run, _report_blog_error, args)
+
+
+def cmd_blog_publish(args: argparse.Namespace) -> int:
+    """``pepper blog publish --room ROOM NOTE [--slug S] [--summary TEXT] [--published-at WHEN]
+    [--yes] [--json]``.
+
+    Runs the check first and shows it, then asks. ``--yes`` (or a yes at the prompt) is the
+    owner saying they read it, so it is sent as ``acknowledge``, with the check's ``source``
+    handed back unchanged. A note the check refuses is exit 2 with the reason, and nothing is
+    published. ``--json`` never prompts, so it needs ``--yes``; read the check with
+    ``pepper blog check --json`` first.
+
+    Exit codes: 0 published · 1 auth/API/transport · 2 bad input, refused, or the note changed
+    since the check."""
+
+    def run(api: api_client.ApiClient) -> int:
+        found = _blog_note(api, args)
+        if found is None:
+            return 2
+        if not args.yes and (_json_mode(args) or not _stdin_is_tty()):
+            _emit_error(
+                args,
+                "usage",
+                "publishing puts the note on the blog; read 'pepper blog check' and pass --yes",
+            )
+            return 2
+        checked = api.blog_check(*found, published_at=args.published_at)
+        if not _json_mode(args):
+            blog_view.check(checked)
+        if checked.get("refusal"):
+            _emit_error(args, "validation", f"can't publish: {checked['refusal']}")
+            return 2
+        if (
+            code := _confirm_destructive(
+                args,
+                f"Publish {checked.get('title')!r} at {checked.get('slug')}?",
+                yes=args.yes,
+                refusal="publishing puts the note on the blog; pass --yes",
+            )
+        ) is not None:
+            return code
+        result = api.blog_publish(
+            *found,
+            source=str(checked.get("source", "")),
+            acknowledge=True,
+            slug=args.slug,
+            summary=args.summary,
+            published_at=args.published_at,
+        )
+        _emit(result, args, lambda: blog_view.published(result))
+        return 0
+
+    return _with_api(run, _report_blog_error, args)
+
+
+def cmd_blog_withdraw(args: argparse.Namespace) -> int:
+    """``pepper blog withdraw --room ROOM POST [--yes] [--json]``: take a post down.
+
+    Not a delete: publishing the note again brings the post back at its address."""
+
+    def run(api: api_client.ApiClient) -> int:
+        room_id = _need_group(api, args.room, args=args)
+        if (
+            code := _confirm_destructive(
+                args,
+                "Withdraw this post from the blog?",
+                yes=args.yes,
+                refusal="withdrawing takes the post down; pass --yes",
+            )
+        ) is not None:
+            return code
+        result = api.blog_withdraw(room_id, args.post)
+        _emit(result, args, lambda: blog_view.withdrawn(result))
+        return 0
+
+    return _with_api(run, _report_blog_error, args)
 
 
 def cmd_takeout(args: argparse.Namespace) -> int:
