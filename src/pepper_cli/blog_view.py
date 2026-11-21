@@ -46,11 +46,29 @@ def _list(title: str, values: list[Any]) -> None:
             _line(f"  {_s(value)}")
 
 
-def check(body: dict[str, Any]) -> None:
-    """What publishing would do: the address, anything to read first, and the review."""
+def address(body: dict[str, Any], slug: str | None) -> str:
+    """The address a publish will use: the check's, or with ``--slug``, the check's date in
+    front of the name asked for. The server makes the address; this only previews it, and the
+    server refuses a name a republish cannot take."""
+    proposed = str(body.get("slug") or "")
+    if not slug:
+        return proposed
+    day, sep, _name = proposed.rpartition("/")
+    return f"{day}{sep}{slug}"
+
+
+def check(body: dict[str, Any], *, address: str | None = None, summary: str | None = None) -> None:
+    """What publishing would do: the address, anything to read first, and the review.
+
+    ``address`` and ``summary`` are what ``publish`` was asked to send, shown so the owner
+    confirms what goes out rather than the check's defaults."""
     _line(f"[bold]{_s(body.get('title'))}[/bold]")
     verb = "Republishes at" if body.get("republish") else "Publishes at"
-    _line(f"{verb} [bold]{_s(body.get('slug'))}[/bold]")
+    _line(f"{verb} [bold]{_s(address or body.get('slug'))}[/bold]")
+    if summary is not None:
+        _line(
+            "Summary: " + (_s(summary) if summary else "[dim](none; readers get an excerpt)[/dim]")
+        )
     if body.get("refusal"):
         _line(f"[red]Can't publish:[/red] {_s(body['refusal'])}")
     _list("Warnings", list(body.get("warnings") or []))

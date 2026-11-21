@@ -9437,28 +9437,30 @@ def cmd_blog_publish(args: argparse.Namespace) -> int:
 
     Exit codes: 0 published · 1 auth/API/transport · 2 bad input, refused, or the note changed
     since the check."""
+    # Before any request, so a script without --yes gets the usage error and nothing else.
+    if not args.yes and (_json_mode(args) or not _stdin_is_tty()):
+        _emit_error(
+            args,
+            "usage",
+            "publishing puts the note on the blog; read 'pepper blog check' and pass --yes",
+        )
+        return 2
 
     def run(api: api_client.ApiClient) -> int:
         found = _blog_note(api, args)
         if found is None:
             return 2
-        if not args.yes and (_json_mode(args) or not _stdin_is_tty()):
-            _emit_error(
-                args,
-                "usage",
-                "publishing puts the note on the blog; read 'pepper blog check' and pass --yes",
-            )
-            return 2
         checked = api.blog_check(*found, published_at=args.published_at)
+        address = blog_view.address(checked, args.slug)
         if not _json_mode(args):
-            blog_view.check(checked)
+            blog_view.check(checked, address=address, summary=args.summary)
         if checked.get("refusal"):
             _emit_error(args, "validation", f"can't publish: {checked['refusal']}")
             return 2
         if (
             code := _confirm_destructive(
                 args,
-                f"Publish {checked.get('title')!r} at {checked.get('slug')}?",
+                f"Publish {checked.get('title')!r} at {address}?",
                 yes=args.yes,
                 refusal="publishing puts the note on the blog; pass --yes",
             )
@@ -9482,18 +9484,19 @@ def cmd_blog_withdraw(args: argparse.Namespace) -> int:
     """``pepper blog withdraw --room ROOM POST [--yes] [--json]``: take a post down.
 
     Not a delete: publishing the note again brings the post back at its address."""
+    # Ask before resolving the room, so a script without --yes makes no request.
+    if (
+        code := _confirm_destructive(
+            args,
+            "Withdraw this post from the blog?",
+            yes=args.yes,
+            refusal="withdrawing takes the post down; pass --yes",
+        )
+    ) is not None:
+        return code
 
     def run(api: api_client.ApiClient) -> int:
         room_id = _need_group(api, args.room, args=args)
-        if (
-            code := _confirm_destructive(
-                args,
-                "Withdraw this post from the blog?",
-                yes=args.yes,
-                refusal="withdrawing takes the post down; pass --yes",
-            )
-        ) is not None:
-            return code
         result = api.blog_withdraw(room_id, args.post)
         _emit(result, args, lambda: blog_view.withdrawn(result))
         return 0

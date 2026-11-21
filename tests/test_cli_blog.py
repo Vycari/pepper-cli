@@ -183,7 +183,7 @@ def test_publish_without_yes_off_a_terminal_reads_nothing_and_exits_2(
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
     assert cli.main(["blog", "publish", "--room", _ROOM, _NOTE]) == 2
     assert "--yes" in capsys.readouterr().err
-    assert _calls() == []
+    assert _FakeBlogApi.instances == []
 
 
 def test_a_refused_note_is_exit_2_and_nothing_is_published(fake, capsys) -> None:
@@ -211,3 +211,32 @@ def test_withdraw_with_yes(fake, capsys) -> None:
     assert cli.main(["blog", "withdraw", "--room", _ROOM, _POST, "--yes"]) == 0
     assert ("blog_withdraw", _ROOM, _POST) in _calls()
     assert "Withdrawn" in capsys.readouterr().out
+
+
+def test_the_prompt_and_preview_show_the_slug_and_summary_asked_for(
+    fake, capsys, monkeypatch
+) -> None:
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    asked: list[str] = []
+    monkeypatch.setattr(cli, "_prompt", lambda prompt: asked.append(prompt) or "n")
+    argv = ["blog", "publish", "--room", _ROOM, _NOTE, "--slug", "letter", "--summary", "Hi."]
+    assert cli.main(argv) == 0
+    out = capsys.readouterr().out
+    assert "2014/03/02/letter" in asked[0]
+    assert "Publishes at 2014/03/02/letter" in out
+    assert "an-old-letter" not in out
+    assert "Summary: Hi." in out
+
+
+def test_without_yes_off_a_terminal_room_and_note_names_are_never_looked_up(
+    tmp_home, capsys, monkeypatch
+) -> None:
+    def no_client(**kw):
+        raise AssertionError("no request should be made")
+
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
+    monkeypatch.setattr(api_client, "ApiClient", no_client)
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
+    assert cli.main(["blog", "publish", "--room", "Trip", "Letter"]) == 2
+    assert cli.main(["blog", "withdraw", "--room", "Trip", _POST]) == 2
+    assert capsys.readouterr().err.count("--yes") == 2
