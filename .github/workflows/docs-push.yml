@@ -175,6 +175,8 @@ jobs:
           # DOCS_SYNC_AUTO_MERGE to `false` to go back to hand merges. A failure warns and leaves
           # the PR for a hand merge; the sync itself succeeded.
           if [ "${AUTO_MERGE:-}" = "false" ]; then
+            # Disarm too: a PR an earlier run armed would otherwise still merge on green.
+            gh pr merge "$pr" --disable-auto > /dev/null 2>&1 || true
             echo "DOCS_SYNC_AUTO_MERGE is false: $pr waits for a hand merge."
           elif gh pr merge "$pr" --auto --squash --match-head-commit "$(git rev-parse HEAD)"; then
             echo "Auto-merge armed on $pr."
