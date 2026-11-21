@@ -125,6 +125,25 @@ jobs:
             --json number,isCrossRepository,headRepositoryOwner \
             -q 'map(select((.isCrossRepository | not) and
               (.headRepositoryOwner.login | ascii_downcase) == "vycari")) | .[0].number // empty')"
+          # The kill switch (DOCS_SYNC_AUTO_MERGE, below) governs runs. With it off, the open
+          # sync PR is disarmed first, before any push or any step that can fail, so a run that
+          # pushes a new head and then dies cannot leave that head armed. A failed disarm fails
+          # the run rather than reporting a hold that is not in place. To hold a PR that is
+          # armed right now, disable auto-merge on it (or dispatch this workflow).
+          auto_merge_off() {
+            [[ "${AUTO_MERGE,,}" =~ ^[[:space:]]*(false|0|no|off)[[:space:]]*$ ]]
+          }
+          disarm_auto_merge() {
+            gh pr merge "$1" --disable-auto > /dev/null 2>&1 || true
+            if [ "$(gh pr view "$1" --json autoMergeRequest -q '.autoMergeRequest != null')" != "false" ]; then
+              echo "::error title=Auto-merge still armed::DOCS_SYNC_AUTO_MERGE is off but $1 could not be shown disarmed. Disable auto-merge on it by hand."
+              exit 1
+            fi
+          }
+          if [ -n "$existing" ] && auto_merge_off; then
+            disarm_auto_merge "$existing"
+          fi
+
           branch_exists=false
           rc=0
           git ls-remote --exit-code --heads origin "$SYNC_BRANCH" > /dev/null || rc=$?
@@ -178,9 +197,9 @@ jobs:
           # help files. Pinned to the head this run pushed. Set the Actions variable
           # DOCS_SYNC_AUTO_MERGE to `false` (or 0, no, off) to go back to hand merges. A failure
           # warns and leaves the PR for a hand merge; the sync itself succeeded.
-          if [[ "${AUTO_MERGE,,}" =~ ^[[:space:]]*(false|0|no|off)[[:space:]]*$ ]]; then
+          if auto_merge_off; then
             # Disarm too: a PR an earlier run armed would otherwise still merge on green.
-            gh pr merge "$pr" --disable-auto > /dev/null 2>&1 || true
+            disarm_auto_merge "$pr"
             echo "DOCS_SYNC_AUTO_MERGE is off: $pr waits for a hand merge."
           elif gh pr merge "$pr" --auto --squash --match-head-commit "$(git rev-parse HEAD)"; then
             echo "Auto-merge armed on $pr."
