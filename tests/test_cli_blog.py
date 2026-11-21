@@ -469,8 +469,6 @@ def test_publish_yes_checks_then_publishes_with_the_source(tmp_home, patch_api, 
     assert api.sent("publish")[0][3] == {
         "source": _SOURCE,
         "acknowledge": True,
-        "slug": None,
-        "summary": None,
         "published_at": None,
     }
 
@@ -481,13 +479,21 @@ def test_publish_without_slug_or_summary_leaves_them_out_for_the_saved_stage(
     _login(tmp_home)
     patch_api(stage=_SCHEDULED)
     assert cli.main(["blog", "publish", "--room", _GID, _NID, "--yes"]) == 0
-    sent = _api().sent("publish")[0][3]
-    assert sent["slug"] is None and sent["summary"] is None  # the client omits None from the body
+    api = _api()
+    assert api.sent("update_stage") == []
+    assert "slug" not in api.sent("publish")[0][3]  # the server uses the saved stage
 
 
-def test_publish_passes_slug_and_summary_through(tmp_home, patch_api) -> None:
+def test_publish_slug_and_summary_are_staged_first_so_the_preview_is_what_publishes(
+    tmp_home, patch_api, capsys
+) -> None:
     _login(tmp_home)
-    patch_api()
+    staged = {
+        **_stage(slug="my-post", summary="A short one."),
+        "address": "2026/11/19/my-post",
+        "check": _check(),
+    }
+    patch_api(updated=staged)
     rc = cli.main(
         [
             "blog", "publish", "--room", _GID, _NID, "--yes",
@@ -495,16 +501,46 @@ def test_publish_passes_slug_and_summary_through(tmp_home, patch_api) -> None:
         ]
     )  # fmt: skip
     assert rc == 0
-    sent = _api().sent("publish")[0][3]
-    assert sent["slug"] == "my-post"
-    assert sent["summary"] == "A short one."
+    api = _api()
+    assert [c[0] for c in api.calls] == ["get_stage", "update_stage", "publish"]
+    assert api.sent("update_stage")[0][3] == {"slug": "my-post", "summary": "A short one."}
+    err = capsys.readouterr().err
+    # The preview is the server's answer for the values given, and only that address shows.
+    assert "Address: 2026/11/19/my-post" in err
+    assert "hello-world" not in err
+    assert "A short one." in err
+    sent = api.sent("publish")[0][3]
+    assert "slug" not in sent and "summary" not in sent
 
 
-def test_publish_an_empty_summary_is_sent_not_dropped(tmp_home, patch_api) -> None:
+def test_publish_declined_after_staging_publishes_nothing(
+    tmp_home, patch_api, monkeypatch, capsys
+) -> None:
     _login(tmp_home)
-    patch_api()
+    patch_api(updated={**_stage(slug="my-post"), "check": _check()})
+    _tty(monkeypatch, "n")
+    assert cli.main(["blog", "publish", "--room", _GID, _NID, "--slug", "my-post"]) == 0
+    api = _api()
+    assert api.sent("update_stage")[0][3] == {"slug": "my-post"}
+    assert api.sent("publish") == []
+
+
+def test_publish_slug_on_a_published_post_exits_2_and_sends_nothing(
+    tmp_home, patch_api, capsys
+) -> None:
+    _login(tmp_home)
+    patch_api(check=_check(republish=True))
+    rc = cli.main(["blog", "publish", "--room", _GID, _NID, "--yes", "--slug", "other"])
+    assert rc == 2
+    assert "keeps its address" in capsys.readouterr().err
+    assert [c[0] for c in _api().calls] == ["get_stage"]
+
+
+def test_publish_an_empty_summary_is_staged_not_dropped(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(updated={**_stage(summary=""), "check": _check()})
     assert cli.main(["blog", "publish", "--room", _GID, _NID, "--yes", "--summary", ""]) == 0
-    assert _api().sent("publish")[0][3]["summary"] == ""
+    assert _api().sent("update_stage")[0][3] == {"summary": ""}
 
 
 def test_publish_confirm_yes_publishes_and_acknowledges(tmp_home, patch_api, monkeypatch, capsys):
@@ -666,7 +702,7 @@ def test_422_with_an_unreadable_body_is_still_one_line(tmp_home, patch_api, caps
 
 def test_a_summary_the_server_refuses_is_its_message(tmp_home, patch_api, capsys) -> None:
     _login(tmp_home)
-    patch_api(publish=_err(400, "A summary is at most 280 characters."))
+    patch_api(updated=_err(422, "A summary is at most 280 characters."))
     rc = cli.main(["blog", "publish", "--room", _GID, _NID, "--yes", "--summary", "x" * 400])
     assert rc == 1
     assert "A summary is at most 280 characters." in capsys.readouterr().err

@@ -2477,8 +2477,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "--slug",
         metavar="NAME",
         help=(
-            "The post's address, on a first publish only (a republish keeps its address). The "
-            "server puts the publish date in front, so --slug my-post becomes "
+            "The post's address, on a first publish only (on a published post it exits 2: the "
+            "address is kept). Saved to the stage before the preview, so the address shown is the "
+            "one used. The server puts the publish date in front, so --slug my-post becomes "
             "YYYY/MM/DD/my-post. Omitted, the saved stage's address, else one made from the title."
         ),
     )
@@ -2486,7 +2487,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "--summary",
         metavar="TEXT",
         help=(
-            "The post's summary, at most 280 characters (the server checks). Omitted, the saved "
+            "The post's summary, at most 280 characters (the server checks), saved to the stage "
+            "before the preview. Omitted, the saved "
             "stage's summary, else the post keeps its own; --summary '' publishes with none, so "
             "readers get an excerpt."
         ),
@@ -9573,6 +9575,9 @@ def cmd_blog_publish(args: argparse.Namespace) -> int:
 
     Runs the check, shows it (on stderr, so stdout stays the result), asks y/N, then publishes
     with the ``source`` the check returned, so what goes public is what the person just read.
+    ``--slug`` / ``--summary`` are saved to the stage before the preview, so the address and
+    summary shown are the server's for those values and the ones the publish uses (a declined
+    question leaves them saved). ``--slug`` on a published post exits 2: its address is kept.
     ``--yes`` skips the question; without a terminal, or under ``--json``, it is required.
     ``acknowledge: true`` is sent only after that confirmation (a question answered yes, or
     ``--yes``), whether or not the check had findings; the server decides when it matters. A
@@ -9591,8 +9596,30 @@ def cmd_blog_publish(args: argparse.Namespace) -> int:
         if not isinstance(check, dict):
             _emit_error(args, "server", "the server's stage carried no check to publish")
             return 1
+        if args.slug is not None and check.get("republish"):
+            _emit_error(
+                args,
+                "usage",
+                "a published post keeps its address; --slug applies to a first publish only",
+            )
+            return 2
+        changes = {
+            key: value
+            for key, value in (("slug", args.slug), ("summary", args.summary))
+            if value is not None
+        }
+        if changes:
+            # Saved to the stage first, so the preview below is the server's own address and
+            # summary for these values, and the publish then uses exactly what was shown.
+            stage = api.update_blog_stage(*target, changes)
+            check = stage.get("check")
+            if not isinstance(check, dict):
+                _emit_error(args, "server", "the server's stage carried no check to publish")
+                return 1
         if not _json_mode(args):
-            for line in blog_view.check_lines(check):
+            for line in blog_view.check_lines(check, with_address=False):
+                render.info(line, soft_wrap=True)
+            for line in blog_view.stage_lines(stage):
                 render.info(line, soft_wrap=True)
         if check.get("refusal"):
             _emit_error(args, "conflict", str(check["refusal"]), status=409)
@@ -9616,8 +9643,6 @@ def cmd_blog_publish(args: argparse.Namespace) -> int:
             *target,
             source=source,
             acknowledge=True,
-            slug=args.slug,
-            summary=args.summary,
             published_at=args.published_at,
         )
 
