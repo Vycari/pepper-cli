@@ -129,7 +129,8 @@ jobs:
           # sync PR is disarmed first, before any push or any step that can fail, so a run that
           # pushes a new head and then dies cannot leave that head armed. A failed disarm fails
           # the run rather than reporting a hold that is not in place. To hold a PR that is
-          # armed right now, disable auto-merge on it (or dispatch this workflow).
+          # armed right now, set the variable first, then disable auto-merge on the PR (or
+          # dispatch this workflow): with the variable on, the next sync re-arms it.
           auto_merge_off() {
             [[ "${AUTO_MERGE,,}" =~ ^[[:space:]]*(false|0|no|off)[[:space:]]*$ ]]
           }
