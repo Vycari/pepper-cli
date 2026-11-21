@@ -17,7 +17,7 @@ rest describes how the commands behave.
 
 - An agent member authenticates with its own token, which starts `pep_agt_`. It is not a Pepper
   user account. It can reach the rooms it has been added to and nothing else, and only through
-  the nineteen commands listed in section 8. Apart from `login`, every other command that talks to
+  the twenty commands listed in section 8. Apart from `login`, every other command that talks to
   the server answers an agent token with a 401 (section 9).
 - `pepper --profile <name> whoami` is the one exception that tells you who you are: with an agent
   token it prints your `person_id`, display name, sponsor, room count and token expiry (add
@@ -482,7 +482,7 @@ set.
 
 ## 8. What an agent token can run
 
-An agent token is accepted by exactly these nineteen commands (the channel server in section 4
+An agent token is accepted by exactly these twenty commands (the channel server in section 4
 uses the same routes as the watch, the poll, the reads, the posts and the reactions, and adds none). They are also the prefixes a harness
 that asks before running commands needs to allow. Each is scoped to one profile name and one
 subcommand, so allowing them does not allow `login`, `logout` or anything in section 9.
@@ -507,12 +507,13 @@ pepper --profile <name> notes search
 pepper --profile <name> notes show
 pepper --profile <name> notes links
 pepper --profile <name> notes edit
+pepper --profile <name> notes create
 pepper --profile <name> whoami
 ```
 
-The five `notes` commands reach only the notes of a room whose roster names you, so always give
-them `--room <room>`. They list that room's notes (text notes only), print one note, or replace
-its body; `NOTE` is the note's name or id:
+The six `notes` commands reach only the notes of a room whose roster names you, so always give
+them `--room <room>`. They list that room's notes (text notes only), print one note, replace
+its body, or create a note; `NOTE` is the note's name or id:
 
 - `pepper --profile <name> notes list --room <room>` and
   `pepper --profile <name> notes search QUERY --room <room>` find notes.
@@ -527,6 +528,11 @@ its body; `NOTE` is the note's name or id:
   (an agent has no editor; `--name` renames). Edit only when you were asked to. An edit sends the
   etag it just read, so a note someone changed in between answers a conflict (exit 1) rather than
   being overwritten: read it again and decide, and never pass `--force` to get past it.
+- `pepper --profile <name> notes create "<name>" --room <room> --file -` creates a note from
+  stdin and prints its id (`--json`: the id and `etag`). The note is the room's, not yours. Create
+  one only when you were asked to, and don't pass `--image`: an agent can't upload pictures.
+  Creating never checks the name, so a second run makes a second note with the same name: list
+  the room's notes first when a rerun is possible.
 - A note can show pictures, written as `![description](/artifacts/<id>/raw)` on a line of its
   own. An agent member can't upload or open pictures, but a note it edits may hold lines like
   that which members added: keep them exactly as they are, and move them only along with the text
@@ -543,15 +549,14 @@ title is the note's name, and its text is the note's Markdown body, with no fron
 
 - Write a blog post into a room note, never into a chat message. An article posted with
   `pepper --profile <name> messages post` lands in a topic, and the Blog app never sees it.
-- An agent token cannot create a note (section 9), so an agent drafts a post by editing a note a
-  member made for it, with `pepper --profile <name> notes edit NOTE --room <room> --file -`. On a
-  person's own token, the note-creating command listed in section 9 makes it, with `--room` and
-  `--file -`.
+- Draft a new post with `pepper --profile <name> notes create "<title>" --room <room> --file -`,
+  or edit a note a member made for it with
+  `pepper --profile <name> notes edit NOTE --room <room> --file -`.
 - Publishing, withdrawing and listing posts are steps a room owner takes in the Blog app, on the
   web or in the app. The CLI has no command for them with any token, and the CLI's app commands
   name no Blog actions: never guess an action name for something that publishes. When a draft is ready, say so in the room and let an owner publish
   it. Publishing a note that is already a post updates that post rather than adding a second one.
-- Importing an existing blog on a person's token: creating a note makes a new one every time, even when a note with
+- Importing an existing blog: creating a note makes a new one every time, even when a note with
   that name exists, so list the room's notes first with
   `pepper --profile <name> notes list --room <room>` and skip the titles already there. A post's
   date is the day an owner publishes it; there is no way yet to keep an older post's original
@@ -575,8 +580,8 @@ is changed. That covers:
   agent member cannot change or remove a message, including its own.
 - `pepper --profile <name> rooms show`: room details.
 - Two flags on commands that otherwise work: `--mark` on a read and `--attach` on a post.
-- `pepper --profile <name> notes create` and `pepper --profile <name> notes delete`: an agent
-  member cannot create or delete a note. Personal notes (any `notes` command without `--room`) and
+- `pepper --profile <name> notes delete`: an agent member cannot delete a note, including one it
+  created. Personal notes (any `notes` command without `--room`) and
   every other kind of artifact (images, links, files) are out of reach too.
 - Calendar publishing (`pepper calendar publish`, the private address another calendar app subscribes to, including the per-calendar titles switch that `set` offers for calendars shared with the person) and every other
   calendar command. They act on a person's own account, so only a person's own token reaches them.
@@ -597,9 +602,9 @@ binary has, not commands your token may use.
 
 - 401: the CLI prints `Authentication failed (401). Run 'pepper login' to refresh your token.`
   Do not follow that advice; it is written for a person. First check the command against
-  sections 8 and 9. A 401 from a command or flag that is not on the list of nineteen is the expected
+  sections 8 and 9. A 401 from a command or flag that is not on the list of twenty is the expected
   refusal of an agent token and says nothing about your login: stop using that command. A 401
-  from one of the nineteen means the token is unknown, revoked or expired, or its owner's access was
+  from one of the twenty means the token is unknown, revoked or expired, or its owner's access was
   removed. Stop and tell your operator.
 - A paused or retired agent keeps a valid token, so it is not a 401. The groups service stops
   acting for it: the stream ends with `agent_unavailable` (section 4), and other commands fail
