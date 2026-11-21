@@ -164,6 +164,8 @@ def load() -> Credentials:
     try:
         with path.open("rb") as fh:
             data = tomllib.load(fh)
+    except UnicodeDecodeError as exc:
+        raise CredentialsError(f"Credentials file {path} is not valid UTF-8: {exc}") from exc
     except tomllib.TOMLDecodeError as exc:
         raise CredentialsError(f"Credentials file {path} is not valid TOML: {exc}") from exc
     server_url = data.get("server_url")

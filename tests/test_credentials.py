@@ -77,6 +77,27 @@ def test_load_malformed_toml_errors(tmp_home: Path) -> None:
         credentials.load()
 
 
+def test_load_invalid_utf8_at_beginning_errors(tmp_home: Path) -> None:
+    path = credentials.credentials_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xff\xffserver_url = 'http://example.com'\n")
+    path.chmod(0o600)
+    with pytest.raises(credentials.CredentialsError, match="not valid UTF-8") as exc_info:
+        credentials.load()
+    assert isinstance(exc_info.value.__cause__, UnicodeDecodeError)
+
+
+def test_load_invalid_utf8_inside_toml_errors(tmp_home: Path) -> None:
+    path = credentials.credentials_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b'server_url = "http://example.com"\ntoken = "secret_\xff_pat"\n')
+    path.chmod(0o600)
+    with pytest.raises(credentials.CredentialsError, match="not valid UTF-8") as exc_info:
+        credentials.load()
+    assert isinstance(exc_info.value.__cause__, UnicodeDecodeError)
+    assert "secret_" not in str(exc_info.value)
+
+
 def test_load_missing_keys_errors(tmp_home: Path) -> None:
     path = credentials.credentials_path()
     path.parent.mkdir(parents=True, exist_ok=True)
