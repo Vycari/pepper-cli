@@ -27,6 +27,30 @@ _SPEC.loader.exec_module(docs_push)
 REPO = "Vycari/pepper-cli"
 
 
+def _bash_4_or_newer() -> bool:
+    """The workflow shell runs on Ubuntu's bash and uses bash 4 syntax (`${VAR,,}`).
+
+    macOS ships bash 3.2, so a Mac with no newer bash on PATH skips these tests rather
+    than failing them.
+    """
+    bash = shutil.which("bash")
+    if sys.platform == "win32" or bash is None:
+        return False
+    major = subprocess.run(
+        [bash, "-c", "echo ${BASH_VERSINFO[0]}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    return major.isdigit() and int(major) >= 4
+
+
+_NEEDS_BASH_4 = pytest.mark.skipif(
+    not _bash_4_or_newer(),
+    reason="runs the workflow shell, which needs bash 4 or newer, with POSIX stub tools",
+)
+
+
 def _server(tmp_path: Path, owners: dict[str, str]) -> Path:
     server = tmp_path / "server"
     (server / ".github").mkdir(parents=True)
@@ -193,30 +217,21 @@ def _run_pr_tail(
     return log.read_text()
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32" or shutil.which("bash") is None,
-    reason="runs the workflow shell with POSIX stub tools",
-)
+@_NEEDS_BASH_4
 def test_a_draft_someone_converted_is_neither_readied_nor_armed(tmp_path: Path) -> None:
     calls = _run_pr_tail(tmp_path, existing="42", converted=True)
     assert "pr ready" not in calls
     assert "pr merge" not in calls
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32" or shutil.which("bash") is None,
-    reason="runs the workflow shell with POSIX stub tools",
-)
+@_NEEDS_BASH_4
 def test_the_jobs_own_orphaned_draft_is_readied_and_armed(tmp_path: Path) -> None:
     calls = _run_pr_tail(tmp_path, existing="42", converted=False).splitlines()
     ready = calls.index("pr ready 42")
     assert calls.index("pr merge 42 --auto --squash --match-head-commit deadbeef") > ready
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32" or shutil.which("bash") is None,
-    reason="runs the workflow shell with POSIX stub tools",
-)
+@_NEEDS_BASH_4
 @pytest.mark.parametrize(
     ("value", "off"),
     [
