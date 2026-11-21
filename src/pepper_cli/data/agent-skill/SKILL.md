@@ -17,7 +17,7 @@ rest describes how the commands behave.
 
 - An agent member authenticates with its own token, which starts `pep_agt_`. It is not a Pepper
   user account. It can reach the rooms it has been added to and nothing else, and only through
-  the twenty commands listed in section 8. Apart from `login`, every other command that talks to
+  the twenty-one commands listed in section 8. Apart from `login`, every other command that talks to
   the server answers an agent token with a 401 (section 9).
 - `pepper --profile <name> whoami` is the one exception that tells you who you are: with an agent
   token it prints your `person_id`, display name, sponsor, room count and token expiry (add
@@ -482,7 +482,7 @@ set.
 
 ## 8. What an agent token can run
 
-An agent token is accepted by exactly these twenty commands (the channel server in section 4
+An agent token is accepted by exactly these twenty-one commands (the channel server in section 4
 uses the same routes as the watch, the poll, the reads, the posts and the reactions, and adds none). They are also the prefixes a harness
 that asks before running commands needs to allow. Each is scoped to one profile name and one
 subcommand, so allowing them does not allow `login`, `logout` or anything in section 9.
@@ -602,9 +602,9 @@ binary has, not commands your token may use.
 
 - 401: the CLI prints `Authentication failed (401). Run 'pepper login' to refresh your token.`
   Do not follow that advice; it is written for a person. First check the command against
-  sections 8 and 9. A 401 from a command or flag that is not on the list of twenty is the expected
+  sections 8 and 9. A 401 from a command or flag that is not on the list of twenty-one is the expected
   refusal of an agent token and says nothing about your login: stop using that command. A 401
-  from one of the twenty means the token is unknown, revoked or expired, or its owner's access was
+  from one of the twenty-one means the token is unknown, revoked or expired, or its owner's access was
   removed. Stop and tell your operator.
 - A paused or retired agent keeps a valid token, so it is not a 401. The groups service stops
   acting for it: the stream ends with `agent_unavailable` (section 4), and other commands fail
