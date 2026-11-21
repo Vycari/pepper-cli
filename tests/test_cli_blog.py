@@ -469,6 +469,8 @@ def test_publish_yes_checks_then_publishes_with_the_source(tmp_home, patch_api, 
     assert api.sent("publish")[0][3] == {
         "source": _SOURCE,
         "acknowledge": True,
+        "slug": None,
+        "summary": None,
         "published_at": None,
     }
 
@@ -481,7 +483,6 @@ def test_publish_without_slug_or_summary_leaves_them_out_for_the_saved_stage(
     assert cli.main(["blog", "publish", "--room", _GID, _NID, "--yes"]) == 0
     api = _api()
     assert api.sent("update_stage") == []
-    assert "slug" not in api.sent("publish")[0][3]  # the server uses the saved stage
 
 
 def test_publish_slug_and_summary_are_staged_first_so_the_preview_is_what_publishes(
@@ -510,7 +511,25 @@ def test_publish_slug_and_summary_are_staged_first_so_the_preview_is_what_publis
     assert "hello-world" not in err
     assert "A short one." in err
     sent = api.sent("publish")[0][3]
-    assert "slug" not in sent and "summary" not in sent
+    # The values shown are pinned, so a stage changed during the question cannot replace them.
+    assert sent["slug"] == "my-post"
+    assert sent["summary"] == "A short one."
+
+
+def test_publish_pins_the_saved_stage_it_showed(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(stage=_stage(slug="saved-name", summary="Saved."))
+    assert cli.main(["blog", "publish", "--room", _GID, _NID, "--yes"]) == 0
+    sent = _api().sent("publish")[0][3]
+    assert sent["slug"] == "saved-name"
+    assert sent["summary"] == "Saved."
+
+
+def test_publish_a_republish_sends_no_slug(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(check=_check(republish=True), stage=_stage(slug="saved-name"))
+    assert cli.main(["blog", "publish", "--room", _GID, _NID, "--yes"]) == 0
+    assert _api().sent("publish")[0][3]["slug"] is None
 
 
 def test_publish_declined_after_staging_publishes_nothing(

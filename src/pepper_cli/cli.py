@@ -9577,7 +9577,8 @@ def cmd_blog_publish(args: argparse.Namespace) -> int:
     with the ``source`` the check returned, so what goes public is what the person just read.
     ``--slug`` / ``--summary`` are saved to the stage before the preview, so the address and
     summary shown are the server's for those values and the ones the publish uses (a declined
-    question leaves them saved). ``--slug`` on a published post exits 2: its address is kept.
+    question leaves them saved). The stage's slug and summary that were shown are sent with the
+    publish. ``--slug`` on a published post exits 2: its address is kept.
     ``--yes`` skips the question; without a terminal, or under ``--json``, it is required.
     ``acknowledge: true`` is sent only after that confirmation (a question answered yes, or
     ``--yes``), whether or not the check had findings; the server decides when it matters. A
@@ -9639,10 +9640,16 @@ def cmd_blog_publish(args: argparse.Namespace) -> int:
             )
         ) is not None:
             return code
+        # The slug and summary shown go with the publish, so a stage another owner changes while
+        # the question is open cannot change what goes public. A republish keeps its address.
+        shown_slug = stage.get("slug") if not check.get("republish") else None
+        shown_summary = stage.get("summary")
         result = api.publish_blog_note(
             *target,
             source=source,
             acknowledge=True,
+            slug=shown_slug if isinstance(shown_slug, str) else None,
+            summary=shown_summary if isinstance(shown_summary, str) else None,
             published_at=args.published_at,
         )
 
