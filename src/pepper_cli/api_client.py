@@ -4619,6 +4619,109 @@ class ApiClient:
             raise ApiError(status=200, body=str(body), detail="malformed response")
         return [row for row in body if isinstance(row, dict)]
 
+    def get_blog_stage(
+        self,
+        group_id: str,
+        note_id: str,
+        *,
+        published_at: str | None = None,
+        publish_at: str | None = None,
+    ) -> dict[str, Any]:
+        """``GET /api/v1/groups/{group_id}/blog/notes/{note_id}/stage`` — the note's saved stage
+        (``slug``, ``summary``, ``publish_at``, ``publish_at_display``, ``timezone``, ...; all
+        null when nothing is staged) with the publish check under ``check`` (including the
+        ``source`` token a publish must hand back).
+
+        A person's token only (an agent token is a 401) and a room owner's (403 otherwise). The
+        schema is open in the contract: the CLI renders what it finds and passes the rest through.
+        ``published_at`` (sent as typed) previews a backdated publish: ``address`` is that day's.
+        ``publish_at`` (sent as typed) previews scheduling at that time before it is saved.
+        """
+        given = {"published_at": published_at, "publish_at": publish_at}
+        params = {k: v for k, v in given.items() if v is not None} or None
+        body = self._request("GET", self._blog_stage_path(group_id, note_id), params=params).json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return body
+
+    def update_blog_stage(
+        self, group_id: str, note_id: str, fields: dict[str, Any]
+    ) -> dict[str, Any]:
+        """``PATCH .../blog/notes/{note_id}/stage`` — change only the keys in ``fields``
+        (``slug``, ``summary``, ``publish_at``, ``acknowledge``); an explicit ``None`` clears.
+        ``publish_at`` is sent exactly as given: the server parses it. 409 on a refusal or when
+        findings need ``acknowledge``; 422 for an unparseable or past time. Returns the stage.
+        """
+        body = self._request("PATCH", self._blog_stage_path(group_id, note_id), json=fields).json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return body
+
+    def delete_blog_stage(self, group_id: str, note_id: str) -> None:
+        """``DELETE .../blog/notes/{note_id}/stage`` — remove the saved stage."""
+        self._request("DELETE", self._blog_stage_path(group_id, note_id))
+
+    @staticmethod
+    def _blog_stage_path(group_id: str, note_id: str) -> str:
+        return f"/api/v1/groups/{group_id}/blog/notes/{note_id}/stage"
+
+    def publish_blog_note(
+        self,
+        group_id: str,
+        note_id: str,
+        *,
+        source: str,
+        acknowledge: bool = False,
+        slug: str | None = None,
+        summary: str | None = None,
+        published_at: str | None = None,
+    ) -> dict[str, Any]:
+        """``POST /api/v1/groups/{group_id}/blog/notes/{note_id}/publish`` — publish (or
+        republish) the note as the check (``GET .../stage``, under ``check``) that returned
+        ``source`` saw it.
+
+        ``slug`` is a bare name, honoured on a first publish only; the server puts a
+        ``YYYY/MM/DD/`` prefix in front. ``summary`` is validated server-side (at most 280
+        characters). Both are left out of the body when ``None``; ``acknowledge`` is sent only
+        when true. ``published_at`` is sent exactly as given (the server parses it) and dates an
+        imported post: 422 for a future time, a time without a zone, or a republish. 409 when the
+        note changed since the check, or the check had findings and ``acknowledge`` is not true.
+        """
+        payload: dict[str, Any] = {"source": source}
+        if acknowledge:
+            payload["acknowledge"] = True
+        if slug is not None:
+            payload["slug"] = slug
+        if summary is not None:
+            payload["summary"] = summary
+        if published_at is not None:
+            payload["published_at"] = published_at
+        body = self._request(
+            "POST", f"/api/v1/groups/{group_id}/blog/notes/{note_id}/publish", json=payload
+        ).json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return body
+
+    def list_blog_posts(self, group_id: str) -> dict[str, Any]:
+        """``GET /api/v1/groups/{group_id}/blog/posts`` — the room's posts (``id``, ``slug``,
+        ``title``, ``url``, ``published_at``, ``withdrawn``, ``edited_since``, ...) newest first,
+        and the ``unpublished`` notes. A person's token only; owner-only routes answer 403."""
+        body = self._request("GET", f"/api/v1/groups/{group_id}/blog/posts").json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return body
+
+    def withdraw_blog_post(self, group_id: str, post_id: str) -> dict[str, Any]:
+        """``POST /api/v1/groups/{group_id}/blog/posts/{post_id}/withdraw`` — take a post down.
+        Answers ``post_id``, ``already`` (it was withdrawn before), ``card`` and ``copy``."""
+        body = self._request(
+            "POST", f"/api/v1/groups/{group_id}/blog/posts/{post_id}/withdraw"
+        ).json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return body
+
     def get_artifact_detail_raw(self, artifact_id: str) -> dict[str, Any]:
         """``GET /api/v1/artifacts/{id}/detail`` as the server's own dict (``kind_label``,
         ``mime_type``, ``size_label``, ``text_body``, ``link``, ``viewer``, ... for every kind),
