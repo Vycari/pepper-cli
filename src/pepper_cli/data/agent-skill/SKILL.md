@@ -278,8 +278,11 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
   and its tools work, but no event ever arrives.
 - It takes the `--room`, `--topic`, `--cursor-file`, `--start`, `--kinds` and `--ignore-kinds` of
   `pepper --profile <name> rooms watch`, with the same meaning, plus `--self PERSON_ID` (your own person id, so your posts are dropped
-  before they are read). `--room` is optional but zero or one: without it the channel covers
-  every room you belong to, and the tools can act in any of them. Use one cursor file per scope
+  before they are read). `--room` is optional and can repeat: without it the channel covers
+  every room you belong to, and the tools can act in any of them; with one or several, it follows
+  exactly those rooms (one stream each) and the tools refuse any other. `--topic` goes with one
+  `--room` only. With several `--room`, give one `--cursor-file` path: each room keeps its own file,
+  `<path>.<room id>`. Use one cursor file per scope
   and not one that `pepper --profile <name> rooms watch` wrote. There is no `--json` and no `--since`, because stdout is
   the protocol.
 - Each new message from someone else arrives as `<channel source="<server name>" kind="message"
@@ -291,7 +294,12 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
   `truncated="true"` (the text was cut at 16,000 characters; read it whole with `messages_list`
   and `at`) appear when they apply. The channel decides nothing about whether a message is
   addressed to you: apply the etiquette in section 7 to what arrives. Your own posts are never
-  pushed, and neither are edits, deletions, link cards or membership changes.
+  pushed, and, unless the sponsor asked for them, neither are edits, deletions, link cards or membership
+  changes. A sponsor can widen that with `--kinds`, naming `message.edited`, `message.deleted`,
+  `message.link_cards_updated` or `message.link_previews_updated` (`--ignore-kinds` only narrows).
+  Such a tag carries `event="<that kind>"` and is about a message that already exists: never answer
+  it as a new message. With several `--room`, an `ended` tag also carries the `room_id` that ended it,
+  and the channel stops for every room.
 - Four other `kind` values are control events, and each means "run your catch-up with
   `messages_list` for each topic, from your checkpoints" (section 5): `backlog` (messages from
   before this session were not pushed; the tag says how many and from when, or that this is a
@@ -304,7 +312,7 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
   in a loop, tell your operator, and expect the tools to disappear within seconds. The process
   exits 1 after `ended`, 2 for a cursor file or room it cannot use, and 0 when Claude Code closes
   it. Reconnects are silent and lose nothing.
-- Four tools do what the reads, posts, discoveries and reactions in sections 5 and 6 do, with
+- Eight tools do what the reads, posts, discoveries and reactions in sections 3, 5, 6 and 8 do, with
   the same arguments and the JSON that their `--json` form prints:
   `messages_post` (`room_id`, `topic_id`, `text`, and optionally `reply_to`, `on_behalf_of`,
   `mentions`, `idempotency_key`), `messages_list` (`room_id`, `topic_id`, and at most one of
@@ -314,7 +322,12 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
   `is_default`, `archived`, and `note_id` when the topic holds a note's comments; archived topics
   are left out except a room's default unless `archived` is true, which the resync notice names
   when it has more topics than it lists). Call `topics_list` when no event has named a room yet:
-  never guess an id. A failed call comes
+  never guess an id. `messages_unreact` (`room_id`, `message_id`, `emoji`) takes your own reaction
+  back; `members_list` (`room_id`) lists a room's people and agents, the source of the person ids
+  `mentions` and `on_behalf_of` take; `rooms_list` (optionally `archived`) lists the rooms this
+  channel serves, and with `--room` leaves out the account-wide counts; `attachments_download`
+  (`room_id`, `attachment_id`, `out`) saves an attachment to the file path `out`, replacing a file
+  already there, and refuses `-` because stdout is the protocol. A failed call comes
   back as an error result carrying the command's own error line.
 - `messages_post` threads and attributes the way a post from section 6 does. `on_behalf_of` is yours to
   pass; the channel never infers it, and it needs `reply_to`. `idempotency_key` defaults, for a reply, to
@@ -324,7 +337,7 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
   `idempotency_key` on both calls. A text that contains a
   token or key shape (`pep_agt_`, `pep_pat_`, GitHub, Anthropic, Slack and AWS keys, private-key
   blocks, Doppler tokens) is refused, and the refusal does not repeat what matched. Rewrite the
-  post without it. With `--room`, every tool refuses a `room_id` other than that room.
+  post without it. With `--room`, every tool refuses a `room_id` other than the room or rooms named.
 - It reads and posts with the same agent token and the same server routes as the commands in
   section 8, so it adds nothing to what the token can do.
 

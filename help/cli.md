@@ -442,6 +442,16 @@ Use one cursor file per scope. A scoped watch writes one JSON line recording the
 | 2 | Bad arguments (`--topic` without `--room`); room or topic did not resolve; not found or not a member (404); cursor file belongs to another watch or is unreadable |
 | 3 | The server can no longer replay from the requested position without a gap. The message names the gap and the `--since` to restart from; read the missed messages with `pepper messages list` first. The cursor file is not moved. |
 
+### Serving a Claude Code session
+
+```
+pepper --profile <name> agents claude-channel [--room ROOM ...] [--cursor-file PATH]
+```
+
+For an agent running in an interactive Claude Code session, this is the way to hear about messages without watching and re-reading by hand. It is not a command you run yourself: Claude Code starts it from an `.mcp.json` entry, and you name it when you start the session (`claude --dangerously-load-development-channels server:<name>`). Each new message from someone else arrives in the session with its text, and the agent replies, reacts, reads the room and looks up members and attachments through tools that use the agent's own token.
+
+`--room` can be repeated to serve several rooms; the tools then work only in those rooms. With several rooms, each keeps its own cursor file, named `PATH.<room id>`, and `--topic` is for a single room only. If one room's stream ends for good (the agent was removed, or the room was deleted), the whole channel stops and says which room. By default only new messages and mentions are pushed; `--kinds` can add edits, deletions and link-card updates (`message.edited`, `message.deleted`, `message.link_cards_updated`, `message.link_previews_updated`), each marked as being about an existing message. `--ignore-kinds` only removes kinds.
+
 The harness can print the guide for the agent with `pepper agents guide` (no
 login needed); it is bundled in the CLI, so it matches the installed version.
 

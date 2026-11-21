@@ -89,14 +89,16 @@ def _frame(event: str, data: dict, event_id: int | None = None) -> str:
     return f"{head}event: {event}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
 
 
-def _scope(*, room: str = _ROOM, requested: str = _ROOM, topic: str | None = None) -> str:
+def _scope(
+    *, room: str = _ROOM, requested: str = _ROOM, topic: str | None = None, sgroup: str = _SGROUP
+) -> str:
     return _frame(
         "scope",
         {
             "v": 1,
             "room_id": room,
             "requested_room_id": requested,
-            "service_group_id": _SGROUP,
+            "service_group_id": sgroup,
             "topic_id": topic,
             "agent_person_id": _AGENT,
         },
@@ -112,6 +114,8 @@ def _event(
     author: str = _ALICE,
     created: datetime | None = None,
     scoped: bool = True,
+    room: str = _ROOM,
+    sgroup: str = _SGROUP,
 ) -> str:
     payload: dict[str, Any] = {"message_id": message, "author_person_id": author}
     if topic is not None:
@@ -119,13 +123,13 @@ def _event(
     data: dict[str, Any] = {
         "id": event_id,
         "kind": kind,
-        "group_id": _SGROUP,
+        "group_id": sgroup,
         "person_id": _ALICE,
         "payload": payload,
         "created_at": (created or _now()).isoformat(),
     }
     if scoped:
-        data["room_id"] = _ROOM
+        data["room_id"] = room
     return _frame(kind, data, event_id)
 
 
@@ -211,6 +215,11 @@ class _Fake:
         self.room_archived = False
         #: every extra room the server lists, so a merge's survivor can be looked up.
         self.extra_groups: list[str] = []
+        #: per-room stream scripts, keyed by room id; each pops its own list, before ``streams``.
+        self.room_streams: dict[str, list[str | int]] = {}
+        #: per-room topics (topic id -> name), for rooms that must not share ``topics``.
+        self.room_topics: dict[str, dict[str, str]] = {}
+        self.attachments: dict[str, bytes] = {}
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -257,6 +266,8 @@ class _Fake:
         }:
             if self.fail_topics:
                 return httpx.Response(503, json={"detail": "down"})
+            room_key = path.split("/")[4]
+            topics = self.room_topics.get(room_key, self.topics)
             rows = [
                 {
                     "topic_id": tid,
@@ -266,12 +277,35 @@ class _Fake:
                     "archived_at": "2026-11-01T00:00:00Z" if tid in self.archived_topics else None,
                     "subject_artifact_id": self.subjects.get(tid),
                 }
-                for tid, name in self.topics.items()
+                for tid, name in topics.items()
             ]
             return httpx.Response(200, json={"topics": rows})
+        if path.endswith("/roster"):
+            return httpx.Response(
+                200,
+                json={
+                    "members": [
+                        {"person_id": _ALICE, "display_name": "Alice Example", "is_agent": False},
+                        {"person_id": _AGENT, "display_name": "Kitchen Bot", "is_agent": True},
+                    ]
+                },
+            )
+        if "/attachments/" in path:
+            aid = path.rsplit("/", 1)[1]
+            if aid not in self.attachments:
+                return httpx.Response(404, json={"detail": "No such attachment."})
+            return httpx.Response(200, content=self.attachments[aid])
         if path.endswith("/events/stream"):
             if self.on_stream is not None:
                 self.on_stream()
+            room_script = self.room_streams.get(path.split("/")[4])
+            if room_script is not None:
+                if not room_script:
+                    return httpx.Response(503, json={"detail": "down"})
+                item = room_script.pop(0)
+                if isinstance(item, int):
+                    return httpx.Response(item, json={"detail": "No such group."})
+                return httpx.Response(200, text=item, headers={"content-type": "text/event-stream"})
             if not self.streams:
                 self.exhausted.set()
                 return httpx.Response(503, json={"detail": "down"})
@@ -309,6 +343,8 @@ class _Fake:
                 parent_message_id=body.get("parent_message_id"),
             )
             return httpx.Response(200, json={"message": row})
+        if path.endswith("/reactions/clear"):
+            return httpx.Response(200, json={"reactions": []})
         if path.endswith("/reactions"):
             return httpx.Response(200, json={"reactions": [{"emoji": "👍", "count": 1}]})
         return httpx.Response(500, json={"detail": f"unexpected {path}"})
@@ -572,7 +608,7 @@ def test_discover_before_initialize_is_method_not_found_even_with_the_modern_env
     assert replies["init"]["result"]["protocolVersion"] == "2025-11-25"
 
 
-def test_tools_list_names_the_four_p1_and_p2_tools(monkeypatch):
+def test_tools_list_names_every_tool_design_9_1_lists(monkeypatch):
     replies: dict = {}
 
     def script(s: _Session) -> None:
@@ -585,6 +621,10 @@ def test_tools_list_names_the_four_p1_and_p2_tools(monkeypatch):
         "messages_post",
         "messages_list",
         "messages_react",
+        "messages_unreact",
+        "members_list",
+        "rooms_list",
+        "attachments_download",
         "topics_list",
     ]
     assert all(t["inputSchema"]["type"] == "object" for t in tools)
@@ -2289,7 +2329,7 @@ def test_a_failed_tool_call_is_an_error_result_with_the_cli_line_not_a_protocol_
         out["401"] = s.call("messages_list", {"room_id": _ROOM, "topic_id": _TOPIC})
         fake.message_status = 500
         out["500"] = s.call("messages_list", {"room_id": _ROOM, "topic_id": _TOPIC})
-        out["unknown"] = s.call("rooms_list", {})
+        out["unknown"] = s.call("no_such_tool", {})
 
     result = run_channel(monkeypatch, fake, script=script)
 
@@ -2298,7 +2338,7 @@ def test_a_failed_tool_call_is_an_error_result_with_the_cli_line_not_a_protocol_
     assert "refused this agent's token" in out["401"][0]
     assert "pepper login" not in out["401"][0]
     assert out["500"] == ("Server returned 500: nope", True)
-    assert out["unknown"] == ("unknown tool 'rooms_list'", True)
+    assert out["unknown"] == ("unknown tool 'no_such_tool'", True)
     assert all("error" not in m for m in result.stdout.messages() if "id" in m)
 
 
@@ -2682,4 +2722,426 @@ def test_the_cli_entry_dispatches_to_the_server_module(monkeypatch):
 
     assert cli.main(["agents", "claude-channel", "--room", "x"]) == 0
 
-    assert seen[0].room == "x"
+    assert seen[0].room == ["x"]
+
+
+# --- P2: --kinds widening (design §7.1, §13.2) ------------------------------
+
+
+def test_kinds_can_name_an_edit_and_it_is_pushed_with_an_event_attribute(monkeypatch):
+    fake = _Fake(_CONNECTED + _scope() + _event(7, kind="message.edited"))
+
+    result = run_channel(
+        monkeypatch, fake, ["--room", _ROOM, "--kinds", "message.created,message.edited"]
+    )
+
+    assert result.kinds() == ["message"]
+    note = result.notifications[0]
+    assert note["meta"]["event"] == "message.edited"
+    assert note["meta"]["message_id"] == _MESSAGE
+    assert note["content"].splitlines()[0].startswith("Alice Example in Kitchen")
+    assert "[message.edited:" in note["content"]
+    assert "Can you check the oven?" in note["content"]
+    assert all(_META_KEY.match(key) for key in note["meta"])
+    assert any(f"at={_MESSAGE}" in str(r.url) for r in fake.requests)
+
+
+def test_a_plain_message_has_no_event_attribute(monkeypatch):
+    fake = _Fake(_CONNECTED + _scope() + _event(7))
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM])
+
+    assert "event" not in result.notifications[0]["meta"]
+
+
+def test_two_edits_of_one_message_are_two_events_and_a_replay_is_still_dropped(monkeypatch):
+    fake = _Fake(
+        _CONNECTED
+        + _scope()
+        + _event(7, kind="message.edited")
+        + _event(8, kind="message.edited")
+        + _event(8, kind="message.edited")
+    )
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM, "--kinds", "message.edited"])
+
+    assert result.kinds() == ["message", "message"]
+
+
+def test_kinds_naming_only_an_edit_leaves_new_messages_out(monkeypatch):
+    fake = _Fake(
+        _CONNECTED + _scope() + _event(7) + _event(8, kind="message.edited", message=_MESSAGE_2)
+    )
+    fake.messages[_MESSAGE_2] = _message_json(_MESSAGE_2, raw_body="second")
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM, "--kinds", "message.edited"])
+
+    assert [n["meta"]["message_id"] for n in result.notifications] == [_MESSAGE_2]
+
+
+def test_ignore_kinds_still_narrows_a_widened_kind(monkeypatch):
+    fake = _Fake(_CONNECTED + _scope() + _event(7, kind="message.edited"))
+
+    result = run_channel(
+        monkeypatch,
+        fake,
+        ["--room", _ROOM, "--kinds", "message.edited", "--ignore-kinds", "message.edited"],
+    )
+
+    assert result.notifications == []
+
+
+def test_ignore_kinds_alone_does_not_widen_what_is_pushed(monkeypatch):
+    fake = _Fake(_CONNECTED + _scope() + _event(7, kind="message.edited") + _event(8))
+
+    result = run_channel(
+        monkeypatch,
+        fake,
+        ["--room", _ROOM, "--ignore-kinds", "message.link_cards_updated"],
+    )
+
+    assert [n["meta"]["message_id"] for n in result.notifications] == [_MESSAGE]
+    assert "event" not in result.notifications[0]["meta"]
+
+
+def test_a_member_kind_named_in_kinds_stays_silent(monkeypatch, tmp_path):
+    cursor_file = tmp_path / "cursor"
+    fake = _Fake(_CONNECTED + _scope() + _event(7, kind="member.joined", topic=None) + _cursor(8))
+
+    result = run_channel(
+        monkeypatch,
+        fake,
+        ["--room", _ROOM, "--kinds", "member.joined", "--cursor-file", str(cursor_file)],
+    )
+
+    assert result.notifications == []
+    assert json.loads(cursor_file.read_text())["cursor"] == 8
+
+
+def test_the_agents_own_edit_is_not_pushed(monkeypatch):
+    fake = _Fake(_CONNECTED + _scope() + _event(7, kind="message.edited"))
+    fake.messages[_MESSAGE] = _message_json(is_you=True)
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM, "--kinds", "message.edited"])
+
+    assert result.notifications == []
+
+
+# --- P2: the remaining tools (design §9.1) ----------------------------------
+
+
+def test_messages_unreact_sends_the_clear_route_and_refuses_another_room(monkeypatch):
+    fake = _Fake(_CONNECTED)
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["ok"] = s.call(
+            "messages_unreact", {"room_id": _ROOM, "message_id": _MESSAGE, "emoji": "👍"}
+        )
+        out["other"] = s.call(
+            "messages_unreact", {"room_id": _OTHER_ROOM, "message_id": _MESSAGE, "emoji": "👍"}
+        )
+        out["bad_id"] = s.call(
+            "messages_unreact", {"room_id": _ROOM, "message_id": "../x", "emoji": "👍"}
+        )
+
+    run_channel(monkeypatch, fake, ["--room", _ROOM], script=script)
+
+    assert out["ok"][1] is False
+    assert json.loads(out["ok"][0]) == {"reactions": []}
+    clears = [r for r in fake.requests if r.url.path.endswith("/reactions/clear")]
+    assert len(clears) == 1
+    assert clears[0].url.path == f"/api/v1/groups/{_ROOM}/messages/{_MESSAGE}/reactions/clear"
+    assert json.loads(clears[0].content) == {"emoji": "👍"}
+    assert out["other"][1] is True
+    assert out["bad_id"][1] is True
+
+
+def test_members_list_returns_the_roster_envelope(monkeypatch):
+    fake = _Fake(_CONNECTED)
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["ok"] = s.call("members_list", {"room_id": _ROOM})
+        out["other"] = s.call("members_list", {"room_id": _OTHER_ROOM})
+        out["missing"] = s.call("members_list", {})
+
+    run_channel(monkeypatch, fake, ["--room", _ROOM], script=script)
+
+    body = json.loads(out["ok"][0])
+    assert body["next_before"] is None
+    assert [m["person_id"] for m in body["items"]] == [_ALICE, _AGENT]
+    assert body["items"][1]["is_agent"] is True
+    assert out["other"][1] is True
+    assert out["missing"][1] is True
+    assert fake.paths().count(f"/api/v1/groups/{_ROOM}/roster") == 1
+
+
+def test_rooms_list_unscoped_matches_the_cli_json(monkeypatch):
+    fake = _Fake(_CONNECTED)
+    fake.extra_groups = [_OTHER_ROOM]
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["rooms"] = s.call("rooms_list", {})
+
+    run_channel(monkeypatch, fake, script=script)
+
+    body = json.loads(out["rooms"][0])
+    assert [g["group_id"] for g in body["items"]] == [_ROOM, _OTHER_ROOM]
+    assert body["enabled"] is True
+    assert body["degraded"] is False
+    assert body["total"] == 2
+    assert "archived_total" in body
+    assert body["next_before"] is None
+
+
+def test_rooms_list_with_a_room_serves_only_that_room_and_hides_account_counts(monkeypatch):
+    fake = _Fake(_CONNECTED)
+    fake.extra_groups = [_OTHER_ROOM]
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["rooms"] = s.call("rooms_list", {})
+
+    run_channel(monkeypatch, fake, ["--room", _ROOM], script=script)
+
+    body = json.loads(out["rooms"][0])
+    assert [g["group_id"] for g in body["items"]] == [_ROOM]
+    assert "total" not in body
+    assert "archived_total" not in body
+
+
+def test_rooms_list_archived_asks_for_the_archived_list(monkeypatch):
+    fake = _Fake(_CONNECTED)
+    fake.room_archived = True
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["default"] = s.call("rooms_list", {})
+        out["archived"] = s.call("rooms_list", {"archived": True})
+
+    run_channel(monkeypatch, fake, script=script)
+
+    assert json.loads(out["default"][0])["items"] == []
+    assert [g["group_id"] for g in json.loads(out["archived"][0])["items"]] == [_ROOM]
+
+
+def test_attachments_download_writes_the_file_and_reports_it(monkeypatch, tmp_path):
+    attachment = "00000000-0000-0000-0000-0000000000aa"
+    fake = _Fake(_CONNECTED)
+    fake.attachments[attachment] = b"\x00recipe\xff"
+    target = tmp_path / "recipe.bin"
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["ok"] = s.call(
+            "attachments_download",
+            {"room_id": _ROOM, "attachment_id": attachment, "out": str(target)},
+        )
+
+    run_channel(monkeypatch, fake, ["--room", _ROOM], script=script)
+
+    assert out["ok"][1] is False
+    assert json.loads(out["ok"][0]) == {"path": str(target), "bytes": 8}
+    assert target.read_bytes() == b"\x00recipe\xff"
+
+
+def test_attachments_download_refuses_stdout_other_rooms_and_bad_paths(monkeypatch, tmp_path):
+    attachment = "00000000-0000-0000-0000-0000000000aa"
+    fake = _Fake(_CONNECTED)
+    fake.attachments[attachment] = b"x"
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        base = {"room_id": _ROOM, "attachment_id": attachment}
+        out["stdout"] = s.call("attachments_download", {**base, "out": "-"})
+        out["room"] = s.call(
+            "attachments_download",
+            {**base, "room_id": _OTHER_ROOM, "out": str(tmp_path / "a")},
+        )
+        out["id"] = s.call(
+            "attachments_download", {**base, "attachment_id": "../x", "out": str(tmp_path / "a")}
+        )
+        out["dir"] = s.call(
+            "attachments_download", {**base, "out": str(tmp_path / "no" / "such" / "file")}
+        )
+        out["missing"] = s.call(
+            "attachments_download",
+            {**base, "attachment_id": _MESSAGE, "out": str(tmp_path / "b")},
+        )
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM], script=script)
+
+    assert all(is_error for _, is_error in out.values())
+    assert "stdout carries the channel" in out["stdout"][0]
+    assert "couldn't write" in out["dir"][0]
+    assert out["missing"][0] == "not found, or you are not a member of that room"
+    assert not (tmp_path / "a").exists()
+    assert result.stdout.messages(), "stdout still holds only JSON-RPC"
+
+
+# --- P2: repeated --room (design §14 D) --------------------------------------
+
+_SGROUP_2 = "00000000-0000-0000-0000-0000000000e2"
+
+
+def _two_rooms(*, first: list, second: list) -> _Fake:
+    fake = _Fake()
+    fake.extra_groups = [_OTHER_ROOM]
+    fake.room_topics = {_ROOM: {_TOPIC: "Dinner"}, _OTHER_ROOM: {_OTHER_TOPIC: "Chores"}}
+    fake.room_streams = {_ROOM: first, _OTHER_ROOM: second}
+    fake.messages[_MESSAGE_2] = _message_json(_MESSAGE_2, raw_body="Bins out?")
+    return fake
+
+
+def _other_scope() -> str:
+    return _scope(room=_OTHER_ROOM, requested=_OTHER_ROOM, sgroup=_SGROUP_2)
+
+
+def _other_event(event_id: int, **kw: Any) -> str:
+    return _event(
+        event_id, room=_OTHER_ROOM, sgroup=_SGROUP_2, topic=_OTHER_TOPIC, message=_MESSAGE_2, **kw
+    )
+
+
+def test_repeated_room_follows_each_room_and_tags_events_with_their_own_room(monkeypatch, tmp_path):
+    cursor = tmp_path / "cursor"
+    fake = _two_rooms(
+        first=[_CONNECTED + _scope() + _event(7)],
+        second=[_CONNECTED + _other_scope() + _other_event(3)],
+    )
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        s.wait_notifications(2, settle=0.2)
+        out["in"] = s.call("messages_list", {"room_id": _OTHER_ROOM, "topic_id": _OTHER_TOPIC})
+        out["out"] = s.call("messages_list", {"room_id": _SURVIVOR, "topic_id": _TOPIC})
+
+    result = run_channel(
+        monkeypatch,
+        fake,
+        ["--room", _ROOM, "--room", _OTHER_ROOM, "--cursor-file", str(cursor)],
+        script=script,
+    )
+
+    by_room = {n["meta"]["room_id"]: n["meta"] for n in result.notifications}
+    assert by_room[_ROOM]["topic_id"] == _TOPIC
+    assert by_room[_ROOM]["message_id"] == _MESSAGE
+    assert by_room[_OTHER_ROOM]["topic_id"] == _OTHER_TOPIC
+    assert by_room[_OTHER_ROOM]["message_id"] == _MESSAGE_2
+    assert result.code == 0
+    # One scoped cursor file per room: a file holds one scope's position.
+    assert json.loads(Path(f"{cursor}.{_ROOM}").read_text())["cursor"] == 7
+    assert json.loads(Path(f"{cursor}.{_OTHER_ROOM}").read_text())["cursor"] == 3
+    assert not cursor.exists()
+    # The tools serve both rooms and no others.
+    assert out["in"][1] is False
+    assert out["out"][1] is True
+
+
+def test_the_same_room_twice_is_one_stream_and_keeps_the_plain_cursor_file(monkeypatch, tmp_path):
+    cursor = tmp_path / "cursor"
+    fake = _Fake(_CONNECTED + _scope() + _event(7))
+
+    result = run_channel(
+        monkeypatch,
+        fake,
+        ["--room", _ROOM, "--room", "Kitchen", "--cursor-file", str(cursor)],
+    )
+
+    assert result.kinds() == ["message"]
+    # Each stream opens once with ``start=head`` (a reconnect resumes with ``since``).
+    opened = [r for r in fake.stream_requests() if r.url.params.get("start") == "head"]
+    assert len(opened) == 1
+    assert json.loads(cursor.read_text())["cursor"] == 7
+
+
+def test_rooms_list_with_two_rooms_lists_exactly_those(monkeypatch):
+    fake = _two_rooms(first=[_CONNECTED + _scope()], second=[_CONNECTED + _other_scope()])
+    fake.extra_groups = [_OTHER_ROOM, _SURVIVOR]
+    out: dict = {}
+
+    def script(s: _Session) -> None:
+        out["rooms"] = s.call("rooms_list", {})
+
+    run_channel(monkeypatch, fake, ["--room", _ROOM, "--room", _OTHER_ROOM], script=script)
+
+    assert [g["group_id"] for g in json.loads(out["rooms"][0])["items"]] == [_ROOM, _OTHER_ROOM]
+
+
+def test_a_stream_that_ends_for_good_ends_the_channel_once_and_names_its_room(monkeypatch):
+    fake = _two_rooms(
+        first=[_CONNECTED + _scope()],
+        second=[_CONNECTED + _other_scope() + _error("access_revoked", retry=False)],
+    )
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM, "--room", _OTHER_ROOM], script=_ended)
+
+    assert result.kinds() == ["ended"]
+    assert result.code == 1
+    meta = result.notifications[0]["meta"]
+    assert meta["room_id"] == _OTHER_ROOM
+    assert f"room {_OTHER_ROOM}" in result.notifications[0]["content"]
+
+
+def test_a_single_rooms_ended_event_does_not_name_a_room(monkeypatch):
+    fake = _Fake(_CONNECTED + _scope() + _error("access_revoked", retry=False))
+
+    result = run_channel(monkeypatch, fake, ["--room", _ROOM], script=_ended)
+
+    assert "room_id" not in result.notifications[0]["meta"]
+
+
+def test_topic_with_several_rooms_is_a_usage_error_before_any_request(capsys):
+    fake = _Fake()
+    parser, _ = cli._build_parser()
+    args = parser.parse_args(
+        ["agents", "claude-channel", "--room", _ROOM, "--room", _OTHER_ROOM, "--topic", _TOPIC]
+    )
+
+    assert claude_channel.run(args) == 2
+
+    assert fake.requests == []
+    assert "cannot go with several --room" in capsys.readouterr().err
+
+
+def test_a_room_that_does_not_resolve_among_several_exits_2(monkeypatch):
+    fake = _two_rooms(first=[_CONNECTED], second=[_CONNECTED])
+    stdin, stdout = _Stdin(), _Stdout()
+    _install(monkeypatch, fake, stdin, stdout)
+    parser, _ = cli._build_parser()
+    args = parser.parse_args(["agents", "claude-channel", "--room", _ROOM, "--room", "no such"])
+
+    assert claude_channel.run(args) == 2
+
+    assert fake.stream_requests() == []
+    assert stdout.chunks == []
+
+
+def test_a_cursor_file_one_room_cannot_use_is_refused_before_streaming(
+    monkeypatch, tmp_path, capsys
+):
+    cursor = tmp_path / "cursor"
+    Path(f"{cursor}.{_OTHER_ROOM}").write_text("12\n")
+    fake = _two_rooms(first=[_CONNECTED], second=[_CONNECTED])
+    stdin, stdout = _Stdin(), _Stdout()
+    _install(monkeypatch, fake, stdin, stdout)
+    parser, _ = cli._build_parser()
+    args = parser.parse_args(
+        [
+            "agents",
+            "claude-channel",
+            "--room",
+            _ROOM,
+            "--room",
+            _OTHER_ROOM,
+            "--cursor-file",
+            str(cursor),
+        ]
+    )
+
+    assert claude_channel.run(args) == 2
+
+    assert fake.stream_requests() == []
+    assert "holds the unscoped watch's cursor" in capsys.readouterr().err
