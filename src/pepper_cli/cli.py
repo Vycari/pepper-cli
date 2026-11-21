@@ -9592,7 +9592,7 @@ def cmd_blog_publish(args: argparse.Namespace) -> int:
         target = _blog_note(api, args)
         if target is None:
             return 2
-        stage = api.get_blog_stage(*target)
+        stage = api.get_blog_stage(*target, published_at=args.published_at)
         check = stage.get("check")
         if not isinstance(check, dict):
             _emit_error(args, "server", "the server's stage carried no check to publish")
@@ -9612,7 +9612,9 @@ def cmd_blog_publish(args: argparse.Namespace) -> int:
         if changes:
             # Saved to the stage first, so the preview below is the server's own address and
             # summary for these values, and the publish then uses exactly what was shown.
-            stage = api.update_blog_stage(*target, changes)
+            api.update_blog_stage(*target, changes)
+            # Read back with the backdate, if any, so the address shown is the one it will get.
+            stage = api.get_blog_stage(*target, published_at=args.published_at)
             check = stage.get("check")
             if not isinstance(check, dict):
                 _emit_error(args, "server", "the server's stage carried no check to publish")
@@ -9642,14 +9644,26 @@ def cmd_blog_publish(args: argparse.Namespace) -> int:
             return code
         # The slug and summary shown go with the publish, so a stage another owner changes while
         # the question is open cannot change what goes public. A republish keeps its address.
-        shown_slug = stage.get("slug") if not check.get("republish") else None
-        shown_summary = stage.get("summary")
+        # With nothing saved, what was shown is the server's own default (the name at the end of
+        # its address, the check's summary), and that is what is sent.
+        shown_slug: str | None = None
+        if not check.get("republish"):
+            saved_slug = stage.get("slug")
+            address = stage.get("address")
+            if isinstance(saved_slug, str) and saved_slug:
+                shown_slug = saved_slug
+            elif isinstance(address, str) and address:
+                shown_slug = address.rsplit("/", 1)[-1]
+        saved_summary = stage.get("summary")
+        shown_summary = (
+            saved_summary if isinstance(saved_summary, str) else str(check.get("summary") or "")
+        )
         result = api.publish_blog_note(
             *target,
             source=source,
             acknowledge=True,
-            slug=shown_slug if isinstance(shown_slug, str) else None,
-            summary=shown_summary if isinstance(shown_summary, str) else None,
+            slug=shown_slug,
+            summary=shown_summary,
             published_at=args.published_at,
         )
 

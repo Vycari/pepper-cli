@@ -141,3 +141,18 @@ def test_list_and_withdraw_non_object_answers_are_malformed() -> None:
             api.list_blog_posts(_GID)
         with pytest.raises(api_client.ApiError):
             api.withdraw_blog_post(_GID, "p")
+
+
+def test_get_stage_sends_published_at_as_typed_only_when_given() -> None:
+    queries: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        queries.append(request.url.query.decode())
+        return httpx.Response(200, json={"check": {}})
+
+    with _client(handler) as api:
+        api.get_blog_stage(_GID, _NID)
+        api.get_blog_stage(_GID, _NID, published_at="2014-03-02 17:00+01:00")
+
+    assert queries[0] == ""
+    assert httpx.QueryParams(queries[1])["published_at"] == "2014-03-02 17:00+01:00"

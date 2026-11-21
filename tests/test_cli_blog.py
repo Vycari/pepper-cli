@@ -107,6 +107,7 @@ class _FakeBlogApi:
     def __init__(self, *, server_url, token, **canned) -> None:
         self._canned = canned
         self.calls: list[tuple] = []
+        self.stage_reads: list[str | None] = []
         _FakeBlogApi.instances.append(self)
 
     def __enter__(self):
@@ -130,8 +131,12 @@ class _FakeBlogApi:
         self.calls.append(("list_artifacts", principal, name, name_prefix))
         return self._result("notes")
 
-    def get_blog_stage(self, group_id, note_id):
+    def get_blog_stage(self, group_id, note_id, published_at=None):
         self.calls.append(("get_stage", group_id, note_id))
+        self.stage_reads.append(published_at)
+        updated = self._canned.get("updated")
+        if self.sent("update_stage") and isinstance(updated, dict) and "check" in updated:
+            return updated  # the read-back after a PATCH sees what was saved
         check = self._result("check")
         return {**self._result("stage"), "check": check}
 
@@ -470,7 +475,7 @@ def test_publish_yes_checks_then_publishes_with_the_source(tmp_home, patch_api, 
         "source": _SOURCE,
         "acknowledge": True,
         "slug": None,
-        "summary": None,
+        "summary": "",  # what was shown: none, so readers get an excerpt
         "published_at": None,
     }
 
@@ -503,7 +508,7 @@ def test_publish_slug_and_summary_are_staged_first_so_the_preview_is_what_publis
     )  # fmt: skip
     assert rc == 0
     api = _api()
-    assert [c[0] for c in api.calls] == ["get_stage", "update_stage", "publish"]
+    assert [c[0] for c in api.calls] == ["get_stage", "update_stage", "get_stage", "publish"]
     assert api.sent("update_stage")[0][3] == {"slug": "my-post", "summary": "A short one."}
     err = capsys.readouterr().err
     # The preview is the server's answer for the values given, and only that address shows.
@@ -523,6 +528,30 @@ def test_publish_pins_the_saved_stage_it_showed(tmp_home, patch_api) -> None:
     sent = _api().sent("publish")[0][3]
     assert sent["slug"] == "saved-name"
     assert sent["summary"] == "Saved."
+
+
+def test_publish_with_nothing_saved_pins_the_servers_default_it_showed(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(
+        stage={**_stage(), "address": "2026/11/19/hello-world"},
+        check=_check(summary="The post's own."),
+    )
+    assert cli.main(["blog", "publish", "--room", _GID, _NID, "--yes"]) == 0
+    sent = _api().sent("publish")[0][3]
+    assert sent["slug"] == "hello-world"
+    assert sent["summary"] == "The post's own."
+
+
+def test_publish_published_at_previews_the_backdated_address(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(stage={**_stage(), "address": "2014/03/02/hello-world"})
+    when = "2014-03-02T17:00:00Z"
+    rc = cli.main(["blog", "publish", "--room", _GID, _NID, "--yes", "--published-at", when])
+    assert rc == 0
+    api = _api()
+    assert api.stage_reads == [when]  # the preview is the server's for that day
+    assert "Address: 2014/03/02/hello-world" in capsys.readouterr().err
+    assert api.sent("publish")[0][3]["published_at"] == when
 
 
 def test_publish_a_republish_sends_no_slug(tmp_home, patch_api) -> None:

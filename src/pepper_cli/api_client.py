@@ -4619,7 +4619,9 @@ class ApiClient:
             raise ApiError(status=200, body=str(body), detail="malformed response")
         return [row for row in body if isinstance(row, dict)]
 
-    def get_blog_stage(self, group_id: str, note_id: str) -> dict[str, Any]:
+    def get_blog_stage(
+        self, group_id: str, note_id: str, *, published_at: str | None = None
+    ) -> dict[str, Any]:
         """``GET /api/v1/groups/{group_id}/blog/notes/{note_id}/stage`` — the note's saved stage
         (``slug``, ``summary``, ``publish_at``, ``publish_at_display``, ``timezone``, ...; all
         null when nothing is staged) with the publish check under ``check`` (including the
@@ -4627,8 +4629,10 @@ class ApiClient:
 
         A person's token only (an agent token is a 401) and a room owner's (403 otherwise). The
         schema is open in the contract: the CLI renders what it finds and passes the rest through.
+        ``published_at`` (sent as typed) previews a backdated publish: ``address`` is that day's.
         """
-        body = self._request("GET", self._blog_stage_path(group_id, note_id)).json()
+        params = {"published_at": published_at} if published_at is not None else None
+        body = self._request("GET", self._blog_stage_path(group_id, note_id), params=params).json()
         if not isinstance(body, dict):
             raise ApiError(status=200, body=str(body), detail="malformed response")
         return body
