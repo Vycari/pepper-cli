@@ -122,7 +122,10 @@ def test_docs_push_workflow_labels_and_arms_auto_merge() -> None:
     early = script.index('if [ -n "$existing" ] && auto_merge_off; then')
     assert script.index('disarm_auto_merge "$existing"', early) < script.index("git push", early)
     # An existing draft is a maintainer's hold: the run exits before it can ready or arm it.
-    held = script.index("is a draft, so it is held")
+    # Only a draft someone converted is held; the job's own orphaned draft is finished.
+    draft = script.index("--json isDraft")
+    held = script.index("was converted to draft, so it is held", draft)
+    assert draft < script.index('"convert_to_draft"', draft) < held
     assert script.index("exit 0", held) < script.index('gh pr ready "$pr"', held)
     # Labeled and ready before it is armed.
     assert script.index('gh pr ready "$pr"') < script.index("--auto --squash")

@@ -178,11 +178,18 @@ jobs:
           if [ -n "$existing" ]; then
             gh pr edit "$existing" --title "$title" --body "$body" --add-label greptile:skip
             pr="$existing"
-            # A draft sync PR is a maintainer's hold: this job leaves its own PR a draft only for
-            # the moment between create and ready. Keep it held, and arm nothing.
+            # This job leaves its own PR a draft only between create and ready, so a draft with
+            # no convert-to-draft event is one a failed `gh pr ready` left behind: finish it. A
+            # draft someone converted is a maintainer's hold: keep it held, and arm nothing.
             if [ "$(gh pr view "$pr" --json isDraft -q .isDraft)" = "true" ]; then
-              echo "::notice::$pr is a draft, so it is held: updated, not marked ready or armed."
-              exit 0
+              converted="$(gh api --paginate "repos/{owner}/{repo}/issues/$pr/timeline" \
+                --jq '.[] | select(.event == "convert_to_draft") | .event' | wc -l)"
+              if [ "$converted" -gt 0 ]; then
+                echo "::notice::$pr was converted to draft, so it is held: updated, not marked ready or armed."
+                exit 0
+              fi
+              gh pr ready "$pr"
+              echo "Marked $pr ready (a previous run's ready step had failed)."
             fi
           else
             # Draft, label, then ready: review schedules on the open event and skips drafts, so
