@@ -8,6 +8,10 @@ supply one.
 
 from __future__ import annotations
 
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import httpx
 import pytest
 
@@ -175,6 +179,119 @@ def test_download_takeout_leaves_no_partial_file_when_stream_fails(tmp_path) -> 
         api.download_takeout(out_path=str(out_path))
 
     assert list(tmp_path.iterdir()) == []
+
+
+def test_download_takeout_keeps_the_previous_archive_when_the_stream_fails(tmp_path) -> None:
+    out_path = tmp_path / "out.zip"
+    out_path.write_bytes(b"previous complete archive")
+
+    def _bomb():
+        yield b"PK\x05\x06"
+        raise RuntimeError("connection dropped mid-stream")
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_bomb())
+
+    with (
+        api_client.ApiClient(
+            server_url="http://example.com",
+            token=SecretStr("pep_pat_abc"),
+            client=_mock(handler),
+        ) as api,
+        pytest.raises(RuntimeError),
+    ):
+        api.download_takeout(out_path=str(out_path))
+
+    assert out_path.read_bytes() == b"previous complete archive"
+    assert [p.name for p in tmp_path.iterdir()] == ["out.zip"]
+
+
+def test_download_takeout_leaves_a_sibling_part_file_alone(tmp_path) -> None:
+    out_path = tmp_path / "out.zip"
+    sibling = tmp_path / "out.zip.part"
+    sibling.write_bytes(b"someone else's partial download")
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_ZIP_BYTES)
+
+    with api_client.ApiClient(
+        server_url="http://example.com",
+        token=SecretStr("pep_pat_abc"),
+        client=_mock(handler),
+    ) as api:
+        api.download_takeout(out_path=str(out_path))
+
+    assert out_path.read_bytes() == _ZIP_BYTES
+    assert sibling.read_bytes() == b"someone else's partial download"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["out.zip", "out.zip.part"]
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the pytest temp path plus a 250-byte name can exceed MAX_PATH",
+)
+def test_download_takeout_stages_a_name_near_the_filename_limit(tmp_path) -> None:
+    """A 250-byte destination fits beside the old five-byte ``.part`` suffix.
+    The staging name must not add the full destination name."""
+    out_name = "a" * 246 + ".zip"
+    out_path = tmp_path / out_name
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_ZIP_BYTES)
+
+    with api_client.ApiClient(
+        server_url="http://example.com",
+        token=SecretStr("pep_pat_abc"),
+        client=_mock(handler),
+    ) as api:
+        result = api.download_takeout(out_path=str(out_path))
+
+    assert result == str(out_path)
+    assert out_path.read_bytes() == _ZIP_BYTES
+    assert [p.name for p in tmp_path.iterdir()] == [out_name]
+
+
+def test_concurrent_downloads_use_separate_staging_files(tmp_path) -> None:
+    out_path = tmp_path / "out.zip"
+    second_started = threading.Event()
+    first_done = threading.Event()
+    first_body = b"first-half-second-half"
+    second_body = b"other-half-tail-half"
+
+    def first_stream():
+        yield first_body[:10]
+        assert second_started.wait(5)
+        yield first_body[10:]
+
+    def second_stream():
+        yield second_body[:10]
+        second_started.set()
+        assert first_done.wait(5)
+        yield second_body[10:]
+
+    def download(stream):
+        def handler(_: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=stream())
+
+        with api_client.ApiClient(
+            server_url="http://example.com",
+            token=SecretStr("pep_pat_abc"),
+            client=_mock(handler),
+        ) as api:
+            return api.download_takeout(out_path=str(out_path))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(download, first_stream)
+        second = pool.submit(download, second_stream)
+        try:
+            first_result = first.result(timeout=10)
+        finally:
+            first_done.set()
+        second_result = second.result(timeout=10)
+
+    assert first_result == second_result == str(out_path)
+    assert out_path.read_bytes() == second_body
+    assert [p.name for p in tmp_path.iterdir()] == ["out.zip"]
 
 
 def test_download_takeout_rejects_redirect_without_writing_file(tmp_path) -> None:
