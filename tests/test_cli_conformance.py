@@ -176,7 +176,7 @@ VERBS = frozenset(
         "steer",
         "take",
         "reconsider",
-        # A room's blog (planning/blog-api.md §5): `check` reads what publishing a note would
+        # A room's blog: `check` reads what publishing a note would
         # do, `publish` puts it on the blog, `withdraw` takes a post down (not a delete:
         # publishing the note again brings it back).
         "check",
