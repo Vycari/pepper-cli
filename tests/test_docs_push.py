@@ -111,9 +111,12 @@ def test_docs_push_workflow_labels_and_arms_auto_merge() -> None:
     assert "--label greptile:skip" in script
     assert 'gh pr ready "$pr"' in script
     assert '--auto --squash --match-head-commit "$(git rev-parse HEAD)"' in script
-    off = script.index('[ "${AUTO_MERGE:-}" = "false" ]')
+    off = script.index("(false|0|no|off)")
     # The kill switch disarms a PR an earlier run armed, before reporting the hand merge.
     assert script.index('gh pr merge "$pr" --disable-auto', off) < script.index("elif", off)
+    # An existing draft is a maintainer's hold: the run exits before it can ready or arm it.
+    held = script.index("is a draft, so it is held")
+    assert script.index("exit 0", held) < script.index('gh pr ready "$pr"', held)
     # Labeled and ready before it is armed.
     assert script.index('gh pr ready "$pr"') < script.index("--auto --squash")
     assert step["env"]["AUTO_MERGE"] == "${{ vars.DOCS_SYNC_AUTO_MERGE }}"
