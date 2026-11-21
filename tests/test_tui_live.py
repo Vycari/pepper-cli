@@ -368,7 +368,7 @@ async def test_a_pin_change_delivered_after_the_thread_is_gone_is_ignored(
         # is about (it flaked under a loaded parallel run).
         await _quiet(pilot, app, monkeypatch)
         await app.thread.remove()
-        app.on_thread_view_pin_changed(ThreadView.PinChanged(True))
+        app.on_thread_view_pin_changed(ThreadView.PinChanged(True, True, 0, None))
 
 
 async def test_a_topic_page_delivered_while_the_thread_is_being_removed_is_dropped() -> None:
@@ -413,6 +413,38 @@ async def test_reaching_the_end_marks_the_newest_row_read(monkeypatch: pytest.Mo
         assert (ts.TOPIC_A1, arrived) not in server.puts
         scroller.scroll_end(animate=False)
         await until(pilot, lambda: (ts.TOPIC_A1, arrived) in server.puts)
+
+
+async def test_a_scroll_back_to_one_line_short_does_not_mark_the_newest_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Vycari P2 on #279: ``pinned`` tolerates one line. A row that arrived while scrolled
+    up must stay unread when the reader scrolls back to ``max_scroll_y - 1``: the newest row
+    is still hidden behind that line, so no PUT may claim it."""
+    server = ts.standard_server()
+    _long_topic(server)
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 20)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: "row 39" in body_text(app))
+        scroller = app.thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and app.thread.at_end)
+        await _quiet(pilot, app, monkeypatch)
+        puts = len(server.puts)
+        scroller.scroll_y = 5  # up a few rows, not to the top: no older-page load to race
+        await until(pilot, lambda: not app.thread.pinned)
+        arrived = "2026-09-16T18:30:00+00:00"
+        server.messages[ts.TOPIC_A1].append(ts.message("r99", arrived, "fresh"))
+        app._run("topic")
+        await until(pilot, lambda: "r99" in app.store.rows and "fresh" in body_text(app))
+        await pilot.pause()
+        assert len(server.puts) == puts  # the row arrived below the screen
+        scroller.scroll_y = scroller.max_scroll_y - 1
+        await until(pilot, lambda: app.thread.pinned)
+        assert not app.thread.at_end
+        await pilot.pause(0.3)
+        assert len(server.puts) == puts  # one line short: the newest row is still hidden
 
 
 def _topic_reads(server: ts.FakeServer, topic_id: str) -> int:
@@ -490,6 +522,69 @@ async def test_a_send_that_lands_while_scrolled_up_marks_nothing_read(
         assert app.marks.marks[ts.TOPIC_A1] < _at(theirs)
         scroller.scroll_end(animate=False)
         await until(pilot, lambda: any(_at(t) > _at(theirs) for _x, t in server.puts))
+
+
+async def test_a_stale_scroll_to_the_end_does_not_drag_a_reader_back_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#274, driven by hand: the send's render, made while pinned, arms a scroll to the end
+    and Textual defers it through two refreshes. A Windows merge-queue run landed the last
+    one after the round trip, on a reader who had scrolled up; the screen changed under
+    them and the read mark claimed the row that arrived unseen. It must stand down instead.
+    """
+    server = ts.standard_server()
+    _long_topic(server)
+    post = f"POST /api/v1/groups/{ts.ROOM_A}/topics/{ts.TOPIC_A1}/messages"
+    gate = threading.Event()
+    server.gates[post] = gate
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 20)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: "row 39" in body_text(app))
+        scroller = app.thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and app.thread.pinned)
+        await _quiet(pilot, app, monkeypatch)
+        deferred: list = []
+        real = scroller.call_after_refresh
+
+        def hold(callback, *args, **kwargs) -> None:
+            if getattr(callback, "__name__", "") in {
+                "scroll_end",
+                "_lazily_scroll_end",
+                "stick_to_end",
+            }:
+                deferred.append((callback, args, kwargs))
+            else:
+                real(callback, *args, **kwargs)
+
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        app.composer.focus()
+        app.composer.insert("mine")
+        await pilot.press("enter")
+        await until(pilot, lambda: "sending…" in body_text(app))
+        # The render's first refresh came while the reader was still at the end, so the last
+        # try is now waiting for the refresh that measures the pending row.
+        callback, args, kwargs = deferred.pop(0)
+        callback(*args, **kwargs)
+        assert len(deferred) == 1
+        # During the round trip the person scrolls up, and someone else posts first.
+        scroller.scroll_home(animate=False)
+        await until(pilot, lambda: scroller.scroll_y == 0)
+        theirs = "2026-09-16T17:59:30+00:00"
+        server.messages[ts.TOPIC_A1].append(ts.message("m-theirs", theirs, "theirs"))
+        gate.set()
+        await until(pilot, lambda: all(i.status != "sending" for i in app.pending.items))
+        await pilot.pause(0.4)
+        assert all(_at(t) < _at(theirs) for _x, t in server.puts)
+        while deferred:
+            callback, args, kwargs = deferred.pop(0)
+            callback(*args, **kwargs)
+        await pilot.pause(0.4)
+        # It did not follow its send down: nothing puts the unseen row in the read mark,
+        # and the reader keeps the place they moved to.
+        assert all(_at(t) < _at(theirs) for _x, t in server.puts)
+        assert not app.thread.pinned
 
 
 async def test_the_catch_up_at_the_streams_head_loads_a_read_from_just_before_it() -> None:

@@ -9,6 +9,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
+from rich.console import Group
+from rich.text import Text
 from textual.geometry import Size
 from textual.widget import Widget
 
@@ -455,6 +457,445 @@ async def test_a_scroll_made_while_keep_place_waits_is_not_undone(monkeypatch) -
         assert scrolled == []  # it stood down rather than scroll past the older rows
         assert held == []  # and did not wait to try again
         assert scroller.scroll_y == moved
+
+
+async def test_a_stick_to_the_end_stands_down_if_the_reader_moved(monkeypatch) -> None:
+    """#274: the scroll to the end a pinned render arms waits a refresh or more; a reader
+    who moves in that window keeps the place they moved to. Driven by hand for the same
+    reason as the keep-place test above."""
+    app = tui_app.PepperApp(_older_thread_server().client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and thread.pinned)
+        held: list = []
+
+        def hold(cb, *_a, **_k) -> None:
+            if getattr(cb, "__name__", "") == "stick_to_end":
+                held.append(cb)
+
+        scrolled: list[bool] = []
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        monkeypatch.setattr(
+            scroller, "scroll_end", lambda **kw: scrolled.append(kw.get("immediate", False))
+        )
+        at = scroller.scroll_y
+        thread.show(body_text(app))  # pinned: arms the scroll to the end
+        moved = at - 3
+        scroller.scroll_y = moved  # the reader moves before it runs
+        held.pop()()
+        assert scrolled == []  # it stood down
+        assert held == []
+        assert scroller.scroll_y == moved
+
+
+async def test_a_stick_to_the_end_stands_down_if_the_reader_moves_between_refreshes(
+    monkeypatch,
+) -> None:
+    """#274: the first refresh can come while the reader is still at the end and arm the last
+    try; a scroll before that one runs must still win, or it drags the reader back down."""
+    app = tui_app.PepperApp(_older_thread_server().client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and thread.pinned)
+        held: list = []
+
+        def hold(cb, *_a, **_k) -> None:
+            if getattr(cb, "__name__", "") == "stick_to_end":
+                held.append(cb)
+
+        scrolled: list[bool] = []
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        monkeypatch.setattr(
+            scroller, "scroll_end", lambda **kw: scrolled.append(kw.get("immediate", False))
+        )
+        at = scroller.scroll_y
+        thread.show(body_text(app))
+        held.pop()()  # still at the end: this one waits for the layout, and does not scroll
+        assert scrolled == []
+        assert len(held) == 1
+        moved = at - 3
+        scroller.scroll_y = moved
+        held.pop()()
+        assert scrolled == []  # the last try stood down too
+        assert scroller.scroll_y == moved
+
+
+async def test_rows_that_arrive_when_the_reader_moves_keep_their_cue(monkeypatch) -> None:
+    """Codex and Greptile on #279: rows that arrive while pinned, then a reader who moves
+    before the deferred scroll runs, are below the screen. They stay counted, or later polls
+    deduplicate them and the "N new" cue is never shown."""
+    app = tui_app.PepperApp(_older_thread_server().client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and thread.pinned)
+        held: list = []
+
+        def hold(cb, *_a, **_k) -> None:
+            if getattr(cb, "__name__", "") == "stick_to_end":
+                held.append(cb)
+
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        monkeypatch.setattr(scroller, "scroll_end", lambda **kw: None)
+        at = scroller.scroll_y
+        thread.show(body_text(app) + "\ntheir new row", new_rows=1)
+        assert not thread.query_one("#thread-new").display  # still at the end, nothing unseen
+        moved = at - 3
+        scroller.scroll_y = moved  # the reader moves before it runs
+        held.pop()()
+        assert thread._unseen == 1  # the row is below the screen: still counted
+        assert thread.query_one("#thread-new").display
+        assert "1 new" in plain(app, "#thread-new")
+        assert scroller.scroll_y == moved
+
+
+async def test_overlapping_scrolls_do_not_restore_a_cue_for_rows_on_screen(monkeypatch) -> None:
+    """Greptile on #279: two deferred scrolls can capture the same position. The first
+    reaches the end; the second must not mistake that movement for a reader scroll and count
+    rows that are already on screen."""
+    for interval in ("ACTIVE_INTERVAL", "COOLING_INTERVAL", "IDLE_INTERVAL"):
+        monkeypatch.setattr(state, interval, 60.0)
+    app = tui_app.PepperApp(_older_thread_server().client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and thread.pinned)
+        held: list = []
+
+        def hold(cb, *a, **k) -> None:
+            if getattr(cb, "__name__", "") == "stick_to_end":
+                held.append((cb, a, k))
+
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        thread.show(body_text(app) + "\nfirst new row", new_rows=1)
+        # The second render, before the first callback ran: it captured the same position.
+        thread.show(body_text(app) + "\nfirst new row\nsecond new row", new_rows=2)
+        waiting = list(held)
+        held.clear()
+        assert len(waiting) == 2
+        for cb, a, k in waiting:  # each waits one more refresh
+            cb(*a, **k)
+        await pilot.pause(0.1)  # the layout measures the new rows
+        last = list(held)
+        held.clear()
+        assert len(last) == 2
+        for cb, a, k in last:  # the first reaches the end, the second must stand down
+            cb(*a, **k)
+        await pilot.pause()
+        assert thread.pinned  # the rows are on screen
+        assert thread._unseen == 0
+        assert not thread.query_one("#thread-new").display
+
+
+async def test_a_scroll_left_over_from_another_conversation_does_not_count_its_rows(
+    monkeypatch,
+) -> None:
+    """Greptile on #279: a callback can outlive a conversation switch. It must not add its
+    rows to the new conversation's cue, which the new render has already reset."""
+    app = tui_app.PepperApp(_older_thread_server().client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and thread.pinned)
+        held: list = []
+
+        def hold(cb, *a, **k) -> None:
+            if getattr(cb, "__name__", "") == "stick_to_end":
+                held.append((cb, a, k))
+
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        thread.show(body_text(app) + "\nstale row", new_rows=1)
+        stale = held.pop()  # the only callback so far: conversation A's
+        app.open_conversation(state.Conversation(ts.ROOM_B, ts.TOPIC_B1))
+        await until(pilot, lambda: "next book" in body_text(app))
+        scroller.scroll_y = 0  # the switch moved the view before the callback ran
+        cb, a, k = stale
+        cb(*a, **k)
+        # Before any poll can repaint: the new conversation starts with nothing counted.
+        assert thread._unseen == 0
+        assert not thread.query_one("#thread-new").display
+
+
+async def test_a_first_page_is_marked_read_only_once_its_scroll_lands(monkeypatch) -> None:
+    """Codex P2 on #279: the first page used to be marked read the moment the render
+    scheduled its scroll to the end, before the newest row was on screen. A reader who moves
+    in that window must leave the topic unread."""
+    server = ts.standard_server()
+    _a1(
+        server,
+        *(
+            ts.message(f"r{i:02d}", f"2026-09-16T17:{i:02d}:00+00:00", f"row {i}")
+            for i in range(40)
+        ),
+    )
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 20)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        scroller = app.thread.scroller
+        real = scroller.call_after_refresh
+        held: list = []
+
+        def hold(cb, *a, **k) -> None:
+            if getattr(cb, "__name__", "") == "stick_to_end":
+                held.append(cb)
+            else:
+                real(cb, *a, **k)
+
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: "row 39" in body_text(app))
+        await pilot.pause(0.4)  # a few polls while the scroll to the end has not run
+        assert server.puts == []  # nothing marked before the newest row is on screen
+        scroller.scroll_y = 5  # the reader moves before it runs
+        await pilot.pause()
+        while held:
+            held.pop(0)()
+        await pilot.pause(0.4)
+        assert server.puts == []  # it stood down: nothing was marked
+
+
+@pytest.mark.parametrize("placement", ["stay", "away", "back", "end"])
+async def test_a_live_poll_marks_only_once_its_scroll_lands(placement, monkeypatch) -> None:
+    """Codex P2 on #279: a live poll used to mark its rows read the moment the render
+    scheduled the scroll to the end, before they were on screen. When the reader moves first
+    the scroll stands down, so nothing may have been claimed, and that holds even if they
+    return to the offset captured at render time. A reader who moves to the new end has seen
+    the rows, and that landing must still mark them."""
+    for interval in ("ACTIVE_INTERVAL", "COOLING_INTERVAL", "IDLE_INTERVAL"):
+        monkeypatch.setattr(state, interval, 60.0)
+    server = _older_thread_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and thread.pinned)
+        await until(pilot, lambda: (ts.TOPIC_A1, "2026-09-16T10:13:00+00:00") in server.puts)
+        held: list = []
+        real = scroller.call_after_refresh
+
+        def hold(cb, *a, **k) -> None:
+            if getattr(cb, "__name__", "") == "stick_to_end":
+                held.append((cb, a, k))
+            else:
+                real(cb, *a, **k)
+
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        server.messages[ts.TOPIC_A1].append(
+            ts.message("m99", "2026-09-16T10:14:00+00:00", "late row")
+        )
+        app._run("topic")
+        await until(pilot, lambda: "late row" in body_text(app))
+        await pilot.pause()
+        # The row is rendered but below the viewport until the scroll lands.
+        assert (ts.TOPIC_A1, "2026-09-16T10:14:00+00:00") not in server.puts
+        at = scroller.scroll_y
+        if placement == "away":
+            scroller.scroll_y = at - 3  # the reader moves before the scroll runs
+            await pilot.pause()
+        elif placement == "back":
+            scroller.scroll_y = at - 3  # away, then back to the offset it captured
+            await pilot.pause()
+            scroller.scroll_y = at
+            await pilot.pause()
+            assert scroller.scroll_y == at
+            assert scroller.max_scroll_y - at >= 2  # the old end is not the new one
+        elif placement == "end":
+            scroller.scroll_end(animate=False)  # the reader reaches the new end themselves
+            await pilot.pause()
+            assert scroller.scroll_y != at
+        while held:
+            cb, a, k = held.pop(0)
+            cb(*a, **k)
+        await pilot.pause()
+        if placement in ("away", "back"):
+            assert thread._unseen == 1  # the row is below the screen, still counted
+            assert (ts.TOPIC_A1, "2026-09-16T10:14:00+00:00") not in server.puts
+        else:
+            await until(pilot, lambda: (ts.TOPIC_A1, "2026-09-16T10:14:00+00:00") in server.puts)
+
+
+async def test_scrolling_back_a_line_short_of_a_new_row_is_not_marked_read(monkeypatch) -> None:
+    """Codex P2 on #279: ``pinned`` accepts one line short of the end, so a one-line growth
+    plus a scroll away and back would have landed while the newest line was still hidden."""
+    for interval in ("ACTIVE_INTERVAL", "COOLING_INTERVAL", "IDLE_INTERVAL"):
+        monkeypatch.setattr(state, interval, 60.0)
+    server = _older_thread_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and thread.pinned)
+        await until(pilot, lambda: (ts.TOPIC_A1, "2026-09-16T10:13:00+00:00") in server.puts)
+        held: list = []
+        real = scroller.call_after_refresh
+
+        def hold(cb, *a, **k) -> None:
+            if getattr(cb, "__name__", "") == "stick_to_end":
+                held.append((cb, a, k))
+            else:
+                real(cb, *a, **k)
+
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        at = scroller.scroll_y
+        shown = thread.query_one("#thread-body").content
+        thread.show(
+            Group(shown, Text("late row")),
+            new_rows=1,
+            through="2026-09-16T10:14:00+00:00",
+        )
+        await pilot.pause(0.1)  # the layout measures the one added line
+        assert scroller.max_scroll_y - at == 1  # exactly the boundary this guards
+        scroller.scroll_y = at - 3
+        await pilot.pause()
+        scroller.scroll_y = at
+        await pilot.pause()
+        assert thread.pinned  # one line short, which ``pinned`` tolerates
+        assert not thread.at_end  # but the newest line is below the viewport
+        while held:
+            cb, a, k = held.pop(0)
+            cb(*a, **k)
+        await pilot.pause()
+        assert thread._unseen == 1
+        assert (ts.TOPIC_A1, "2026-09-16T10:14:00+00:00") not in server.puts
+        # The true end, one line further, still marks it: the scroll path reports the end
+        # itself rather than relying on ``pinned``, which was already true a line above.
+        scroller.scroll_end(animate=False)
+        await until(
+            pilot,
+            lambda: (ts.TOPIC_A1, "2026-09-16T10:14:00+00:00") in server.puts,
+        )
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("at_end", True),
+        ("scrolled_up", False),
+        ("stale_render", False),
+        ("clamped_reset", True),
+        ("event_was_short", False),
+        ("newer_than_rendered", False),
+        ("no_timestamp", False),
+    ],
+)
+async def test_the_read_mark_decision(case, expected, monkeypatch) -> None:
+    """The one decision every scroll and landing path calls: a mark needs the current
+    render, the true end, and a timestamp that render showed."""
+    for interval in ("ACTIVE_INTERVAL", "COOLING_INTERVAL", "IDLE_INTERVAL"):
+        monkeypatch.setattr(state, interval, 60.0)
+    server = _older_thread_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and thread.at_end)
+        await until(pilot, lambda: (ts.TOPIC_A1, "2026-09-16T10:13:00+00:00") in server.puts)
+        owed: list[str] = []
+        monkeypatch.setattr(app, "_owe", lambda _conv, through: owed.append(through))
+        if case == "scrolled_up":
+            scroller.scroll_home(animate=False)
+            await until(pilot, lambda: not thread.pinned)
+        elif case == "clamped_reset":
+            thread.show(
+                "short page",
+                reset=True,
+                through="2026-09-16T10:13:00+00:00",
+            )
+            await pilot.pause(0.2)  # the shorter page clamps the old position to its end
+            assert thread.at_end
+            owed.clear()
+        render_id, through = thread.render_id, thread.through
+        event_at_end = True
+        if case == "stale_render":
+            render_id -= 1
+        elif case == "event_was_short":
+            # The view is at the end now, but the scroll raised this event one line short.
+            event_at_end = False
+        elif case == "newer_than_rendered":
+            through = "2026-09-16T10:14:00+00:00"
+        elif case == "no_timestamp":
+            through = None
+        assert (
+            app._note_viewed(
+                render_id=render_id,
+                through=through,
+                at_end=event_at_end,
+            )
+            is expected
+        )
+        assert bool(owed) is expected
+
+
+async def test_a_landed_event_from_a_replaced_render_is_ignored(monkeypatch) -> None:
+    """Codex P2 on #279: ``Landed`` is queued. One posted for a render that a later reset
+    replaced must not mark the new screen read, while a landing for the current render
+    still does."""
+    for interval in ("ACTIVE_INTERVAL", "COOLING_INTERVAL", "IDLE_INTERVAL"):
+        monkeypatch.setattr(state, interval, 60.0)
+    app = tui_app.PepperApp(_older_thread_server().client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        held: list = []
+        real = scroller.call_after_refresh
+
+        def hold(cb, *a, **k) -> None:
+            if getattr(cb, "__name__", "") == "stick_to_end":
+                held.append(cb)
+            else:
+                real(cb, *a, **k)
+
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        owed: list[str] = []
+        monkeypatch.setattr(app, "_owe", lambda _conv, through: owed.append(through))
+        stale = thread.render_id
+        thread.show(
+            "a later screen",
+            reset=True,
+            through="2026-09-16T10:13:00+00:00",
+        )
+        await pilot.pause(0.1)  # the shorter page clamps the old position to its end
+        thread.post_message(tui_app.ThreadView.Landed(stale, "2026-09-16T10:00:00+00:00"))
+        await pilot.pause()
+        assert "2026-09-16T10:00:00+00:00" not in owed  # a render no longer shown
+        owed.clear()  # the clamp itself may have landed the current render
+        thread.post_message(
+            tui_app.ThreadView.Landed(thread.render_id, "2026-09-16T10:13:00+00:00")
+        )
+        await pilot.pause()
+        assert owed == ["2026-09-16T10:13:00+00:00"]  # the current render still lands
+
+
+async def test_a_reset_clamped_to_a_shorter_end_is_marked_read(monkeypatch) -> None:
+    """Codex P2 on #279: a shorter page clamps the old scroll position to the new end
+    without a reader move. That reset landed, so the topic must be marked read."""
+    for interval in ("ACTIVE_INTERVAL", "COOLING_INTERVAL", "IDLE_INTERVAL"):
+        monkeypatch.setattr(state, interval, 60.0)
+    app = tui_app.PepperApp(_older_thread_server().client())
+    async with app.run_test(size=(100, 14)) as pilot:
+        await _open_a1(app, pilot, "body 13")
+        thread = app.thread
+        scroller = thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and thread.pinned)
+        calls: list[str | None] = []
+        monkeypatch.setattr(app, "_note_viewed", lambda **kw: calls.append(kw.get("through")))
+        old = scroller.scroll_y
+        thread.show("short page", reset=True, through="2026-09-16T10:13:00+00:00")
+        await pilot.pause(0.2)  # the layout clamps the old position to the shorter end
+        assert scroller.scroll_y != old  # clamped, not a reader scroll
+        assert thread.pinned
+        assert calls == ["2026-09-16T10:13:00+00:00"]  # the reset landed at the new end
 
 
 async def test_o_opens_the_first_link_and_never_a_non_web_url() -> None:
