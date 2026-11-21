@@ -91,3 +91,25 @@ def test_every_help_file_is_a_flat_markdown_topic() -> None:
     assert names
     for name in names:
         assert docs_push._NAME.match(name), name
+
+
+def test_docs_push_workflow_labels_and_arms_auto_merge() -> None:
+    # The sync PR skips review (prose, reviewed here) and merges through pepper's queue once its
+    # required checks pass. Pinned to the pushed head; DOCS_SYNC_AUTO_MERGE=false switches it off.
+    import yaml
+
+    workflow = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / ".github/workflows/docs-push.yml").read_text()
+    )
+    step = next(
+        s
+        for s in workflow["jobs"]["push"]["steps"]
+        if s.get("name") == "Open, update or close the sync PR"
+    )
+    script = step["run"]
+    assert "--draft" in script
+    assert "--label greptile:skip" in script
+    assert 'gh pr ready "$pr"' in script
+    assert '--auto --squash --match-head-commit "$(git rev-parse HEAD)"' in script
+    assert '[ "${AUTO_MERGE:-}" = "false" ]' in script
+    assert step["env"]["AUTO_MERGE"] == "${{ vars.DOCS_SYNC_AUTO_MERGE }}"

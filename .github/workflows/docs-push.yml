@@ -114,6 +114,7 @@ jobs:
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           CHANGED: ${{ steps.place.outputs.changed }}
           SRC_SHA: ${{ steps.place.outputs.src_sha }}
+          AUTO_MERGE: ${{ vars.DOCS_SYNC_AUTO_MERGE }}
         run: |
           set -euo pipefail
           export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.helper
@@ -156,7 +157,27 @@ jobs:
 
           body="Automated sync of the help topics $CLIENT_REPO owns (its \`help/\` directory, at ${SRC_SHA}), pushed by that repo's docs-push workflow. The owned files are listed in \`.github/docs-owners.json\`. Edit them in $CLIENT_REPO, not here: the next sync force-pushes this branch, and a hand edit to an owned file fails the docs-owners check."
           if [ -n "$existing" ]; then
-            gh pr edit "$existing" --title "$title" --body "$body"
+            gh pr edit "$existing" --title "$title" --body "$body" --add-label greptile:skip
+            pr="$existing"
           else
-            gh pr create --head "$SYNC_BRANCH" --base main --title "$title" --body "$body"
+            # Draft, label, then ready: review schedules on the open event and skips drafts, so
+            # the label must land first. The help words are prose, reviewed in this repo.
+            pr="$(gh pr create --draft --head "$SYNC_BRANCH" --base main --title "$title" \
+              --body "$body" --label greptile:skip)"
+          fi
+          if [ "$(gh pr view "$pr" --json isDraft -q .isDraft)" = "true" ]; then
+            gh pr ready "$pr"
+          fi
+
+          # Auto-merge through pepper's merge queue once its required checks pass, including
+          # docs-owners, which fails a docs-sync PR that touches anything but this repo's own
+          # help files. Pinned to the head this run pushed. Set the Actions variable
+          # DOCS_SYNC_AUTO_MERGE to `false` to go back to hand merges. A failure warns and leaves
+          # the PR for a hand merge; the sync itself succeeded.
+          if [ "${AUTO_MERGE:-}" = "false" ]; then
+            echo "DOCS_SYNC_AUTO_MERGE is false: $pr waits for a hand merge."
+          elif gh pr merge "$pr" --auto --squash --match-head-commit "$(git rev-parse HEAD)"; then
+            echo "Auto-merge armed on $pr."
+          else
+            echo "::warning title=Auto-merge not armed::Could not arm auto-merge on $pr; it waits for a hand merge."
           fi
