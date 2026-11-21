@@ -361,6 +361,12 @@ the open room. A dot marks a conversation with something unread, and `@`
 marks one where someone mentioned you. It reads the same unread state as the
 web app, so what you read in one place clears in the other.
 
+A topic with unread messages opens at the first one you haven't read, under a
+"new messages" line, instead of at the bottom. Messages count as read as they
+scroll into view: scroll down through a long backlog and what you have seen is
+marked read, so if you stop halfway, the topic reopens at the rest. Nothing is
+marked while the terminal is in the background.
+
 The box at the bottom sends to whatever is open. In Pepper's conversation,
 Enter sends a message and the reply streams into the thread. In a room's
 topic, Enter posts as you; type `@` and part of a name to mention someone.

@@ -10,6 +10,8 @@ from textual.message import Message
 from textual.widgets import Static
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from rich.console import RenderableType
     from textual.app import ComposeResult
     from textual.widget import Widget
@@ -126,6 +128,21 @@ class ThreadView(Vertical):
             self.render_id = render_id
             self.through = through
 
+    class Scrolled(Message):
+        """The visible region moved (or was just placed): which rows are fully on screen may
+        have changed, so the progressive read mark (read-state-sync §5.1 (b)) may move.
+        Carries the render it was posted for, as ``Landed`` does, and the region as the scroll
+        left it: the first line shown and the viewport's height. The height is read at the
+        scroll, not when the message is handled, because reaching the bottom clears the
+        ``N new`` line and gives the viewport that line back; a row that line was hiding
+        when the reader arrived must not count as seen (pepper-cli#279)."""
+
+        def __init__(self, render_id: int, top: float, height: int) -> None:
+            super().__init__()
+            self.render_id = render_id
+            self.top = top
+            self.height = height
+
     def __init__(self) -> None:
         super().__init__(id="thread")
         self._unseen = 0
@@ -190,15 +207,20 @@ class ThreadView(Vertical):
         reset: bool = False,
         prepended: bool = False,
         through: str | None = None,
+        anchor: Callable[[], int | None] | None = None,
     ) -> None:
-        """Replace the content. ``reset`` (a different conversation) always lands at the end.
+        """Replace the content. ``reset`` (a different conversation) lands at the end, unless
+        ``anchor`` names a line to land on instead (a topic opened at its read cursor).
 
         ``prepended`` says rows were added above what was shown (an older page): the view
         keeps showing the same lines, so the added height is scrolled past. ``through`` is
         the newest timestamp ``body`` renders, carried on ``Landed`` so a mark published
-        after a later poll covers only the rows this render put on screen.
+        after a later poll covers only the rows this render put on screen. ``anchor`` is called
+        once the layout has measured the rows, and returns the body line to put at the top of
+        the view (``None``: the end after all).
         """
-        stick = reset or (self.pinned and not prepended)
+        anchored = reset and anchor is not None
+        stick = not anchored and (reset or (self.pinned and not prepended))
         scroller = self.scroller
         old_height, old_y = scroller.virtual_size.height, scroller.scroll_y
         scrolls = self._scrolls
@@ -224,7 +246,10 @@ class ThreadView(Vertical):
                 scroller.scroll_to(y=old_y + max(grown, 0), animate=False)
 
             scroller.call_after_refresh(keep_place)
-        if stick:
+        if anchored:
+            self._unseen = 0
+            self._land_on(anchor, render_id, through)
+        elif stick:
             self._unseen = 0
 
             def stick_to_end(tries: int = _STICK_TRIES) -> None:
@@ -268,12 +293,47 @@ class ThreadView(Vertical):
             self._unseen += new_rows
         self._paint_marker()
 
+    def _land_on(
+        self,
+        anchor: Callable[[], int | None] | None,
+        render_id: int,
+        through: str | None,
+    ) -> None:
+        """Scroll to the line ``anchor`` names, after the layout has measured the rows."""
+        scroller = self.scroller
+
+        def land(tries: int = _STICK_TRIES) -> None:
+            if self._render_id != render_id:
+                return  # another conversation was opened while this waited
+            if tries > 1:
+                scroller.call_after_refresh(land, tries - 1)
+                return
+            line = anchor() if anchor is not None else None
+            if line is None:
+                scroller.scroll_end(animate=False, immediate=True)
+                self.post_message(self.Landed(render_id, through))
+                return
+            scroller.scroll_to(y=line, animate=False, immediate=True)
+            if self.at_end:
+                # A short unread tail: the newest row is on screen, so the topic is read.
+                self.post_message(self.Landed(render_id, through))
+            self.post_message(
+                self.Scrolled(
+                    render_id, scroller.scroll_y, scroller.scrollable_content_region.height
+                )
+            )
+
+        scroller.call_after_refresh(land)
+
     def on_mount(self) -> None:
         # However the bottom is reached (keys, wheel, scrollbar drag), the marker clears.
         self.watch(self.scroller, "scroll_y", self._scrolled, init=False)
 
     def _scrolled(self, _old: float, new: float) -> None:
         self._scrolls += 1
+        self.post_message(
+            self.Scrolled(self._render_id, new, self.scroller.scrollable_content_region.height)
+        )
         if new <= 0 and self.scroller.max_scroll_y > 0:
             self.post_message(self.AtTop())
         pinned = self.pinned
