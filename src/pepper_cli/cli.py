@@ -9490,9 +9490,10 @@ def cmd_blog_stage(args: argparse.Namespace) -> int:
     stderr, then ``PATCH .../stage`` with only the flags given. ``--at`` is sent exactly as typed;
     the server parses it. Scheduling is a public act, so ``--at`` first saves any slug or summary
     given, shows the check and the address and summary the post will get on that day (the stage
-    read with ``publish_at``), stops on a refused check (exit 1, no time saved), asks y/N (``--yes`` skips it; required off a terminal and under
-    ``--json``) and sends ``acknowledge: true`` only after that yes. A declined question exits 0
-    with ``Aborted.``. Exit 0 ok, 1 auth/API (409 refusal, 422 bad time), 2 bad input.
+    read with ``publish_at``), stops on a refused check (exit 1, no time saved), asks y/N
+    (``--yes`` skips it; required off a terminal and under ``--json``) and sends
+    ``acknowledge: true`` only after that yes. A declined question exits 0 with ``Aborted.``.
+    Exit 0 ok, 1 auth/API (409 refusal, 422 bad time), 2 bad input.
     """
     changes: dict[str, Any] = {}
     if args.slug is not None:
