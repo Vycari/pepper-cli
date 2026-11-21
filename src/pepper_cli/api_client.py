@@ -3574,7 +3574,8 @@ class ApiClient:
         deadline: float | None = None,
     ) -> Generator[FeedFrame]:
         """Open one SSE feed connection at ``path`` and yield its frames, until ``deadline``
-        (see :class:`_DeadlineCut`) when one is given."""
+        (see :class:`_DeadlineCut`) when one is given. A non-2xx response raises
+        :class:`ApiError` before any frame; a 2xx empty body ends the feed cleanly."""
         headers = {
             "Authorization": f"Bearer {self._token.get_secret_value()}",
             "User-Agent": USER_AGENT,
@@ -3604,7 +3605,11 @@ class ApiClient:
                 pool=_within(base_timeout.pool, read_timeout),
             ),
         ) as resp:
-            if resp.status_code >= 400:
+            # Strict 2xx here, not the >=400 the JSON paths use: httpx does not
+            # follow redirects by default, so a 3xx body would otherwise parse
+            # as an empty feed and look like a clean close. A redirect must fail
+            # loudly instead, and the bearer token must never follow a Location.
+            if not resp.is_success:
                 resp.read()
                 _raise_for_error(resp)
             cut = _DeadlineCut(resp, deadline)
@@ -4829,8 +4834,8 @@ class ApiClient:
             # Strict 2xx here, not the >=400 the JSON paths use: httpx
             # doesn't follow redirects by default, and a 3xx body written
             # to disk would masquerade as a complete backup. The JSON
-            # paths already fail loudly on 3xx (body doesn't parse); this
-            # is the one path where a non-2xx body could pass silently.
+            # paths already fail loudly on 3xx (body doesn't parse); the
+            # streamed paths check success themselves for the same reason.
             if not resp.is_success:
                 # Materialize the body so the ApiError can carry a detail
                 # message — same dance as the other error paths.
