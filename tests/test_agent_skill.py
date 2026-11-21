@@ -56,6 +56,7 @@ _API_NOUNS = frozenset(
         "apps",
         "comments",
         "notes",
+        "blog",
     }
 )
 _NEEDS_PROFILE = _API_NOUNS | {"login", "logout", "whoami"}

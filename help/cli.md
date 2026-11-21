@@ -310,10 +310,20 @@ ever want to look back at a specific conversation in detail.
   starts as a room note: `pepper notes create "<title>" --room <room> --file
   post.md`, where the note's name is the post's title and the file is the
   post's text, with no title heading at the top. Don't post an article as a
-  chat message: the Blog app only sees notes. Publishing it is a room owner's
-  step in the Blog app, on the web or in the app; the CLI can't publish,
-  withdraw or list posts yet. `pepper rooms show <room>` notes this under the
-  Blog app.
+  chat message: the Blog app only sees notes. If you own the room,
+  `pepper blog list --room <room>` shows the blog's posts and the notes not
+  yet published, and `pepper blog publish --room <room> <note>` publishes
+  one. It first shows what it found, like links that will turn into plain
+  words or text Pepper wrote that you haven't read, and asks before it goes
+  out. `pepper blog check` shows the same without publishing, and
+  `pepper blog withdraw --room <room> <post>` takes a post down. Publishing
+  the note again puts it back.
+- **Moving an old blog over:** create a note for each post, then publish it
+  with `--published-at` set to the day it first went out, like
+  `--published-at 2014-03-02T09:00:00-08:00`. The post keeps that date and
+  its address uses that day, and no card goes into the room's comments, so an
+  archive doesn't flood them. The date only works the first time a note is
+  published.
 <!-- /rollout -->
 - **A picture's alt text and captions:** `pepper notes image <picture>`
   prints the details Pepper keeps with a picture in a note: its alt text, title,

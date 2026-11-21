@@ -389,7 +389,7 @@ def test_rooms_show_hints_how_the_cli_drives_blog_and_notes(tmp_home, patch_api,
     lines = capsys.readouterr().out.splitlines()
     blog = lines.index("  Blog")
     assert "posts are room notes" in lines[blog + 1]
-    assert "publishes them in the Blog app" in lines[blog + 1]
+    assert "pepper blog list --room" in lines[blog + 1]
     notes = lines.index("  Notes")
     assert "pepper notes list --room <room>" in lines[notes + 1]
     todo = lines.index("  To-do")

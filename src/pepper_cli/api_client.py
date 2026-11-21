@@ -1492,6 +1492,35 @@ class GroupTopicSummary:
     subject_artifact_id: str | None = None
 
 
+# MIRROR: src/pepper/api/blog.py::PublishedOut
+@dataclass(frozen=True)
+class BlogPublished:
+    """``POST /api/v1/groups/{id}/blog/notes/{note}/publish``: the post the note became.
+
+    ``card`` is how the post's card in the room's comments topic went (``none`` for a post
+    dated in the past). ``copy`` is set only for a blog with a public room.
+    """
+
+    post_id: str
+    slug: str
+    url: str
+    republished: bool
+    card: str
+    copy: str | None = None
+
+
+# MIRROR: src/pepper/api/blog.py::WithdrawnOut
+@dataclass(frozen=True)
+class BlogWithdrawn:
+    """``POST /api/v1/groups/{id}/blog/posts/{post}/withdraw``. ``already`` means the post was
+    already withdrawn, so nothing changed."""
+
+    post_id: str
+    already: bool
+    card: str
+    copy: str | None = None
+
+
 # MIRROR: src/pepper/api/groups.py::list_groups
 # (route handler; untyped dict response, no snapshot schema)
 @dataclass(frozen=True)
@@ -4609,6 +4638,72 @@ class ApiClient:
         ).json()
         result = resp.get("result") or {}
         return str(result.get("name", ""))
+
+    def blog_posts(self, group_id: str) -> dict[str, Any]:
+        """``GET /api/v1/groups/{id}/blog/posts``: the room blog's posts and, for an owner, the
+        room's notes not yet published, as the server's own dict."""
+        body = self._request("GET", f"/api/v1/groups/{group_id}/blog/posts").json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return body
+
+    def blog_check(
+        self, group_id: str, note_id: str, *, published_at: str | None = None
+    ) -> dict[str, Any]:
+        """``GET /api/v1/groups/{id}/blog/notes/{note}/check``: what publishing the note would
+        do, and the ``source`` that :meth:`blog_publish` must hand back unchanged.
+        ``published_at`` previews the address a post dated then would get."""
+        params = {"published_at": published_at} if published_at else None
+        body = self._request(
+            "GET", f"/api/v1/groups/{group_id}/blog/notes/{note_id}/check", params=params
+        ).json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return body
+
+    def blog_publish(
+        self,
+        group_id: str,
+        note_id: str,
+        *,
+        source: str,
+        acknowledge: bool,
+        slug: str | None = None,
+        summary: str | None = None,
+        published_at: str | None = None,
+    ) -> BlogPublished:
+        """``POST /api/v1/groups/{id}/blog/notes/{note}/publish``. Optional fields are sent only
+        when given, so an omitted summary leaves the post's summary as it is."""
+        payload: dict[str, Any] = {"source": source, "acknowledge": acknowledge}
+        if slug is not None:
+            payload["slug"] = slug
+        if summary is not None:
+            payload["summary"] = summary
+        if published_at is not None:
+            payload["published_at"] = published_at
+        body = self._request(
+            "POST", f"/api/v1/groups/{group_id}/blog/notes/{note_id}/publish", json=payload
+        ).json()
+        return BlogPublished(
+            post_id=str(body["post_id"]),
+            slug=str(body["slug"]),
+            url=str(body["url"]),
+            republished=bool(body["republished"]),
+            card=str(body.get("card", "")),
+            copy=body.get("copy"),
+        )
+
+    def blog_withdraw(self, group_id: str, post_id: str) -> BlogWithdrawn:
+        """``POST /api/v1/groups/{id}/blog/posts/{post}/withdraw``: take a post down."""
+        body = self._request(
+            "POST", f"/api/v1/groups/{group_id}/blog/posts/{post_id}/withdraw"
+        ).json()
+        return BlogWithdrawn(
+            post_id=str(body["post_id"]),
+            already=bool(body["already"]),
+            card=str(body.get("card", "")),
+            copy=body.get("copy"),
+        )
 
     def list_apps(self) -> list[dict[str, Any]]:
         """``GET /api/v1/apps``: every app's summary (``slug``, ``title``, ``description``,

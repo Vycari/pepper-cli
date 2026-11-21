@@ -86,6 +86,8 @@ NOUNS = frozenset(
         "tui",
         # `fortune` is a session-style command like `whoami`: one local line, no object.
         "fortune",
+        # `blog` is the product's Blog app: a room's posts, published from its notes.
+        "blog",
     }
 )
 
@@ -174,6 +176,12 @@ VERBS = frozenset(
         "steer",
         "take",
         "reconsider",
+        # A room's blog: `check` reads what publishing a note would
+        # do, `publish` puts it on the blog, `withdraw` takes a post down (not a delete:
+        # publishing the note again brings it back).
+        "check",
+        "publish",
+        "withdraw",
     }
 )
 
@@ -730,7 +738,41 @@ _COMMENT_THREAD = {
     "replies": [],
 }
 
+_BLOG_POST = {
+    "id": _A,
+    "note_id": _NOTE,
+    "slug": "2026/10/01/runbook",
+    "title": "Runbook",
+    "url": "https://example.com/b/2026/10/01/runbook",
+    "published_at": "2026-10-01T12:00:00+00:00",
+    "updated_at": "2026-10-01T12:00:00+00:00",
+    "withdrawn": False,
+}
+_BLOG_CHECK = {
+    "note_id": _NOTE,
+    "title": "Runbook",
+    "slug": "2026/10/01/runbook",
+    "republish": False,
+    "source": "a.b.c",
+    "refusal": None,
+    "warnings": [],
+    "flattened_links": [],
+    "linked_posts": [],
+    "other_images": [],
+    "copied_images": 0,
+    "review": {"human_version_found": True, "diff": "", "body": ""},
+}
+
 ROUTES: dict[str, object] = {
+    f"/api/v1/groups/{_G}/blog/posts": {
+        "room_id": _G,
+        "enabled": True,
+        "may_publish": True,
+        "may_withdraw": True,
+        "posts": [_BLOG_POST],
+        "unpublished": [],
+    },
+    f"/api/v1/groups/{_G}/blog/notes/{_NOTE}/check": _BLOG_CHECK,
     "/api/v1/whoami": {"user_id": "u", "display_name": "U", "timezone": "UTC"},
     # `rooms poll`: an empty page, so JSON mode is a single cursor line like `rooms watch`'s.
     "/api/v1/groups/events": {"events": [], "next_after_id": 7},
@@ -992,6 +1034,18 @@ ROUTES: dict[str, object] = {
 
 #: Non-GET routes (POST, DELETE): the room post answers ``{"message": {...}}``.
 POST_ROUTES: dict[str, object] = {
+    f"/api/v1/groups/{_G}/blog/notes/{_NOTE}/publish": {
+        "post_id": _A,
+        "slug": "2026/10/01/runbook",
+        "url": "https://example.com/b/2026/10/01/runbook",
+        "republished": False,
+        "card": "posted",
+    },
+    f"/api/v1/groups/{_G}/blog/posts/{_A}/withdraw": {
+        "post_id": _A,
+        "already": False,
+        "card": "edited",
+    },
     "/api/v1/client/capabilities": {},
     "/api/v1/graph/merge": {"log_id": "l1", "survivor_id": "e2", "merged_id": "e1", "aliases": 1},
     "/api/v1/graph/merges/l1/undo": {
@@ -1285,6 +1339,10 @@ JSON_CASES: dict[str, list[str]] = {
     "notes create": ["notes", "create", "Runbook", "--file", "body.md"],
     "notes edit": ["notes", "edit", _NOTE, "--file", "body.md"],
     "notes delete": ["notes", "delete", _NOTE, "--yes"],
+    "blog list": ["blog", "list", "--room", _G],
+    "blog check": ["blog", "check", "--room", _G, _NOTE],
+    "blog publish": ["blog", "publish", "--room", _G, _NOTE, "--yes"],
+    "blog withdraw": ["blog", "withdraw", "--room", _G, _A, "--yes"],
     "notes image": ["notes", "image", _BLOB],
     "notes image-set": ["notes", "image-set", _BLOB, "--caption", "Lunch"],
     "notes image-suggest": ["notes", "image-suggest", _BLOB],
@@ -1379,6 +1437,8 @@ def _run(argv: list[str], capsys) -> tuple[int, str, str]:
 #: or ``--yes``, having written nothing. The personal case is turning a schedule on; in a room
 #: ``create``, ``run``, ``steer`` and ``edit --cron`` (``planning/research-projects.md`` §9.2).
 CONFIRMS = {
+    "blog publish": ["blog", "publish", "--room", _G, _NOTE],
+    "blog withdraw": ["blog", "withdraw", "--room", _G, _A],
     "research-projects edit": ["research-projects", "edit", _RP, "--cron", "0 9 * * 0"],
     "research-projects edit --room": [
         "research-projects",

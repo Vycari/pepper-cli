@@ -552,15 +552,21 @@ title is the note's name, and its text is the note's Markdown body, with no fron
 - Draft a new post with `pepper --profile <name> notes create "<title>" --room <room> --file -`,
   or edit a note a member made for it with
   `pepper --profile <name> notes edit NOTE --room <room> --file -`.
-- Publishing, withdrawing and listing posts are steps a room owner takes in the Blog app, on the
-  web or in the app. The CLI has no command for them with any token, and the CLI's app commands
-  name no Blog actions: never guess an action name for something that publishes. When a draft is ready, say so in the room and let an owner publish
-  it. Publishing a note that is already a post updates that post rather than adding a second one.
-- Importing an existing blog: creating a note makes a new one every time, even when a note with
-  that name exists, so list the room's notes first with
-  `pepper --profile <name> notes list --room <room>` and skip the titles already there. A post's
-  date is the day an owner publishes it; there is no way yet to keep an older post's original
-  date, so say that before starting an import.
+- Publishing, withdrawing and listing posts are a room owner's steps. An agent token cannot take
+  them (the `blog` commands are in section 9), and the CLI's app commands name no Blog actions:
+  never guess an action name for something that publishes. When a draft is ready, say so in the
+  room and let an owner publish it. Publishing a note that is already a post updates that post
+  rather than adding a second one.
+- On a room owner's own token, the `blog` commands in section 9 list the blog, check a note,
+  publish it and withdraw a post. Publishing always runs the check first and shows what it found
+  (links that become plain words, images left as they are, text Pepper wrote that nobody has read
+  yet). Read it, or show it to the owner, before passing `--yes`: `--yes` says the owner read it.
+- Importing an existing blog on an owner's token: creating a note makes a new one every time,
+  even when a note with that name exists, so list the blog first (its posts, and its notes not yet
+  published) and skip the titles already there. Create each note, then publish it with
+  `--published-at` set to the original date, ISO 8601 with a time zone. The post's address takes
+  that day, and no card goes into the room's comments, so an archive does not flood it. A date
+  works on a first publish only; a post keeps the date it was first published under.
 
 `pepper fortune` prints a short fortune. It is local, needs no token and calls no server, so
 any profile can run it; it is only for fun.
@@ -583,6 +589,14 @@ is changed. That covers:
 - `pepper --profile <name> notes delete`: an agent member cannot delete a note, including one it
   created. Personal notes (any `notes` command without `--room`) and
   every other kind of artifact (images, links, files) are out of reach too.
+- A room's blog, for a room owner on their own token:
+  `pepper --profile <name> blog list --room <room>` (the posts, and the notes not yet published),
+  `pepper --profile <name> blog check --room <room> NOTE` (what publishing would do),
+  `pepper --profile <name> blog publish --room <room> NOTE` (with `--slug`, `--summary` and
+  `--published-at`; the check takes `--published-at` too, to preview the address) and
+  `pepper --profile <name> blog withdraw --room <room> POST`. Publishing and withdrawing ask
+  first, and need `--yes` without a terminal or with `--json`. A note the check refuses, or one
+  that changed since the check, exits 2 with the reason, and nothing is published.
 - Calendar publishing (`pepper calendar publish`, the private address another calendar app subscribes to, including the per-calendar titles switch that `set` offers for calendars shared with the person) and every other
   calendar command. They act on a person's own account, so only a person's own token reaches them.
 - `pepper graph list`, `pepper graph search`, `pepper graph show` and `pepper graph upcoming`: a person's own entity graph of the people in their mail and meetings. Read-only. `pepper graph entity ID` and `pepper graph catalog ID` (or `--scheme S --value V`) show one entity or catalog entry with its edges (`--history` adds closed ones; `pepper graph entity --room ROOM ID` reads a room's own page, for a member of a room on the `entity-graph-rooms` rollout); a timeout/error status exits 1, and only a person's own token reaches them. `pepper graph duplicates` suggests likely duplicate people; `pepper graph merge FROM_ID INTO_ID`, `pepper graph merges ID` (the log) and `pepper graph undo LOG_ID` join, list and undo merges; `pepper graph not-same A_ID B_ID` marks a pair as different people. `pepper graph households` lists shared-address households, changed with `household-create NAME ADDRESS [--member ID]`, `household-add`, `household-remove [--member ID]` and `household-dissolve [--into ID]`. These write to the graph: a refused write prints `Refused (<reason>)` (a 409 with the reason code in `detail`) and exits 1, and `--json` puts it on stderr with code `conflict`. `pepper graph me` lists the addresses the person marked as their own; `pepper graph me mark ENTITY_ID (--address A... | --all)` and `pepper graph me unmark ADDRESS` change them, and a refusal prints `Refused (<reason>)` and exits 1. Run a merge, household or me-mark change only when the person asked for it.
