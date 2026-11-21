@@ -375,10 +375,12 @@ def test_document_names_the_tempting_commands_as_unavailable() -> None:
         "rooms show",
         "notes create",
         "notes delete",
+        "blog list",
         "blog stage",
         "blog unschedule",
         "blog unstage",
         "blog publish",
+        "blog withdraw",
     ):
         assert f"`pepper --profile <name> {needle}`" in cannot, needle
     for flag in _AGENT_REFUSED_FLAGS:

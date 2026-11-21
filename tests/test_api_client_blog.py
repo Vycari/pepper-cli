@@ -99,3 +99,45 @@ def test_a_non_object_answer_is_a_malformed_response() -> None:
             api.get_blog_stage(_GID, _NID)
         with pytest.raises(api_client.ApiError):
             api.publish_blog_note(_GID, _NID, source="s")
+
+
+def test_publish_sends_published_at_verbatim() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["json"] = json.loads(request.content)
+        return httpx.Response(200, json={})
+
+    with _client(handler) as api:
+        api.publish_blog_note(_GID, _NID, source="s", published_at="2019-04-02 09:30")
+
+    assert seen["json"] == {"source": "s", "published_at": "2019-04-02 09:30"}
+
+
+def test_list_posts_and_withdraw_wire_shapes() -> None:
+    seen: list[tuple] = []
+    pid = "00000000-0000-0000-0000-0000000000f1"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path, request.content))
+        if request.method == "GET":
+            return httpx.Response(200, json={"posts": [], "unpublished": [], "future": 1})
+        return httpx.Response(200, json={"post_id": pid, "already": False, "card": "none"})
+
+    with _client(handler) as api:
+        listed = api.list_blog_posts(_GID)
+        gone = api.withdraw_blog_post(_GID, pid)
+
+    assert listed["future"] == 1 and gone["post_id"] == pid
+    assert seen == [
+        ("GET", f"/api/v1/groups/{_GID}/blog/posts", b""),
+        ("POST", f"/api/v1/groups/{_GID}/blog/posts/{pid}/withdraw", b""),
+    ]
+
+
+def test_list_and_withdraw_non_object_answers_are_malformed() -> None:
+    with _client(lambda r: httpx.Response(200, json=[1])) as api:
+        with pytest.raises(api_client.ApiError):
+            api.list_blog_posts(_GID)
+        with pytest.raises(api_client.ApiError):
+            api.withdraw_blog_post(_GID, "p")

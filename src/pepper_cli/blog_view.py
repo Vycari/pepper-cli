@@ -100,6 +100,55 @@ def _block(text: object) -> list[str]:
     return [f"  {line}" for line in sanitize_text(str(text or "")).splitlines()]
 
 
+def posts_lines(payload: dict[str, Any]) -> list[str]:
+    """The room's posts, one line each (title, address, date, tags), then the notes not yet posts.
+
+    Whatever the server sent is printed: ``scheduled_for`` only when it is there.
+    """
+    posts = payload.get("posts")
+    lines: list[str] = []
+    for post in posts if isinstance(posts, list) else []:
+        if not isinstance(post, dict):
+            continue
+        title = sanitize_line(str(post.get("title") or "(untitled)"))
+        address = sanitize_line(str(post.get("address") or post.get("slug") or "")) or "\u2014"
+        when = sanitize_line(str(post.get("published_at") or ""))
+        tags = []
+        if post.get("withdrawn"):
+            tags.append("withdrawn")
+        if post.get("edited_since"):
+            tags.append("note edited since")
+        if post.get("scheduled_for"):
+            tags.append(f"scheduled for {sanitize_line(str(post['scheduled_for']))}")
+        suffix = f"  [{', '.join(tags)}]" if tags else ""
+        lines.append(f"{title}  {address}  {when}{suffix}")
+        post_id = sanitize_line(str(post.get("id") or ""))
+        if post_id:
+            lines.append(f"  id {post_id}")
+    unpublished = payload.get("unpublished")
+    rows = [r for r in unpublished if isinstance(r, dict)] if isinstance(unpublished, list) else []
+    if rows:
+        lines.append("Not published yet:")
+        for row in rows:
+            title = sanitize_line(str(row.get("title") or "(untitled)"))
+            lines.append(f"  {title}  {sanitize_line(str(row.get('note_id') or ''))}")
+    return lines or ["No posts yet."]
+
+
+def withdrawn_lines(result: dict[str, Any]) -> list[str]:
+    """The result of a withdraw."""
+    lines = ["Already withdrawn." if result.get("already") else "Withdrawn."]
+    if result.get("card") == "unavailable" or result.get("copy") in (
+        "unavailable",
+        "links_unavailable",
+    ):
+        lines.append(
+            "The post is down, but its comments card or public-room copy could not be brought "
+            "in step just now. Withdraw again to try again."
+        )
+    return lines
+
+
 def published_lines(result: dict[str, Any]) -> list[str]:
     """The result of a publish: the address, and whether it was a first publish."""
     verb = "Republished" if result.get("republished") else "Published"

@@ -76,6 +76,31 @@ _PUBLISHED = {
 }
 
 
+_PID = "00000000-0000-0000-0000-0000000000f1"
+_POSTS = {
+    "posts": [
+        {
+            "id": _PID,
+            "title": "Hello World",
+            "slug": "2026/11/19/hello-world",
+            "published_at": "2026-11-19T10:00:00+00:00",
+            "withdrawn": False,
+            "edited_since": True,
+        },
+        {
+            "id": "00000000-0000-0000-0000-0000000000f2",
+            "title": "Old News",
+            "slug": "2019/04/02/old-news",
+            "published_at": "2019-04-02T16:30:00+00:00",
+            "withdrawn": True,
+            "edited_since": False,
+            "scheduled_for": "2026-12-01T09:00:00+00:00",
+        },
+    ],
+    "unpublished": [{"note_id": _NID, "title": "Draft"}],
+}
+
+
 class _FakeBlogApi:
     instances: list[_FakeBlogApi] = []
 
@@ -118,6 +143,14 @@ class _FakeBlogApi:
         self.calls.append(("delete_stage", group_id, note_id))
         self._result("deleted")
 
+    def list_blog_posts(self, group_id):
+        self.calls.append(("list_posts", group_id))
+        return self._result("posts")
+
+    def withdraw_blog_post(self, group_id, post_id):
+        self.calls.append(("withdraw", group_id, post_id))
+        return self._result("withdrawn")
+
     def publish_blog_note(self, group_id, note_id, **kwargs):
         self.calls.append(("publish", group_id, note_id, kwargs))
         return self._result("publish")
@@ -136,6 +169,8 @@ def patch_api(monkeypatch):
         canned.setdefault("stage", _stage())
         canned.setdefault("updated", _SCHEDULED)
         canned.setdefault("deleted", None)
+        canned.setdefault("posts", _POSTS)
+        canned.setdefault("withdrawn", {"post_id": _PID, "already": False, "card": "posted"})
         monkeypatch.setattr(api_client, "ApiClient", lambda **kw: _FakeBlogApi(**canned, **kw))
 
     return install
@@ -436,6 +471,7 @@ def test_publish_yes_checks_then_publishes_with_the_source(tmp_home, patch_api, 
         "acknowledge": True,
         "slug": None,
         "summary": None,
+        "published_at": None,
     }
 
 
@@ -678,3 +714,176 @@ def test_stage_show_prints_the_one_address_the_server_names(tmp_home, patch_api,
     # The check's own address (today's date, the title's name) is not shown beside it.
     assert "Address: 2026/11/21/my-post" in out
     assert out.count("Address:") == 1 and "hello-world" not in out
+
+
+# ---------------------------------------------------------------------------
+# list
+
+
+def test_list_prints_title_address_date_and_tags(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api()
+    assert cli.main(["blog", "list", "--room", _GID]) == 0
+    out = capsys.readouterr().out
+    assert "Hello World" in out and "2026/11/19/hello-world" in out
+    assert "2026-11-19T10:00:00+00:00" in out and "note edited since" in out
+    assert "withdrawn" in out and "scheduled for 2026-12-01T09:00:00+00:00" in out
+    assert "Not published yet:" in out and "Draft" in out
+    assert _api().sent("list_posts") == [("list_posts", _GID)]
+
+
+def test_list_omits_scheduled_for_when_the_server_does_not_send_it(
+    tmp_home, patch_api, capsys
+) -> None:
+    _login(tmp_home)
+    patch_api(posts={"posts": [_POSTS["posts"][0]], "unpublished": []})
+    assert cli.main(["blog", "list", "--room", _GID]) == 0
+    out = capsys.readouterr().out
+    assert "scheduled" not in out and "Not published" not in out
+
+
+def test_list_empty_and_json_and_escapes(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(posts={"posts": [], "unpublished": []})
+    assert cli.main(["blog", "list", "--room", _GID]) == 0
+    assert "No posts yet." in capsys.readouterr().out
+    patch_api()
+    assert cli.main(["blog", "list", "--room", _GID, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "items": _POSTS["posts"],
+        "next_before": None,
+        "unpublished": _POSTS["unpublished"],
+    }
+    patch_api(posts={"posts": [{**_POSTS["posts"][0], "title": "Hi\x1b[31m"}]})
+    assert cli.main(["blog", "list", "--room", _GID]) == 0
+    assert "\x1b" not in capsys.readouterr().out
+
+
+def test_list_requires_a_room() -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["blog", "list"])
+    assert exc.value.code == 2
+
+
+def test_list_401_and_403_are_one_line(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(posts=_err(401))
+    assert cli.main(["blog", "list", "--room", _GID]) == 1
+    assert "need your own token" in capsys.readouterr().err
+    patch_api(posts=_err(403, "Only an owner"))
+    assert cli.main(["blog", "list", "--room", _GID]) == 1
+    assert "403" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# publish --published-at
+
+
+def test_publish_sends_published_at_as_typed(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(publish={**_PUBLISHED, "card": "none"})
+    when = "2019-04-02 09:30"  # not even valid ISO: the server decides, the CLI does not parse
+    argv = ["blog", "publish", "--room", _GID, _NID, "--yes", "--published-at", when]
+    assert cli.main(argv) == 0
+    assert _api().sent("publish")[0][3]["published_at"] == when
+
+
+def test_publish_without_published_at_sends_none(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api()
+    assert cli.main(["blog", "publish", "--room", _GID, _NID, "--yes"]) == 0
+    assert _api().sent("publish")[0][3]["published_at"] is None
+
+
+def test_publish_published_at_422_message_surfaces(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(publish=_err(422, "published_at must be in the past"))
+    argv = ["blog", "publish", "--room", _GID, _NID, "--yes", "--published-at", "2999-01-01T00:00Z"]
+    assert cli.main(argv) == 1
+    assert "published_at must be in the past" in capsys.readouterr().err
+
+
+def test_publish_help_says_it_backdates_and_what_is_refused(capsys) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["blog", "publish", "--help"])
+    text = " ".join(capsys.readouterr().out.split())
+    assert "Backdate an import" in text and "future" in text and "republish" in text
+
+
+# ---------------------------------------------------------------------------
+# withdraw
+
+
+def test_withdraw_yes_by_id_posts_without_listing(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api()
+    assert cli.main(["blog", "withdraw", "--room", _GID, _PID, "--yes"]) == 0
+    assert _api().sent("withdraw") == [("withdraw", _GID, _PID)]
+    assert _api().sent("list_posts") == []
+    assert "Withdrawn." in capsys.readouterr().out
+
+
+def test_withdraw_resolves_title_or_address(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api()
+    for value in ("hello world", "2026/11/19/hello-world"):
+        assert cli.main(["blog", "withdraw", "--room", _GID, value, "--yes"]) == 0
+        assert _api().sent("withdraw") == [("withdraw", _GID, _PID)]
+
+
+def test_withdraw_unknown_and_ambiguous_titles_are_exit_2(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api()
+    assert cli.main(["blog", "withdraw", "--room", _GID, "Nope", "--yes"]) == 2
+    assert "no post" in capsys.readouterr().err
+    dup = {"posts": [_POSTS["posts"][0], {**_POSTS["posts"][1], "title": "Hello World"}]}
+    patch_api(posts=dup)
+    assert cli.main(["blog", "withdraw", "--room", _GID, "Hello World", "--yes"]) == 2
+    assert "more than one post" in capsys.readouterr().err
+    assert _api().sent("withdraw") == []
+
+
+def test_withdraw_confirm_yes_and_no(tmp_home, patch_api, monkeypatch, capsys) -> None:
+    _login(tmp_home)
+    patch_api()
+    asked = _tty(monkeypatch, "n")
+    assert cli.main(["blog", "withdraw", "--room", _GID, _PID]) == 0
+    assert "Aborted." in capsys.readouterr().err
+    assert _api().sent("withdraw") == [] and "Withdraw" in asked[0]
+    _tty(monkeypatch, "y")
+    patch_api()
+    assert cli.main(["blog", "withdraw", "--room", _GID, _PID]) == 0
+    assert len(_api().sent("withdraw")) == 1
+
+
+def test_withdraw_without_terminal_or_under_json_needs_yes(
+    tmp_home, patch_api, monkeypatch, capsys
+) -> None:
+    _login(tmp_home)
+    patch_api()
+    _tty(monkeypatch, None)
+    assert cli.main(["blog", "withdraw", "--room", _GID, _PID]) == 2
+    assert cli.main(["blog", "withdraw", "--room", _GID, _PID, "--json"]) == 2
+    assert "--yes" in capsys.readouterr().err
+    assert _api().sent("withdraw") == []
+
+
+def test_withdraw_json_prints_the_answer_and_notes_already(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    answer = {"post_id": _PID, "already": True, "card": "unavailable"}
+    patch_api(withdrawn=answer)
+    assert cli.main(["blog", "withdraw", "--room", _GID, _PID, "--yes", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == answer
+    assert cli.main(["blog", "withdraw", "--room", _GID, _PID, "--yes"]) == 0
+    out = capsys.readouterr().out
+    assert "Already withdrawn." in out and "could not be brought in step" in out
+
+
+def test_withdraw_errors_are_one_line(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(withdrawn=_err(404, "No such post"))
+    assert cli.main(["blog", "withdraw", "--room", _GID, _PID, "--yes"]) == 2
+    assert "No such post" in capsys.readouterr().err
+    patch_api(withdrawn=_err(401))
+    assert cli.main(["blog", "withdraw", "--room", _GID, _PID, "--yes"]) == 1
+    assert "need your own token" in capsys.readouterr().err

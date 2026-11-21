@@ -66,10 +66,11 @@ Subcommands:
   ``edit`` sends nothing when the text is unchanged and runs the
   conflict flow (save + diff + re-open/overwrite/quit) on a stale
   ``If-Match``. ``delete`` asks before deleting unless ``--yes``.
-- ``pepper blog stage | unschedule | unstage | publish --room ROOM NOTE`` — publish a room note to
-  the room's blog. ``stage`` shows the publish check and the saved stage, or saves a slug, summary
-  or ``--at`` time; ``publish`` shows the check, asks y/N (``--yes`` skips it) and publishes with
-  the check's ``source`` token. A person's token only.
+- ``pepper blog list | stage | unschedule | unstage | publish | withdraw --room ROOM`` — a room's
+  blog. ``list`` shows its posts; ``stage`` shows the publish check and the saved stage, or saves
+  a slug, summary or ``--at`` time; ``publish`` shows the check, asks y/N (``--yes`` skips it) and
+  publishes with the check's ``source`` token (``--published-at`` backdates an import);
+  ``withdraw POST`` takes a post down (asks first). A person's token only.
 - ``pepper brief [--date YYYY-MM-DD | --now]`` — your morning brief, read from the server's
   Brief document in the order it sends; ``--now`` runs a fresh one.
 - ``pepper feed list | show`` and ``pepper following list | show | search | create | delete`` — the
@@ -2415,8 +2416,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "blog",
         help="Publish a room note to the room's blog. ``stage`` it, then ``publish``.",
         description=(
-            "Publish a note of a room you own to that room's blog. `stage` shows what publishing "
-            "would do and what to review first, and saves the address, summary and a time to "
+            "Publish a note of a room you own to that room's blog, list its posts and withdraw "
+            "one. `stage` shows what publishing would do and what to review first, and saves the "
+            "address, summary and a time to "
             "publish; `publish` shows the check, asks, and publishes exactly what it showed. "
             "Needs your own token (an agent token is refused), the blog app installed in the "
             "room, and the blog rollout."
@@ -2489,7 +2491,38 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
             "readers get an excerpt."
         ),
     )
+    p_blog_publish.add_argument(
+        "--published-at",
+        metavar="ISO",
+        help=(
+            "Backdate an import: date the post as of this time, e.g. 2019-04-02T09:30:00-07:00 "
+            "(ISO 8601 with a zone), sent as typed. The post's address takes that day and it "
+            "gets no comments card. The server refuses a time in the future and a republish "
+            "(a post keeps the date it was first published under), and says so."
+        ),
+    )
     p_blog_publish.set_defaults(handler=cmd_blog_publish)
+
+    p_blog_list = sub_blog.add_parser(
+        "list",
+        help="List the room's blog posts and the notes not yet published.",
+        parents=[_json_parent],
+    )
+    p_blog_list.add_argument("--room", required=True, help=_ROOM_ARG_HELP)
+    p_blog_list.set_defaults(handler=cmd_blog_list)
+
+    p_blog_withdraw = sub_blog.add_parser(
+        "withdraw",
+        help="Take a published post down from the blog (asks first).",
+        parents=[_yes_parent, _json_parent],
+    )
+    p_blog_withdraw.add_argument(
+        "post",
+        metavar="POST",
+        help="The post's id, or its exact title or address (as 'blog list' shows them).",
+    )
+    p_blog_withdraw.add_argument("--room", required=True, help=_ROOM_ARG_HELP)
+    p_blog_withdraw.set_defaults(handler=cmd_blog_withdraw)
 
     p_comments = sub.add_parser(
         "comments",
@@ -9585,10 +9618,103 @@ def cmd_blog_publish(args: argparse.Namespace) -> int:
             acknowledge=True,
             slug=args.slug,
             summary=args.summary,
+            published_at=args.published_at,
         )
 
         def human() -> None:
             for line in blog_view.published_lines(result):
+                render.out_text(line, soft_wrap=True)
+
+        _emit(result, args, human)
+        return 0
+
+    return _with_api(run, _report_blog_api_error, args)
+
+
+def cmd_blog_list(args: argparse.Namespace) -> int:
+    """``pepper blog list --room ROOM [--json]``: ``GET .../blog/posts``. ``--json`` is the list
+    envelope: the server's ``posts`` as ``items``, and its other keys (``unpublished``, ...)
+    alongside."""
+
+    def run(api: api_client.ApiClient) -> int:
+        group_id = _need_group(api, args.room, args=args)
+        payload = api.list_blog_posts(group_id)
+
+        def human() -> None:
+            for line in blog_view.posts_lines(payload):
+                render.out_text(line, soft_wrap=True)
+
+        posts = payload.get("posts")
+        meta = {k: v for k, v in payload.items() if k != "posts"}
+        _emit_list(posts if isinstance(posts, list) else [], args, human, **meta)
+        return 0
+
+    return _with_api(run, _report_blog_api_error, args)
+
+
+def _resolve_blog_post(
+    posts: list[Any], value: str, args: argparse.Namespace
+) -> dict[str, Any] | None:
+    """The post named by ``value``: its id, else its one exact title or address (any case).
+
+    More than one post by that title (a withdrawn one and its replacement, say) is ambiguous and
+    refused with the ids, rather than picking one to take down.
+    """
+    rows = [p for p in posts if isinstance(p, dict)]
+    by_id = [p for p in rows if str(p.get("id")) == value]
+    if by_id:
+        return by_id[0]
+    wanted = value.casefold()
+    found = [
+        p
+        for p in rows
+        if wanted in (str(p.get("title") or "").casefold(), str(p.get("slug") or "").casefold())
+        or wanted == str(p.get("address") or "").casefold()
+    ]
+    if len(found) == 1:
+        return found[0]
+    if found:
+        ids = ", ".join(str(p.get("id")) for p in found)
+        _emit_error(args, "ambiguous", f"more than one post matches {value!r}; use its id ({ids})")
+    else:
+        _emit_error(args, "not_found", f"no post {value!r} in this room's blog (see 'blog list')")
+    return None
+
+
+def cmd_blog_withdraw(args: argparse.Namespace) -> int:
+    """``pepper blog withdraw --room ROOM POST [--yes] [--json]``: ``POST .../posts/{id}/withdraw``.
+
+    POST is an id (sent as given, the server 404s a wrong one) or an exact title or address
+    found in ``GET .../posts``. Taking a public post down asks y/N; ``--yes`` skips it and it is
+    required without a terminal or under ``--json``. A declined question exits 0 with
+    ``Aborted.``. ``--json`` prints the server's answer unchanged.
+    """
+
+    def run(api: api_client.ApiClient) -> int:
+        group_id = _need_group(api, args.room, args=args)
+        if _valid_uuid(args.post):
+            post_id, title = args.post, args.post
+        else:
+            post = _resolve_blog_post(
+                api.list_blog_posts(group_id).get("posts") or [], args.post, args
+            )
+            if post is None:
+                return 2
+            post_id = str(post.get("id"))
+            title = sanitize_line(str(post.get("title") or post_id))
+        if (
+            code := _confirm_destructive(
+                args,
+                f"Withdraw {title!r} from the blog? It stops being shown to readers.",
+                yes=args.yes,
+                refusal="withdrawing takes a post down; pass --yes to withdraw without a prompt",
+            )
+        ) is not None:
+            return code
+        result = api.withdraw_blog_post(group_id, post_id)
+
+        def human() -> None:
+            for line in blog_view.withdrawn_lines(result):
                 render.out_text(line, soft_wrap=True)
 
         _emit(result, args, human)

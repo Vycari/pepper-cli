@@ -4663,6 +4663,7 @@ class ApiClient:
         acknowledge: bool = False,
         slug: str | None = None,
         summary: str | None = None,
+        published_at: str | None = None,
     ) -> dict[str, Any]:
         """``POST /api/v1/groups/{group_id}/blog/notes/{note_id}/publish`` — publish (or
         republish) the note as the check (``GET .../stage``, under ``check``) that returned
@@ -4671,8 +4672,9 @@ class ApiClient:
         ``slug`` is a bare name, honoured on a first publish only; the server puts a
         ``YYYY/MM/DD/`` prefix in front. ``summary`` is validated server-side (at most 280
         characters). Both are left out of the body when ``None``; ``acknowledge`` is sent only
-        when true. 409 when the note changed since the check, or the check had findings and
-        ``acknowledge`` is not true.
+        when true. ``published_at`` is sent exactly as given (the server parses it) and dates an
+        imported post: 422 for a future time, a time without a zone, or a republish. 409 when the
+        note changed since the check, or the check had findings and ``acknowledge`` is not true.
         """
         payload: dict[str, Any] = {"source": source}
         if acknowledge:
@@ -4681,8 +4683,29 @@ class ApiClient:
             payload["slug"] = slug
         if summary is not None:
             payload["summary"] = summary
+        if published_at is not None:
+            payload["published_at"] = published_at
         body = self._request(
             "POST", f"/api/v1/groups/{group_id}/blog/notes/{note_id}/publish", json=payload
+        ).json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return body
+
+    def list_blog_posts(self, group_id: str) -> dict[str, Any]:
+        """``GET /api/v1/groups/{group_id}/blog/posts`` — the room's posts (``id``, ``slug``,
+        ``title``, ``url``, ``published_at``, ``withdrawn``, ``edited_since``, ...) newest first,
+        and the ``unpublished`` notes. A person's token only; owner-only routes answer 403."""
+        body = self._request("GET", f"/api/v1/groups/{group_id}/blog/posts").json()
+        if not isinstance(body, dict):
+            raise ApiError(status=200, body=str(body), detail="malformed response")
+        return body
+
+    def withdraw_blog_post(self, group_id: str, post_id: str) -> dict[str, Any]:
+        """``POST /api/v1/groups/{group_id}/blog/posts/{post_id}/withdraw`` — take a post down.
+        Answers ``post_id``, ``already`` (it was withdrawn before), ``card`` and ``copy``."""
+        body = self._request(
+            "POST", f"/api/v1/groups/{group_id}/blog/posts/{post_id}/withdraw"
         ).json()
         if not isinstance(body, dict):
             raise ApiError(status=200, body=str(body), detail="malformed response")

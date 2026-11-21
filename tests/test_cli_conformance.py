@@ -109,6 +109,8 @@ VERBS = frozenset(
         "unschedule",
         "unstage",
         "publish",
+        # `blog withdraw POST` takes a published post down (it asks, so it takes `--yes`).
+        "withdraw",
         "search",
         "watch",
         # `poll` is `watch` as one bounded read (`rooms poll`): the page, the cursor, exit.
@@ -186,7 +188,7 @@ VERBS = frozenset(
 )
 
 #: §3.1: these prompt on a TTY and need ``--yes`` otherwise.
-DESTRUCTIVE = frozenset({"delete", "remove", "revoke", "uninstall", "leave"})
+DESTRUCTIVE = frozenset({"delete", "remove", "revoke", "uninstall", "leave", "withdraw"})
 
 # ---------------------------------------------------------------------------
 # Exemptions (permanent) and pending lists (shrink to empty by phase 3)
@@ -827,6 +829,7 @@ ROUTES: dict[str, object] = {
     "/api/v1/skills": [_SKILL],
     "/api/v1/skills/triage": _SKILL_FULL,
     f"/api/v1/groups/{_G}/blog/notes/{_NOTE}/stage": _BLOG_STAGE,
+    f"/api/v1/groups/{_G}/blog/posts": {"posts": [], "unpublished": []},
     f"/api/v1/groups/{_G}/skills": [_GRANT_ROW],
     f"/api/v1/groups/{_G}/skills/{_GRANT}": {**_GRANT_ROW, "skill": _SKILL_FULL},
     "/api/v1/scheduled-tasks": [_TASK_ROW],
@@ -1033,6 +1036,12 @@ POST_ROUTES: dict[str, object] = {
         k: v for k, v in _BLOG_STAGE.items() if k != "check"
     },
     "/api/v1/client/capabilities": {},
+    f"/api/v1/groups/{_G}/blog/posts/{_P}/withdraw": {
+        "post_id": _P,
+        "already": False,
+        "card": "posted",
+        "copy": None,
+    },
     f"/api/v1/groups/{_G}/blog/notes/{_NOTE}/publish": {
         "post_id": _P,
         "slug": "2026/10/01/runbook",
@@ -1339,6 +1348,8 @@ JSON_CASES: dict[str, list[str]] = {
     "blog unschedule": ["blog", "unschedule", _NOTE, "--room", _G],
     "blog unstage": ["blog", "unstage", _NOTE, "--room", _G],
     "blog publish": ["blog", "publish", _NOTE, "--room", _G, "--yes"],
+    "blog list": ["blog", "list", "--room", _G],
+    "blog withdraw": ["blog", "withdraw", _P, "--room", _G, "--yes"],
     "comments list": ["comments", "list", "--note", _NOTE],
     "comments resolve": ["comments", "resolve", "--note", _NOTE, "m1"],
     "comments reopen": ["comments", "reopen", "--note", _NOTE, "m1"],
@@ -1430,6 +1441,7 @@ def _run(argv: list[str], capsys) -> tuple[int, str, str]:
 #: or ``--yes``, having written nothing. The personal case is turning a schedule on; in a room
 #: ``create``, ``run``, ``steer`` and ``edit --cron`` (``planning/research-projects.md`` §9.2).
 CONFIRMS = {
+    "blog withdraw": ["blog", "withdraw", _P, "--room", _G],
     "research-projects edit": ["research-projects", "edit", _RP, "--cron", "0 9 * * 0"],
     "research-projects edit --room": [
         "research-projects",
