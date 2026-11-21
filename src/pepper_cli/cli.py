@@ -9488,8 +9488,9 @@ def cmd_blog_stage(args: argparse.Namespace) -> int:
     No flags: ``GET .../stage``, which carries the publish check, and print the check followed by
     the saved stage (a read; nothing changes). With flags: the same read, the check shown on
     stderr, then ``PATCH .../stage`` with only the flags given. ``--at`` is sent exactly as typed;
-    the server parses it. Scheduling is a public act, so ``--at`` stops on a refused check (exit
-    1, nothing saved), asks y/N (``--yes`` skips it; required off a terminal and under
+    the server parses it. Scheduling is a public act, so ``--at`` first saves any slug or summary
+    given, shows the check and the address and summary the post will get on that day (the stage
+    read with ``publish_at``), stops on a refused check (exit 1, no time saved), asks y/N (``--yes`` skips it; required off a terminal and under
     ``--json``) and sends ``acknowledge: true`` only after that yes. A declined question exits 0
     with ``Aborted.``. Exit 0 ok, 1 auth/API (409 refusal, 422 bad time), 2 bad input.
     """
@@ -9505,7 +9506,8 @@ def cmd_blog_stage(args: argparse.Namespace) -> int:
         target = _blog_note(api, args)
         if target is None:
             return 2
-        stage = api.get_blog_stage(*target)
+        # With --at the stage is read below, after any slug or summary is saved, at that time.
+        stage: dict[str, Any] = api.get_blog_stage(*target) if args.at is None else {}
         check = stage.get("check")
         if not changes:
             if _json_mode(args):
@@ -9516,9 +9518,19 @@ def cmd_blog_stage(args: argparse.Namespace) -> int:
                     render.out_text(line, soft_wrap=True)
             _print_blog_stage(stage, args)
             return 0
+        if args.at is not None:
+            # Slug and summary first, then the stage read at that time, so the address and summary
+            # shown before the question are the server's for what is being scheduled.
+            if words := {k: v for k, v in changes.items() if k in ("slug", "summary")}:
+                api.update_blog_stage(*target, words)
+            stage = api.get_blog_stage(*target, publish_at=args.at)
+            check = stage.get("check")
         if isinstance(check, dict) and not _json_mode(args):
             for line in blog_view.check_lines(check, with_address=False):
                 render.info(line, soft_wrap=True)
+            if args.at is not None:
+                for line in blog_view.stage_lines(stage, with_schedule=False):
+                    render.info(line, soft_wrap=True)
         if args.at is not None:
             if isinstance(check, dict) and check.get("refusal"):
                 _emit_error(args, "conflict", str(check["refusal"]), status=409)

@@ -153,6 +153,8 @@ def test_get_stage_sends_published_at_as_typed_only_when_given() -> None:
     with _client(handler) as api:
         api.get_blog_stage(_GID, _NID)
         api.get_blog_stage(_GID, _NID, published_at="2014-03-02 17:00+01:00")
+        api.get_blog_stage(_GID, _NID, publish_at="2026-12-01 09:00")
 
     assert queries[0] == ""
     assert httpx.QueryParams(queries[1])["published_at"] == "2014-03-02 17:00+01:00"
+    assert dict(httpx.QueryParams(queries[2])) == {"publish_at": "2026-12-01 09:00"}

@@ -108,6 +108,7 @@ class _FakeBlogApi:
         self._canned = canned
         self.calls: list[tuple] = []
         self.stage_reads: list[str | None] = []
+        self.schedule_previews: list[str | None] = []
         _FakeBlogApi.instances.append(self)
 
     def __enter__(self):
@@ -131,9 +132,10 @@ class _FakeBlogApi:
         self.calls.append(("list_artifacts", principal, name, name_prefix))
         return self._result("notes")
 
-    def get_blog_stage(self, group_id, note_id, published_at=None):
+    def get_blog_stage(self, group_id, note_id, published_at=None, publish_at=None):
         self.calls.append(("get_stage", group_id, note_id))
         self.stage_reads.append(published_at)
+        self.schedule_previews.append(publish_at)
         updated = self._canned.get("updated")
         if self.sent("update_stage") and isinstance(updated, dict) and "check" in updated:
             return updated  # the read-back after a PATCH sees what was saved
@@ -385,6 +387,42 @@ def test_stage_at_declined_saves_nothing(tmp_home, patch_api, monkeypatch, capsy
     assert cli.main(["blog", "stage", "--room", _GID, _NID, "--at", "2026-11-21 09:00"]) == 0
     assert "Aborted." in capsys.readouterr().err
     assert not _api().sent("update_stage")
+
+
+def test_stage_at_shows_the_address_and_summary_before_asking(
+    tmp_home, patch_api, monkeypatch, capsys
+) -> None:
+    _login(tmp_home)
+    patch_api(stage={**_stage(summary="Saved."), "address": "2026/12/01/hello-world"})
+    prompts = _tty(monkeypatch, "n")
+    assert cli.main(["blog", "stage", "--room", _GID, _NID, "--at", "2026-12-01 09:00"]) == 0
+    api = _api()
+    assert api.schedule_previews == ["2026-12-01 09:00"]  # the address is that day's
+    err = capsys.readouterr().err
+    assert err.index("Address: 2026/12/01/hello-world") < err.index("Aborted.")
+    assert "Summary: Saved." in err
+    assert "Not scheduled" not in err
+    assert prompts
+
+
+def test_stage_at_with_a_slug_saves_it_first_so_the_preview_shows_it(
+    tmp_home, patch_api, monkeypatch, capsys
+) -> None:
+    _login(tmp_home)
+    staged = {**_stage(slug="mine"), "address": "2026/12/01/mine", "check": _check()}
+    patch_api(updated=staged)
+    rc = cli.main(
+        [
+            "blog", "stage", "--room", _GID, _NID,
+            "--slug", "mine", "--at", "2026-12-01 09:00", "--yes",
+        ]
+    )  # fmt: skip
+    assert rc == 0
+    api = _api()
+    assert [c[0] for c in api.calls[-3:]] == ["update_stage", "get_stage", "update_stage"]
+    assert api.sent("update_stage")[0][3] == {"slug": "mine"}
+    assert api.sent("update_stage")[1][3]["publish_at"] == "2026-12-01 09:00"
+    assert "Address: 2026/12/01/mine" in capsys.readouterr().err
 
 
 def test_stage_at_refused_check_exits_1_without_saving(tmp_home, patch_api, capsys) -> None:

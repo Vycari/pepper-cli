@@ -71,7 +71,7 @@ def check_lines(check: dict[str, Any], *, with_address: bool = True) -> list[str
     return lines
 
 
-def stage_lines(stage: dict[str, Any]) -> list[str]:
+def stage_lines(stage: dict[str, Any], *, with_schedule: bool = True) -> list[str]:
     """The address a publish would use, the saved summary and the schedule, as the server sent them.
 
     ``address`` is the server's whole address (the date the post will carry and the saved name);
@@ -87,6 +87,8 @@ def stage_lines(stage: dict[str, Any]) -> list[str]:
     summary = sanitize_line(str(saved if saved is not None else check.get("summary") or ""))
     excerpt = "(none; readers get an excerpt)"
     lines = [f"Address: {address}", f"Summary: {summary or excerpt}"]
+    if not with_schedule:
+        return lines
     when = stage.get("publish_at_display")
     if when:
         lines.append(f"Scheduled: {sanitize_line(str(when))}")
