@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -192,21 +193,30 @@ def _run_pr_tail(
     return log.read_text()
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("bash") is None,
+    reason="runs the workflow shell with POSIX stub tools",
+)
 def test_a_draft_someone_converted_is_neither_readied_nor_armed(tmp_path: Path) -> None:
     calls = _run_pr_tail(tmp_path, existing="42", converted=True)
     assert "pr ready" not in calls
     assert "pr merge" not in calls
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("bash") is None,
+    reason="runs the workflow shell with POSIX stub tools",
+)
 def test_the_jobs_own_orphaned_draft_is_readied_and_armed(tmp_path: Path) -> None:
     calls = _run_pr_tail(tmp_path, existing="42", converted=False).splitlines()
     ready = calls.index("pr ready 42")
     assert calls.index("pr merge 42 --auto --squash --match-head-commit deadbeef") > ready
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("bash") is None,
+    reason="runs the workflow shell with POSIX stub tools",
+)
 @pytest.mark.parametrize(
     ("value", "off"),
     [
