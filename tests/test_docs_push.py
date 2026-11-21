@@ -135,7 +135,9 @@ def test_docs_push_workflow_labels_and_arms_auto_merge() -> None:
     assert step["env"]["AUTO_MERGE"] == "${{ vars.DOCS_SYNC_AUTO_MERGE }}"
 
 
-def _run_pr_tail(tmp_path: Path, *, existing: str, converted: bool, auto_merge: str = "") -> str:
+def _run_pr_tail(
+    tmp_path: Path, *, existing: str, converted: bool, auto_merge: str = "", draft: bool = True
+) -> str:
     """Run the step's real PR handling (from the edit-or-create branch on) against a stub `gh`.
 
     Returns the `gh` calls it made, one per line. The PR is a draft; `converted` decides
@@ -161,10 +163,11 @@ def _run_pr_tail(tmp_path: Path, *, existing: str, converted: bool, auto_merge: 
     bin_dir.mkdir()
     log = tmp_path / "gh.log"
     timeline = "convert_to_draft" if converted else ""
+    is_draft = "true" if draft else "false"
     (bin_dir / "gh").write_text(
         f'#!/bin/sh\necho "$*" >> "{log}"\n'
         'case "$1 $2" in\n'
-        '  "pr view") case "$*" in *isDraft*) echo true ;; *) echo false ;; esac ;;\n'
+        f'  "pr view") case "$*" in *isDraft*) echo {is_draft} ;; *) echo false ;; esac ;;\n'
         f'  "api "*) [ -n "{timeline}" ] && echo {timeline} ;;\n'
         '  "pr create") echo 77 ;;\n'
         "esac\nexit 0\n"
@@ -201,3 +204,23 @@ def test_the_jobs_own_orphaned_draft_is_readied_and_armed(tmp_path: Path) -> Non
     calls = _run_pr_tail(tmp_path, existing="42", converted=False).splitlines()
     ready = calls.index("pr ready 42")
     assert calls.index("pr merge 42 --auto --squash --match-head-commit deadbeef") > ready
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.parametrize(
+    ("value", "off"),
+    [
+        ("", False),
+        ("true", False),
+        ("1", False),
+        ("false", True),
+        (" OFF ", True),
+        ("No", True),
+        ("0", True),
+    ],
+)
+def test_the_kill_switch_reads_its_value(tmp_path: Path, value: str, *, off: bool) -> None:
+    calls = _run_pr_tail(tmp_path, existing="42", converted=False, auto_merge=value, draft=False)
+    armed = "pr merge 42 --auto" in calls
+    assert armed is not off
+    assert ("pr merge 42 --disable-auto" in calls) is off
