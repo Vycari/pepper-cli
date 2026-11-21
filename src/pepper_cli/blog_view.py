@@ -12,7 +12,7 @@ from pepper_cli.api_client import BlogPublished, BlogWithdrawn
 from pepper_cli.render import local_stamp as _stamp
 from pepper_cli.render import one_line as _s
 from pepper_cli.render import out_line as _line
-from pepper_cli.render import out_text
+from pepper_cli.render import out_text, warning
 
 
 def posts(body: dict[str, Any]) -> None:
@@ -97,12 +97,37 @@ def _card(card: str) -> str:
     }.get(card, "")
 
 
+#: Results that did not go through. The post itself stands either way.
+_CARD_WARNING = (
+    "The post's card in the room's comments couldn't be updated; publishing or withdrawing "
+    "again tries again."
+)
+_COPY_WARNINGS = {
+    "unavailable": (
+        "The post's copy in the public room couldn't be updated; publishing or withdrawing "
+        "again tries again."
+    ),
+    "links_unavailable": (
+        "The post's copy in the public room is up to date, but other posts that link to it "
+        "couldn't be; publishing or withdrawing again tries again."
+    ),
+}
+
+
+def _warn_partial(card: str, copy: str | None) -> None:
+    if card == "unavailable":
+        warning(_CARD_WARNING)
+    if copy in _COPY_WARNINGS:
+        warning(_COPY_WARNINGS[copy])
+
+
 def published(result: BlogPublished) -> None:
     verb = "Republished" if result.republished else "Published"
     _line(f"[bold]{verb}[/bold] {_s(result.slug)}")
     out_text(result.url, soft_wrap=True)
     if note := _card(result.card):
         _line(f"[dim]{note}[/dim]")
+    _warn_partial(result.card, result.copy)
 
 
 def withdrawn(result: BlogWithdrawn) -> None:
@@ -110,3 +135,4 @@ def withdrawn(result: BlogWithdrawn) -> None:
         _line("That post was already withdrawn.")
     else:
         _line("Withdrawn. Publishing the note again puts it back at the same address.")
+    _warn_partial(result.card, result.copy)

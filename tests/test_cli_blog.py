@@ -240,3 +240,36 @@ def test_without_yes_off_a_terminal_room_and_note_names_are_never_looked_up(
     assert cli.main(["blog", "publish", "--room", "Trip", "Letter"]) == 2
     assert cli.main(["blog", "withdraw", "--room", "Trip", _POST]) == 2
     assert capsys.readouterr().err.count("--yes") == 2
+
+
+def test_a_card_or_public_copy_that_did_not_go_through_is_a_warning(capsys) -> None:
+    from pepper_cli import blog_view
+
+    blog_view.published(
+        api_client.BlogPublished(
+            post_id=_POST, slug="s", url="u", republished=False, card="unavailable", copy="written"
+        )
+    )
+    blog_view.withdrawn(
+        api_client.BlogWithdrawn(post_id=_POST, already=False, card="edited", copy="unavailable")
+    )
+    blog_view.withdrawn(
+        api_client.BlogWithdrawn(
+            post_id=_POST, already=False, card="edited", copy="links_unavailable"
+        )
+    )
+    err = capsys.readouterr().err
+    assert "card in the room's comments couldn't be updated" in err
+    assert "copy in the public room couldn't be updated" in err
+    assert "other posts that link to it" in err
+
+
+def test_a_clean_publish_prints_no_warning(capsys) -> None:
+    from pepper_cli import blog_view
+
+    blog_view.published(
+        api_client.BlogPublished(
+            post_id=_POST, slug="s", url="u", republished=False, card="posted", copy="written"
+        )
+    )
+    assert capsys.readouterr().err == ""
