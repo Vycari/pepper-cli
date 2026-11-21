@@ -5715,6 +5715,17 @@
             "default": false,
             "type": "boolean"
           },
+          "group_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "person_id": {
             "format": "uuid",
             "type": "string"
