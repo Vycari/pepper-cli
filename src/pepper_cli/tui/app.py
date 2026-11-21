@@ -314,9 +314,9 @@ class PepperApp(App[None]):
         #: there lands on them and ends the opening. ``_open_pages`` counts the older pages
         #: read to reach the cursor.
         self._opening = False
-        #: The rail has answered once, so its unread rows and cursors are known. A topic whose
-        #: first page lands before that cannot tell if it is unread: it marks nothing until the
-        #: answer arrives (``_opening_deferred``), then decides.
+        #: The rail's unread request has answered once, so unread rows and cursors are known.
+        #: A topic whose first page lands before that cannot tell if it is unread: it marks
+        #: nothing until the answer arrives (``_opening_deferred``), then decides.
         self._rail_seen = False
         self._opening_deferred = False
         self._open_cursor: datetime | None = None
@@ -848,8 +848,12 @@ class PepperApp(App[None]):
             snapshot=update.unread_answered,
         )
         self.marks.settle(self.rooms)
-        self._rail_seen = True
-        if self._opening_deferred:
+        # Only an unread answer (or a server with no such route) releases a deferred opening: a
+        # rail whose unread request failed says nothing about what is unread, and a later poll
+        # asks again.
+        if update.unread_answered or update.unread_missing:
+            self._rail_seen = True
+        if self._rail_seen and self._opening_deferred:
             self._resume_opening()
         if self._bell and (self.marks.mentioned_topics(self.rooms) - had - {self.current.topic_id}):
             self.bell()

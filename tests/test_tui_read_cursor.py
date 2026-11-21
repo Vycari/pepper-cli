@@ -319,3 +319,59 @@ async def test_a_first_page_that_beats_the_rail_marks_nothing_until_the_unread_a
             assert max(_put_rows(server)) < 39
     finally:
         gate.set()
+
+
+async def test_a_failed_unread_request_keeps_the_hold_until_a_poll_answers() -> None:
+    """Greptile P1: the rail's room list answering is not the unread answer. With the unread
+    route failing, nothing is marked and the topic is not opened at the foot; when a later poll
+    answers, it opens at the cursor."""
+    server = ts.standard_server()
+    _backlog(server)
+    server.fail["/api/v1/groups/unread"] = 500
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 20)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: app.loaded_topic and "row 39" in body_text(app))
+        await pilot.pause(0.5)
+        assert _put_rows(server) == []
+        del server.fail["/api/v1/groups/unread"]
+        app._rail.refetch_all()
+        app._run("rail")
+        await until(pilot, lambda: "new messages" in body_text(app))
+        await until(pilot, lambda: bool(_put_rows(server)))
+        assert max(_put_rows(server)) < 39
+
+
+async def test_a_reader_who_scrolls_before_the_landing_runs_keeps_their_place(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Greptile P2: the landing waits two refreshes for the layout; a scroll in that window
+    is the reader's, and the landing must not pull them back to the divider."""
+    server = ts.standard_server()
+    _backlog(server)
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 20)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2 and app.marks.unread)
+        scroller = app.thread.scroller
+        real, held = scroller.call_after_refresh, []
+
+        def hold(cb, *a, **k) -> None:
+            if getattr(cb, "__name__", "") == "land":
+                held.append((cb, a, k))
+            else:
+                real(cb, *a, **k)
+
+        monkeypatch.setattr(scroller, "call_after_refresh", hold)
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: app.loaded_topic and "row 39" in body_text(app))
+        await until(pilot, lambda: bool(held))
+        cb, a, k = held.pop(0)
+        cb(*a, **k)  # the first refresh, which takes the scroll count
+        scroller.scroll_to(y=3, animate=False)
+        await pilot.pause(0.1)
+        while held:
+            cb, a, k = held.pop(0)
+            cb(*a, **k)
+        await pilot.pause(0.2)
+        assert scroller.scroll_y == 3

@@ -302,11 +302,15 @@ class ThreadView(Vertical):
         """Scroll to the line ``anchor`` names, after the layout has measured the rows."""
         scroller = self.scroller
 
-        def land(tries: int = _STICK_TRIES) -> None:
+        def land(tries: int = _STICK_TRIES, scrolls: int | None = None) -> None:
             if self._render_id != render_id:
                 return  # another conversation was opened while this waited
+            if scrolls is not None and self._scrolls != scrolls:
+                return  # the reader scrolled while this waited: they own the position now
             if tries > 1:
-                scroller.call_after_refresh(land, tries - 1)
+                # The count is taken here, after the first refresh has settled the layout:
+                # swapping the body can clamp the old offset, which is not the reader moving.
+                scroller.call_after_refresh(land, tries - 1, self._scrolls)
                 return
             line = anchor() if anchor is not None else None
             if line is None:
