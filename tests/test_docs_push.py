@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -130,3 +133,71 @@ def test_docs_push_workflow_labels_and_arms_auto_merge() -> None:
     # Labeled and ready before it is armed.
     assert script.index('gh pr ready "$pr"') < script.index("--auto --squash")
     assert step["env"]["AUTO_MERGE"] == "${{ vars.DOCS_SYNC_AUTO_MERGE }}"
+
+
+def _run_pr_tail(tmp_path: Path, *, existing: str, converted: bool, auto_merge: str = "") -> str:
+    """Run the step's real PR handling (from the edit-or-create branch on) against a stub `gh`.
+
+    Returns the `gh` calls it made, one per line. The PR is a draft; `converted` decides
+    whether its timeline has a `convert_to_draft` event.
+    """
+    import yaml
+
+    workflow = yaml.safe_load((ROOT / ".github/workflows/docs-push.yml").read_text())
+    step = next(
+        s
+        for s in workflow["jobs"]["push"]["steps"]
+        if s.get("name") == "Open, update or close the sync PR"
+    )
+    script = step["run"]
+    helpers = script[
+        script.index("auto_merge_off() {") : script.index(
+            "\n}", script.index("disarm_auto_merge() {")
+        )
+        + 2
+    ]
+    tail = script[script.index('if [ -n "$existing" ]; then\n  gh pr edit') :]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "gh.log"
+    timeline = "convert_to_draft" if converted else ""
+    (bin_dir / "gh").write_text(
+        f'#!/bin/sh\necho "$*" >> "{log}"\n'
+        'case "$1 $2" in\n'
+        '  "pr view") case "$*" in *isDraft*) echo true ;; *) echo false ;; esac ;;\n'
+        f'  "api "*) [ -n "{timeline}" ] && echo {timeline} ;;\n'
+        '  "pr create") echo 77 ;;\n'
+        "esac\nexit 0\n"
+    )
+    (bin_dir / "git").write_text("#!/bin/sh\necho deadbeef\n")
+    for tool in ("gh", "git"):
+        (bin_dir / tool).chmod(0o755)
+    subprocess.run(
+        ["bash", "-c", f"set -euo pipefail\n{helpers}\n{tail}"],
+        env={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "existing": existing,
+            "AUTO_MERGE": auto_merge,
+            "SYNC_BRANCH": "docs-sync/x",
+            "title": "t",
+            "body": "b",
+        },
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return log.read_text()
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_a_draft_someone_converted_is_neither_readied_nor_armed(tmp_path: Path) -> None:
+    calls = _run_pr_tail(tmp_path, existing="42", converted=True)
+    assert "pr ready" not in calls
+    assert "pr merge" not in calls
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_the_jobs_own_orphaned_draft_is_readied_and_armed(tmp_path: Path) -> None:
+    calls = _run_pr_tail(tmp_path, existing="42", converted=False).splitlines()
+    ready = calls.index("pr ready 42")
+    assert calls.index("pr merge 42 --auto --squash --match-head-commit deadbeef") > ready
