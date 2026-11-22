@@ -150,3 +150,54 @@ def test_chat_history_malformed_rows_raise_api_error() -> None:
         api.chat_history()
     with _api([{"id": "a1", "role": "user"}]) as api, pytest.raises(ApiError):
         api.chat_history()
+
+
+@pytest.mark.parametrize("delivery", [None, 3, True, ["x"], {"a": 1}])
+def test_a_room_task_whose_delivery_is_not_a_string_is_malformed(delivery: object) -> None:
+    with _api([_task(delivery=delivery)]) as api, pytest.raises(ApiError) as raised:
+        api.list_scheduled_tasks(group_id="g1")
+    assert raised.value.status == 200
+    assert "'delivery'" in str(raised.value)
+
+
+def test_a_room_task_with_a_string_delivery_parses() -> None:
+    with _api([_task(delivery="the room's default")]) as api:
+        (task,) = api.list_scheduled_tasks(group_id="g1")
+    assert task.delivery == "the room's default"
+
+
+_HISTORY_ROW = {"id": "a1", "role": "user", "created_at": "z"}
+
+
+@pytest.mark.parametrize("bad", ["x", 3, None, [1]])
+def test_a_chat_history_row_that_is_not_an_object_is_malformed(bad: object) -> None:
+    with _api([_HISTORY_ROW, bad]) as api, pytest.raises(ApiError) as raised:
+        api.chat_history()
+    assert raised.value.status == 200
+    assert "chat history row is not an object" in str(raised.value)
+
+
+@pytest.mark.parametrize("field", ["attachments", "reactions"])
+@pytest.mark.parametrize("value", [1, "x", {"a": 1}, True])
+def test_a_chat_history_list_field_of_the_wrong_type_is_malformed(
+    field: str, value: object
+) -> None:
+    with _api([{**_HISTORY_ROW, field: value}]) as api, pytest.raises(ApiError) as raised:
+        api.chat_history()
+    assert raised.value.status == 200
+    assert repr(field) in str(raised.value)
+
+
+def test_chat_history_list_fields_default_when_missing_or_null() -> None:
+    rows = [
+        _HISTORY_ROW,
+        {**_HISTORY_ROW, "id": "a2", "attachments": None, "reactions": None},
+        {**_HISTORY_ROW, "id": "a3", "attachments": [{"k": 1}], "reactions": [{"e": "+1"}]},
+    ]
+    with _api(rows) as api:
+        entries = api.chat_history()
+    assert [(e.attachments, e.reactions) for e in entries] == [
+        ([], []),
+        ([], []),
+        ([{"k": 1}], [{"e": "+1"}]),
+    ]

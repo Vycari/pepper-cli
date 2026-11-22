@@ -3267,22 +3267,7 @@ class ApiClient:
         rows = self._request("GET", "/api/v1/chat/history").json()
         if not isinstance(rows, list):
             raise _malformed("chat history is not a list", rows)
-        return [
-            ChatHistoryEntry(
-                id=str(_wire_get(r, "id", "chat history row", str, int)),
-                role=_wire_get(r, "role", "chat history row", str),
-                text=r.get("text") or "",
-                channel=r.get("channel") or "",
-                created_at=_wire_get(r, "created_at", "chat history row", str),
-                attachments=list(r.get("attachments") or []),
-                reactions=list(r.get("reactions") or []),
-                trajectory_id=str(t) if (t := r.get("trajectory_id")) else None,
-                client_message_id=str(c) if (c := r.get("client_message_id")) else None,
-                drafts=draft_cards_from(r.get("drafts")),
-            )
-            for r in rows
-            if isinstance(r, dict)
-        ]
+        return [_chat_history_entry(_wire_row(r, "chat history row")) for r in rows]
 
     def post_tool_result(
         self, *, call_id: str, content: list[dict[str, Any]], is_error: bool = False
@@ -5218,7 +5203,7 @@ def _room_scheduled_task_from_dict(row: dict[str, Any]) -> RoomScheduledTaskSumm
     """Parse one room task row — the room listing and every room write."""
     return RoomScheduledTaskSummary(
         **_scheduled_task_fields(row),
-        delivery=_wire_get(row, "delivery", "room scheduled task", object),
+        delivery=_wire_get(row, "delivery", "room scheduled task", str),
         last_run_status=row.get("last_run_status"),
     )
 
@@ -5284,6 +5269,31 @@ def _wire_row(raw: object, what: str) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise _malformed(f"{what} is not an object", raw)
     return raw
+
+
+def _chat_history_entry(r: dict[str, Any]) -> ChatHistoryEntry:
+    """One ``/api/v1/chat/history`` row. ``attachments``/``reactions`` may be missing or
+    ``null`` (an empty list), but a present value must be a list."""
+    what = "chat history row"
+    return ChatHistoryEntry(
+        id=str(_wire_get(r, "id", what, str, int)),
+        role=_wire_get(r, "role", what, str),
+        text=r.get("text") or "",
+        channel=r.get("channel") or "",
+        created_at=_wire_get(r, "created_at", what, str),
+        attachments=list(_optional_list(r, "attachments", what)),
+        reactions=list(_optional_list(r, "reactions", what)),
+        trajectory_id=str(t) if (t := r.get("trajectory_id")) else None,
+        client_message_id=str(c) if (c := r.get("client_message_id")) else None,
+        drafts=draft_cards_from(r.get("drafts")),
+    )
+
+
+def _optional_list(row: dict[str, Any], key: str, what: str) -> list[Any]:
+    """``row[key]`` as a list: missing or ``null`` is empty, any other non-list is malformed."""
+    if row.get(key) is None:
+        return []
+    return _wire_get(row, key, what, list)
 
 
 def _wire_get(
@@ -5756,9 +5766,18 @@ def _iter_feed_frames(lines: Iterator[str]) -> Iterator[FeedFrame]:
     data_lines: list[str] = []
 
     def build() -> FeedFrame | None:
-        if not data_lines:
-            return None
         kind = event_type or "message"
+        if not data_lines:
+            if (
+                event_id is not None
+                or kind == "cursor"
+                or (bad_id and kind not in _ID_OPTIONAL_KINDS)
+            ):
+                # A position with no body: dropping it would let the next frame move the
+                # caller's cursor past an event it never saw.
+                raise _stream_problem(f"{kind!r} frame has a position but no data")
+            # No position (a bare ``event:``, ``retry:`` or ``id:`` reset): nothing to deliver.
+            return None
         try:
             payload = _json.loads("\n".join(data_lines))
         except _json.JSONDecodeError:

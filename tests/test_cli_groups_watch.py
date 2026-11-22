@@ -625,6 +625,45 @@ def test_an_unreadable_cursor_frame_is_a_stream_error_even_without_an_id():
         _frames_of("event: cursor\ndata: not json\n\n")
 
 
+@pytest.mark.parametrize(
+    "frame",
+    [
+        "id: 4\nevent: message.created\n\n",
+        "id: 4\n\n",
+        "id: x4\nevent: message.created\n\n",
+        "event: cursor\n\n",
+    ],
+    ids=["id-and-kind", "id-only", "bad-id", "cursor"],
+)
+def test_a_positioned_frame_with_no_data_is_a_stream_error_not_a_silent_drop(frame):
+    body = (
+        'id: 3\nevent: message.created\ndata: {"id":3}\n\n'
+        f"{frame}"
+        'id: 5\nevent: message.created\ndata: {"id":5}\n\n'
+    )
+    seen: list[FeedFrame] = []
+    with _api(lambda _r: httpx.Response(200, text=body)) as api:
+        frames = api.watch_agent_events()
+        with pytest.raises(api_client.ApiError) as raised:
+            while True:
+                seen.append(next(frames))
+    assert [f.id for f in seen] == [3]
+    assert raised.value.status == 200
+    assert "malformed event stream" in str(raised.value)
+
+
+def test_an_unpositioned_frame_with_no_data_is_still_ignored():
+    frames = _frames_of(
+        "event: heartbeat\n\n"
+        "retry: 3000\n\n"
+        "id:\n\n"
+        "event: error\nid: nope\n\n"
+        "event: scope\n\n"
+        'id: 4\nevent: message.created\ndata: {"id":4}\n\n'
+    )
+    assert [(f.kind, f.id) for f in frames] == [("message.created", 4)]
+
+
 def test_an_unreadable_scope_frame_reaches_the_caller_empty():
     frames = _frames_of("event: scope\ndata: not json\n\nevent: scope\ndata: [1]\n\n")
     assert [(f.kind, f.id, f.payload) for f in frames] == [("scope", None, {})] * 2
