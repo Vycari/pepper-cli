@@ -1069,9 +1069,17 @@
               }
             ]
           },
+          "forwarding_disabled": {
+            "default": false,
+            "type": "boolean"
+          },
           "id": {
             "format": "uuid",
             "type": "string"
+          },
+          "is_private_email": {
+            "default": false,
+            "type": "boolean"
           },
           "linked_at": {
             "format": "date-time",
