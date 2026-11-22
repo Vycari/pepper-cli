@@ -68,7 +68,8 @@ credentials from this machine when you're done with it.
   (or `pepper tui`, or `pepper run`) and Pepper can read the files under that
   folder for this session only. It can only read them, never change them, and
   nothing outside the folders you name is reachable. Repeat `--root` for more
-  than one folder.
+  than one folder. A search that has to stop early, in a very large folder or a
+  very large file, says so rather than reporting that nothing was found.
 - **Save a prompt as a script:** `pepper run FILE` sends the file's text as one
   message. Start the file with `#!/usr/bin/env -S pepper run`, make it
   executable, and it runs like any other command. Anything you pass after the
@@ -332,10 +333,23 @@ ever want to look back at a specific conversation in detail.
   starts as a room note: `pepper notes create "<title>" --room <room> --file
   post.md`, where the note's name is the post's title and the file is the
   post's text, with no title heading at the top. Don't post an article as a
-  chat message: the Blog app only sees notes. Publishing it is a room owner's
-  step in the Blog app, on the web or in the app; the CLI's
-  `pepper blog` commands do that (owner's own login only). `pepper rooms show <room>` notes this under the
-  Blog app.
+  chat message: the Blog app only sees notes. If you own the room,
+  `pepper blog list --room <room>` shows the blog's posts and the notes not
+  yet published, and `pepper blog publish --room <room> <note>` publishes
+  one. It first shows what it found, like links that will turn into plain
+  words or text Pepper wrote that you haven't read, and asks before it goes
+  out. `pepper blog stage --room <room> <note>` shows the same without
+  publishing, saves the post's address and summary (`--slug`, `--summary`),
+  and with `--at` schedules it to publish the note as it stands then.
+  `pepper blog unschedule` cancels the time, `pepper blog unstage` drops the
+  saved details, and `pepper blog withdraw --room <room> <post>` takes a post
+  down. Publishing the note again puts it back.
+- **Moving an old blog over:** create a note for each post, then publish it
+  with `--published-at` set to the day it first went out, like
+  `--published-at 2014-03-02T09:00:00-08:00`. The post keeps that date and
+  its address uses that day, and no card goes into the room's comments, so an
+  archive doesn't flood them. The date only works the first time a note is
+  published.
 <!-- /rollout -->
 - **A picture's alt text and captions:** `pepper notes image <picture>`
   prints the details Pepper keeps with a picture in a note: its alt text, title,
@@ -372,6 +386,12 @@ with Pepper, then your rooms by most recent activity with their topics under
 the open room. A dot marks a conversation with something unread, and `@`
 marks one where someone mentioned you. It reads the same unread state as the
 web app, so what you read in one place clears in the other.
+
+A topic with unread messages opens at the first one you haven't read, under a
+"new messages" line, instead of at the bottom. Messages count as read as they
+scroll into view: scroll down through a long backlog and what you have seen is
+marked read, so if you stop halfway, the topic reopens at the rest. Nothing is
+marked while the terminal is in the background.
 
 The box at the bottom sends to whatever is open. In Pepper's conversation,
 Enter sends a message and the reply streams into the thread. In a room's
@@ -453,6 +473,16 @@ Use one cursor file per scope. A scoped watch writes one JSON line recording the
 | 1 | Token refused or not an agent's; server lacks scoped watch; scope not confirmed or an out-of-scope event; the server ended the stream for good (removed from the room, room deleted, room merged while watching) |
 | 2 | Bad arguments (`--topic` without `--room`); room or topic did not resolve; not found or not a member (404); cursor file belongs to another watch or is unreadable |
 | 3 | The server can no longer replay from the requested position without a gap. The message names the gap and the `--since` to restart from; read the missed messages with `pepper messages list` first. The cursor file is not moved. |
+
+### Serving a Claude Code session
+
+```
+pepper --profile <name> agents claude-channel [--room ROOM ...] [--cursor-file PATH]
+```
+
+For an agent running in an interactive Claude Code session, this is the way to hear about messages without watching and re-reading by hand. It is not a command you run yourself: Claude Code starts it from an `.mcp.json` entry, and you name it when you start the session (`claude --dangerously-load-development-channels server:<name>`). Each new message from someone else arrives in the session with its text, and the agent replies, reacts, reads the room and looks up members and attachments through tools that use the agent's own token. Attachments it saves go into a `pepper-attachments` folder where the session runs, and it never replaces a file already there.
+
+`--room` can be repeated to serve several rooms; the tools then work only in those rooms. With several rooms, each keeps its own cursor file, named `PATH.<room id>`, and `--topic` is for a single room only. If one room's stream ends for good (the agent was removed, or the room was deleted), the whole channel stops and says which room. By default only new messages and mentions are pushed; `--kinds` can add edits, deletions and link-card updates (`message.edited`, `message.deleted`, `message.link_cards_updated`, `message.link_previews_updated`), each marked as being about an existing message. `--ignore-kinds` only removes kinds.
 
 The harness can print the guide for the agent with `pepper agents guide` (no
 login needed); it is bundled in the CLI, so it matches the installed version.

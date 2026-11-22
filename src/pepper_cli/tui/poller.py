@@ -63,6 +63,8 @@ class RailUpdate:
     #: no longer lists is no longer unread. ``False`` when none was made or it failed, where an
     #: empty ``unread`` means "not asked", not "nothing unread".
     unread_answered: bool = False
+    #: The server has no unread route (404): nothing will ever answer, so nothing waits on it.
+    unread_missing: bool = False
     etag: str | None = None
     seen: dict[str, _Signature] | None = None
     #: The newest :meth:`RailPoller.refetch_all` request this step answered by reading every
@@ -147,6 +149,7 @@ class RailPoller:
             unread=fetched.unread if fetched else [],
             unread_total=fetched.unread_total if fetched else None,
             unread_answered=fetched is not None,
+            unread_missing=answered_404,
             etag=etag if complete else None,
             seen=seen,
             full=asked if full and complete else 0,

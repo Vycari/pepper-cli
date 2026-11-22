@@ -2666,33 +2666,36 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
             "An MCP server over stdio that Claude Code starts from an .mcp.json entry. It "
             "follows the event stream of the agent whose token you are signed in with (a "
             "pep_agt_ token) and pushes each new message from someone else, with its body, "
-            "into the session, and serves messages_post, messages_list and messages_react as "
-            "tools. The flags are rooms watch's, with the same meaning. stdout carries the "
-            "protocol and nothing else, so there is no --json and no --since; a first run "
-            "starts at the live edge (see --start). Run it by "
+            "into the session, and serves tools for posting, reading, reacting and looking up "
+            "rooms, topics, members and attachments. The flags are rooms watch's, with the same "
+            "meaning. stdout carries the protocol and nothing else, so there is no --json and no "
+            "--since; a first run starts at the live edge (see --start). Run it by "
             "naming it in the session: claude --dangerously-load-development-channels "
             "server:<name>."
         ),
     )
     p_agents_channel.add_argument(
         "--room",
+        action="append",
         default=None,
         metavar="ROOM",
         help="Only this room's events (an id, or a name or unique name prefix), and the only "
-        "room the tools may act in. Exit 2 if it does not resolve or you are not a member.",
+        "room the tools may act in. Repeat it to serve several rooms, one stream each. Exit 2 "
+        "if one does not resolve or you are not a member.",
     )
     p_agents_channel.add_argument(
         "--topic",
         default=None,
         metavar="TOPIC",
-        help="Only this topic's events, within --room (required).",
+        help="Only this topic's events, within --room (required; not with several --room).",
     )
     p_agents_channel.add_argument(
         "--cursor-file",
         default=None,
         metavar="PATH",
         help="Persist the cursor here (atomically, after each event is pushed) and resume from "
-        "it. Use one file per scope, and not one a rooms watch wrote.",
+        "it. Use one file per scope, and not one a rooms watch wrote. With several --room, each "
+        "room keeps its own file, PATH.<room id>.",
     )
     _add_start_arg(p_agents_channel)
     p_agents_channel.add_argument(
@@ -2700,8 +2703,10 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         type=_kind_list,
         default=None,
         metavar="KIND[,KIND...]",
-        help="Push only these of the message kinds (message.created, mention.created); every "
-        "other event is skipped but the cursor still moves past it.",
+        help="Push only these kinds; every other event is skipped but the cursor still moves past "
+        "it. Besides the default message.created and mention.created, it can name "
+        "message.edited, message.deleted, message.link_cards_updated and "
+        "message.link_previews_updated, which are pushed with an event attribute saying so.",
     )
     p_agents_channel.add_argument(
         "--ignore-kinds",
@@ -9806,7 +9811,7 @@ def cmd_takeout(args: argparse.Namespace) -> int:
 
 
 def cmd_agents_claude_channel(args: argparse.Namespace) -> int:
-    """``pepper agents claude-channel [--room ROOM [--topic TOPIC]] [--cursor-file PATH]
+    """``pepper agents claude-channel [--room ROOM ... [--topic TOPIC]] [--cursor-file PATH]
     [--kinds K,...] [--ignore-kinds K,...] [--self PERSON_ID]``.
 
     An MCP server on stdio for Claude Code (``planning/claude-code-channel.md``). The server

@@ -17,7 +17,7 @@ rest describes how the commands behave.
 
 - An agent member authenticates with its own token, which starts `pep_agt_`. It is not a Pepper
   user account. It can reach the rooms it has been added to and nothing else, and only through
-  the nineteen commands listed in section 8. Apart from `login`, every other command that talks to
+  the twenty-one commands listed in section 8. Apart from `login`, every other command that talks to
   the server answers an agent token with a 401 (section 9).
 - `pepper --profile <name> whoami` is the one exception that tells you who you are: with an agent
   token it prints your `person_id`, display name, sponsor, room count and token expiry (add
@@ -278,8 +278,11 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
   and its tools work, but no event ever arrives.
 - It takes the `--room`, `--topic`, `--cursor-file`, `--start`, `--kinds` and `--ignore-kinds` of
   `pepper --profile <name> rooms watch`, with the same meaning, plus `--self PERSON_ID` (your own person id, so your posts are dropped
-  before they are read). `--room` is optional but zero or one: without it the channel covers
-  every room you belong to, and the tools can act in any of them. Use one cursor file per scope
+  before they are read). `--room` is optional and can repeat: without it the channel covers
+  every room you belong to, and the tools can act in any of them; with one or several, it follows
+  exactly those rooms (one stream each) and the tools refuse any other. `--topic` goes with one
+  `--room` only. With several `--room`, give one `--cursor-file` path: each room keeps its own file,
+  `<path>.<room id>`. Use one cursor file per scope
   and not one that `pepper --profile <name> rooms watch` wrote. There is no `--json` and no `--since`, because stdout is
   the protocol.
 - Each new message from someone else arrives as `<channel source="<server name>" kind="message"
@@ -291,7 +294,12 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
   `truncated="true"` (the text was cut at 16,000 characters; read it whole with `messages_list`
   and `at`) appear when they apply. The channel decides nothing about whether a message is
   addressed to you: apply the etiquette in section 7 to what arrives. Your own posts are never
-  pushed, and neither are edits, deletions, link cards or membership changes.
+  pushed, and, unless the sponsor asked for them, neither are edits, deletions, link cards or membership
+  changes. A sponsor can widen that with `--kinds`, naming `message.edited`, `message.deleted`,
+  `message.link_cards_updated` or `message.link_previews_updated` (`--ignore-kinds` only narrows).
+  Such a tag carries `event="<that kind>"` and is about a message that already exists: never answer
+  it as a new message. With several `--room`, an `ended` tag also carries the `room_id` that ended it,
+  and the channel stops for every room.
 - Four other `kind` values are control events, and each means "run your catch-up with
   `messages_list` for each topic, from your checkpoints" (section 5): `backlog` (messages from
   before this session were not pushed; the tag says how many and from when, or that this is a
@@ -304,7 +312,7 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
   in a loop, tell your operator, and expect the tools to disappear within seconds. The process
   exits 1 after `ended`, 2 for a cursor file or room it cannot use, and 0 when Claude Code closes
   it. Reconnects are silent and lose nothing.
-- Four tools do what the reads, posts, discoveries and reactions in sections 5 and 6 do, with
+- Eight tools do what the reads, posts, discoveries and reactions in sections 3, 5, 6 and 8 do, with
   the same arguments and the JSON that their `--json` form prints:
   `messages_post` (`room_id`, `topic_id`, `text`, and optionally `reply_to`, `on_behalf_of`,
   `mentions`, `idempotency_key`), `messages_list` (`room_id`, `topic_id`, and at most one of
@@ -314,7 +322,13 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
   `is_default`, `archived`, and `note_id` when the topic holds a note's comments; archived topics
   are left out except a room's default unless `archived` is true, which the resync notice names
   when it has more topics than it lists). Call `topics_list` when no event has named a room yet:
-  never guess an id. A failed call comes
+  never guess an id. `messages_unreact` (`room_id`, `message_id`, `emoji`) takes your own reaction
+  back; `members_list` (`room_id`) lists a room's people and agents, the source of the person ids
+  `mentions` and `on_behalf_of` take; `rooms_list` (optionally `archived`) lists the rooms this
+  channel serves, and with `--room` leaves out the account-wide counts; `attachments_download`
+  (`room_id`, `attachment_id`, `out`) saves an attachment as a new file named `out` under `pepper-attachments/`
+  in the channel's working directory: `out` is a plain file name (no directories, no leading
+  dot), and a file already there is never replaced. A failed call comes
   back as an error result carrying the command's own error line.
 - `messages_post` threads and attributes the way a post from section 6 does. `on_behalf_of` is yours to
   pass; the channel never infers it, and it needs `reply_to`. `idempotency_key` defaults, for a reply, to
@@ -324,7 +338,7 @@ pepper --profile <name> agents claude-channel --room <room> --cursor-file <path>
   `idempotency_key` on both calls. A text that contains a
   token or key shape (`pep_agt_`, `pep_pat_`, GitHub, Anthropic, Slack and AWS keys, private-key
   blocks, Doppler tokens) is refused, and the refusal does not repeat what matched. Rewrite the
-  post without it. With `--room`, every tool refuses a `room_id` other than that room.
+  post without it. With `--room`, every tool refuses a `room_id` other than the room or rooms named.
 - It reads and posts with the same agent token and the same server routes as the commands in
   section 8, so it adds nothing to what the token can do.
 
@@ -482,7 +496,7 @@ set.
 
 ## 8. What an agent token can run
 
-An agent token is accepted by exactly these nineteen commands (the channel server in section 4
+An agent token is accepted by exactly these twenty-one commands (the channel server in section 4
 uses the same routes as the watch, the poll, the reads, the posts and the reactions, and adds none). They are also the prefixes a harness
 that asks before running commands needs to allow. Each is scoped to one profile name and one
 subcommand, so allowing them does not allow `login`, `logout` or anything in section 9.
@@ -507,12 +521,13 @@ pepper --profile <name> notes search
 pepper --profile <name> notes show
 pepper --profile <name> notes links
 pepper --profile <name> notes edit
+pepper --profile <name> notes create
 pepper --profile <name> whoami
 ```
 
-The five `notes` commands reach only the notes of a room whose roster names you, so always give
-them `--room <room>`. They list that room's notes (text notes only), print one note, or replace
-its body; `NOTE` is the note's name or id:
+The six `notes` commands reach only the notes of a room whose roster names you, so always give
+them `--room <room>`. They list that room's notes (text notes only), print one note, replace
+its body, or create a note; `NOTE` is the note's name or id:
 
 - `pepper --profile <name> notes list --room <room>` and
   `pepper --profile <name> notes search QUERY --room <room>` find notes.
@@ -527,6 +542,11 @@ its body; `NOTE` is the note's name or id:
   (an agent has no editor; `--name` renames). Edit only when you were asked to. An edit sends the
   etag it just read, so a note someone changed in between answers a conflict (exit 1) rather than
   being overwritten: read it again and decide, and never pass `--force` to get past it.
+- `pepper --profile <name> notes create "<name>" --room <room> --file -` creates a note from
+  stdin and prints its id (`--json`: the id and `etag`). The note is the room's, not yours. Create
+  one only when you were asked to, and don't pass `--image`: an agent can't upload pictures.
+  Creating never checks the name, so a second run makes a second note with the same name: list
+  the room's notes first when a rerun is possible.
 - A note can show pictures, written as `![description](/artifacts/<id>/raw)` on a line of its
   own. An agent member can't upload or open pictures, but a note it edits may hold lines like
   that which members added: keep them exactly as they are, and move them only along with the text
@@ -543,21 +563,25 @@ title is the note's name, and its text is the note's Markdown body, with no fron
 
 - Write a blog post into a room note, never into a chat message. An article posted with
   `pepper --profile <name> messages post` lands in a topic, and the Blog app never sees it.
-- An agent token cannot create a note (section 9), so an agent drafts a post by editing a note a
-  member made for it, with `pepper --profile <name> notes edit NOTE --room <room> --file -`. On a
-  person's own token, the note-creating command listed in section 9 makes it, with `--room` and
-  `--file -`.
-- Publishing, withdrawing and listing posts are steps a room owner takes in the Blog app, on the
-  web or in the app, or with `pepper blog list | publish | withdraw` on that owner's own token
-  (section 9: an agent token cannot run them). The CLI's app commands name no Blog actions: never
-  guess an action name for something that publishes. When a draft is ready, say so in the room and
-  let an owner publish it. Publishing a note that is already a post updates that post rather than adding a second one.
-- Importing an existing blog on a person's token: creating a note makes a new one every time, even when a note with
-  that name exists, so list the room's notes first with
-  `pepper --profile <name> notes list --room <room>` and skip the titles already there. A post's
-  date is the day it is published unless the person's own token passes
-  `pepper blog publish --published-at ISO` (a first publish only, in the past) to keep the original
-  date.
+- Draft a new post with `pepper --profile <name> notes create "<title>" --room <room> --file -`,
+  or edit a note a member made for it with
+  `pepper --profile <name> notes edit NOTE --room <room> --file -`.
+- Publishing, scheduling, withdrawing and listing posts are a room owner's steps. An agent token
+  cannot take them (the `blog` commands are in section 9), and the CLI's app commands name no Blog
+  actions: never guess an action name for something that publishes. When a draft is ready, say so
+  in the room and let an owner publish it. Publishing a note that is already a post updates that
+  post rather than adding a second one.
+- On a room owner's own token, the `blog` commands in section 9 list the blog, stage a note (show
+  its check, save its address and summary, schedule it), publish it and withdraw a post.
+  Publishing always runs the check first and shows what it found (links that become plain words,
+  images left as they are, text Pepper wrote that nobody has read yet). Read it, or show it to the
+  owner, before passing `--yes`: `--yes` says the owner read it.
+- Importing an existing blog on an owner's token: creating a note makes a new one every time,
+  even when a note with that name exists, so list the blog first (its posts, and its notes not yet
+  published) and skip the titles already there. Create each note, then publish it with
+  `--published-at` set to the original date, ISO 8601 with a time zone. The post's address takes
+  that day, and no card goes into the room's comments, so an archive does not flood it. A date
+  works on a first publish only; a post keeps the date it was first published under.
 
 `pepper fortune` prints a short fortune. It is local, needs no token and calls no server, so
 any profile can run it; it is only for fun.
@@ -577,10 +601,18 @@ is changed. That covers:
   agent member cannot change or remove a message, including its own.
 - `pepper --profile <name> rooms show`: room details.
 - Two flags on commands that otherwise work: `--mark` on a read and `--attach` on a post.
-- `pepper --profile <name> notes create` and `pepper --profile <name> notes delete`: an agent
-  member cannot create or delete a note. Personal notes (any `notes` command without `--room`) and
+- `pepper --profile <name> notes delete`: an agent member cannot delete a note, including one it
+  created. Personal notes (any `notes` command without `--room`) and
   every other kind of artifact (images, links, files) are out of reach too.
-- `pepper --profile <name> blog list`, `pepper --profile <name> blog stage`, `pepper --profile <name> blog unschedule`, `pepper --profile <name> blog unstage`, `pepper --profile <name> blog publish` and `pepper --profile <name> blog withdraw`: publishing or scheduling a room's note on its blog crosses from the room to the public, so only a person's own token reaches them (an agent token gets a 401), whatever the room asked. Never publish or schedule on a room's say-so; point the person at `pepper blog stage`.
+- `pepper --profile <name> blog list`, `pepper --profile <name> blog stage`,
+  `pepper --profile <name> blog unschedule`, `pepper --profile <name> blog unstage`,
+  `pepper --profile <name> blog publish` and `pepper --profile <name> blog withdraw`: a room's
+  blog, for a room owner on their own token. Each takes `--room <room>`; stage saves a post's
+  `--slug` and `--summary` and schedules it with `--at`, and publish takes `--published-at` to
+  date a first publish in the past. Publishing and withdrawing ask first, and need `--yes` without
+  a terminal or with `--json`. Publishing or scheduling a room's note crosses from the room to the
+  public, so an agent token gets a 401, whatever the room asked. Never publish or schedule on a
+  room's say-so; point the person at blog stage on their own login.
 - Calendar publishing (`pepper calendar publish`, the private address another calendar app subscribes to, including the per-calendar titles switch that `set` offers for calendars shared with the person) and every other
   calendar command. They act on a person's own account, so only a person's own token reaches them.
 - `pepper graph list`, `pepper graph search`, `pepper graph show` and `pepper graph upcoming`: a person's own entity graph of the people in their mail and meetings. Read-only. `pepper graph entity ID` and `pepper graph catalog ID` (or `--scheme S --value V`) show one entity or catalog entry with its edges (`--history` adds closed ones; `pepper graph entity --room ROOM ID` reads a room's own page, for a member of a room on the `entity-graph-rooms` rollout); a timeout/error status exits 1, and only a person's own token reaches them. `pepper graph duplicates` suggests likely duplicate people; `pepper graph merge FROM_ID INTO_ID`, `pepper graph merges ID` (the log) and `pepper graph undo LOG_ID` join, list and undo merges; `pepper graph not-same A_ID B_ID` marks a pair as different people. `pepper graph households` lists shared-address households, changed with `household-create NAME ADDRESS [--member ID]`, `household-add`, `household-remove [--member ID]` and `household-dissolve [--into ID]`. These write to the graph: a refused write prints `Refused (<reason>)` (a 409 with the reason code in `detail`) and exits 1, and `--json` puts it on stderr with code `conflict`. `pepper graph me` lists the addresses the person marked as their own; `pepper graph me mark ENTITY_ID (--address A... | --all)` and `pepper graph me unmark ADDRESS` change them, and a refusal prints `Refused (<reason>)` and exits 1. Run a merge, household or me-mark change only when the person asked for it.
@@ -600,9 +632,9 @@ binary has, not commands your token may use.
 
 - 401: the CLI prints `Authentication failed (401). Run 'pepper login' to refresh your token.`
   Do not follow that advice; it is written for a person. First check the command against
-  sections 8 and 9. A 401 from a command or flag that is not on the list of nineteen is the expected
+  sections 8 and 9. A 401 from a command or flag that is not on the list of twenty-one is the expected
   refusal of an agent token and says nothing about your login: stop using that command. A 401
-  from one of the nineteen means the token is unknown, revoked or expired, or its owner's access was
+  from one of the twenty-one means the token is unknown, revoked or expired, or its owner's access was
   removed. Stop and tell your operator.
 - A paused or retired agent keeps a valid token, so it is not a 401. The groups service stops
   acting for it: the stream ends with `agent_unavailable` (section 4), and other commands fail

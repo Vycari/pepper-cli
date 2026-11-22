@@ -360,6 +360,8 @@ async def test_the_new_marker_clears_however_the_bottom_is_reached() -> None:
     server.messages[ts.TOPIC_A1] = [
         ts.message(f"r{i:02d}", f"2026-09-16T17:{i:02d}:00+00:00", f"row {i}") for i in range(40)
     ]
+    # Read through the newest row, so the topic opens at its foot rather than at its cursor.
+    server.marks[ts.TOPIC_A1] = "2026-09-16T17:39:00+00:00"
     app = tui_app.PepperApp(server.client())
     async with app.run_test(size=(120, 20)) as pilot:
         await until(pilot, lambda: len(app.rooms) == 2)

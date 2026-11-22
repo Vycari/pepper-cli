@@ -805,6 +805,22 @@ def test_chat_without_credentials_errors(tmp_home: Path, patch_api) -> None:
     assert rc == 1
 
 
+def test_chat_with_invalid_utf8_credentials_errors_without_traceback(
+    tmp_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = credentials.credentials_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b'server_url = "http://example.com"\ntoken = "\xff"\n')
+    path.chmod(0o600)
+
+    rc = cli.main(["chat", "hi"])
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "not valid UTF-8" in captured.err
+    assert "Traceback" not in captured.err
+    assert "Traceback" not in captured.out
+
+
 def test_chat_blank_message_errors(tmp_home: Path, patch_api) -> None:
     credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
     rc = cli.main(["chat", "   "])

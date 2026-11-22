@@ -124,6 +124,9 @@ _ROOM_EVENT_KINDS = frozenset(
     }
 )
 #: Loops whose failures put "offline, retrying" in the header.
+#: Older pages read, at most, to reach a read cursor that is further back than the newest page.
+_OPEN_PAGES_MAX = 20
+
 _LOOPS = ("startup", "rail", "dm", "topic", "publish")
 #: On-demand loops. A failed send is not retried by itself (it waits for ``r``), so it does not
 #: say "retrying"; the roster retries quietly; the turn reports in the status line.
@@ -161,6 +164,11 @@ _PUBLISH_PERMANENT = frozenset({400, 403, 404, 409, 410, 422})
 def utcnow() -> datetime:
     """The wall clock, in one place so a test can replace it (or pass ``now=`` to the app)."""
     return datetime.now(UTC)
+
+
+def _top_line() -> int:
+    """The anchor that holds a thread at its first line."""
+    return 0
 
 
 @dataclass
@@ -301,6 +309,26 @@ class PepperApp(App[None]):
         self._topic_error: str | None = None
         self._last_input = time.monotonic()
         self._blurred = False
+        #: A topic with unread messages is being opened at the person's read cursor (§5.1):
+        #: ``_open_cursor`` is where it stood, and the first render that has the rows from
+        #: there lands on them and ends the opening. ``_open_pages`` counts the older pages
+        #: read to reach the cursor.
+        self._opening = False
+        #: The rail's unread request has answered once, so unread rows and cursors are known.
+        #: A topic whose first page lands before that cannot tell if it is unread: it marks
+        #: nothing until the answer arrives (``_opening_deferred``), then decides.
+        self._rail_seen = False
+        self._opening_deferred = False
+        self._open_cursor: datetime | None = None
+        self._open_pages = 0
+        #: Id of the first message after the cursor: the ``new messages`` divider sits above it
+        #: for as long as the topic stays open.
+        self._new_from: str | None = None
+        #: What the open topic's last render showed, to measure which rows are on screen:
+        #: its items, the ``created_at`` of each message item, and the measured line spans.
+        self._rendered_items: list[tuple[str | None, Any]] = []
+        self._rendered_stamps: dict[str, str] = {}
+        self._spans_cache: tuple[int, list[tuple[str, int, int]], int] | None = None
         #: Held rows of the open topic a stream event said changed, to be read again one at
         #: a time (``_refresh_next``): a row on an older page is in no poll's window.
         self._stale_rows: list[str] = []
@@ -444,8 +472,11 @@ class PepperApp(App[None]):
         try:
             if not self.query(Sidebar):
                 return False
-            # A thread on its way out (#177) still answers a query but has no children to paint.
-            return not any(thread.going for thread in self.query(ThreadView))
+            # The thread is mounted for the app's whole run, so no thread means teardown has
+            # already removed it (#324). One on its way out (#177) still answers a query but
+            # has no children to paint.
+            threads = self.query(ThreadView)
+            return bool(threads) and not any(thread.going for thread in threads)
         except ScreenStackError:
             return False
 
@@ -564,6 +595,8 @@ class PepperApp(App[None]):
     def on_app_focus(self, _event: events.AppFocus) -> None:
         self._blurred = False
         self._last_input = time.monotonic()
+        if self.query(ThreadView):
+            self._note_seen(self.thread.render_id)  # what stayed on screen while away is now seen
         self._poll_now()
         if self.pane is not None:
             self._run("apps")
@@ -818,6 +851,13 @@ class PepperApp(App[None]):
             snapshot=update.unread_answered,
         )
         self.marks.settle(self.rooms)
+        # Only an unread answer (or a server with no such route) releases a deferred opening: a
+        # rail whose unread request failed says nothing about what is unread, and a later poll
+        # asks again.
+        if update.unread_answered or update.unread_missing:
+            self._rail_seen = True
+        if self._rail_seen and self._opening_deferred:
+            self._resume_opening()
         if self._bell and (self.marks.mentioned_topics(self.rooms) - had - {self.current.topic_id}):
             self.bell()
 
@@ -893,6 +933,8 @@ class PepperApp(App[None]):
         fresh = [m for m in messages if m.id in new_ids and not m.is_you]
         first = not self.loaded_topic
         self.loaded_topic = True
+        if first:
+            self._begin_opening()
         self._render_topic(new_rows=len(fresh), reset=first)
         if not self._blurred:
             # Every mark waits for its guarded scroll to land (``Landed``): a pinned poll
@@ -932,13 +974,79 @@ class PepperApp(App[None]):
             you_id=self.you_person_id,
             pending=self.pending.in_conversation(self.current),
             selected=self.selected,
+            new_before=self._new_from,
         )
+
+    def _begin_opening(self) -> None:
+        """A topic's first page landed: open it at the read cursor if it has unread messages.
+
+        The cursor is the server's, as the rail last said it, and the topic must be unread by
+        the server's count: a topic with no cursor, or nothing unread, opens at the foot
+        (§5.1 "Where a topic opens"; first sight never marks, §5.3).
+        """
+        self._opening, self._open_cursor, self._open_pages = False, None, 0
+        self._new_from = None
+        self._opening_deferred = False
+        topic_id = self.current.topic_id
+        if self.current.is_pepper or topic_id is None:
+            return
+        if not self._rail_seen:
+            self._opening_deferred = True  # decided when the rail's unread answer lands
+            return
+        row, cursor = self.marks.unread.get(topic_id), self.marks.marks.get(topic_id)
+        if row is not None and row.unread_count > 0 and cursor is not None:
+            self._opening, self._open_cursor = True, cursor
+
+    def _resume_opening(self) -> None:
+        """The rail's unread answer landed for a topic whose first page came first: decide now,
+        before any mark (every mark path stands down while it was deferred)."""
+        self._opening_deferred = False
+        if not self.loaded_topic or not self.query(ThreadView):
+            return
+        self._begin_opening()
+        if self._opening:
+            self._render_topic(new_rows=0, reset=True)
+        else:
+            self._note_viewed(render_id=self.thread.render_id, through=self.thread.through)
+            self._run("publish")
+
+    def _cursor_gap(self, cursor: datetime | None) -> bool:
+        """Messages between ``cursor`` and the oldest row held may exist: an older page is
+        still to read and the oldest row held is already past the cursor. A mark may not
+        claim across that gap, as it was never on screen."""
+        if not self.store.has_older:
+            return False
+        stamps = [parse for m in self.store.ordered() if (parse := state.parse_ts(m.created_at))]
+        return bool(stamps) and (cursor is None or stamps[0] > cursor)
+
+    def _first_after(self, cursor: datetime) -> str | None:
+        for message in self.store.ordered():
+            stamp = state.parse_ts(message.created_at)
+            if stamp is not None and stamp > cursor:
+                return message.id
+        return None
 
     def _render_topic(self, *, new_rows: int, reset: bool, prepended: bool = False) -> None:
         if not self.loaded_topic:
             self.thread.show(Text("Loading…", style="dim"), reset=True)
             return
+        anchor = None
+        chase = False
+        if reset and self._opening and self._open_cursor is not None:
+            if self._cursor_gap(self._open_cursor) and self._open_pages < _OPEN_PAGES_MAX:
+                # The cursor is further back than the page held: hold at the top, with nothing
+                # marked, while older pages are read until it is covered.
+                chase = True
+                anchor = _top_line
+            else:
+                self._opening = False
+                self._new_from = self._first_after(self._open_cursor)
+                if self._new_from is not None:
+                    anchor = self._divider_line
         items = self._topic_items()
+        self._rendered_items = items
+        self._rendered_stamps = {f"msg:{m.id}": m.created_at for m in self.store.ordered()}
+        self._spans_cache = None
         body = Group(*(r for _, r in items)) if items else Text("(no messages)", style="dim")
         self.thread.show(
             body,
@@ -946,7 +1054,85 @@ class PepperApp(App[None]):
             reset=reset,
             prepended=prepended,
             through=self.store.newest_created_at(),
+            anchor=anchor,
         )
+        if chase:
+            self._load_older()
+
+    def _item_lines(self) -> list[int]:
+        options = self.console.options.update_width(self.thread.body_width())
+        return [
+            len(self.console.render_lines(r, options, pad=False)) for _, r in self._rendered_items
+        ]
+
+    def _divider_line(self) -> int | None:
+        """The body line of the ``new messages`` divider (the top of what opens in view)."""
+        keys = [key for key, _ in self._rendered_items]
+        if self._new_from is None or f"msg:{self._new_from}" not in keys:
+            return None
+        index = keys.index(f"msg:{self._new_from}") - 1  # the divider sits right above it
+        return sum(self._item_lines()[:index])
+
+    def _message_spans(self) -> list[tuple[str, int, int]] | None:
+        """``(created_at, top, bottom)`` body lines of each server message the last render showed,
+        or ``None`` when the view has not measured that render yet (its height differs)."""
+        width = self.thread.body_width()
+        if self._spans_cache is not None and self._spans_cache[0] == width:
+            spans, total = self._spans_cache[1], self._spans_cache[2]
+        else:
+            spans, top = [], 0
+            for (key, _), lines in zip(self._rendered_items, self._item_lines(), strict=True):
+                if key is not None and (stamp := self._rendered_stamps.get(key)) is not None:
+                    spans.append((stamp, top, top + lines))
+                top += lines
+            total = top
+            self._spans_cache = (width, spans, total)
+        if self.thread.scroller.virtual_size.height != total:
+            return None
+        return spans
+
+    def _seen_through(self, top: float | None = None, height: int | None = None) -> str | None:
+        """The ``created_at`` (the server's own string) of the newest message row that lies
+        fully inside the visible region, or ``None``. A row cut by either edge is not seen.
+        The region is the live one unless the scroll that raised the event is given."""
+        spans = self._message_spans()
+        if not spans:
+            return None
+        scroller = self.thread.scroller
+        top = scroller.scroll_y if top is None else top
+        bottom = top + (scroller.scrollable_content_region.height if height is None else height)
+        seen = [stamp for stamp, start, end in spans if start >= top and end <= bottom]
+        return seen[-1] if seen else None
+
+    def _note_seen(
+        self, render_id: int, *, top: float | None = None, height: int | None = None
+    ) -> None:
+        """Progressive read mark (read-state-sync §5.1 (b), decision Q8): move the cursor to the
+        newest message that has been fully on screen, even with rows below it unread. It never
+        claims a row that was not on screen, and it sends that row's own ``created_at``.
+
+        The same guards as :meth:`_note_viewed` (torn down, Pepper DM, blurred, a pane over the
+        thread, a replaced render), plus: not while a topic is still being opened at its cursor
+        (the first render lands before anything is marked), and not across a gap of older
+        unread pages (the rows between the cursor and the oldest row held were never shown).
+        """
+        if not self.query(ThreadView) or self.thread.going or not self.loaded_topic:
+            return
+        conv = self.current
+        if conv.is_pepper or conv.topic_id is None or self._blurred or self.pane is not None:
+            return
+        if render_id != self.thread.render_id or self._opening or self._opening_deferred:
+            return
+        cursor = self.marks.marks.get(conv.topic_id)
+        if cursor is None or self._cursor_gap(cursor):
+            return  # first sight never marks (§5.3); and no mark claims across a gap
+        through = self._seen_through(top, height)
+        stamp = state.parse_ts(through) if through is not None else None
+        if through is None or stamp is None or not self.marks.merge(conv.topic_id, stamp):
+            return
+        self._owe(conv, through)
+        self._run("publish")
+        self.refresh_chrome()
 
     def refresh_chrome(self) -> None:
         """Sidebar, header, notice, subline and terminal title from the current state."""
@@ -1084,6 +1270,10 @@ class PepperApp(App[None]):
         self._load_draft()
         self.store = state.MessageStore()
         self.loaded_topic = False
+        self._opening, self._open_cursor, self._open_pages = False, None, 0
+        self._new_from = None
+        self._opening_deferred = False
+        self._rendered_items, self._rendered_stamps, self._spans_cache = [], {}, None
         self._topic_error = None
         # A new subject for the topic and refresh loops: cancel their timers, clear the
         # previous subject's failures and any rerun held behind its in-flight request, and
@@ -1266,6 +1456,8 @@ class PepperApp(App[None]):
             return False  # an open Todos/Notes pane hides the thread: its rows are not on screen
         if render_id != self.thread.render_id or not at_end or not self.thread.at_end:
             return False
+        if self._opening or self._opening_deferred:
+            return False  # still reading older pages to reach the cursor: nothing landed yet
         rendered = self.thread.through
         if through is None or rendered is None:
             return False  # a reset with nothing to show (the Loading screen): no row was seen
@@ -1839,6 +2031,10 @@ class PepperApp(App[None]):
         self._run("publish")
         self.refresh_chrome()
 
+    def on_thread_view_scrolled(self, event: ThreadView.Scrolled) -> None:
+        """The visible region moved: mark what has been fully on screen (progressive, §5.1 (b))."""
+        self._note_seen(event.render_id, top=event.top, height=event.height)
+
     def on_thread_view_landed(self, event: ThreadView.Landed) -> None:
         """A guarded scroll put the newest row of ``event``'s render on screen: the topic is
         read through it. The decision function drops a landing whose render has been
@@ -1858,12 +2054,27 @@ class PepperApp(App[None]):
             "older",
             lambda: poller.fetch_older(self._api, conv, before=before, limit=state.OLDER_PAGE),
             self._got_older,
-            on_error=lambda exc: self._action_failed("load older messages", exc),
+            on_error=self._older_failed,
         )
+
+    def _older_failed(self, exc: Exception) -> bool:
+        """A failed older page. While a topic is being opened at its cursor nothing else would
+        retry it, and the hold would never end (no mark, even at the end): so the opening ends
+        here, landing as it does at the page cap, with the gap rule still keeping progressive
+        marks off the rows that were never shown."""
+        if self._opening:
+            self._open_pages = _OPEN_PAGES_MAX
+            self._render_topic(new_rows=0, reset=True)
+        return self._action_failed("load older messages", exc)
 
     def _got_older(self, page: GroupMessagePage) -> None:
         self._learn_from_messages(page.messages)
         added = self.store.add_older(page.messages, page.next_before)
+        if self._opening:
+            # Still reaching the read cursor: this render re-anchors (or reads another page).
+            self._open_pages += 1
+            self._render_topic(new_rows=0, reset=True)
+            return
         self._render_topic(new_rows=0, reset=False, prepended=bool(added))
 
     # new topic and the topic rail

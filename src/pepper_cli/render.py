@@ -966,7 +966,7 @@ def render_group_roster(rows: list[GroupRosterMember]) -> None:
 #: app's key; an app with no entry gets no line. Only the apps whose data the CLI reaches today.
 APP_HINTS: dict[str, str] = {
     "notes": "the room's notes: 'pepper notes list --room <room>'",
-    "blog": "posts are room notes; an owner publishes them in the Blog app",
+    "blog": "posts are room notes; an owner publishes them: 'pepper blog list --room <room>'",
 }
 
 

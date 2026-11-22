@@ -190,3 +190,17 @@ def test_quote_edge_cases() -> None:
     assert "┃ words" in no_author
     for junk in ({}, {"author": "", "excerpt": ""}, "not a dict"):
         assert "┃" not in _text(rows.message_renderable(_m(quote=junk)))
+
+
+def test_a_new_messages_divider_goes_above_the_first_message_after_the_cursor() -> None:
+    messages = [
+        api_client.group_message_from_dict(ts.message(f"m{i}", f"2026-09-16T17:3{i}:00+00:00"))
+        for i in range(3)
+    ]
+    items = rows.thread_items(messages, you_id=None, new_before="m1")
+    assert [key for key, _ in items if key is not None] == ["msg:m0", "msg:m1", "msg:m2"]
+    before = next(i for i, (key, _) in enumerate(items) if key == "msg:m1")
+    assert "new messages" in _text(items[before - 1][1])
+    assert items[before - 1][0] is None  # keyless: never selectable
+    assert sum(1 for _, r in items if "new messages" in _text(r)) == 1
+    assert all("new messages" not in _text(r) for _, r in rows.thread_items(messages, you_id=None))

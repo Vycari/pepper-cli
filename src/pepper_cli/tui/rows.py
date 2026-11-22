@@ -69,6 +69,11 @@ def day_divider(label: str) -> Text:
     return Text(f"── {sanitize_line(label)} ──", style="dim", justify="center")
 
 
+def new_divider() -> Text:
+    """``── new messages ──``: where the person's read cursor was when the topic opened."""
+    return Text("── new messages ──", style="bold", justify="center")
+
+
 def _header(name: Text, stamp: str) -> RenderableType:
     grid = Table.grid(expand=True)
     grid.add_column(ratio=1, overflow="ellipsis", no_wrap=True)
@@ -300,6 +305,7 @@ def thread_items(
     you_id: str | None,
     pending: Iterable[PendingSend] = (),
     selected: str | None = None,
+    new_before: str | None = None,
 ) -> list[tuple[str | None, RenderableType]]:
     """A topic's rows with their selection keys (``msg:<id>``, ``pending:<key>``; ``None``
     for a day divider), in display order: server rows, then this session's pending sends.
@@ -307,6 +313,8 @@ def thread_items(
     A message with an empty ``day_key`` or ``day_label`` (the server's broken-message
     placeholder) neither opens a divider nor resets the day, as on the web. A message is
     shown with its name line when it is selected, so the selection always says whose it is.
+    ``new_before`` is the id of the first message after the read cursor: a ``new messages``
+    divider (also keyless) goes right above it, below that message's day divider.
     """
     items: list[tuple[str | None, RenderableType]] = []
     last_day: str | None = None
@@ -315,6 +323,8 @@ def thread_items(
             items.append((None, day_divider(m.day_label)))
             last_day = m.day_key
         key = f"msg:{m.id}"
+        if m.id == new_before:
+            items.append((None, new_divider()))
         if key == selected:
             row = message_renderable(m, you_id=you_id, show_name=True)
             items.append((key, Styled(row, SELECTED)))
