@@ -1083,6 +1083,30 @@ def test_a_resync_is_pushed_before_the_next_message(monkeypatch):
     assert result.kinds() == ["resync", "message"]
 
 
+@pytest.mark.parametrize("scoped", [True, False], ids=["scoped", "unscoped"])
+def test_a_malformed_positioned_frame_is_skipped_with_a_resync_and_the_stream_goes_on(
+    monkeypatch, tmp_path, scoped
+):
+    """VR-4266a8f0: the bad frame used to fail the connection, and every reconnect resumed
+    before it and failed there again, so no later event was ever pushed."""
+    cursor_file = tmp_path / "cursor"
+    bad = "id: 4\nevent: message.created\ndata: [1]\n\n"
+    head = _CONNECTED + (_scope() if scoped else "")
+    fake = _Fake(head + bad + _event(5, scoped=scoped) + _PING)
+    argv = ["--cursor-file", str(cursor_file), "--start", "beginning"]
+
+    result = run_channel(monkeypatch, fake, (["--room", _ROOM] if scoped else []) + argv)
+
+    assert result.kinds() == ["resync", "message"]
+    assert "unreadable 'message.created' frame at position 4" in result.notifications[0]["content"]
+    saved = cursor_file.read_text()
+    assert (json.loads(saved)["cursor"] if scoped else int(saved)) == 5
+    streams = [r for r in fake.requests if r.url.path.endswith("/events/stream")]
+    # Once the script runs out the fake answers 503: every later connection resumes past the
+    # skipped frame, never before it.
+    assert streams[1].headers.get("last-event-id") == "5"
+
+
 def test_kinds_and_ignore_kinds_narrow_what_is_pushed_and_the_cursor_still_moves(
     monkeypatch, tmp_path
 ):

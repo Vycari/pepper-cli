@@ -413,12 +413,27 @@ def test_chat_history_reads_drafts_and_skips_ones_with_no_id() -> None:
     "accounts",
     [5, "ab", {"a": 1}, [1], ["ab"], [["1"]], [[]], [["1", 2]], [[1, "Work"]], [["1", "W"], "x"]],
 )
-def test_a_malformed_draft_accounts_value_is_a_malformed_response(accounts) -> None:
+def test_a_draft_with_malformed_accounts_is_left_out_and_counted(accounts) -> None:
+    good = {"draft_id": "ok", "accounts": [["1", "Work"]]}
     raw = {"draft_id": "d", "accounts": accounts}
-    with pytest.raises(api_client.ApiError) as raised:
-        api_client.draft_cards_from([raw])
-    assert raised.value.status == 200
-    assert "draft account" in str(raised.value)
+    cards, skipped = api_client.parse_draft_cards([raw, good])
+    # Never shown with an account choice that may be wrong, and never at the others' cost.
+    assert [c.draft_id for c in cards] == ["ok"]
+    assert skipped == 1
+    assert [c.draft_id for c in api_client.draft_cards_from([raw, good])] == ["ok"]
+
+
+def test_a_history_row_keeps_its_good_drafts_and_counts_a_malformed_one() -> None:
+    row = {"id": "a1", "role": "assistant", "text": "t", "channel": "x", "created_at": "z"}
+    drafts = [{"draft_id": "d1"}, {"draft_id": "d2", "accounts": [["1", 2]]}]
+    with api_client.ApiClient(
+        server_url="http://example.com",
+        token=SecretStr("pep_pat_abc"),
+        client=_mock(lambda _r: httpx.Response(200, json=[{**row, "drafts": drafts}])),
+    ) as api:
+        (entry,) = api.chat_history()
+    assert [d.draft_id for d in entry.drafts] == ["d1"]
+    assert entry.skipped_drafts == 1
 
 
 def test_valid_draft_accounts_are_unchanged_and_a_longer_entry_keeps_its_pair() -> None:

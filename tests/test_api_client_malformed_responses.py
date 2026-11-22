@@ -145,11 +145,23 @@ def test_malformed_trajectory_details_raise_api_error(body: object) -> None:
     assert len(raised.value.body) <= 200
 
 
-def test_chat_history_malformed_rows_raise_api_error() -> None:
+def test_chat_history_that_is_not_a_list_raises_api_error() -> None:
     with _api({"rows": []}) as api, pytest.raises(ApiError):
         api.chat_history()
-    with _api([{"id": "a1", "role": "user"}]) as api, pytest.raises(ApiError):
-        api.chat_history()
+
+
+def test_a_malformed_chat_history_row_is_skipped_and_counted_not_fatal() -> None:
+    """VR-55cdb7b3: one bad row used to reject the whole thread, so the TUI's Pepper pane
+    failed on every poll for the rest of the day."""
+    good = {"id": "a1", "role": "user", "created_at": "z"}
+    rows = [good, {"id": "a2", "role": None, "created_at": "z"}, {**good, "id": "a3"}]
+    with _api(rows) as api:
+        entries = api.chat_history()
+    assert [e.id for e in entries] == ["a1", "a3"]
+    assert entries.skipped == 1
+    with _api([{"id": "a1", "role": "user"}]) as api:
+        entries = api.chat_history()
+    assert (list(entries), entries.skipped) == ([], 1)
 
 
 @pytest.mark.parametrize("delivery", [None, 3, True, ["x"], {"a": 1}])
@@ -170,22 +182,23 @@ _HISTORY_ROW = {"id": "a1", "role": "user", "created_at": "z"}
 
 
 @pytest.mark.parametrize("bad", ["x", 3, None, [1]])
-def test_a_chat_history_row_that_is_not_an_object_is_malformed(bad: object) -> None:
-    with _api([_HISTORY_ROW, bad]) as api, pytest.raises(ApiError) as raised:
-        api.chat_history()
-    assert raised.value.status == 200
-    assert "chat history row is not an object" in str(raised.value)
+def test_a_chat_history_row_that_is_not_an_object_is_skipped(bad: object) -> None:
+    with _api([_HISTORY_ROW, bad]) as api:
+        entries = api.chat_history()
+    assert [e.id for e in entries] == ["a1"]
+    assert entries.skipped == 1
 
 
 @pytest.mark.parametrize("field", ["attachments", "reactions"])
 @pytest.mark.parametrize("value", [1, "x", {"a": 1}, True])
-def test_a_chat_history_list_field_of_the_wrong_type_is_malformed(
+def test_a_chat_history_row_whose_list_field_has_the_wrong_type_is_skipped(
     field: str, value: object
 ) -> None:
-    with _api([{**_HISTORY_ROW, field: value}]) as api, pytest.raises(ApiError) as raised:
-        api.chat_history()
-    assert raised.value.status == 200
-    assert repr(field) in str(raised.value)
+    rows = [{**_HISTORY_ROW, field: value}, {**_HISTORY_ROW, "id": "a2"}]
+    with _api(rows) as api:
+        entries = api.chat_history()
+    assert [e.id for e in entries] == ["a2"]
+    assert entries.skipped == 1
 
 
 def test_chat_history_list_fields_default_when_missing_or_null() -> None:

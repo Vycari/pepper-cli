@@ -3625,7 +3625,14 @@ class _ReplTurnSink(turn.TurnSink):
     def reply(self, payload: dict) -> None:
         self._pause()
         render.render_reply(payload.get("reply") or "")
-        render.render_drafts(api_client.draft_cards_from(payload.get("drafts")))
+        drafts, skipped = api_client.parse_draft_cards(payload.get("drafts"))
+        render.render_drafts(drafts)
+        if skipped:
+            # The reply itself was delivered; a bad draft card must not fail the turn.
+            render.warning(
+                f"{skipped} draft(s) from this reply could not be read and are not shown; "
+                "nothing was sent."
+            )
 
     def error(self, payload: dict) -> None:
         self._pause()
@@ -7097,6 +7104,18 @@ def _kind_list(value: str) -> frozenset[str]:
     return frozenset(kinds)
 
 
+def _report_skipped_frame(frame: api_client.FeedFrame) -> None:
+    """Say on stderr that the watch skipped a frame it could not read (stdout stays one line
+    per event). The cursor still moves past it, so the watch goes on instead of reconnecting
+    into the same frame forever."""
+    where = f" at position {frame.id}" if frame.id is not None else ""
+    render.warning(
+        f"Skipped an unreadable {frame.kind[:80]!r} frame{where} ({frame.malformed}); it was not "
+        "printed, and the watch goes on with the next event. Read the room with 'pepper "
+        "messages list' if something may be missing."
+    )
+
+
 def _watch_frame_shows_health(frame: api_client.FeedFrame) -> bool:
     """Whether ``frame`` proves the stream is past connecting and working.
 
@@ -7529,7 +7548,7 @@ def cmd_rooms_watch(args: argparse.Namespace) -> int:
                         if _watch_frame_shows_health(frame):
                             delay = _WATCH_BACKOFF_START
                             failures = 0
-                        if frame.kind == "error":
+                        if frame.kind == "error" and frame.malformed is None:
                             if frame.payload.get("retry") is False:
                                 _emit_error(
                                     args,
@@ -7540,7 +7559,14 @@ def cmd_rooms_watch(args: argparse.Namespace) -> int:
                                 return 1
                             problem = str(frame.payload.get("error", "error"))
                             break
-                        if frame.id is not None:
+                        if frame.malformed is not None:
+                            # Unreadable: nothing is printed, but the cursor moves past it, or
+                            # every reconnect would resume before it and stall on it again.
+                            _report_skipped_frame(frame)
+                            if frame.id is None:
+                                continue
+                            new_cursor = frame.id
+                        elif frame.id is not None:
                             new_cursor = frame.id
                         elif frame.kind == "cursor" and isinstance(
                             frame.payload.get("cursor"), int
@@ -7548,7 +7574,9 @@ def cmd_rooms_watch(args: argparse.Namespace) -> int:
                             new_cursor = frame.payload["cursor"]
                         else:
                             continue
-                        if frame.kind == "cursor":
+                        if frame.malformed is not None:
+                            pass
+                        elif frame.kind == "cursor":
                             if args.json:
                                 _emit_line(_watch_cursor_line(new_cursor))
                         elif (allowed is None or frame.kind in allowed) and (
@@ -8107,11 +8135,11 @@ def _follow_scoped_watch(
                     if _watch_frame_shows_health(frame):
                         delay = _WATCH_BACKOFF_START
                         failures = 0
-                    if frame.kind == "error":
+                    if frame.kind == "error" and frame.malformed is None:
                         served = scope.room_id if scope is not None else room_id
                         problem = _scoped_watch_problem(frame, served, topic_id, args)
                         break
-                    if frame.kind == "comment":
+                    if frame.kind == "comment" and frame.malformed is None:
                         continue
                     if scope is None or frame.kind == "scope":
                         seen = _confirm_scope(frame, room_id, topic_id, args)
@@ -8136,13 +8164,22 @@ def _follow_scoped_watch(
                             raise _WatchStopError(1)
                         scope = seen
                         continue
-                    if frame.id is not None:
+                    if frame.malformed is not None:
+                        # Unreadable: nothing is printed (its scope cannot be checked either),
+                        # but the cursor moves past it so a reconnect does not stall on it.
+                        _report_skipped_frame(frame)
+                        if frame.id is None:
+                            continue
+                        new_cursor = frame.id
+                    elif frame.id is not None:
                         new_cursor = frame.id
                     elif frame.kind == "cursor" and isinstance(frame.payload.get("cursor"), int):
                         new_cursor = frame.payload["cursor"]
                     else:
                         continue
-                    if frame.kind == "cursor":
+                    if frame.malformed is not None:
+                        pass
+                    elif frame.kind == "cursor":
                         if args.json:
                             _emit_line(_watch_cursor_line(new_cursor))
                     else:

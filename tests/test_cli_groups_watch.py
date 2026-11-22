@@ -591,24 +591,23 @@ def test_unknown_kinds_and_fields_pass_through_the_feed_parser():
 @pytest.mark.parametrize(
     "data", ["not json", "[1]", '"scalar"', "7", "null", '{"a":'], ids=lambda d: d
 )
-def test_a_malformed_event_payload_is_a_stream_error_not_a_silent_drop(data):
+def test_a_malformed_event_payload_is_a_skipped_frame_not_a_silent_drop(data):
     body = (
         'id: 3\nevent: message.created\ndata: {"id":3}\n\n'
         f"id: 4\nevent: message.created\ndata: {data}\n\n"
         'id: 5\nevent: message.created\ndata: {"id":5}\n\n'
     )
-    seen: list[FeedFrame] = []
-    with _api(lambda _r: httpx.Response(200, text=body)) as api:
-        frames = api.watch_agent_events()
-        with pytest.raises(api_client.ApiError) as raised:
-            while True:
-                seen.append(next(frames))
-    # The frame before is delivered; the later valid one is never reached, so a consumer's
-    # cursor cannot move past the lost event.
-    assert [f.id for f in seen] == [3]
-    assert raised.value.status == 200
-    assert "malformed event stream" in str(raised.value)
-    assert data not in str(raised.value)
+    frames = _frames_of(body)
+    # The bad frame is handed on, flagged and empty, with its position, so a consumer moves
+    # past it and says so; the frame after it still arrives on the same connection.
+    assert [(f.id, f.malformed is not None, f.payload) for f in frames] == [
+        (3, False, {"id": 3}),
+        (4, True, {}),
+        (5, False, {"id": 5}),
+    ]
+    assert frames[1].kind == "message.created"
+    assert frames[1].malformed == "frame data is not a valid JSON object"
+    assert data not in frames[1].malformed
 
 
 def test_an_id_less_unknown_frame_with_an_unreadable_body_is_ignored():
@@ -620,9 +619,10 @@ def test_an_id_less_unknown_frame_with_an_unreadable_body_is_ignored():
     assert [(f.kind, f.id) for f in frames] == [("message.created", 4)]
 
 
-def test_an_unreadable_cursor_frame_is_a_stream_error_even_without_an_id():
-    with pytest.raises(api_client.ApiError):
-        _frames_of("event: cursor\ndata: not json\n\n")
+def test_an_unreadable_cursor_frame_is_a_skipped_frame_even_without_an_id():
+    (frame,) = _frames_of("event: cursor\ndata: not json\n\n")
+    assert (frame.kind, frame.id, frame.payload) == ("cursor", None, {})
+    assert frame.malformed is not None
 
 
 @pytest.mark.parametrize(
@@ -635,21 +635,17 @@ def test_an_unreadable_cursor_frame_is_a_stream_error_even_without_an_id():
     ],
     ids=["id-and-kind", "id-only", "bad-id", "cursor"],
 )
-def test_a_positioned_frame_with_no_data_is_a_stream_error_not_a_silent_drop(frame):
+def test_a_positioned_frame_with_no_data_is_a_skipped_frame_not_a_silent_drop(frame):
     body = (
         'id: 3\nevent: message.created\ndata: {"id":3}\n\n'
         f"{frame}"
         'id: 5\nevent: message.created\ndata: {"id":5}\n\n'
     )
-    seen: list[FeedFrame] = []
-    with _api(lambda _r: httpx.Response(200, text=body)) as api:
-        frames = api.watch_agent_events()
-        with pytest.raises(api_client.ApiError) as raised:
-            while True:
-                seen.append(next(frames))
-    assert [f.id for f in seen] == [3]
-    assert raised.value.status == 200
-    assert "malformed event stream" in str(raised.value)
+    frames = _frames_of(body)
+    assert [f.id for f in frames][::2] == [3, 5]
+    assert [f.malformed for f in frames] == [None, "frame has a position but no data", None]
+    # A readable id is kept, so the consumer can move past it; a malformed one is not.
+    assert frames[1].id == (4 if frame.startswith("id: 4") else None)
 
 
 def test_an_unpositioned_frame_with_no_data_is_still_ignored():
@@ -670,14 +666,10 @@ def test_an_unreadable_scope_frame_reaches_the_caller_empty():
 
 
 @pytest.mark.parametrize("bad_id", ["nope", "-1", "1.5", "12abc", "\u00b2"])
-def test_a_malformed_event_id_is_a_stream_error(bad_id):
+def test_a_malformed_event_id_is_a_skipped_frame(bad_id):
     body = f'id: {bad_id}\nevent: message.created\ndata: {{"id":9}}\n\n'
-    with (
-        _api(lambda _r: httpx.Response(200, text=body)) as api,
-        pytest.raises(api_client.ApiError) as raised,
-    ):
-        list(api.watch_agent_events())
-    assert "malformed id" in str(raised.value)
+    (frame,) = _frames_of(body)
+    assert (frame.id, frame.payload, frame.malformed) == (None, {}, "frame has a malformed id")
 
 
 def test_cursor_less_and_control_frames_stay_compatible():
@@ -706,45 +698,97 @@ def test_a_feed_frame_at_the_size_limit_passes_and_one_over_fails(monkeypatch):
     # (the newline counts as a byte).
     exact = prefix + "{" + '"k":"' + "x" * (64 - 1 - len(prefix) - 8) + '"}'
     assert len(exact.encode()) + 1 == 64
-    assert len(_frames_of(exact + "\n\n")) == 1
-    with pytest.raises(api_client.ApiError) as raised:
-        _frames_of(exact + "x\n\n")
-    assert "larger than 64 bytes" in str(raised.value)
+    (fits,) = _frames_of(exact + "\n\n")
+    assert fits.malformed is None
+    (over,) = _frames_of(exact + "x\n\n")
+    assert (over.payload, over.malformed) == ({}, "frame larger than 64 bytes")
 
 
 def test_many_small_data_lines_cannot_grow_a_frame_without_bound(monkeypatch):
     monkeypatch.setattr(api_client, "MAX_SSE_FRAME_BYTES", 64)
-    body = "data: 0123456789\n" * 100
-    with pytest.raises(api_client.ApiError):
-        _frames_of(body)
+    lines = iter(["data: 0123456789"] * 100)
+    frames = api_client._iter_feed_frames(lines)
+    (frame,) = list(frames)
+    assert frame.malformed == "frame larger than 64 bytes"
 
 
-def test_the_next_connection_recovers_after_an_oversized_frame(monkeypatch):
+def test_an_oversized_frame_is_skipped_by_position_and_the_stream_goes_on(monkeypatch):
     monkeypatch.setattr(api_client, "MAX_SSE_FRAME_BYTES", 64)
-    bodies = iter(
-        [
-            'id: 1\nevent: message.created\ndata: {"id":1}\n\n'
-            "id: 2\nevent: message.created\ndata: " + "x" * 200 + "\n\n",
-            'id: 2\nevent: message.created\ndata: {"id":2}\n\n',
-        ]
+    body = (
+        'id: 1\nevent: message.created\ndata: {"id":1}\n\n'
+        "event: message.created\ndata: " + "x" * 200 + "\nid: 2\n\n"
+        'id: 3\nevent: message.created\ndata: {"id":3}\n\n'
     )
-    headers: list[str | None] = []
+    frames = _frames_of(body)
+    assert [(f.kind, f.id, f.malformed) for f in frames] == [
+        ("message.created", 1, None),
+        ("message.created", 2, "frame larger than 64 bytes"),
+        ("message.created", 3, None),
+    ]
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        headers.append(request.headers.get("last-event-id"))
-        return httpx.Response(200, text=next(bodies))
 
-    cursor = None
-    with _api(handler) as api:
-        try:
-            for frame in api.watch_agent_events(last_event_id=cursor):
-                cursor = frame.id
-        except api_client.ApiError:
+def _parsed_watch(monkeypatch, body: str) -> list[dict[str, int | None]]:
+    """``rooms watch`` against the real feed parser: the first connection serves ``body``, the
+    second stops the run (as Ctrl-C would)."""
+    calls: list[dict[str, int | None]] = []
+
+    class FakeApi:
+        def __init__(self, **_kw) -> None:
             pass
-        assert cursor == 1
-        resumed = list(api.watch_agent_events(last_event_id=cursor))
-    assert headers == [None, "1"]
-    assert [f.id for f in resumed] == [2]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return None
+
+        def watch_agent_events(self, *, since=0, last_event_id=None, start=None, **_kw):
+            calls.append({"since": since, "last_event_id": last_event_id})
+            if len(calls) > 1:
+                raise KeyboardInterrupt
+            yield from api_client._iter_feed_frames(iter(body.splitlines()))
+
+    monkeypatch.setattr(api_client, "ApiClient", FakeApi)
+    monkeypatch.setattr(cli.time, "sleep", lambda _s: None)
+    return calls
+
+
+def test_a_malformed_positioned_frame_is_skipped_and_the_watch_goes_on(
+    monkeypatch, capsys, tmp_path
+):
+    """VR-4266a8f0: one bad frame with a position used to fail every connection at the same
+    place, so the watch reconnected into it forever and nothing after it arrived."""
+    body = (
+        'id: 3\nevent: message.created\ndata: {"id":3}\n\n'
+        "id: 4\nevent: message.created\ndata: [1]\n\n"
+        'id: 5\nevent: message.created\ndata: {"id":5}\n\n'
+    )
+    calls = _parsed_watch(monkeypatch, body)
+    cursor_file = tmp_path / "cursor"
+
+    assert cli.main(["rooms", "watch", "--json", "--cursor-file", str(cursor_file)]) == 0
+
+    out, err = capsys.readouterr()
+    assert [json.loads(line)["cursor"] for line in out.splitlines()] == [3, 5]
+    assert "Skipped an unreadable 'message.created' frame at position 4" in err
+    assert cursor_file.read_text().strip() == "5"
+    # The connection ended cleanly and the next one resumed past everything it delivered.
+    assert calls[1]["last_event_id"] == 5
+
+
+def test_a_malformed_frame_with_no_readable_position_is_skipped_too(monkeypatch, capsys):
+    body = (
+        'id: 3\nevent: message.created\ndata: {"id":3}\n\n'
+        'id: 4x\nevent: message.created\ndata: {"id":4}\n\n'
+        'id: 5\nevent: message.created\ndata: {"id":5}\n\n'
+    )
+    _parsed_watch(monkeypatch, body)
+
+    assert cli.main(["rooms", "watch", "--json"]) == 0
+
+    out, err = capsys.readouterr()
+    assert [json.loads(line)["cursor"] for line in out.splitlines()] == [3, 5]
+    assert "Skipped an unreadable 'message.created' frame (frame has a malformed id)" in err
 
 
 def test_the_cursor_file_helpers_round_trip(tmp_path: Path):
