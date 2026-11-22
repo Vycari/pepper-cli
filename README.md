@@ -168,6 +168,15 @@ pepper login --server https://your-host --token pat_xxx     # fully non-interact
 Passing `--token` always skips the browser flow, whether or not `--manual` is
 also given.
 
+The server URL must be a bare origin (`https://host[:port]`, no user name,
+path, query or fragment), checked at login and again whenever the saved
+credentials are read, before the token is sent anywhere. Plain `http://` is
+accepted only for this machine (`localhost`, `*.localhost`, `127.0.0.0/8`,
+`[::1]`), so `pepper login --server http://localhost:8000` works for local
+development. For a self-hosted server on a network you trust that has no
+TLS, set `PEPPER_ALLOW_INSECURE_HTTP=1`; the token then crosses that network
+in the clear.
+
 Credentials are written to `$XDG_CONFIG_HOME/pepper/credentials.toml`
 (`~/.config/pepper/credentials.toml` by default) with strict `0600`
 permissions — the CLI refuses to read a world- or group-readable file.

@@ -211,3 +211,153 @@ def test_invalid_profile_names_rejected(name: str) -> None:
 def test_valid_profile_names_accepted(name: str) -> None:
     credentials.set_profile(name)
     assert credentials.active_profile() == name
+
+
+# ---------------------------------------------------------------------------
+# Atomic replace (#295): a failed write never costs the last good login.
+
+
+def _old_login_survives() -> None:
+    creds = credentials.load()
+    assert creds.server_url == "https://old.example.com"
+    assert creds.token.get_secret_value() == "pep_pat_old"
+
+
+def test_save_keeps_old_credentials_when_the_write_fails(tmp_home: Path, monkeypatch) -> None:
+    credentials.save(server_url="https://old.example.com", token=SecretStr("pep_pat_old"))
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(credentials, "_serialize", boom)
+    with pytest.raises(OSError, match="disk full"):
+        credentials.save(server_url="https://new.example.com", token=SecretStr("pep_pat_new"))
+
+    _old_login_survives()
+    assert [p.name for p in credentials.credentials_path().parent.iterdir()] == ["credentials.toml"]
+
+
+def test_save_keeps_old_credentials_when_the_replace_fails(tmp_home: Path, monkeypatch) -> None:
+    credentials.save(server_url="https://old.example.com", token=SecretStr("pep_pat_old"))
+
+    def no_replace(src, dst):
+        raise OSError("rename refused")
+
+    monkeypatch.setattr(credentials.os, "replace", no_replace)
+    with pytest.raises(OSError, match="rename refused"):
+        credentials.save(server_url="https://new.example.com", token=SecretStr("pep_pat_new"))
+
+    _old_login_survives()
+    assert [p.name for p in credentials.credentials_path().parent.iterdir()] == ["credentials.toml"]
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX-only perms check")
+def test_save_is_0600_under_a_permissive_umask(tmp_home: Path) -> None:
+    old = os.umask(0)
+    try:
+        path = credentials.save(server_url="https://pepper.example", token=SecretStr("pep_pat_x"))
+        path = credentials.save(server_url="https://pepper.example", token=SecretStr("pep_pat_y"))
+    finally:
+        os.umask(old)
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX-only perms check")
+def test_save_tightens_a_replaced_world_readable_file(tmp_home: Path) -> None:
+    path = credentials.save(server_url="https://pepper.example", token=SecretStr("pep_pat_x"))
+    path.chmod(0o644)
+    credentials.save(server_url="https://pepper.example", token=SecretStr("pep_pat_y"))
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+# ---------------------------------------------------------------------------
+# Server URL validation (#296): the token only goes to a canonical origin.
+
+
+@pytest.mark.parametrize(
+    ("raw", "canonical"),
+    [
+        ("https://pepper.example.com", "https://pepper.example.com"),
+        ("https://pepper.example.com/", "https://pepper.example.com"),
+        ("HTTPS://Pepper.Example.com:8443", "https://pepper.example.com:8443"),
+        ("http://localhost:8000", "http://localhost:8000"),
+        ("http://app.localhost:8000/", "http://app.localhost:8000"),
+        ("http://127.0.0.1:8000", "http://127.0.0.1:8000"),
+        ("http://127.1.2.3", "http://127.1.2.3"),
+        ("http://[::1]:8000", "http://[::1]:8000"),
+        ("https://[2001:db8::1]", "https://[2001:db8::1]"),
+    ],
+)
+def test_validate_server_url_accepts(raw: str, canonical: str, monkeypatch) -> None:
+    monkeypatch.delenv(credentials.ALLOW_INSECURE_HTTP_ENV, raising=False)
+    assert credentials.validate_server_url(raw) == canonical
+
+
+@pytest.mark.parametrize(
+    ("raw", "why"),
+    [
+        ("", "empty"),
+        ("pepper.example.com", "https://"),
+        ("ftp://pepper.example.com", "https://"),
+        ("javascript:alert(1)", "https://"),
+        ("https://", "no host"),
+        ("https:///path", "no host"),
+        ("https://alice:hunter2@pepper.example.com", "user name or password"),
+        ("https://alice@pepper.example.com", "user name or password"),
+        ("https://pepper.example.com?x=1", "query"),
+        ("https://pepper.example.com/#frag", "fragment"),
+        ("https://pepper.example.com/api", "no path"),
+        ("https://pepper.example.com:notaport", "Invalid server URL"),
+        ("https://pepper.example.com:99999", "Invalid server URL"),
+        ("https://pepper.example .com", "spaces"),
+        ("https://pepper.example.com\n", "control"),
+        ("http://pepper.example.com", "plain http"),
+        ("http://192.168.1.10:8000", "plain http"),
+        ("http://localhost.evil.example", "plain http"),
+    ],
+)
+def test_validate_server_url_rejects(raw: str, why: str, monkeypatch) -> None:
+    monkeypatch.delenv(credentials.ALLOW_INSECURE_HTTP_ENV, raising=False)
+    with pytest.raises(ValueError, match=why) as excinfo:
+        credentials.validate_server_url(raw)
+    assert "hunter2" not in str(excinfo.value)
+
+
+def test_validate_server_url_plain_http_needs_the_opt_in(monkeypatch) -> None:
+    monkeypatch.setenv(credentials.ALLOW_INSECURE_HTTP_ENV, "1")
+    assert credentials.validate_server_url("http://pepper.lan:8000/") == "http://pepper.lan:8000"
+    # The opt-in relaxes only the scheme rule; the URL must still be a bare origin.
+    with pytest.raises(ValueError, match="user name or password"):
+        credentials.validate_server_url("http://a:b@pepper.lan")
+
+
+def _write_creds_file(server_url: str) -> None:
+    path = credentials.credentials_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'server_url = "{server_url}"\ntoken = "pep_pat_supersecret"\n')
+    path.chmod(0o600)
+
+
+@pytest.mark.parametrize(
+    "server_url",
+    [
+        "https://alice:hunter2@pepper.example.com",
+        "https://pepper.example.com/?next=evil",
+        "file:///etc/passwd",
+        "http://pepper.example.com",
+    ],
+)
+def test_load_refuses_an_unsafe_server_url(server_url: str, monkeypatch) -> None:
+    monkeypatch.delenv(credentials.ALLOW_INSECURE_HTTP_ENV, raising=False)
+    _write_creds_file(server_url)
+    with pytest.raises(credentials.CredentialsError) as excinfo:
+        credentials.load()
+    message = str(excinfo.value)
+    assert "pep_pat_supersecret" not in message
+    assert "hunter2" not in message
+
+
+def test_load_accepts_a_self_hosted_https_url(monkeypatch) -> None:
+    monkeypatch.delenv(credentials.ALLOW_INSECURE_HTTP_ENV, raising=False)
+    _write_creds_file("https://pepper.selfhosted.example:8443/")
+    assert credentials.load().server_url == "https://pepper.selfhosted.example:8443"
