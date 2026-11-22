@@ -23,11 +23,13 @@ when it meant "you may not look there" teaches the model the folder is empty.
 
 from __future__ import annotations
 
+import errno
 import os
+import stat
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 #: Bytes of one file ``fs_read`` will return. Past it the content is cut and
 #: a marker says so, because a silently truncated file is one the model will
@@ -43,9 +45,23 @@ MAX_LIST_ENTRIES = 500
 MAX_GREP_MATCHES = 40
 GREP_SNIPPET_CHARS = 240
 
-#: Files ``fs_grep`` will open, per search. A search that walks a
-#: node_modules tree is a search that hangs the turn.
+#: Files ``fs_grep`` will open to read, per search, across every root. The cap
+#: counts files actually opened: an ignored name, an external symlink or a
+#: binary suffix is turned away without being opened and costs nothing here,
+#: so a run of unusable entries cannot hide a readable file behind it. A search
+#: that walks a node_modules tree is a search that hangs the turn.
 MAX_GREP_FILES = 2_000
+
+#: Directory entries ``fs_grep`` will look at, per search, across every root.
+#: The second half of the budget: unusable entries are free against
+#: :data:`MAX_GREP_FILES`, so something else has to bound the walk itself.
+MAX_GREP_ENTRIES = 50_000
+
+#: Longest ``path`` and ``query`` the provider will act on. The advertised
+#: schema says "string" and nothing more, and the provider is the boundary
+#: that actually enforces it.
+MAX_PATH_CHARS = 4_096
+MAX_QUERY_CHARS = 1_000
 
 #: Directory and file names skipped by ``fs_list``'s walk and ``fs_grep``'s.
 #: Not a security control — containment is — just the difference between a
@@ -85,8 +101,24 @@ BINARY_SUFFIXES = frozenset(
 _SNIFF_BYTES = 8_000
 
 
-def _read_capped(path: Path, *, marker: bool = True) -> str:
-    """Read at most :data:`MAX_READ_BYTES` from ``path``.
+_OUTSIDE = "That path isn't inside the folder you shared, or doesn't exist."
+
+#: ``errno`` values an ``O_NOFOLLOW`` walk raises when a component that was a
+#: plain directory or file at check time is, by open time, a symlink, a
+#: different kind of object, or gone: a replacement race, answered with the
+#: same refusal as any other out-of-root path.
+_RACE_ERRNOS = frozenset({errno.ELOOP, errno.ENOTDIR, errno.ENOENT})
+
+#: Descriptor-relative, no-follow opens need ``O_NOFOLLOW`` and ``dir_fd``
+#: support, which Windows lacks; there :func:`_open_file` falls back to
+#: opening by path and re-checking the opened object.
+_HAS_DIRFD = hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd
+_O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+_O_BINARY = getattr(os, "O_BINARY", 0)
+
+
+def _read_capped_info(fh: IO[bytes]) -> tuple[str, bool]:
+    """Read at most :data:`MAX_READ_BYTES` from ``fh``; say whether it was cut.
 
     Reads from the open file rather than slicing ``read_bytes()``, so the cap
     bounds *memory and I/O* and not merely the returned string. The
@@ -96,16 +128,162 @@ def _read_capped(path: Path, *, marker: bool = True) -> str:
     :data:`MAX_GREP_FILES` candidates.
 
     One byte past the cap is read deliberately: it is what distinguishes "the
-    file ended here" from "this is where we stopped", and only the second
-    earns the truncation marker.
+    file ended here" from "this is where we stopped".
     """
-    with path.open("rb") as fh:
-        raw = fh.read(MAX_READ_BYTES + 1)
+    raw = fh.read(MAX_READ_BYTES + 1)
     truncated = len(raw) > MAX_READ_BYTES
-    text = raw[:MAX_READ_BYTES].decode("utf-8", errors="replace")
-    if truncated and marker:
+    return raw[:MAX_READ_BYTES].decode("utf-8", errors="replace"), truncated
+
+
+def _read_capped(fh: IO[bytes]) -> str:
+    """:func:`_read_capped_info`'s text, plus a marker if the file was cut.
+
+    Only a cut file earns the truncation marker.
+    """
+    text, truncated = _read_capped_info(fh)
+    if truncated:
         text += f"\n…[truncated at {MAX_READ_BYTES} bytes]"
     return text
+
+
+def _is_binary(fh: IO[bytes], path: Path) -> bool:
+    """Binary by suffix, else by a NUL in the first :data:`_SNIFF_BYTES`.
+
+    Leaves ``fh`` at the start, so the content read that follows sees the
+    whole file.
+    """
+    if path.suffix.lower() in BINARY_SUFFIXES:
+        return True
+    head = fh.read(_SNIFF_BYTES)
+    fh.seek(0)
+    return b"\x00" in head
+
+
+def _open_dir_fd(root: Path, parts: Sequence[str]) -> int:
+    """A descriptor for ``root/<parts>``, opened one component at a time.
+
+    Every step is an ``openat`` with ``O_NOFOLLOW`` relative to the previous
+    descriptor, so the object reached is the one those names pointed at *as
+    each was opened*. ``parts`` come from a path that ``realpath`` already
+    resolved, so they hold no symlinks; if one has become a symlink since
+    (the replacement race this exists for) the open fails instead of
+    following it out of the root.
+    """
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | _O_CLOEXEC)
+    try:
+        for part in parts:
+            nxt = os.open(
+                part,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | _O_CLOEXEC,
+                dir_fd=fd,
+            )
+            os.close(fd)
+            fd = nxt
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _race_refusal(exc: OSError) -> PathRefused | None:
+    return PathRefused(_OUTSIDE) if exc.errno in _RACE_ERRNOS else None
+
+
+def _open_file(root: Path, real: Path) -> IO[bytes]:
+    """``real`` (resolved, inside ``root``) opened for reading, bound to what was opened.
+
+    The file is opened ``O_NOFOLLOW | O_NONBLOCK`` relative to a descriptor for
+    its parent, so a swapped-in symlink is refused and a swapped-in fifo cannot
+    block; the caller's ``fstat`` check then refuses anything not regular.
+    Without ``dir_fd`` support the fallback opens by path and then checks the
+    opened object against a fresh resolve: still inside the root, and the same
+    file.
+    """
+    try:
+        if not _HAS_DIRFD:
+            return _open_file_by_path(root, real)
+        parts = real.relative_to(root).parts
+        parent = _open_dir_fd(root, parts[:-1])
+        try:
+            fd = os.open(
+                parts[-1] if parts else ".",
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | _O_CLOEXEC,
+                dir_fd=parent,
+            )
+        finally:
+            os.close(parent)
+        return _wrap_regular(fd)
+    except OSError as exc:
+        refusal = _race_refusal(exc)
+        if refusal is not None:
+            raise refusal from exc
+        raise
+
+
+def _wrap_regular(fd: int) -> IO[bytes]:
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise PathRefused("That isn't a readable file.")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _open_file_by_path(root: Path, real: Path) -> IO[bytes]:
+    fd = os.open(real, os.O_RDONLY | _O_BINARY | _O_CLOEXEC)
+    try:
+        again = real.resolve(strict=True)
+        if not _is_within(again, root) or not os.path.samestat(os.fstat(fd), again.stat()):
+            raise PathRefused(_OUTSIDE)
+    except BaseException:
+        os.close(fd)
+        raise
+    return _wrap_regular(fd)
+
+
+def _lstat_within(root: Path, real: Path) -> os.stat_result:
+    """``lstat`` of ``real`` through its parent's descriptor; a symlink is a race."""
+    try:
+        if not _HAS_DIRFD:
+            return real.stat()
+        parts = real.relative_to(root).parts
+        parent = _open_dir_fd(root, parts[:-1])
+        try:
+            result = os.stat(parts[-1] if parts else ".", dir_fd=parent, follow_symlinks=False)
+        finally:
+            os.close(parent)
+    except OSError as exc:
+        refusal = _race_refusal(exc)
+        if refusal is not None:
+            raise refusal from exc
+        raise
+    if stat.S_ISLNK(result.st_mode):
+        raise PathRefused(_OUTSIDE)
+    return result
+
+
+def _scan_dir(root: Path, real: Path) -> list[tuple[str, bool]]:
+    """``(name, is_dir)`` for ``real`` (resolved, inside ``root``), read through a descriptor.
+
+    ``is_dir`` is read while the descriptor is open: a ``DirEntry`` from a
+    descriptor scan cannot be asked after it is closed.
+    """
+    if not _HAS_DIRFD:
+        with os.scandir(real) as it:
+            return [(e.name, e.is_dir()) for e in it]
+    try:
+        fd = _open_dir_fd(root, real.relative_to(root).parts)
+    except OSError as exc:
+        refusal = _race_refusal(exc)
+        if refusal is not None:
+            raise refusal from exc
+        raise
+    try:
+        with os.scandir(fd) as it:
+            return [(e.name, e.is_dir()) for e in it]
+    finally:
+        os.close(fd)
 
 
 class PathRefused(Exception):
@@ -143,6 +321,40 @@ def _is_within(candidate: Path, root: Path) -> bool:
     to get right on three platforms.
     """
     return candidate == root or candidate.is_relative_to(root)
+
+
+def _text_arg(arguments: dict[str, Any], key: str, limit: int) -> str:
+    """``arguments[key]`` as a string, or a refusal; absent means empty.
+
+    The advertised JSON schema says "string", but a caller can send anything,
+    and ``str()`` on an array or a number turns a malformed call into a path
+    or a search term. Only a missing key is tolerated; ``null`` is not a string.
+    """
+    value = arguments.get(key, "")
+    if not isinstance(value, str):
+        raise PathRefused(f"`{key}` must be a string.")
+    if len(value) > limit:
+        raise PathRefused(f"`{key}` is too long (at most {limit} characters).")
+    if "\x00" in value:
+        raise PathRefused(f"`{key}` must not contain a NUL character.")
+    return value
+
+
+@dataclass
+class _GrepBudget:
+    """One search's shared allowance of files opened and entries walked.
+
+    ``exhausted`` is set only when the search wanted more than it was given,
+    so a tree that fits exactly in the budget is still a complete search.
+    """
+
+    files_left: int = 0
+    entries_left: int = 0
+    exhausted: bool = False
+
+    def __post_init__(self) -> None:
+        self.files_left = MAX_GREP_FILES
+        self.entries_left = MAX_GREP_ENTRIES
 
 
 class FilesystemProvider:
@@ -252,14 +464,14 @@ class FilesystemProvider:
         """
         try:
             if name == "fs_list":
-                return self._list(str(arguments.get("path") or "")), False
+                return self._list(_text_arg(arguments, "path", MAX_PATH_CHARS)), False
             if name == "fs_read":
-                return self._read(str(arguments.get("path") or "")), False
+                return self._read(_text_arg(arguments, "path", MAX_PATH_CHARS)), False
             if name == "fs_grep":
                 return (
                     self._grep(
-                        str(arguments.get("query") or ""),
-                        str(arguments.get("path") or ""),
+                        _text_arg(arguments, "query", MAX_QUERY_CHARS),
+                        _text_arg(arguments, "path", MAX_PATH_CHARS),
                     ),
                     False,
                 )
@@ -319,24 +531,6 @@ class FilesystemProvider:
         for root in self._roots:
             yield root, relative
 
-    @staticmethod
-    def _require_regular(path: Path) -> None:
-        """Refuse anything that is not a plain file.
-
-        A fifo blocks forever on open, a device file is unbounded, and a
-        socket is neither. ``is_file`` follows symlinks, which is correct
-        here because the link was already resolved and contained.
-        """
-        if not path.is_file():
-            raise PathRefused("That isn't a readable file.")
-
-    @staticmethod
-    def _looks_binary(path: Path) -> bool:
-        if path.suffix.lower() in BINARY_SUFFIXES:
-            return True
-        with path.open("rb") as fh:
-            return b"\x00" in fh.read(_SNIFF_BYTES)
-
     def _contained(self, path: Path) -> Path | None:
         """``path`` re-resolved, if it is still inside a granted root.
 
@@ -347,12 +541,22 @@ class FilesystemProvider:
         is outside the grant even though the link itself sits inside it
         (``os.walk(followlinks=False)`` stops a symlinked *directory* being
         descended and says nothing about a symlinked file).
+
+        This is a check on a pathname, so it is only half of the guard: what
+        it returns is then opened through :func:`_open_file` and friends,
+        which re-bind the open to the object that was checked.
         """
         try:
             real = path.resolve(strict=True)
         except (OSError, RuntimeError):
             return None
         return real if any(_is_within(real, r.path) for r in self._roots) else None
+
+    def _root_for(self, real: Path) -> Path:
+        for root in self._roots:
+            if _is_within(real, root.path):
+                return root.path
+        raise PathRefused(_OUTSIDE)
 
     def _label_for(self, path: Path) -> str:
         """``root-name/relative/path`` — how a result names a file.
@@ -379,10 +583,12 @@ class FilesystemProvider:
         target = self._resolve(relative) if relative else self._roots[0].path
         if not target.is_dir():
             raise PathRefused("That isn't a folder.")
+        root = self._root_for(target)
         rows: list[str] = []
         truncated = False
-        for entry in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
-            if entry.name in IGNORED_NAMES:
+        entries = sorted(_scan_dir(root, target), key=lambda e: (not e[1], e[0].lower()))
+        for name, _is_dir in entries:
+            if name in IGNORED_NAMES:
                 continue
             if len(rows) >= MAX_LIST_ENTRIES:
                 truncated = True
@@ -390,14 +596,22 @@ class FilesystemProvider:
             # A listing names a symlink's target as if it were a file here,
             # and ``stat()`` follows the link — so an outward link would
             # publish an external file's existence and size. Same containment
-            # rule as everything else, applied before the name is printed.
-            real = self._contained(entry)
+            # rule as everything else, applied before the name is printed;
+            # the size then comes from the object the checked name still
+            # points at, not from a second lookup by pathname.
+            real = self._contained(target / name)
             if real is None:
                 continue
-            if real.is_dir():
-                rows.append(f"{entry.name}/")
-            elif real.is_file():
-                rows.append(f"{entry.name} ({real.stat().st_size} bytes)")
+            try:
+                info = _lstat_within(self._root_for(real), real)
+            except PathRefused:
+                # Replaced by a link between the check and the stat: not
+                # listed, like any other entry outside the grant.
+                continue
+            if stat.S_ISDIR(info.st_mode):
+                rows.append(f"{name}/")
+            elif stat.S_ISREG(info.st_mode):
+                rows.append(f"{name} ({info.st_size} bytes)")
             # Anything else (fifo, socket, device) is simply not listed:
             # naming it invites the model to read it, and it cannot.
         if not rows:
@@ -411,14 +625,19 @@ class FilesystemProvider:
         if not relative:
             raise PathRefused("Which file? `path` is required.")
         target = self._resolve(relative)
-        self._require_regular(target)
-        if self._looks_binary(target):
-            raise PathRefused("That file is binary — there's no text to read.")
-        text = _read_capped(target)
+        with _open_file(self._root_for(target), target) as fh:
+            if _is_binary(fh, target):
+                raise PathRefused("That file is binary — there's no text to read.")
+            text = _read_capped(fh)
         return f"{self._label_for(target)}:\n{text}"
 
-    def _walk(self, start: Path, *, limit: int = MAX_GREP_FILES) -> Iterator[Path]:
+    def _walk(self, start: Path, budget: _GrepBudget) -> Iterator[Path]:
         """Yield candidate files under ``start``, ignoring the usual noise.
+
+        Every yielded entry spends one of ``budget``'s entries. When the
+        budget is spent with entries still unvisited, ``budget.exhausted`` is
+        set before the walk stops, so the caller can tell a search that ran
+        out of walk from one that finished.
 
         ``followlinks`` stays off: a symlinked directory would otherwise be
         walked, and a cycle would make the search unbounded. That says
@@ -426,25 +645,22 @@ class FilesystemProvider:
         caller is responsible for putting every candidate through
         :meth:`_contained` before opening it.
         """
-        seen = 0
         for dirpath, dirnames, filenames in os.walk(start, followlinks=False):
             dirnames[:] = sorted(d for d in dirnames if d not in IGNORED_NAMES)
             for filename in sorted(filenames):
                 if filename in IGNORED_NAMES:
                     continue
-                if seen >= limit:
+                if budget.entries_left <= 0:
+                    budget.exhausted = True
                     return
-                seen += 1
+                budget.entries_left -= 1
                 yield Path(dirpath) / filename
 
-    def _walk_all(self, starts: Sequence[Path]) -> Iterator[Path]:
-        """:meth:`_walk` over several trees, sharing one file budget."""
-        budget = MAX_GREP_FILES
+    def _walk_all(self, starts: Sequence[Path], budget: _GrepBudget) -> Iterator[Path]:
+        """:meth:`_walk` over several trees, sharing one budget."""
         for start in starts:
-            for path in self._walk(start, limit=budget):
-                budget -= 1
-                yield path
-            if budget <= 0:
+            yield from self._walk(start, budget)
+            if budget.exhausted:
                 return
 
     def _grep(self, query: str, relative: str) -> str:
@@ -463,7 +679,9 @@ class FilesystemProvider:
             starts = self.roots
         lowered = needle.lower()
         hits: list[str] = []
-        for candidate in self._walk_all(starts):
+        budget = _GrepBudget()
+        cut_files: list[str] = []
+        for candidate in self._walk_all(starts, budget):
             if len(hits) >= MAX_GREP_MATCHES:
                 break
             # Containment, before anything is opened. A walked candidate is a
@@ -472,16 +690,24 @@ class FilesystemProvider:
             # pointing at a readable file outside it is exactly how a search
             # would otherwise return content the user never granted.
             real = self._contained(candidate)
-            if real is None:
+            if real is None or real.suffix.lower() in BINARY_SUFFIXES:
                 continue
+            if budget.files_left <= 0:
+                budget.exhausted = True
+                break
+            budget.files_left -= 1
             try:
-                if not real.is_file() or self._looks_binary(real):
-                    continue
-                content = _read_capped(real, marker=False)
-            except OSError:
-                # One unreadable file does not fail a search over a folder.
+                with _open_file(self._root_for(real), real) as fh:
+                    if _is_binary(fh, real):
+                        continue
+                    content, truncated = _read_capped_info(fh)
+            except (OSError, PathRefused):
+                # One unreadable, non-regular or just-replaced file does not
+                # fail a search over a folder.
                 continue
             label = self._label_for(real)
+            if truncated:
+                cut_files.append(label)
             for lineno, line in enumerate(content.splitlines(), start=1):
                 if lowered not in line.lower():
                     continue
@@ -489,21 +715,46 @@ class FilesystemProvider:
                 hits.append(f"{label}:{lineno}: {snippet}")
                 if len(hits) >= MAX_GREP_MATCHES:
                     break
+        notes = self._grep_notes(budget, cut_files)
         if not hits:
+            if notes:
+                return f"No matches for {needle!r} in the part that was searched.\n{notes}"
             return f"No matches for {needle!r}."
         body = "\n".join(hits)
         if len(hits) >= MAX_GREP_MATCHES:
             body += f"\n…[stopped at {MAX_GREP_MATCHES} matches; narrow the search]"
-        return body
+        return f"{body}\n{notes}" if notes else body
+
+    @staticmethod
+    def _grep_notes(budget: _GrepBudget, cut_files: list[str]) -> str:
+        """The partial-result notices: nothing when the search was complete."""
+        notes: list[str] = []
+        if budget.exhausted:
+            notes.append(
+                f"…[search incomplete: stopped after {MAX_GREP_FILES} files opened or "
+                f"{MAX_GREP_ENTRIES} entries seen, so later files were not searched; "
+                "narrow the path]"
+            )
+        if cut_files:
+            shown = ", ".join(cut_files[:5])
+            more = f" and {len(cut_files) - 5} more" if len(cut_files) > 5 else ""
+            notes.append(
+                f"…[search incomplete: only the first {MAX_READ_BYTES} bytes of {shown}{more} "
+                "were searched]"
+            )
+        return "\n".join(notes)
 
 
 __all__ = [
     "BINARY_SUFFIXES",
     "GREP_SNIPPET_CHARS",
     "IGNORED_NAMES",
+    "MAX_GREP_ENTRIES",
     "MAX_GREP_FILES",
     "MAX_GREP_MATCHES",
     "MAX_LIST_ENTRIES",
+    "MAX_PATH_CHARS",
+    "MAX_QUERY_CHARS",
     "MAX_READ_BYTES",
     "FilesystemProvider",
     "PathRefused",
