@@ -6421,6 +6421,17 @@
         ],
         "type": "object"
       },
+      "ResearchForbiddenBody": {
+        "properties": {
+          "detail": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "type": "object"
+      },
       "ResearchForkedFromOut": {
         "properties": {
           "author_name": {
@@ -8199,11 +8210,42 @@
               }
             ]
           },
+          "renewal_due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "renewal_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "renewal_warned_at": {
             "anyOf": [
               {
                 "format": "date-time",
                 "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "runs_until_renewal": {
+            "anyOf": [
+              {
+                "type": "integer"
               },
               {
                 "type": "null"
@@ -8577,6 +8619,105 @@
         },
         "required": [
           "role"
+        ],
+        "type": "object"
+      },
+      "SharingCalendarChoices": {
+        "properties": {
+          "calendars": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "calendars"
+        ],
+        "type": "object"
+      },
+      "SharingCalendarOption": {
+        "properties": {
+          "access_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "account_label": {
+            "type": "string"
+          },
+          "calendar_id": {
+            "type": "string"
+          },
+          "is_primary": {
+            "type": "boolean"
+          },
+          "subscribed": {
+            "type": "boolean"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "writable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "calendar_id",
+          "summary",
+          "account_label",
+          "is_primary",
+          "access_role",
+          "writable",
+          "subscribed"
+        ],
+        "type": "object"
+      },
+      "SharingRecordBody": {
+        "properties": {
+          "available_calendars": {
+            "items": {
+              "$ref": "#/components/schemas/SharingCalendarOption"
+            },
+            "type": "array"
+          },
+          "available_levels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "calendar": {
+            "$ref": "#/components/schemas/SharingCalendarChoices"
+          },
+          "default_levels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "etag": {
+            "type": "string"
+          },
+          "level_labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "calendar",
+          "etag",
+          "available_levels",
+          "level_labels",
+          "default_levels",
+          "available_calendars"
         ],
         "type": "object"
       },
@@ -9373,11 +9514,42 @@
               }
             ]
           },
+          "renewal_due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "renewal_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "renewal_warned_at": {
             "anyOf": [
               {
                 "format": "date-time",
                 "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "runs_until_renewal": {
+            "anyOf": [
+              {
+                "type": "integer"
               },
               {
                 "type": "null"
@@ -9582,11 +9754,42 @@
               }
             ]
           },
+          "renewal_due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "renewal_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "renewal_warned_at": {
             "anyOf": [
               {
                 "format": "date-time",
                 "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "runs_until_renewal": {
+            "anyOf": [
+              {
+                "type": "integer"
               },
               {
                 "type": "null"
@@ -26433,6 +26636,99 @@
         ]
       }
     },
+    "/api/v1/groups/{group_id}/research-projects/{project_id}/steering/{note_id}": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "note_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchSteeringOut"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchConflictBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-group-research-projects"
+        ]
+      }
+    },
     "/api/v1/groups/{group_id}/roster": {
       "get": {
         "parameters": [
@@ -27126,7 +27422,14 @@
                 "schema": {}
               }
             },
-            "description": ""
+            "description": "",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "422": {
             "content": {
@@ -27152,6 +27455,21 @@
             "schema": {
               "format": "uuid",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           {
@@ -27187,7 +27505,31 @@
                 "schema": {}
               }
             },
-            "description": ""
+            "description": "",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharingRecordBody"
+                }
+              }
+            },
+            "description": "",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "422": {
             "content": {
@@ -33158,6 +33500,90 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ResearchDisabledBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-research-projects"
+        ]
+      }
+    },
+    "/api/v1/research-projects/{project_id}/steering/{note_id}": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "note_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchSteeringOut"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchConflictBody"
                 }
               }
             },
