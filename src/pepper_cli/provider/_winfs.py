@@ -58,7 +58,9 @@ def parse_full_dir_info(buf: bytes) -> list[tuple[str, bool]]:
         fields = _FULL_DIR_INFO.unpack_from(buf, offset)
         next_offset, attributes, name_bytes = fields[0], fields[8], fields[9]
         start = offset + _FULL_DIR_INFO.size
-        name = buf[start : start + name_bytes].decode("utf-16-le")
+        # NTFS names are UTF-16 code units, not checked Unicode, so a lone
+        # surrogate is a legal name; ``os.listdir`` keeps it the same way.
+        name = buf[start : start + name_bytes].decode("utf-16-le", errors="surrogatepass")
         if name not in {".", ".."}:
             entries.append((name, bool(attributes & FILE_ATTRIBUTE_DIRECTORY)))
         if next_offset == 0:

@@ -403,6 +403,21 @@ def _is_within(candidate: Path, root: Path) -> bool:
     return candidate == root or candidate.is_relative_to(root)
 
 
+def _showable(text: str) -> bool:
+    """Whether ``text`` survives the trip to the server as UTF-8.
+
+    A file name is not always valid Unicode: POSIX hands back undecodable
+    bytes as lone surrogates (``surrogateescape``) and NTFS allows a lone
+    UTF-16 surrogate outright. The tool result is sent as UTF-8 JSON, which
+    cannot carry one, so a single such name would fail the whole answer.
+    """
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _text_arg(arguments: dict[str, Any], key: str, limit: int) -> str:
     """``arguments[key]`` as a string, or a refusal; absent means empty.
 
@@ -547,24 +562,29 @@ class FilesystemProvider:
         """
         try:
             if name == "fs_list":
-                return self._list(_text_arg(arguments, "path", MAX_PATH_CHARS)), False
-            if name == "fs_read":
-                return self._read(_text_arg(arguments, "path", MAX_PATH_CHARS)), False
-            if name == "fs_grep":
-                return (
-                    self._grep(
-                        _text_arg(arguments, "query", MAX_QUERY_CHARS),
-                        _text_arg(arguments, "path", MAX_PATH_CHARS),
-                    ),
-                    False,
+                text = self._list(_text_arg(arguments, "path", MAX_PATH_CHARS))
+            elif name == "fs_read":
+                text = self._read(_text_arg(arguments, "path", MAX_PATH_CHARS))
+            elif name == "fs_grep":
+                text = self._grep(
+                    _text_arg(arguments, "query", MAX_QUERY_CHARS),
+                    _text_arg(arguments, "path", MAX_PATH_CHARS),
                 )
+            else:
+                return f"No such tool: {name}.", True
         except PathRefused as exc:
             return str(exc), True
         except OSError as exc:
             # Errno text, not the path: the same oracle argument as
             # ``PathRefused``.
             return f"Couldn't read that: {exc.strerror or 'I/O error'}.", True
-        return f"No such tool: {name}.", True
+        # The listing and the search leave out names they cannot show (and
+        # count them); what is left is a label the caller chose, such as a
+        # folder reached through a link with an unshowable name. Escaping it
+        # keeps the answer deliverable rather than failing the whole call.
+        if not _showable(text):
+            text = text.encode("utf-8", errors="backslashreplace").decode("utf-8")
+        return text, False
 
     # -- resolution ----------------------------------------------------
 
@@ -669,9 +689,13 @@ class FilesystemProvider:
         root = self._root_for(target)
         rows: list[str] = []
         truncated = False
+        unshowable = 0
         entries = sorted(_scan_dir(root, target), key=lambda e: (not e[1], e[0].lower()))
         for name, _is_dir in entries:
             if name in IGNORED_NAMES:
+                continue
+            if not _showable(name):
+                unshowable += 1
                 continue
             if len(rows) >= MAX_LIST_ENTRIES:
                 truncated = True
@@ -697,11 +721,21 @@ class FilesystemProvider:
                 rows.append(f"{name} ({info.st_size} bytes)")
             # Anything else (fifo, socket, device) is simply not listed:
             # naming it invites the model to read it, and it cannot.
+        hidden = (
+            f"…[{unshowable} {'entry has a name' if unshowable == 1 else 'entries have names'} "
+            "that can't be shown as text, so left out]"
+            if unshowable
+            else ""
+        )
         if not rows:
+            if hidden:
+                return f"{self._label_for(target)} has nothing to show.\n{hidden}"
             return f"{self._label_for(target)} is empty."
         body = "\n".join(rows)
         if truncated:
             body += f"\n…[truncated: more than {MAX_LIST_ENTRIES} entries; narrow the path]"
+        if hidden:
+            body += f"\n{hidden}"
         return f"{self._label_for(target)}:\n{body}"
 
     def _read(self, relative: str) -> str:
@@ -819,6 +853,12 @@ class FilesystemProvider:
             real = self._contained(candidate)
             if real is None or real.suffix.lower() in BINARY_SUFFIXES:
                 continue
+            label = self._label_for(real)
+            if not _showable(label):
+                # A hit here could not be named in the answer, so it is not
+                # searched; it counts as unread, and costs no file allowance.
+                budget.unreadable += 1
+                continue
             if budget.files_left <= 0:
                 budget.exhausted = True
                 break
@@ -841,7 +881,6 @@ class FilesystemProvider:
             except OSError:
                 budget.unreadable += 1
                 continue
-            label = self._label_for(real)
             if truncated:
                 cut_files.append(label)
             for lineno, line in enumerate(content.splitlines(), start=1):

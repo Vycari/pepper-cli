@@ -11,6 +11,7 @@ an absolute path, and a root-prefix confusion like ``/notes`` versus
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -1001,3 +1002,71 @@ def test_directory_records_parse_to_names_and_kinds() -> None:
         ("plan.md", False),
         ("caf\u00e9.txt", False),
     ]
+
+
+def test_a_lone_surrogate_in_a_directory_record_is_kept_not_fatal() -> None:
+    """NTFS allows an unpaired UTF-16 surrogate in a name; one must not fail the listing."""
+    lone = "bad\ud800.md"
+    record = _winfs._FULL_DIR_INFO.pack(0, 0, 0, 0, 0, 0, 0, 0, 0x20, 2 * len(lone), 0)
+    encoded = lone.encode("utf-16-le", errors="surrogatepass")
+    buf = _dir_record("ok.md", 0x20, last=False) + record + encoded
+    assert _winfs.parse_full_dir_info(buf) == [("ok.md", False), (lone, False)]
+
+
+# ---------------------------------------------------------------------------
+# Names that are not valid Unicode (POSIX undecodable bytes, NTFS lone surrogates)
+
+
+def _assert_deliverable(text: str) -> None:
+    """The tool result goes out as UTF-8 JSON (httpx: ensure_ascii=False)."""
+    json.dumps({"content": text}, ensure_ascii=False).encode("utf-8")
+
+
+def _unshowable_name(notes: Path) -> Path | None:
+    try:
+        target = Path(os.fsdecode(os.fsencode(notes) + b"/bad\xff.md"))
+        target.write_text("needle in a badly named file\n")
+    except (OSError, UnicodeError):
+        return None
+    return target
+
+
+def test_list_leaves_out_and_counts_a_name_that_cannot_be_sent(notes: Path) -> None:
+    if _unshowable_name(notes) is None:
+        pytest.skip("this filesystem refuses undecodable names")
+    text, is_error = FilesystemProvider([notes]).call("fs_list", {})
+    assert not is_error
+    _assert_deliverable(text)
+    assert "plan.md (" in text
+    assert "1 entry has a name that can't be shown as text" in text
+
+
+def test_list_of_only_unshowable_names_says_so(tmp_path: Path) -> None:
+    root = tmp_path / "odd"
+    root.mkdir()
+    if _unshowable_name(root) is None:
+        pytest.skip("this filesystem refuses undecodable names")
+    text, _ = FilesystemProvider([root]).call("fs_list", {})
+    _assert_deliverable(text)
+    assert text.startswith("odd has nothing to show.")
+
+
+def test_grep_counts_a_file_it_cannot_name_as_unread(notes: Path) -> None:
+    if _unshowable_name(notes) is None:
+        pytest.skip("this filesystem refuses undecodable names")
+    text, is_error = FilesystemProvider([notes]).call("fs_grep", {"query": "needle"})
+    assert not is_error
+    _assert_deliverable(text)
+    assert "1 item in the folder could not be read" in text
+
+
+def test_a_read_through_a_link_to_an_unshowable_name_is_escaped_not_fatal(notes: Path) -> None:
+    target = _unshowable_name(notes)
+    if target is None:
+        pytest.skip("this filesystem refuses undecodable names")
+    (notes / "alias.md").symlink_to(target)
+    text, is_error = FilesystemProvider([notes]).call("fs_read", {"path": "alias.md"})
+    assert not is_error
+    _assert_deliverable(text)
+    assert "needle in a badly named file" in text
+    assert "\\udcff" in text
