@@ -494,14 +494,13 @@ def test_entry_budget_counts_folders_and_stops_before_descending_past_it(
         (root / f"d{i:02}" / "inner").mkdir(parents=True)
     monkeypatch.setattr(provider_fs, "MAX_GREP_ENTRIES", 5)
     visited: list[str] = []
-    real_walk = provider_fs.os.walk
+    real_scandir = provider_fs.os.scandir
 
-    def spy_walk(top, **kwargs):
-        for entry in real_walk(top, **kwargs):
-            visited.append(entry[0])
-            yield entry
+    def spy_scandir(path):
+        visited.append(str(path))
+        return real_scandir(path)
 
-    monkeypatch.setattr(provider_fs.os, "walk", spy_walk)
+    monkeypatch.setattr(provider_fs.os, "scandir", spy_scandir)
     text, is_error = FilesystemProvider([root]).call("fs_grep", {"query": "needle"})
     assert not is_error
     assert "No matches" in text
@@ -537,9 +536,90 @@ def test_files_that_fail_to_open_do_not_spend_the_file_budget(notes: Path, monke
 
     monkeypatch.setattr(provider_fs, "_open_file", refuse_locked)
     text, _ = FilesystemProvider([notes]).call("fs_grep", {"query": "needle"})
+    # The file allowance of one went to zz.md, not to the five refused opens…
     assert "zz.md:1: needle here" in text
+    assert "stopped after" not in text
+    # …but the refused files are still part of the folder that went unsearched.
+    assert "5 items in the folder could not be read" in text
     assert "locked" not in text
-    assert "search incomplete" not in text
+
+
+def test_a_clean_miss_is_not_claimed_when_a_file_could_not_be_opened(
+    notes: Path, monkeypatch
+) -> None:
+    (notes / "locked.md").write_text("needle\n")
+    real_open_file = provider_fs._open_file
+
+    def refuse_locked(root: Path, real: Path):
+        if real.name == "locked.md":
+            raise PermissionError(13, "Permission denied")
+        return real_open_file(root, real)
+
+    monkeypatch.setattr(provider_fs, "_open_file", refuse_locked)
+    text, is_error = FilesystemProvider([notes]).call("fs_grep", {"query": "needle"})
+    assert not is_error
+    assert text.startswith("No matches for 'needle' in the part that was searched.")
+    assert "1 item in the folder could not be read" in text
+    assert "locked" not in text
+
+
+def test_an_unreadable_folder_is_reported_not_silently_pruned(notes: Path, monkeypatch) -> None:
+    """Tests may run as root, where ``chmod 000`` blocks nothing, so refuse the listing."""
+    (notes / "private").mkdir()
+    (notes / "private" / "a.md").write_text("needle\n")
+    real_scandir = provider_fs.os.scandir
+
+    def refuse_private(path):
+        if Path(path).name == "private":
+            raise PermissionError(13, "Permission denied")
+        return real_scandir(path)
+
+    monkeypatch.setattr(provider_fs.os, "scandir", refuse_private)
+    text, _ = FilesystemProvider([notes]).call("fs_grep", {"query": "needle"})
+    assert text.startswith("No matches for 'needle' in the part that was searched.")
+    assert "1 item in the folder could not be read" in text
+    assert "private" not in text
+
+
+class _FakeEntry:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def is_dir(self) -> bool:
+        return False
+
+    def is_symlink(self) -> bool:
+        return False
+
+
+def test_a_huge_folder_is_read_only_as_far_as_the_entry_budget(notes: Path, monkeypatch) -> None:
+    """The budget bounds how many names are pulled from the OS, not just visited."""
+    monkeypatch.setattr(provider_fs, "MAX_GREP_ENTRIES", 10)
+    pulled = 0
+
+    class _HugeListing:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc) -> None:
+            return None
+
+        def __iter__(self):
+            nonlocal pulled
+            for i in range(1_000_000):
+                pulled += 1
+                yield _FakeEntry(f"f{i:07}.png")
+
+    monkeypatch.setattr(provider_fs.os, "scandir", lambda _path: _HugeListing())
+    text, _ = FilesystemProvider([notes]).call("fs_grep", {"query": "needle"})
+    assert pulled == 11  # the allowance, plus the one that says there was more
+    assert "search incomplete" in text
+
+
+def test_a_symlinked_folder_inside_the_root_is_not_descended(notes: Path) -> None:
+    (notes / "loop").symlink_to(notes, target_is_directory=True)
+    text, _ = FilesystemProvider([notes]).call("fs_grep", {"query": "phase one"})
+    assert text == "notes/plan.md:2: Call it phase one."
 
 
 def test_one_budget_is_shared_across_roots(tmp_path: Path, monkeypatch) -> None:

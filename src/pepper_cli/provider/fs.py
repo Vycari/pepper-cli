@@ -57,7 +57,10 @@ MAX_GREP_FILES = 2_000
 #: files *and* folders, a folder counted before it is descended. The second half
 #: of the budget: unusable entries and failed opens are free against
 #: :data:`MAX_GREP_FILES`, so something else has to bound the walk itself — and
-#: a tree of empty folders is a walk with no files in it at all.
+#: a tree of empty folders is a walk with no files in it at all. It bounds the
+#: enumeration, not just the visiting: a folder is read one entry at a time and
+#: reading stops once the allowance is spent, so a folder holding millions of
+#: entries is never listed in full.
 MAX_GREP_ENTRIES = 50_000
 
 #: Longest ``path`` and ``query`` the provider will act on. The advertised
@@ -428,6 +431,9 @@ class _GrepBudget:
     files_left: int = 0
     entries_left: int = 0
     exhausted: bool = False
+    #: Files that failed to open or read and folders that failed to list:
+    #: each is part of the folder the search did not cover.
+    unreadable: int = 0
 
     def __post_init__(self) -> None:
         self.files_left = MAX_GREP_FILES
@@ -716,29 +722,66 @@ class FilesystemProvider:
         the budget cannot cover are not descended at all. When the budget is
         spent with entries still unvisited, ``budget.exhausted`` is set before
         the walk stops, so the caller can tell a search that ran out of walk
-        from one that finished.
+        from one that finished. A folder that cannot be listed is counted in
+        ``budget.unreadable`` rather than skipped in silence.
 
-        ``followlinks`` stays off: a symlinked directory would otherwise be
-        walked, and a cycle would make the search unbounded. That says
-        nothing about a symlinked *file*, which this happily yields — the
-        caller is responsible for putting every candidate through
-        :meth:`_contained` before opening it.
+        Order is depth-first, files before subfolders, each sorted by name —
+        but only within the slice :meth:`_read_dir` read, which is at most the
+        remaining allowance plus one. A folder larger than the allowance is
+        therefore cut at whatever the OS listed first, not at the first names
+        alphabetically; sorting it all would mean reading it all.
+
+        Symlinked folders are neither descended nor yielded (the old
+        ``os.walk(followlinks=False)`` behaviour): a cycle would make the
+        search unbounded. A symlinked *file* is yielded, and the caller puts
+        every candidate through :meth:`_contained` before opening it.
         """
-        for dirpath, dirnames, filenames in os.walk(start, followlinks=False):
-            for filename in sorted(filenames):
-                if filename in IGNORED_NAMES:
-                    continue
+        pending = [start]
+        while pending:
+            dirpath = pending.pop()
+            listing = self._read_dir(dirpath, budget)
+            files = sorted(name for name, kind in listing if kind == "file")
+            for filename in files:
                 if budget.entries_left <= 0:
                     budget.exhausted = True
                     return
                 budget.entries_left -= 1
-                yield Path(dirpath) / filename
-            subdirs = sorted(d for d in dirnames if d not in IGNORED_NAMES)
+                yield dirpath / filename
+            subdirs = sorted(name for name, kind in listing if kind != "file")
             if len(subdirs) > budget.entries_left:
                 del subdirs[budget.entries_left :]
                 budget.exhausted = True
             budget.entries_left -= len(subdirs)
-            dirnames[:] = subdirs
+            descend = {name for name, kind in listing if kind == "dir"}
+            pending.extend(dirpath / d for d in reversed(subdirs) if d in descend)
+
+    @staticmethod
+    def _read_dir(dirpath: Path, budget: _GrepBudget) -> list[tuple[str, str]]:
+        """At most ``entries_left + 1`` ``(name, kind)`` pairs from ``dirpath``.
+
+        ``kind`` is ``"dir"``, ``"link-dir"`` (a symlinked folder, never
+        descended) or ``"file"``. Ignored names are dropped as they are read
+        and cost nothing; there are only a handful of them, so they cannot
+        stretch the read. The extra entry past the allowance is what tells a
+        folder that fits from one that was cut. A listing that fails part way
+        keeps what it read and counts the folder as unreadable.
+        """
+        listing: list[tuple[str, str]] = []
+        try:
+            with os.scandir(dirpath) as it:
+                for entry in it:
+                    if entry.name in IGNORED_NAMES:
+                        continue
+                    if entry.is_dir():
+                        kind = "link-dir" if entry.is_symlink() else "dir"
+                    else:
+                        kind = "file"
+                    listing.append((entry.name, kind))
+                    if len(listing) > budget.entries_left:
+                        break
+        except OSError:
+            budget.unreadable += 1
+        return listing
 
     def _walk_all(self, starts: Sequence[Path], budget: _GrepBudget) -> Iterator[Path]:
         """:meth:`_walk` over several trees, sharing one budget."""
@@ -786,6 +829,8 @@ class FilesystemProvider:
                 # fail a search over a folder, and costs nothing against the
                 # file allowance: only an open that succeeded is spent.
                 # MAX_GREP_ENTRIES already bounds how many attempts there are.
+                # It is still part of the folder left unsearched, so say so.
+                budget.unreadable += 1
                 continue
             budget.files_left -= 1
             try:
@@ -794,6 +839,7 @@ class FilesystemProvider:
                         continue
                     content, truncated = _read_capped_info(fh)
             except OSError:
+                budget.unreadable += 1
                 continue
             label = self._label_for(real)
             if truncated:
@@ -824,6 +870,14 @@ class FilesystemProvider:
                 f"…[search incomplete: stopped after {MAX_GREP_FILES} files opened or "
                 f"{MAX_GREP_ENTRIES} entries seen, so later files were not searched; "
                 "narrow the path]"
+            )
+        if budget.unreadable:
+            # A count, never names: an item that failed may be one the caller
+            # never got to see, and the notice must not become an oracle.
+            items = "item" if budget.unreadable == 1 else "items"
+            notes.append(
+                f"…[search incomplete: {budget.unreadable} {items} in the folder could not be "
+                "read, so a match there would not show]"
             )
         if cut_files:
             shown = ", ".join(cut_files[:5])
