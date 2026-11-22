@@ -26,6 +26,7 @@ from __future__ import annotations
 import errno
 import os
 import stat
+import sys
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,15 +47,17 @@ MAX_GREP_MATCHES = 40
 GREP_SNIPPET_CHARS = 240
 
 #: Files ``fs_grep`` will open to read, per search, across every root. The cap
-#: counts files actually opened: an ignored name, an external symlink or a
-#: binary suffix is turned away without being opened and costs nothing here,
+#: counts files actually opened: an ignored name, an external symlink, a
+#: binary suffix or a failed open is turned away unread and costs nothing here,
 #: so a run of unusable entries cannot hide a readable file behind it. A search
 #: that walks a node_modules tree is a search that hangs the turn.
 MAX_GREP_FILES = 2_000
 
-#: Directory entries ``fs_grep`` will look at, per search, across every root.
-#: The second half of the budget: unusable entries are free against
-#: :data:`MAX_GREP_FILES`, so something else has to bound the walk itself.
+#: Directory entries ``fs_grep`` will look at, per search, across every root:
+#: files *and* folders, a folder counted before it is descended. The second half
+#: of the budget: unusable entries and failed opens are free against
+#: :data:`MAX_GREP_FILES`, so something else has to bound the walk itself — and
+#: a tree of empty folders is a walk with no files in it at all.
 MAX_GREP_ENTRIES = 50_000
 
 #: Longest ``path`` and ``query`` the provider will act on. The advertised
@@ -109,12 +112,67 @@ _OUTSIDE = "That path isn't inside the folder you shared, or doesn't exist."
 #: same refusal as any other out-of-root path.
 _RACE_ERRNOS = frozenset({errno.ELOOP, errno.ENOTDIR, errno.ENOENT})
 
+#: Said when the platform can bind neither an open to the checked path nor a
+#: check to the open handle, so containment could only be checked by name.
+_NO_GUARANTEE = (
+    "This system can't confirm a file stays inside the shared folder, so I won't open it."
+)
+
 #: Descriptor-relative, no-follow opens need ``O_NOFOLLOW`` and ``dir_fd``
-#: support, which Windows lacks; there :func:`_open_file` falls back to
-#: opening by path and re-checking the opened object.
+#: support, which Windows lacks; there :func:`_open_file` and friends fall back
+#: to opening by path and checking where the *opened handle* lives
+#: (:func:`_final_path`), which a rename race cannot fool.
 _HAS_DIRFD = hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd
 _O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _O_BINARY = getattr(os, "O_BINARY", 0)
+_O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+
+
+def _final_path(fd: int) -> Path | None:
+    """Where the object open on ``fd`` lives, asked of the handle; ``None`` if unknowable.
+
+    Only Windows needs (and has) an answer here: everywhere else ``dir_fd`` is
+    available and this is never reached. A ``None`` makes the caller refuse.
+    """
+    if sys.platform == "win32":
+        from pepper_cli.provider import _winfs
+
+        return Path(_winfs.final_path(fd))
+    return None
+
+
+def _open_for_check(path: Path, *, directory: bool) -> int:
+    """A descriptor for ``path`` (file or directory) that :func:`_final_path` can locate."""
+    if sys.platform == "win32":
+        from pepper_cli.provider import _winfs
+
+        return _winfs.open_handle(str(path), directory=directory)
+    return os.open(path, os.O_RDONLY | _O_NONBLOCK | _O_CLOEXEC)
+
+
+def _scan_fd(fd: int) -> list[tuple[str, bool]]:
+    """``(name, is_dir)`` for the directory open on ``fd``, read through the descriptor."""
+    if sys.platform == "win32":
+        from pepper_cli.provider import _winfs
+
+        return _winfs.list_dir(fd)
+    with os.scandir(fd) as it:
+        return [(e.name, e.is_dir()) for e in it]
+
+
+def _require_within(root: Path, fd: int) -> None:
+    """Refuse unless the object open on ``fd`` lives inside ``root``.
+
+    The check is on the handle, so swapping a name to point outside and back
+    again around the open changes nothing: whatever was opened is what is
+    judged. Where the handle cannot be located, refuse rather than fall back
+    to a pathname check that a swap can race.
+    """
+    where = _final_path(fd)
+    if where is None:
+        raise PathRefused(_NO_GUARANTEE)
+    if not _is_within(where, root):
+        raise PathRefused(_OUTSIDE)
 
 
 def _read_capped_info(fh: IO[bytes]) -> tuple[str, bool]:
@@ -195,9 +253,9 @@ def _open_file(root: Path, real: Path) -> IO[bytes]:
     The file is opened ``O_NOFOLLOW | O_NONBLOCK`` relative to a descriptor for
     its parent, so a swapped-in symlink is refused and a swapped-in fifo cannot
     block; the caller's ``fstat`` check then refuses anything not regular.
-    Without ``dir_fd`` support the fallback opens by path and then checks the
-    opened object against a fresh resolve: still inside the root, and the same
-    file.
+    Without ``dir_fd`` support the fallback opens by path and then checks where
+    the opened handle lives (:func:`_require_within`), not a fresh lookup by
+    name.
     """
     try:
         if not _HAS_DIRFD:
@@ -235,11 +293,9 @@ def _open_file_by_path(root: Path, real: Path) -> IO[bytes]:
     # would read as "permission denied"; say "not a file" on every platform.
     if real.is_dir():
         raise PathRefused("That isn't a readable file.")
-    fd = os.open(real, os.O_RDONLY | _O_BINARY | _O_CLOEXEC)
+    fd = os.open(real, os.O_RDONLY | _O_BINARY | _O_NONBLOCK | _O_CLOEXEC)
     try:
-        again = real.resolve(strict=True)
-        if not _is_within(again, root) or not os.path.samestat(os.fstat(fd), again.stat()):
-            raise PathRefused(_OUTSIDE)
+        _require_within(root, fd)
     except BaseException:
         os.close(fd)
         raise
@@ -250,7 +306,7 @@ def _lstat_within(root: Path, real: Path) -> os.stat_result:
     """``lstat`` of ``real`` through its parent's descriptor; a symlink is a race."""
     try:
         if not _HAS_DIRFD:
-            return real.stat()
+            return _stat_by_handle(root, real)
         parts = real.relative_to(root).parts
         parent = _open_dir_fd(root, parts[:-1])
         try:
@@ -267,25 +323,42 @@ def _lstat_within(root: Path, real: Path) -> os.stat_result:
     return result
 
 
+def _stat_by_handle(root: Path, real: Path) -> os.stat_result:
+    """The no-``dir_fd`` stat: open ``real``, check where the handle lives, ``fstat`` it.
+
+    The open follows links, so the stat describes what the name points at, and
+    the containment check is on that same object, which a swap cannot race.
+    """
+    fd = _open_for_check(real, directory=False)
+    try:
+        _require_within(root, fd)
+        return os.fstat(fd)
+    finally:
+        os.close(fd)
+
+
 def _scan_dir(root: Path, real: Path) -> list[tuple[str, bool]]:
     """``(name, is_dir)`` for ``real`` (resolved, inside ``root``), read through a descriptor.
 
     ``is_dir`` is read while the descriptor is open: a ``DirEntry`` from a
-    descriptor scan cannot be asked after it is closed.
+    descriptor scan cannot be asked after it is closed. Without ``dir_fd`` the
+    directory is opened by path, checked by where its handle lives, and listed
+    through that handle, so the names returned are the checked directory's.
     """
-    if not _HAS_DIRFD:
-        with os.scandir(real) as it:
-            return [(e.name, e.is_dir()) for e in it]
     try:
-        fd = _open_dir_fd(root, real.relative_to(root).parts)
+        if _HAS_DIRFD:
+            fd = _open_dir_fd(root, real.relative_to(root).parts)
+        else:
+            fd = _open_for_check(real, directory=True)
     except OSError as exc:
         refusal = _race_refusal(exc)
         if refusal is not None:
             raise refusal from exc
         raise
     try:
-        with os.scandir(fd) as it:
-            return [(e.name, e.is_dir()) for e in it]
+        if not _HAS_DIRFD:
+            _require_within(root, fd)
+        return _scan_fd(fd)
     finally:
         os.close(fd)
 
@@ -638,10 +711,12 @@ class FilesystemProvider:
     def _walk(self, start: Path, budget: _GrepBudget) -> Iterator[Path]:
         """Yield candidate files under ``start``, ignoring the usual noise.
 
-        Every yielded entry spends one of ``budget``'s entries. When the
-        budget is spent with entries still unvisited, ``budget.exhausted`` is
-        set before the walk stops, so the caller can tell a search that ran
-        out of walk from one that finished.
+        Every yielded file and every subfolder spends one of ``budget``'s
+        entries; a subfolder is paid for before it is descended, and the ones
+        the budget cannot cover are not descended at all. When the budget is
+        spent with entries still unvisited, ``budget.exhausted`` is set before
+        the walk stops, so the caller can tell a search that ran out of walk
+        from one that finished.
 
         ``followlinks`` stays off: a symlinked directory would otherwise be
         walked, and a cycle would make the search unbounded. That says
@@ -650,7 +725,6 @@ class FilesystemProvider:
         :meth:`_contained` before opening it.
         """
         for dirpath, dirnames, filenames in os.walk(start, followlinks=False):
-            dirnames[:] = sorted(d for d in dirnames if d not in IGNORED_NAMES)
             for filename in sorted(filenames):
                 if filename in IGNORED_NAMES:
                     continue
@@ -659,6 +733,12 @@ class FilesystemProvider:
                     return
                 budget.entries_left -= 1
                 yield Path(dirpath) / filename
+            subdirs = sorted(d for d in dirnames if d not in IGNORED_NAMES)
+            if len(subdirs) > budget.entries_left:
+                del subdirs[budget.entries_left :]
+                budget.exhausted = True
+            budget.entries_left -= len(subdirs)
+            dirnames[:] = subdirs
 
     def _walk_all(self, starts: Sequence[Path], budget: _GrepBudget) -> Iterator[Path]:
         """:meth:`_walk` over several trees, sharing one budget."""
@@ -699,15 +779,21 @@ class FilesystemProvider:
             if budget.files_left <= 0:
                 budget.exhausted = True
                 break
+            try:
+                fh = _open_file(self._root_for(real), real)
+            except (OSError, PathRefused):
+                # One unreadable, non-regular or just-replaced file does not
+                # fail a search over a folder, and costs nothing against the
+                # file allowance: only an open that succeeded is spent.
+                # MAX_GREP_ENTRIES already bounds how many attempts there are.
+                continue
             budget.files_left -= 1
             try:
-                with _open_file(self._root_for(real), real) as fh:
+                with fh:
                     if _is_binary(fh, real):
                         continue
                     content, truncated = _read_capped_info(fh)
-            except (OSError, PathRefused):
-                # One unreadable, non-regular or just-replaced file does not
-                # fail a search over a folder.
+            except OSError:
                 continue
             label = self._label_for(real)
             if truncated:

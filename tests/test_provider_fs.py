@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from pepper_cli.provider import _winfs
 from pepper_cli.provider import fs as provider_fs
 from pepper_cli.provider.fs import FilesystemProvider, PathRefused
 
@@ -454,8 +455,9 @@ def test_unusable_entries_do_not_spend_the_file_budget(
 
 
 def test_a_search_that_fits_the_budget_exactly_is_complete(notes: Path, monkeypatch) -> None:
+    """Three entries: ``plan.md``, the ``projects`` folder and ``projects/2026.md``."""
     monkeypatch.setattr(provider_fs, "MAX_GREP_FILES", 2)
-    monkeypatch.setattr(provider_fs, "MAX_GREP_ENTRIES", 2)
+    monkeypatch.setattr(provider_fs, "MAX_GREP_ENTRIES", 3)
     text, _ = FilesystemProvider([notes]).call("fs_grep", {"query": "absent-term"})
     assert text == "No matches for 'absent-term'."
 
@@ -480,6 +482,64 @@ def test_entry_budget_stops_a_walk_of_unusable_entries_and_says_so(
     assert "zz.md" not in text
     assert "No matches" in text
     assert "search incomplete" in text
+
+
+def test_entry_budget_counts_folders_and_stops_before_descending_past_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A tree of empty folders opens no file, so only the entry budget can stop it."""
+    root = tmp_path / "tree"
+    root.mkdir()
+    for i in range(30):
+        (root / f"d{i:02}" / "inner").mkdir(parents=True)
+    monkeypatch.setattr(provider_fs, "MAX_GREP_ENTRIES", 5)
+    visited: list[str] = []
+    real_walk = provider_fs.os.walk
+
+    def spy_walk(top, **kwargs):
+        for entry in real_walk(top, **kwargs):
+            visited.append(entry[0])
+            yield entry
+
+    monkeypatch.setattr(provider_fs.os, "walk", spy_walk)
+    text, is_error = FilesystemProvider([root]).call("fs_grep", {"query": "needle"})
+    assert not is_error
+    assert "No matches" in text
+    assert "search incomplete" in text
+    # The root, then only the five folders the budget paid for; none of their children.
+    assert len(visited) == 6
+    assert not any(v.endswith("inner") for v in visited)
+
+
+def test_a_tree_of_folders_that_fits_the_entry_budget_is_complete(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "tree"
+    (root / "a" / "b").mkdir(parents=True)
+    monkeypatch.setattr(provider_fs, "MAX_GREP_ENTRIES", 2)
+    text, _ = FilesystemProvider([root]).call("fs_grep", {"query": "needle"})
+    assert text == "No matches for 'needle'."
+
+
+def test_files_that_fail_to_open_do_not_spend_the_file_budget(notes: Path, monkeypatch) -> None:
+    monkeypatch.setattr(provider_fs, "MAX_GREP_FILES", 1)
+    for i in range(5):
+        (notes / f"a{i}-locked.md").write_text("needle locked\n")
+    (notes / "plan.md").unlink()
+    (notes / "projects" / "2026.md").unlink()
+    (notes / "zz.md").write_text("needle here\n")
+    real_open_file = provider_fs._open_file
+
+    def refuse_locked(root: Path, real: Path):
+        if "locked" in real.name:
+            raise PermissionError(13, "Permission denied")
+        return real_open_file(root, real)
+
+    monkeypatch.setattr(provider_fs, "_open_file", refuse_locked)
+    text, _ = FilesystemProvider([notes]).call("fs_grep", {"query": "needle"})
+    assert "zz.md:1: needle here" in text
+    assert "locked" not in text
+    assert "search incomplete" not in text
 
 
 def test_one_budget_is_shared_across_roots(tmp_path: Path, monkeypatch) -> None:
@@ -649,17 +709,39 @@ def test_symlinks_that_stay_inside_the_root_still_work(notes: Path) -> None:
     assert "palias/" in listing
 
 
-def test_the_path_fallback_without_dir_fd_still_reads_and_refuses(
-    notes: Path, tmp_path: Path, monkeypatch
-) -> None:
-    """The Windows path: no ``dir_fd``, so open by path and re-check the object."""
+_HAS_PROC_FD = Path("/proc/self/fd").is_dir()
+
+
+@pytest.fixture
+def path_fallback(monkeypatch) -> None:
+    """The Windows shape on Linux: no ``dir_fd``, and the handle located via ``/proc``.
+
+    ``/proc/self/fd/N`` names the object open on ``N`` the way
+    ``GetFinalPathNameByHandleW`` does on Windows, so the containment check
+    sees what was opened, not what a name points at now.
+    """
+    if not _HAS_PROC_FD:
+        pytest.skip("needs /proc/self/fd to stand in for GetFinalPathNameByHandleW")
     monkeypatch.setattr(provider_fs, "_HAS_DIRFD", False)
+    monkeypatch.setattr(
+        provider_fs, "_final_path", lambda fd: Path(os.readlink(f"/proc/self/fd/{fd}"))
+    )
+
+
+@pytest.mark.usefixtures("path_fallback")
+def test_the_path_fallback_without_dir_fd_still_reads_and_refuses(
+    notes: Path, tmp_path: Path
+) -> None:
+    """The Windows path: no ``dir_fd``, so open by path and check the opened handle."""
     provider = FilesystemProvider([notes])
     text, is_error = provider.call("fs_read", {"path": "plan.md"})
     assert not is_error
     assert "Ship the thing" in text
     listing, _ = provider.call("fs_list", {"path": "projects"})
     assert "2026.md (" in listing
+    listing, _ = provider.call("fs_list", {})
+    assert "projects/" in listing
+    assert "plan.md (" in listing
     grep, _ = provider.call("fs_grep", {"query": "phase one"})
     assert "plan.md:2" in grep
     outside = tmp_path / "outside.md"
@@ -669,10 +751,51 @@ def test_the_path_fallback_without_dir_fd_still_reads_and_refuses(
     assert is_error
 
 
-def test_the_path_fallback_refuses_a_file_replaced_after_the_open(
+@pytest.mark.usefixtures("path_fallback")
+def test_the_path_fallback_judges_the_opened_file_not_a_restored_name(
     notes: Path, tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(provider_fs, "_HAS_DIRFD", False)
+    """Greptile's race on #344: point the name outside for the open, restore it after.
+
+    The old fallback re-resolved the *name* (inside again) and compared it with
+    ``samestat``, which a third swap defeats; that third swap is modelled by
+    making ``samestat`` agree. The check on the opened handle sees the outside
+    file whatever the name says afterwards.
+    """
+    outside = tmp_path / "outside.md"
+    outside.write_text("secret outside the grant\n")
+    target = notes / "plan.md"
+    provider = FilesystemProvider([notes])
+    real_resolve = provider._resolve
+    real_open = provider_fs.os.open
+
+    def resolve_then_swap(relative: str) -> Path:
+        real = real_resolve(relative)
+        real.unlink()
+        real.symlink_to(outside)
+        return real
+
+    def open_then_restore(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if Path(path) == target and target.is_symlink():
+            target.unlink()
+            target.write_text("Ship the thing.\n")
+        return fd
+
+    monkeypatch.setattr(provider, "_resolve", resolve_then_swap)
+    monkeypatch.setattr(provider_fs.os, "open", open_then_restore)
+    monkeypatch.setattr(provider_fs.os.path, "samestat", lambda _a, _b: True)
+    text, is_error = provider.call("fs_read", {"path": "plan.md"})
+    assert is_error
+    assert "secret" not in text
+    assert text == "That path isn't inside the folder you shared, or doesn't exist."
+
+
+@pytest.mark.usefixtures("path_fallback")
+def test_the_path_fallback_reads_what_it_opened_when_the_name_moves_after(
+    notes: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """A swap after the open cannot redirect the read: the descriptor is the file checked."""
     outside = tmp_path / "outside.md"
     outside.write_text("secret\n")
     real_fstat = os.fstat
@@ -686,14 +809,115 @@ def test_the_path_fallback_refuses_a_file_replaced_after_the_open(
         return result
 
     monkeypatch.setattr(provider_fs.os, "fstat", fstat_then_swap)
-    text, is_error = FilesystemProvider([notes]).call("fs_read", {"path": "plan.md"})
-    assert is_error
+    text, _ = FilesystemProvider([notes]).call("fs_read", {"path": "plan.md"})
     assert "secret" not in text
+    assert "Ship the thing" in text
 
 
-def test_the_path_fallback_refuses_a_directory_as_not_a_file(notes: Path, monkeypatch) -> None:
+@pytest.mark.usefixtures("path_fallback")
+def test_the_path_fallback_refuses_a_directory_as_not_a_file(notes: Path) -> None:
     """Windows raises PermissionError opening a directory; the answer must not depend on it."""
-    monkeypatch.setattr(provider_fs, "_HAS_DIRFD", False)
     text, is_error = FilesystemProvider([notes]).call("fs_read", {"path": "projects"})
     assert is_error
     assert "readable file" in text
+
+
+@pytest.mark.usefixtures("path_fallback")
+def test_the_path_fallback_does_not_list_a_directory_swapped_for_an_outward_link(
+    notes: Path, tmp_path: Path, monkeypatch
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "leak.md").write_text("x")
+    provider = FilesystemProvider([notes])
+    real_resolve = provider._resolve
+
+    def resolve_then_swap(relative: str) -> Path:
+        real = real_resolve(relative)
+        (real / "2026.md").unlink()
+        real.rmdir()
+        real.symlink_to(outside, target_is_directory=True)
+        return real
+
+    monkeypatch.setattr(provider, "_resolve", resolve_then_swap)
+    text, is_error = provider.call("fs_list", {"path": "projects"})
+    assert is_error
+    assert "leak.md" not in text
+
+
+@pytest.mark.usefixtures("path_fallback")
+def test_the_path_fallback_does_not_size_an_entry_swapped_for_an_outward_link(
+    notes: Path, tmp_path: Path, monkeypatch
+) -> None:
+    outside = tmp_path / "outside.md"
+    outside.write_text("x" * 4096)
+    provider = FilesystemProvider([notes])
+    real_contained = provider._contained
+
+    def contained_then_swap(path: Path) -> Path | None:
+        real = real_contained(path)
+        if real is not None and real.name == "plan.md":
+            real.unlink()
+            real.symlink_to(outside)
+        return real
+
+    monkeypatch.setattr(provider, "_contained", contained_then_swap)
+    text, is_error = provider.call("fs_list", {})
+    assert not is_error
+    assert "4096" not in text
+    assert "plan.md" not in text
+    assert "projects/" in text
+
+
+def test_without_dir_fd_or_a_locatable_handle_the_provider_refuses(
+    notes: Path, monkeypatch
+) -> None:
+    """No ``openat`` and no way to ask a handle where it is: refuse, don't check by name."""
+    monkeypatch.setattr(provider_fs, "_HAS_DIRFD", False)
+    monkeypatch.setattr(provider_fs, "_final_path", lambda _fd: None)
+    provider = FilesystemProvider([notes])
+    for tool, args in (("fs_read", {"path": "plan.md"}), ("fs_list", {"path": "projects"})):
+        text, is_error = provider.call(tool, args)
+        assert is_error, tool
+        assert "can't confirm" in text
+        assert "Ship the thing" not in text
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stub only exists off Windows")
+def test_final_path_is_unknowable_off_windows() -> None:
+    assert provider_fs._final_path(0) is None
+
+
+# ---------------------------------------------------------------------------
+# The Windows handle helpers' pure halves
+
+
+def test_extended_prefixes_are_stripped_to_realpath_spelling() -> None:
+    assert _winfs.strip_extended_prefix("\\\\?\\C:\\Users\\x") == "C:\\Users\\x"
+    assert _winfs.strip_extended_prefix("\\\\?\\UNC\\srv\\share\\x") == "\\\\srv\\share\\x"
+    assert _winfs.strip_extended_prefix("C:\\plain") == "C:\\plain"
+
+
+def _dir_record(name: str, attributes: int, *, last: bool) -> bytes:
+    encoded = name.encode("utf-16-le")
+    size = _winfs._FULL_DIR_INFO.size + len(encoded)
+    padded = (size + 7) // 8 * 8
+    header = _winfs._FULL_DIR_INFO.pack(
+        0 if last else padded, 0, 0, 0, 0, 0, 0, 0, attributes, len(encoded), 0
+    )
+    return (header + encoded).ljust(padded, b"\x00")
+
+
+def test_directory_records_parse_to_names_and_kinds() -> None:
+    buf = (
+        _dir_record(".", 0x10, last=False)
+        + _dir_record("..", 0x10, last=False)
+        + _dir_record("notes", 0x10, last=False)
+        + _dir_record("plan.md", 0x20, last=False)
+        + _dir_record("caf\u00e9.txt", 0x20, last=True)
+    )
+    assert _winfs.parse_full_dir_info(buf + b"\x00" * 64) == [
+        ("notes", True),
+        ("plan.md", False),
+        ("caf\u00e9.txt", False),
+    ]
