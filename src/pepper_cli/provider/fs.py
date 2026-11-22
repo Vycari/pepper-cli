@@ -231,6 +231,10 @@ def _wrap_regular(fd: int) -> IO[bytes]:
 
 
 def _open_file_by_path(root: Path, real: Path) -> IO[bytes]:
+    # Opening a directory by path raises PermissionError on Windows, which
+    # would read as "permission denied"; say "not a file" on every platform.
+    if real.is_dir():
+        raise PathRefused("That isn't a readable file.")
     fd = os.open(real, os.O_RDONLY | _O_BINARY | _O_CLOEXEC)
     try:
         again = real.resolve(strict=True)

@@ -689,3 +689,11 @@ def test_the_path_fallback_refuses_a_file_replaced_after_the_open(
     text, is_error = FilesystemProvider([notes]).call("fs_read", {"path": "plan.md"})
     assert is_error
     assert "secret" not in text
+
+
+def test_the_path_fallback_refuses_a_directory_as_not_a_file(notes: Path, monkeypatch) -> None:
+    """Windows raises PermissionError opening a directory; the answer must not depend on it."""
+    monkeypatch.setattr(provider_fs, "_HAS_DIRFD", False)
+    text, is_error = FilesystemProvider([notes]).call("fs_read", {"path": "projects"})
+    assert is_error
+    assert "readable file" in text
