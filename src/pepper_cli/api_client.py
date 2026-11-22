@@ -5708,8 +5708,10 @@ def _filename_from_content_disposition(value: str | None) -> str | None:
 #: not data to buffer. The chat parser raises :class:`ApiError` (status 200) instead of growing
 #: without bound; the feed parser stops buffering the frame's data and hands it on as a
 #: :attr:`FeedFrame.malformed` frame, so the watch skips it, visibly, rather than reconnecting
-#: into it forever. A frame of exactly this size is accepted. Only the accumulated frame is
-#: bounded; a single line is already whole by the time ``httpx`` hands it over.
+#: into it forever; one that has not ended after as much again raises, so a stream that never
+#: ends a frame cannot be read forever. A frame of exactly this size is accepted. Only the
+#: accumulated frame is bounded; a single line is already whole by the time ``httpx`` hands
+#: it over.
 MAX_SSE_FRAME_BYTES = 4 * 1024 * 1024
 
 
@@ -5798,7 +5800,9 @@ def _iter_feed_frames(lines: Iterator[str]) -> Iterator[FeedFrame]:
     whose ``data:`` is not a JSON object (and that carries an ``id:``, or is a ``cursor``
     frame), whose ``id:`` is present but not a decimal integer (except on an ``error`` or
     ``scope`` frame), that has a position but no data, or that is larger than
-    :data:`MAX_SSE_FRAME_BYTES`. Its ``id`` is the position when one could be read, so the
+    :data:`MAX_SSE_FRAME_BYTES` (one that runs on for as much again without ending raises
+    :class:`ApiError`, status 200, so a stream that never ends a frame cannot be read forever
+    with nothing yielded). Its ``id`` is the position when one could be read, so the
     caller moves past it and says it skipped it; raising instead would make the caller
     reconnect from before it and meet it again on every connection.
     An unknown ``event:`` kind or ``retry:`` / unknown field is not malformed and
@@ -5873,6 +5877,14 @@ def _iter_feed_frames(lines: Iterator[str]) -> Iterator[FeedFrame]:
             yield FeedFrame(kind="comment", id=None, payload={"comment": line[1:].strip()})
             continue
         size += len(line.encode("utf-8", "replace")) + 1
+        if size > 2 * MAX_SSE_FRAME_BYTES:
+            # Drained as far again past the limit and still no end of frame: a stream that
+            # never sends its blank line would otherwise be read forever, yielding nothing, so
+            # no caller could stop it or notice. End the connection; the caller retries.
+            raise _stream_problem(
+                f"frame larger than {MAX_SSE_FRAME_BYTES} bytes did not end within "
+                f"{MAX_SSE_FRAME_BYTES} more"
+            )
         if size > MAX_SSE_FRAME_BYTES and not oversize:
             # Stop buffering, but keep reading the frame's ``event:`` and ``id:`` so the
             # caller can still move past it.

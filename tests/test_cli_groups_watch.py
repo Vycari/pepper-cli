@@ -706,17 +706,45 @@ def test_a_feed_frame_at_the_size_limit_passes_and_one_over_fails(monkeypatch):
 
 def test_many_small_data_lines_cannot_grow_a_frame_without_bound(monkeypatch):
     monkeypatch.setattr(api_client, "MAX_SSE_FRAME_BYTES", 64)
+    # Nothing past the limit is buffered, and a frame that runs on past the drain ends the
+    # connection rather than being read without end.
     lines = iter(["data: 0123456789"] * 100)
-    frames = api_client._iter_feed_frames(lines)
-    (frame,) = list(frames)
-    assert frame.malformed == "frame larger than 64 bytes"
+    with pytest.raises(api_client.ApiError):
+        list(api_client._iter_feed_frames(lines))
+
+
+def test_an_oversized_frame_that_never_ends_fails_the_connection(monkeypatch):
+    """Greptile P2: a stream that sends ``data:`` lines with no blank line after an oversized
+    frame used to be drained forever with nothing yielded, so no caller could stop it."""
+    monkeypatch.setattr(api_client, "MAX_SSE_FRAME_BYTES", 64)
+
+    def endless():
+        yield "id: 4"
+        while True:
+            yield "data: 0123456789"
+
+    with pytest.raises(api_client.ApiError) as raised:
+        list(api_client._iter_feed_frames(endless()))
+    assert raised.value.status == 200
+    assert "did not end" in str(raised.value)
+
+
+def test_an_oversized_frame_that_ends_within_the_drain_is_still_skipped(monkeypatch):
+    monkeypatch.setattr(api_client, "MAX_SSE_FRAME_BYTES", 64)
+    # 7 lines of 17 bytes: 119 bytes, past 64 and under 128.
+    lines = ["id: 4", *["data: 0123456789"] * 6, "", "id: 5", 'data: {"id":5}', ""]
+    frames = list(api_client._iter_feed_frames(iter(lines)))
+    assert [(f.id, f.malformed) for f in frames] == [
+        (4, "frame larger than 64 bytes"),
+        (5, None),
+    ]
 
 
 def test_an_oversized_frame_is_skipped_by_position_and_the_stream_goes_on(monkeypatch):
     monkeypatch.setattr(api_client, "MAX_SSE_FRAME_BYTES", 64)
     body = (
         'id: 1\nevent: message.created\ndata: {"id":1}\n\n'
-        "event: message.created\ndata: " + "x" * 200 + "\nid: 2\n\n"
+        "event: message.created\ndata: " + "x" * 90 + "\nid: 2\n\n"
         'id: 3\nevent: message.created\ndata: {"id":3}\n\n'
     )
     frames = _frames_of(body)
