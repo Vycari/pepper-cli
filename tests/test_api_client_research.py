@@ -462,3 +462,18 @@ def test_a_room_schedule_carries_the_topic_and_a_change_goes_to_the_room_task() 
     api.change_research_schedule("TASK", cron="0 7 * * 1")
     assert seen[-1].url.path == "/api/v1/scheduled-tasks/TASK"
     assert json.loads(seen[-1].content) == {"cron": "0 7 * * 1"}
+
+
+def test_a_research_page_with_a_non_object_row_fails_instead_of_dropping_it() -> None:
+    body = {"items": [{"id": PID}, "junk"], "next_before": "cursor-2"}
+    with pytest.raises(api_client.ApiError) as raised:
+        api_client._research_page(body, lambda r: r)
+    assert raised.value.status == 200
+    assert "item 1" in str(raised.value)
+    assert len(raised.value.body) <= 200
+
+
+def test_valid_research_pages_keep_their_behaviour() -> None:
+    assert api_client._research_page({"items": []}, lambda r: r).items == []
+    page = api_client._research_page({"items": [{"a": 1}], "next_before": "c"}, lambda r: r)
+    assert (page.items, page.next_before) == ([{"a": 1}], "c")

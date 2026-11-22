@@ -575,21 +575,137 @@ def test_a_204_is_an_empty_feed():
         assert list(api.watch_agent_events()) == []
 
 
-def test_malformed_frames_are_dropped_not_fatal():
-    body = (
-        'id: nope\nevent: x\ndata: {"a":1}\n\n'
-        "event: y\ndata: not json\n\n"
-        "event: z\ndata: [1]\n\n"
+def _frames_of(body: str) -> list[FeedFrame]:
+    with _api(lambda _r: httpx.Response(200, text=body)) as api:
+        return list(api.watch_agent_events())
+
+
+def test_unknown_kinds_and_fields_pass_through_the_feed_parser():
+    frames = _frames_of(
+        'retry: 3000\nx-future: 1\nevent: brand.new\ndata: {"a":1,"extra":[2]}\n\n'
         'id: 4\nevent: message.created\ndata: {"id":4}\n\n'
     )
+    assert [(f.kind, f.id) for f in frames] == [("brand.new", None), ("message.created", 4)]
+
+
+@pytest.mark.parametrize(
+    "data", ["not json", "[1]", '"scalar"', "7", "null", '{"a":'], ids=lambda d: d
+)
+def test_a_malformed_event_payload_is_a_stream_error_not_a_silent_drop(data):
+    body = (
+        'id: 3\nevent: message.created\ndata: {"id":3}\n\n'
+        f"id: 4\nevent: message.created\ndata: {data}\n\n"
+        'id: 5\nevent: message.created\ndata: {"id":5}\n\n'
+    )
+    seen: list[FeedFrame] = []
+    with _api(lambda _r: httpx.Response(200, text=body)) as api:
+        frames = api.watch_agent_events()
+        with pytest.raises(api_client.ApiError) as raised:
+            while True:
+                seen.append(next(frames))
+    # The frame before is delivered; the later valid one is never reached, so a consumer's
+    # cursor cannot move past the lost event.
+    assert [f.id for f in seen] == [3]
+    assert raised.value.status == 200
+    assert "malformed event stream" in str(raised.value)
+    assert data not in str(raised.value)
+
+
+def test_an_id_less_unknown_frame_with_an_unreadable_body_is_ignored():
+    frames = _frames_of(
+        "event: some.future_kind\ndata: not json\n\n"
+        "event: other\ndata: [1]\n\n"
+        'id: 4\nevent: message.created\ndata: {"id":4}\n\n'
+    )
+    assert [(f.kind, f.id) for f in frames] == [("message.created", 4)]
+
+
+def test_an_unreadable_cursor_frame_is_a_stream_error_even_without_an_id():
+    with pytest.raises(api_client.ApiError):
+        _frames_of("event: cursor\ndata: not json\n\n")
+
+
+def test_an_unreadable_scope_frame_reaches_the_caller_empty():
+    frames = _frames_of("event: scope\ndata: not json\n\nevent: scope\ndata: [1]\n\n")
+    assert [(f.kind, f.id, f.payload) for f in frames] == [("scope", None, {})] * 2
+
+
+@pytest.mark.parametrize("bad_id", ["nope", "-1", "1.5", "12abc", "\u00b2"])
+def test_a_malformed_event_id_is_a_stream_error(bad_id):
+    body = f'id: {bad_id}\nevent: message.created\ndata: {{"id":9}}\n\n'
+    with (
+        _api(lambda _r: httpx.Response(200, text=body)) as api,
+        pytest.raises(api_client.ApiError) as raised,
+    ):
+        list(api.watch_agent_events())
+    assert "malformed id" in str(raised.value)
+
+
+def test_cursor_less_and_control_frames_stay_compatible():
+    frames = _frames_of(
+        ": connected\n\n"
+        'event: scope\nid: junk\ndata: {"v":1}\n\n'
+        'event: error\nid: junk\ndata: {"error":"x","retry":true}\n\n'
+        'event: cursor\nid: 8\ndata: {"cursor":8}\n\n'
+        'event: message.created\nid:\ndata: {"id":1}\n\n'
+        'event: future.kind\ndata: {"id":1}\n\n'
+    )
+    assert [(f.kind, f.id) for f in frames] == [
+        ("comment", None),
+        ("scope", None),
+        ("error", None),
+        ("cursor", 8),
+        ("message.created", None),
+        ("future.kind", None),
+    ]
+
+
+def test_a_feed_frame_at_the_size_limit_passes_and_one_over_fails(monkeypatch):
+    monkeypatch.setattr(api_client, "MAX_SSE_FRAME_BYTES", 64)
+    prefix = "data: "
+    # ``event:`` and ``id:`` lines count too; build a frame of exactly 64 bytes with one line
+    # (the newline counts as a byte).
+    exact = prefix + "{" + '"k":"' + "x" * (64 - 1 - len(prefix) - 8) + '"}'
+    assert len(exact.encode()) + 1 == 64
+    assert len(_frames_of(exact + "\n\n")) == 1
+    with pytest.raises(api_client.ApiError) as raised:
+        _frames_of(exact + "x\n\n")
+    assert "larger than 64 bytes" in str(raised.value)
+
+
+def test_many_small_data_lines_cannot_grow_a_frame_without_bound(monkeypatch):
+    monkeypatch.setattr(api_client, "MAX_SSE_FRAME_BYTES", 64)
+    body = "data: 0123456789\n" * 100
+    with pytest.raises(api_client.ApiError):
+        _frames_of(body)
+
+
+def test_the_next_connection_recovers_after_an_oversized_frame(monkeypatch):
+    monkeypatch.setattr(api_client, "MAX_SSE_FRAME_BYTES", 64)
+    bodies = iter(
+        [
+            'id: 1\nevent: message.created\ndata: {"id":1}\n\n'
+            "id: 2\nevent: message.created\ndata: " + "x" * 200 + "\n\n",
+            'id: 2\nevent: message.created\ndata: {"id":2}\n\n',
+        ]
+    )
+    headers: list[str | None] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, text=body)
+        headers.append(request.headers.get("last-event-id"))
+        return httpx.Response(200, text=next(bodies))
 
+    cursor = None
     with _api(handler) as api:
-        frames = list(api.watch_agent_events())
-
-    assert [(f.kind, f.id) for f in frames] == [("x", None), ("message.created", 4)]
+        try:
+            for frame in api.watch_agent_events(last_event_id=cursor):
+                cursor = frame.id
+        except api_client.ApiError:
+            pass
+        assert cursor == 1
+        resumed = list(api.watch_agent_events(last_event_id=cursor))
+    assert headers == [None, "1"]
+    assert [f.id for f in resumed] == [2]
 
 
 def test_the_cursor_file_helpers_round_trip(tmp_path: Path):

@@ -421,7 +421,8 @@ per line, which suits a script reading a pipe. Events say what happened and
 where (they carry ids, not message text), so the harness reads the message with
 `pepper --profile <name> messages list` as before. Give it `--cursor-file PATH` and it remembers
 where it got to, picks up from there after a restart, and reconnects by itself
-if the connection drops. To hear about only some kinds of activity, add
+if the connection drops. A garbled or oversized event is treated as a dropped connection, so it
+reconnects from the last event it handled rather than skipping the damaged one. To hear about only some kinds of activity, add
 `--kinds` with the ones you want (for example `message.created,mention.created`)
 or `--ignore-kinds` with the ones you don't; skipped events still move the
 cursor on, so they aren't delivered later. It exits with an error if the token
