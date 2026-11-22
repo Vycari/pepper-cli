@@ -286,6 +286,10 @@ def test_save_tightens_a_replaced_world_readable_file(tmp_home: Path) -> None:
         ("http://127.1.2.3", "http://127.1.2.3"),
         ("http://[::1]:8000", "http://[::1]:8000"),
         ("https://[2001:db8::1]", "https://[2001:db8::1]"),
+        # A server behind a reverse proxy at a path prefix keeps working.
+        ("https://example.com/pepper", "https://example.com/pepper"),
+        ("https://example.com/pepper/", "https://example.com/pepper"),
+        ("https://Example.com/Team/Pepper//", "https://example.com/Team/Pepper"),
     ],
 )
 def test_validate_server_url_accepts(raw: str, canonical: str, monkeypatch) -> None:
@@ -306,7 +310,10 @@ def test_validate_server_url_accepts(raw: str, canonical: str, monkeypatch) -> N
         ("https://alice@pepper.example.com", "user name or password"),
         ("https://pepper.example.com?x=1", "query"),
         ("https://pepper.example.com/#frag", "fragment"),
-        ("https://pepper.example.com/api", "no path"),
+        ("https://pepper.example.com/a//b", "plain prefix"),
+        ("https://pepper.example.com/a/../b", "plain prefix"),
+        ("https://pepper.example.com/./a", "plain prefix"),
+        ("https://pepper.example.com/a/%2E%2E", "plain prefix"),
         ("https://pepper.example.com:notaport", "Invalid server URL"),
         ("https://pepper.example.com:99999", "Invalid server URL"),
         # A parse failure on a URL carrying userinfo must not echo the password (the
@@ -333,7 +340,7 @@ def test_validate_server_url_rejects(raw: str, why: str, monkeypatch) -> None:
 def test_validate_server_url_plain_http_needs_the_opt_in(monkeypatch) -> None:
     monkeypatch.setenv(credentials.ALLOW_INSECURE_HTTP_ENV, "1")
     assert credentials.validate_server_url("http://pepper.lan:8000/") == "http://pepper.lan:8000"
-    # The opt-in relaxes only the scheme rule; the URL must still be a bare origin.
+    # The opt-in relaxes only the scheme rule; the URL must still be a plain address.
     with pytest.raises(ValueError, match="user name or password"):
         credentials.validate_server_url("http://a:b@pepper.lan")
 

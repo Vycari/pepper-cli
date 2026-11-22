@@ -140,13 +140,14 @@ def insecure_http_allowed() -> bool:
 def validate_server_url(url: str) -> str:
     """Return ``url`` as the canonical API base the bearer token may be sent to.
 
-    The canonical form is ``scheme://host[:port]`` with no trailing slash: every request joins
-    ``/api/v1/...`` to it directly. Raises ``ValueError`` (with a message fit for the terminal,
-    never echoing userinfo) for anything else:
+    The canonical form is ``scheme://host[:port][/prefix]`` with no trailing slash: every
+    request joins ``/api/v1/...`` to it directly, so a server behind a reverse proxy at a path
+    prefix (``https://example.com/pepper``) keeps working. Raises ``ValueError`` (with a
+    message fit for the terminal, never echoing userinfo) for anything else:
 
     * a scheme other than ``http`` / ``https``, or no hostname;
-    * userinfo (``user:password@``), a query, a fragment, a path other than ``/``, or a port
-      that does not parse;
+    * userinfo (``user:password@``), a query, a fragment, a path with an empty, ``.`` or
+      ``..`` segment, or a port that does not parse;
     * plain ``http`` to a host that is not loopback, unless
       :data:`ALLOW_INSECURE_HTTP_ENV` is set, because the token would cross the network in
       the clear.
@@ -176,10 +177,12 @@ def validate_server_url(url: str) -> str:
         raise ValueError("Invalid server URL: it must not carry a user name or password.")
     if parts.query or parts.fragment or "?" in url or "#" in url:
         raise ValueError("Invalid server URL: it must not have a query (?) or fragment (#).")
-    if parts.path not in {"", "/"}:
+    prefix = parts.path.rstrip("/")
+    segments = prefix.split("/")[1:]
+    if any(seg in {"", ".", ".."} or "%2e" in seg.lower() for seg in segments):
         raise ValueError(
-            "Invalid server URL: give only the server's address, with no path "
-            f"(for example {scheme}://{parts.netloc})."
+            "Invalid server URL: its path must be a plain prefix such as /pepper, "
+            "with no empty, '.' or '..' parts."
         )
     if scheme == "http" and not is_loopback_host(host) and not insecure_http_allowed():
         raise ValueError(
@@ -189,7 +192,7 @@ def validate_server_url(url: str) -> str:
     netloc = f"[{host}]" if ":" in host else host
     if port is not None:
         netloc = f"{netloc}:{port}"
-    return f"{scheme}://{netloc}"
+    return f"{scheme}://{netloc}{prefix}"
 
 
 def _config_dir() -> Path:

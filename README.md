@@ -168,8 +168,9 @@ pepper login --server https://your-host --token pat_xxx     # fully non-interact
 Passing `--token` always skips the browser flow, whether or not `--manual` is
 also given.
 
-The server URL must be a bare origin (`https://host[:port]`, no user name,
-path, query or fragment), checked at login and again whenever the saved
+The server URL is an origin with an optional path prefix
+(`https://host[:port]`, or `https://host/pepper` for a server behind a
+reverse proxy; no user name, query or fragment), checked at login and again whenever the saved
 credentials are read, before the token is sent anywhere. Plain `http://` is
 accepted only for this machine (`localhost`, `*.localhost`, `127.0.0.0/8`,
 `[::1]`), so `pepper login --server http://localhost:8000` works for local
