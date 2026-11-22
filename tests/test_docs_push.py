@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -21,6 +25,30 @@ docs_push = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(docs_push)
 
 REPO = "Vycari/pepper-cli"
+
+
+def _bash_4_or_newer() -> bool:
+    """The workflow shell runs on Ubuntu's bash and uses bash 4 syntax (`${VAR,,}`).
+
+    macOS ships bash 3.2, so a Mac with no newer bash on PATH skips these tests rather
+    than failing them.
+    """
+    bash = shutil.which("bash")
+    if sys.platform == "win32" or bash is None:
+        return False
+    major = subprocess.run(
+        [bash, "-c", "echo ${BASH_VERSINFO[0]}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    return major.isdigit() and int(major) >= 4
+
+
+_NEEDS_BASH_4 = pytest.mark.skipif(
+    not _bash_4_or_newer(),
+    reason="runs the workflow shell, which needs bash 4 or newer, with POSIX stub tools",
+)
 
 
 def _server(tmp_path: Path, owners: dict[str, str]) -> Path:
@@ -91,3 +119,133 @@ def test_every_help_file_is_a_flat_markdown_topic() -> None:
     assert names
     for name in names:
         assert docs_push._NAME.match(name), name
+
+
+def test_docs_push_workflow_labels_and_arms_auto_merge() -> None:
+    # The sync PR skips review (prose, reviewed here) and merges through pepper's queue once its
+    # required checks pass. Pinned to the pushed head; DOCS_SYNC_AUTO_MERGE=false switches it off.
+    import yaml
+
+    workflow = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / ".github/workflows/docs-push.yml").read_text()
+    )
+    step = next(
+        s
+        for s in workflow["jobs"]["push"]["steps"]
+        if s.get("name") == "Open, update or close the sync PR"
+    )
+    script = step["run"]
+    assert "--draft" in script
+    assert "--label greptile:skip" in script
+    assert 'gh pr ready "$pr"' in script
+    assert '--auto --squash --match-head-commit "$(git rev-parse HEAD)"' in script
+    # The kill switch disarms a PR an earlier run armed, before reporting the hand merge.
+    final = script.index("if auto_merge_off; then")
+    assert script.index('disarm_auto_merge "$pr"', final) < script.index("elif", final)
+    # A disarm is read back, and one that did not take fails the run.
+    disarm = script.index("disarm_auto_merge() {")
+    body = script[disarm : script.index("\n}", disarm)]
+    assert body.index("--disable-auto") < body.index("autoMergeRequest") < body.index("exit 1")
+    # With the switch off, the open PR is disarmed before anything is pushed.
+    early = script.index('if [ -n "$existing" ] && auto_merge_off; then')
+    assert script.index('disarm_auto_merge "$existing"', early) < script.index("git push", early)
+    # An existing draft is a maintainer's hold: the run exits before it can ready or arm it.
+    # Only a draft someone converted is held; the job's own orphaned draft is finished.
+    draft = script.index("--json isDraft")
+    held = script.index("was converted to draft, so it is held", draft)
+    assert draft < script.index('"convert_to_draft"', draft) < held
+    assert script.index("exit 0", held) < script.index('gh pr ready "$pr"', held)
+    # Labeled and ready before it is armed.
+    assert script.index('gh pr ready "$pr"') < script.index("--auto --squash")
+    assert step["env"]["AUTO_MERGE"] == "${{ vars.DOCS_SYNC_AUTO_MERGE }}"
+
+
+def _run_pr_tail(
+    tmp_path: Path, *, existing: str, converted: bool, auto_merge: str = "", draft: bool = True
+) -> str:
+    """Run the step's real PR handling (from the edit-or-create branch on) against a stub `gh`.
+
+    Returns the `gh` calls it made, one per line. The PR is a draft; `converted` decides
+    whether its timeline has a `convert_to_draft` event.
+    """
+    import yaml
+
+    workflow = yaml.safe_load((ROOT / ".github/workflows/docs-push.yml").read_text())
+    step = next(
+        s
+        for s in workflow["jobs"]["push"]["steps"]
+        if s.get("name") == "Open, update or close the sync PR"
+    )
+    script = step["run"]
+    helpers = script[
+        script.index("auto_merge_off() {") : script.index(
+            "\n}", script.index("disarm_auto_merge() {")
+        )
+        + 2
+    ]
+    tail = script[script.index('if [ -n "$existing" ]; then\n  gh pr edit') :]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "gh.log"
+    timeline = "convert_to_draft" if converted else ""
+    is_draft = "true" if draft else "false"
+    (bin_dir / "gh").write_text(
+        f'#!/bin/sh\necho "$*" >> "{log}"\n'
+        'case "$1 $2" in\n'
+        f'  "pr view") case "$*" in *isDraft*) echo {is_draft} ;; *) echo false ;; esac ;;\n'
+        f'  "api "*) [ -n "{timeline}" ] && echo {timeline} ;;\n'
+        '  "pr create") echo 77 ;;\n'
+        "esac\nexit 0\n"
+    )
+    (bin_dir / "git").write_text("#!/bin/sh\necho deadbeef\n")
+    for tool in ("gh", "git"):
+        (bin_dir / tool).chmod(0o755)
+    subprocess.run(
+        ["bash", "-c", f"set -euo pipefail\n{helpers}\n{tail}"],
+        env={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "existing": existing,
+            "AUTO_MERGE": auto_merge,
+            "SYNC_BRANCH": "docs-sync/x",
+            "title": "t",
+            "body": "b",
+        },
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return log.read_text()
+
+
+@_NEEDS_BASH_4
+def test_a_draft_someone_converted_is_neither_readied_nor_armed(tmp_path: Path) -> None:
+    calls = _run_pr_tail(tmp_path, existing="42", converted=True)
+    assert "pr ready" not in calls
+    assert "pr merge" not in calls
+
+
+@_NEEDS_BASH_4
+def test_the_jobs_own_orphaned_draft_is_readied_and_armed(tmp_path: Path) -> None:
+    calls = _run_pr_tail(tmp_path, existing="42", converted=False).splitlines()
+    ready = calls.index("pr ready 42")
+    assert calls.index("pr merge 42 --auto --squash --match-head-commit deadbeef") > ready
+
+
+@_NEEDS_BASH_4
+@pytest.mark.parametrize(
+    ("value", "off"),
+    [
+        ("", False),
+        ("true", False),
+        ("1", False),
+        ("false", True),
+        (" OFF ", True),
+        ("No", True),
+        ("0", True),
+    ],
+)
+def test_the_kill_switch_reads_its_value(tmp_path: Path, value: str, *, off: bool) -> None:
+    calls = _run_pr_tail(tmp_path, existing="42", converted=False, auto_merge=value, draft=False)
+    armed = "pr merge 42 --auto" in calls
+    assert armed is not off
+    assert ("pr merge 42 --disable-auto" in calls) is off
