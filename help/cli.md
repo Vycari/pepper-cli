@@ -68,7 +68,8 @@ credentials from this machine when you're done with it.
   (or `pepper tui`, or `pepper run`) and Pepper can read the files under that
   folder for this session only. It can only read them, never change them, and
   nothing outside the folders you name is reachable. Repeat `--root` for more
-  than one folder.
+  than one folder. A search that has to stop early, in a very large folder or a
+  very large file, says so rather than reporting that nothing was found.
 - **Save a prompt as a script:** `pepper run FILE` sends the file's text as one
   message. Start the file with `#!/usr/bin/env -S pepper run`, make it
   executable, and it runs like any other command. Anything you pass after the
