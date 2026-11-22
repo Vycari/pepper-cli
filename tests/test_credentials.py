@@ -309,6 +309,11 @@ def test_validate_server_url_accepts(raw: str, canonical: str, monkeypatch) -> N
         ("https://pepper.example.com/api", "no path"),
         ("https://pepper.example.com:notaport", "Invalid server URL"),
         ("https://pepper.example.com:99999", "Invalid server URL"),
+        # A parse failure on a URL carrying userinfo must not echo the password (the
+        # parser's own message quotes the netloc).
+        ("https://alice:hunter2@pepper.example.com\uff1a443", "could not be parsed"),
+        ("https://alice:hunter2@pepper.example.com:notaport", "could not be parsed"),
+        ("https://alice:hunter2@[::1", "could not be parsed"),
         ("https://pepper.example .com", "spaces"),
         ("https://pepper.example.com\n", "control"),
         ("http://pepper.example.com", "plain http"),
@@ -321,6 +326,8 @@ def test_validate_server_url_rejects(raw: str, why: str, monkeypatch) -> None:
     with pytest.raises(ValueError, match=why) as excinfo:
         credentials.validate_server_url(raw)
     assert "hunter2" not in str(excinfo.value)
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__suppress_context__ or excinfo.value.__context__ is None
 
 
 def test_validate_server_url_plain_http_needs_the_opt_in(monkeypatch) -> None:

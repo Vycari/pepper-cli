@@ -158,8 +158,12 @@ def validate_server_url(url: str) -> str:
     try:
         parts = urlsplit(url)
         port = parts.port
-    except ValueError as exc:
-        raise ValueError(f"Invalid server URL: {exc}.") from exc
+    except ValueError:
+        # The parser's own message can quote the netloc, userinfo included, so it is never
+        # echoed. ``from None`` keeps it out of a traceback too.
+        raise ValueError(
+            "Invalid server URL: it could not be parsed (check the host name and port)."
+        ) from None
     scheme = parts.scheme.lower()
     if scheme not in {"http", "https"}:
         raise ValueError(
