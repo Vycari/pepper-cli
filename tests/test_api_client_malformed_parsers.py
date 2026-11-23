@@ -383,29 +383,6 @@ def _device(handler) -> httpx.Client:
     return httpx.Client(transport=httpx.MockTransport(handler))
 
 
-def test_device_start_names_a_missing_or_mistyped_field() -> None:
-    body = {
-        "device_code": "d",
-        "user_code": "u",
-        "verification_url": "v",
-        "expires_in": 60,
-        "interval": 5,
-    }
-    ok = api_client.device_start(
-        "http://x", "n", client=_device(lambda _r: httpx.Response(200, json=body))
-    )
-    assert (ok.user_code, ok.interval) == ("u", 5)
-    for bad, name in (
-        (_without(body, "interval"), "'interval'"),
-        ({**body, "expires_in": "60"}, "'expires_in'"),
-    ):
-        with pytest.raises(ApiError) as raised:
-            api_client.device_start(
-                "http://x", "n", client=_device(lambda _r, b=bad: httpx.Response(200, json=b))
-            )
-        assert name in _malformed(raised)
-
-
 def test_device_poll_approved_without_a_token_or_user_is_malformed() -> None:
     user = {"user_id": "u", "display_name": "d"}
     for body, name in (

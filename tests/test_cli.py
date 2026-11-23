@@ -1704,3 +1704,147 @@ def test_ordinary_chat_unaffected_by_typo_guard(monkeypatch) -> None:
     monkeypatch.setattr(cli, "cmd_chat", lambda args: seen.append(args.message) or 0)
     assert cli.main(["what's", "on", "today"]) == 0
     assert seen == [["what's", "on", "today"]]
+
+
+# ---------------------------------------------------------------------------
+# login — the server URL is checked before any request (#296), the device-login
+# wait is bounded by the authorization's lifetime (#297), and a malformed
+# device-start body is reported as the server's fault (#299).
+
+
+@pytest.mark.parametrize(
+    "server",
+    [
+        "https://alice:hunter2@pepper.example.com",
+        "https://pepper.example.com/?x=1",
+        "ftp://pepper.example.com",
+        "http://pepper.example.com",
+    ],
+)
+def test_login_refuses_an_unsafe_server_url_before_any_request(
+    tmp_home: Path, patch_device_flow, monkeypatch, capsys, server: str
+) -> None:
+    monkeypatch.delenv(credentials.ALLOW_INSECURE_HTTP_ENV, raising=False)
+    calls = patch_device_flow(start=_device_start(), poll_sequence=[])
+
+    rc = cli.main(["login", "--server", server, "--no-browser"])
+
+    assert rc == 2
+    assert calls["start"] == []
+    assert "hunter2" not in capsys.readouterr().err
+    assert not credentials.credentials_path().exists()
+
+
+def test_login_allows_plain_http_to_localhost_without_the_opt_in(
+    tmp_home: Path, patch_api, patch_device_flow, fake_browser, no_sleep, monkeypatch
+) -> None:
+    monkeypatch.delenv(credentials.ALLOW_INSECURE_HTTP_ENV, raising=False)
+    who = api_client.Whoami(user_id="u", email=None, display_name="A", timezone=None)
+    calls = patch_device_flow(
+        start=_device_start(),
+        poll_sequence=[api_client.DevicePoll(status="approved", token=SecretStr("pep_pat_x"))],
+    )
+    patch_api(whoami=who)
+
+    rc = cli.main(["login", "--server", "http://localhost:8000/", "--no-browser"])
+
+    assert rc == 0
+    assert calls["start"][0][0] == "http://localhost:8000"
+    assert credentials.load().server_url == "http://localhost:8000"
+
+
+class _FakeClock:
+    """``time.monotonic`` and ``time.sleep`` on one fake timeline."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+@pytest.fixture
+def fake_clock(monkeypatch) -> _FakeClock:
+    clock = _FakeClock()
+    monkeypatch.setattr(cli.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cli.time, "sleep", clock.sleep)
+    return clock
+
+
+def test_device_login_never_sleeps_past_expiry(
+    tmp_home: Path, patch_device_flow, fake_browser, fake_clock, capsys
+) -> None:
+    """An interval longer than the whole lifetime sleeps only until expiry, then stops
+    without a pointless poll."""
+    calls = patch_device_flow(start=_device_start(expires_in=7, interval=30), poll_sequence=[])
+
+    rc = cli.main(["login", "--server", "http://example.com", "--no-browser"])
+
+    assert rc == 1
+    assert fake_clock.sleeps == [7]
+    assert calls["poll"] == []
+    assert "expired" in capsys.readouterr().err.lower()
+
+
+def test_device_login_slow_down_near_expiry_stops_at_the_deadline(
+    tmp_home: Path, patch_device_flow, fake_browser, fake_clock, capsys
+) -> None:
+    calls = patch_device_flow(
+        start=_device_start(expires_in=12, interval=5),
+        poll_sequence=[
+            api_client.DevicePoll(status="slow_down"),
+            api_client.DevicePoll(status="pending"),
+        ],
+    )
+
+    rc = cli.main(["login", "--server", "http://example.com", "--no-browser"])
+
+    assert rc == 1
+    # 5 s, poll (slow_down: interval becomes 10), then only the 7 s left, then expiry.
+    assert fake_clock.sleeps == [5, 7]
+    assert len(calls["poll"]) == 1
+    assert "expired" in capsys.readouterr().err.lower()
+
+
+def test_device_login_slow_down_growth_is_capped(
+    tmp_home: Path, patch_api, patch_device_flow, fake_browser, fake_clock
+) -> None:
+    who = api_client.Whoami(user_id="u", email=None, display_name="A", timezone=None)
+    patch_device_flow(
+        start=_device_start(expires_in=3600, interval=55),
+        poll_sequence=[
+            api_client.DevicePoll(status="slow_down"),
+            api_client.DevicePoll(status="slow_down"),
+            api_client.DevicePoll(status="approved", token=SecretStr("pep_pat_x")),
+        ],
+    )
+    patch_api(whoami=who)
+
+    rc = cli.main(["login", "--server", "http://example.com", "--no-browser"])
+
+    assert rc == 0
+    assert fake_clock.sleeps == [55, api_client.DEVICE_MAX_INTERVAL, api_client.DEVICE_MAX_INTERVAL]
+
+
+def test_device_login_reports_a_malformed_start_response(
+    tmp_home: Path, patch_device_flow, fake_browser, no_sleep, capsys
+) -> None:
+    calls = patch_device_flow(
+        start=api_client.ApiError(
+            status=201, body="", detail="malformed device-login response: interval ..."
+        ),
+        poll_sequence=[],
+    )
+
+    rc = cli.main(["login", "--server", "http://example.com", "--no-browser"])
+
+    assert rc == 1
+    assert calls["poll"] == []
+    err = capsys.readouterr().err
+    assert "device-login response was unusable" in err
+    assert "rejected" not in err

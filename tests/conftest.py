@@ -30,6 +30,14 @@ def _no_pepper_json(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def _allow_plain_http_fixture_hosts(monkeypatch: pytest.MonkeyPatch):
+    """The suite's fake servers are ``http://example.com`` and friends, which the CLI refuses
+    to send a token to over plain http unless the user opts in (``credentials.
+    validate_server_url``). Opt in for the suite; the tests of that refusal clear it."""
+    monkeypatch.setenv(credentials.ALLOW_INSECURE_HTTP_ENV, "1")
+
+
+@pytest.fixture(autouse=True)
 def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect ``~`` and ``$XDG_CONFIG_HOME`` to a temp dir across all platforms.
 

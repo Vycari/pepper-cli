@@ -361,3 +361,33 @@ class _chdir:
 
         if self._prev is not None:
             os.chdir(self._prev)
+
+
+# ---------------------------------------------------------------------------
+# Private permissions (#301): the archive is the account's data.
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX-only perms check")
+@pytest.mark.parametrize("existing", [False, True])
+def test_download_takeout_writes_an_owner_only_archive(tmp_path, existing: bool) -> None:
+    import os
+
+    out_path = tmp_path / "out.zip"
+    if existing:
+        out_path.write_bytes(b"previous archive")
+        out_path.chmod(0o644)
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_ZIP_BYTES)
+
+    old = os.umask(0)
+    try:
+        with api_client.ApiClient(
+            server_url="http://example.com", token=SecretStr("pep_pat_abc"), client=_mock(handler)
+        ) as api:
+            api.download_takeout(out_path=str(out_path))
+    finally:
+        os.umask(old)
+
+    assert out_path.read_bytes() == _ZIP_BYTES
+    assert out_path.stat().st_mode & 0o777 == 0o600

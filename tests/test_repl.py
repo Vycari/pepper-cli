@@ -453,12 +453,16 @@ def test_repl_title_does_not_leak_credentials_end_to_end(
     monkeypatch.setattr(cli.window_title, "_stdout_is_tty", lambda: True)
     _patch_prompt(monkeypatch, lines=[])
 
+    # A stored URL with userinfo is now refused before anything uses it (#296), so the
+    # password reaches neither the title nor the error; ``_terminal_title`` keeps its own
+    # hostname-only rule (tested above) as the second line.
     rc = cli.main(["chat"])
-    assert rc == 0
+    assert rc == 2
 
-    out = capsys.readouterr().out
-    assert "\x1b]0;\N{HOT PEPPER}\N{VARIATION SELECTOR-16} Pepper (pepper.example.com)\x07" in out
-    assert "hunter2" not in out
+    captured = capsys.readouterr()
+    assert "hunter2" not in captured.out
+    assert "hunter2" not in captured.err
+    assert "\x1b]0;" not in captured.out
 
 
 def test_repl_non_tty_emits_no_title_sequences(
