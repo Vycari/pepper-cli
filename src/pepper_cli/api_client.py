@@ -1587,8 +1587,7 @@ def device_poll(
 # ---------------------------------------------------------------------------
 
 
-# MIRROR: src/pepper/api/groups.py::room_topics
-# (route handler; the response is an untyped dict, so no snapshot schema)
+# MIRROR: src/pepper/api/groups/_responses.py::RoomRailTopicRow
 @dataclass(frozen=True)
 class GroupTopicSummary:
     """One topic, as the rooms list and the topic rail both send it.
@@ -1612,8 +1611,7 @@ class GroupTopicSummary:
     subject_artifact_id: str | None = None
 
 
-# MIRROR: src/pepper/api/groups.py::list_groups
-# (route handler; untyped dict response, no snapshot schema)
+# MIRROR: src/pepper/api/groups/_responses.py::RoomListRow
 @dataclass(frozen=True)
 class GroupSummary:
     """One room on ``GET /api/v1/groups``.
@@ -1686,8 +1684,7 @@ def _unread_row_from_dict(raw: dict[str, Any]) -> GroupUnreadRow | None:
     )
 
 
-# MIRROR: src/pepper/api/groups.py::list_groups
-# (route handler; untyped dict response, no snapshot schema)
+# MIRROR: src/pepper/api/groups/_responses.py::RoomsListResponse
 @dataclass(frozen=True)
 class GroupList:
     """``GET /api/v1/groups`` — and the capability signal for the surface.
@@ -1712,8 +1709,7 @@ class GroupList:
     features: tuple[str, ...] = ()
 
 
-# MIRROR: src/pepper/api/groups.py::topic_messages
-# (route handler; untyped dict response, no snapshot schema)
+# MIRROR: src/pepper/api/groups/_responses.py::RoomMessageCard
 @dataclass(frozen=True)
 class GroupCard:
     """One structured app card carried on a message (``cards[]``).
@@ -1735,8 +1731,7 @@ class GroupCard:
     summary_lines: list[str] = field(default_factory=list)
 
 
-# MIRROR: src/pepper/api/groups.py::topic_messages
-# (route handler; untyped dict response, no snapshot schema)
+# MIRROR: src/pepper/api/groups/_responses.py::RoomMessageRow
 @dataclass(frozen=True)
 class GroupMessage:
     """One message in a topic.
@@ -1820,8 +1815,7 @@ class GroupMessage:
     resolved_by_name: str | None = None
 
 
-# MIRROR: src/pepper/api/groups.py::topic_messages
-# (route handler; untyped dict response, no snapshot schema)
+# MIRROR: src/pepper/api/groups/_responses.py::RoomMessagesResponse
 @dataclass(frozen=True)
 class GroupMessagePage:
     """One page of a topic's messages, oldest-first.
@@ -1837,8 +1831,7 @@ class GroupMessagePage:
     permalink_target_missing: bool = False
 
 
-# MIRROR: src/pepper/api/groups.py::room_roster
-# (route handler; untyped dict response, no snapshot schema)
+# MIRROR: src/pepper/api/groups/_responses.py::RoomRosterMember
 @dataclass(frozen=True)
 class GroupRosterMember:
     """One addressable member. Pepper is prepended by the server and flagged
@@ -1854,8 +1847,7 @@ class GroupRosterMember:
     is_agent: bool = False
 
 
-# MIRROR: src/pepper/api/groups.py::app_launcher
-# (route handler; untyped dict response, no snapshot schema)
+# MIRROR: src/pepper/api/groups/_responses.py::RoomLauncherTile
 @dataclass(frozen=True)
 class GroupAppTile:
     """One tile of a room's launcher. ``principal`` is the room, so opening
@@ -2226,8 +2218,7 @@ class ImageSuggestion:
     run: int | None = None
 
 
-# MIRROR: src/pepper/agent/artifacts/applet.py::read_detail
-# (the detail route answers an untyped JSONResponse, no snapshot schema)
+# MIRROR: src/pepper/api/artifacts_detail.py::ArtifactDetail
 @dataclass(frozen=True)
 class ArtifactDetail:
     """One opened artifact from ``GET /api/v1/artifacts/{id}/detail``.
@@ -2314,12 +2305,11 @@ class NoteWikiLink:
 class NoteLinks:
     """``GET /api/v1/artifacts/{id}/detail``, the link fields only.
 
-    ``backlinks`` is deliberately untyped: the response shape is not
-    pinned by ``contracts/api-v1.openapi.json`` (the detail route answers
-    an untyped ``JSONResponse``), so the raw entries are kept exactly as
-    the server sent them. Typing them would either discard fields we
-    cannot see or invent a schema the server has not promised; ``--json``
-    passes them through untouched.
+    ``backlinks`` is deliberately untyped: ``contracts/api-v1.openapi.json``
+    declares its entries only as open objects (``ArtifactDetail.backlinks``),
+    so the raw entries are kept exactly as the server sent them. Typing
+    them would either discard fields we cannot see or invent a schema the
+    server has not promised; ``--json`` passes them through untouched.
     """
 
     artifact_id: str
