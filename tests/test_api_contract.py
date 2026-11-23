@@ -173,6 +173,10 @@ FIELD_EXCEPTIONS: dict[tuple[str, str], str] = {
         "the CLI groups those into a RoomSkill under 'row'. The flattened fields are checked "
         "through RoomSkill, which mirrors RoomSkillRow."
     ),
+    ("ChatHistoryEntry", "skipped_drafts"): (
+        "Client-computed: how many of the row's 'drafts' parse_draft_cards left out as "
+        "malformed. 'drafts' itself is checked."
+    ),
 }
 
 

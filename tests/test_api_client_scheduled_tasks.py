@@ -231,8 +231,10 @@ def test_a_missing_destinations_key_is_a_malformed_response() -> None:
     body = _task_json()
     del body["destinations"]
     _, handler = _capture(httpx.Response(200, json=[body]))
-    with _client(handler) as api, pytest.raises(KeyError):
+    with _client(handler) as api, pytest.raises(api_client.ApiError) as excinfo:
         api.list_scheduled_tasks()
+    assert excinfo.value.status == 200
+    assert "'destinations'" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------

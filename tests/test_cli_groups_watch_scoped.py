@@ -250,6 +250,26 @@ def test_a_room_watch_streams_the_room_route_and_prints_json_byte_exact(monkeypa
     assert f"/api/v1/groups/{_ROOM}/topics" not in server.paths()
 
 
+def test_a_malformed_positioned_frame_is_skipped_and_the_scoped_watch_goes_on(
+    monkeypatch, capsys, tmp_path
+):
+    """VR-4266a8f0, scoped: the bad frame is not printed (its scope cannot be checked), the
+    cursor moves past it, and the next connection resumes after the events that followed."""
+    bad = "id: 8\nevent: message.created\ndata: [1]\n\n"
+    server = _Server(_CONNECTED + _scope() + _event(7) + bad + _event(9))
+    _serve(monkeypatch, server)
+    cursor_file = tmp_path / "cursor"
+
+    argv = ["rooms", "watch", "--start", "beginning", "--room", _ROOM, "--json"]
+    assert cli.main([*argv, "--cursor-file", str(cursor_file)]) == 0
+
+    out, err = capsys.readouterr()
+    assert [json.loads(line)["cursor"] for line in out.splitlines()] == [7, 9]
+    assert "Skipped an unreadable 'message.created' frame at position 8" in err
+    assert json.loads(cursor_file.read_text())["cursor"] == 9
+    assert server.stream_requests()[1].headers["last-event-id"] == "9"
+
+
 def test_a_room_name_resolves_and_a_topic_name_resolves_within_it(monkeypatch, capsys):
     server = _Server(_CONNECTED + _scope(topic=_TOPIC) + _event(7))
     _serve(monkeypatch, server)
