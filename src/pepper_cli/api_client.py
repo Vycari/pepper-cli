@@ -395,12 +395,14 @@ class SkillDetail:
 
 
 def _skill_detail_from_dict(row: dict) -> SkillDetail:
+    what = "skill"
+    row = _wire_row(row, what)
     return SkillDetail(
-        name=row["name"],
-        description=row["description"],
-        body=row["body"],
+        name=_wire_get(row, "name", what, str),
+        description=_wire_get(row, "description", what, str),
+        body=_wire_get(row, "body", what, str),
         model=row.get("model"),
-        toolsets=tuple(row.get("toolsets") or ()),
+        toolsets=tuple(_optional_list(row, "toolsets", what)),
         max_tool_rounds=row.get("max_tool_rounds"),
         builtin=bool(row.get("builtin", False)),
     )
@@ -450,17 +452,29 @@ class RoomSkillDetail:
     skill: SkillDetail
 
 
+def _skill_summary_from_dict(row: dict) -> SkillSummary:
+    what = "skill"
+    row = _wire_row(row, what)
+    return SkillSummary(
+        name=_wire_get(row, "name", what, str),
+        description=_wire_get(row, "description", what, str),
+        builtin=bool(row.get("builtin", False)),
+    )
+
+
 def _room_skill_from_dict(row: dict) -> RoomSkill:
+    what = "room skill"
+    row = _wire_row(row, what)
     return RoomSkill(
-        id=row["id"],
-        name=row["name"],
-        description=row["description"],
+        id=_wire_get(row, "id", what, str),
+        name=_wire_get(row, "name", what, str),
+        description=_wire_get(row, "description", what, str),
         granted_by=row.get("granted_by"),
         owner_is_you=bool(row.get("owner_is_you", False)),
         builtin=bool(row.get("builtin", False)),
-        toolsets=tuple(row.get("toolsets") or ()),
+        toolsets=tuple(_optional_list(row, "toolsets", what)),
         state=row.get("state", "active"),
-        ungrantable_toolsets=tuple(row.get("ungrantable_toolsets") or ()),
+        ungrantable_toolsets=tuple(_optional_list(row, "ungrantable_toolsets", what)),
         can_revoke=bool(row.get("can_revoke", False)),
     )
 
@@ -1540,22 +1554,15 @@ def device_poll(
             return DevicePoll(status="slow_down", interval=interval)
         if resp.status_code >= 400:
             _raise_for_error(resp)
-        body = resp.json()
+        what = "device poll response"
+        body = _wire_row(resp.json(), what)
         status_value = body.get("status", "")
         if status_value == "approved":
-            user_row = body["user"]
+            user_row = _wire_row(_wire_get(body, "user", what), "device poll user")
             return DevicePoll(
                 status="approved",
-                token=SecretStr(body["token"]),
-                user=Whoami(
-                    user_id=user_row["user_id"],
-                    email=user_row.get("email"),
-                    display_name=user_row["display_name"],
-                    timezone=user_row.get("timezone"),
-                    merged_from=user_row.get("merged_from", []),
-                    date_format=user_row.get("date_format", "mdy"),
-                    time_format=user_row.get("time_format", "12h"),
-                ),
+                token=SecretStr(_wire_get(body, "token", what, str)),
+                user=_whoami_from(user_row, "device poll user", person_id=False),
             )
         return DevicePoll(status=status_value)
     finally:
@@ -1862,16 +1869,20 @@ class GroupAppTile:
 
 
 def _group_card_from_dict(row: dict[str, Any]) -> GroupCard:
-    summary = row.get("summary") or {}
+    what = "group card"
+    row = _wire_row(row, what)
+    summary = row.get("summary")
+    if summary is not None and not isinstance(summary, dict):
+        raise _malformed(f"{what} field 'summary' has the wrong type", row)
     return GroupCard(
         kind=row.get("kind", "card"),
-        app_key=row["app_key"],
-        slug=row["slug"],
-        title=row["title"],
-        principal=row["principal"],
-        url=row["url"],
+        app_key=_wire_get(row, "app_key", what, str),
+        slug=_wire_get(row, "slug", what, str),
+        title=_wire_get(row, "title", what, str),
+        principal=_wire_get(row, "principal", what, str),
+        url=_wire_get(row, "url", what, str),
         view=row.get("view"),
-        summary_lines=list(summary.get("lines") or []),
+        summary_lines=_optional_list(summary or {}, "lines", what),
     )
 
 
@@ -1893,25 +1904,34 @@ def _mention_ids(raw: object) -> list[str]:
 def group_message_from_dict(row: dict[str, Any]) -> GroupMessage:
     """Parse one message. A free function so the page read and any later
     single-message read parse through one place and cannot drift."""
+    what = "group message"
+    row = _wire_row(row, what)
+    required = {
+        **{
+            k: _wire_get(row, k, what, str)
+            for k in (
+                "id",
+                "display_name",
+                "initial",
+                "avatar_tint",
+                "raw_body",
+                "rendered_html",
+                "created_at",
+                "created_at_display",
+                "day_key",
+                "day_kicker",
+                "day_heading",
+                "day_label",
+                "quote_excerpt",
+            )
+        },
+        **{
+            k: _wire_get(row, k, what, bool)
+            for k in ("is_pepper", "is_you", "is_deleted", "is_broken", "run_start")
+        },
+    }
     return GroupMessage(
-        id=row["id"],
-        is_pepper=row["is_pepper"],
-        is_you=row["is_you"],
-        is_deleted=row["is_deleted"],
-        is_broken=row["is_broken"],
-        run_start=row["run_start"],
-        display_name=row["display_name"],
-        initial=row["initial"],
-        avatar_tint=row["avatar_tint"],
-        raw_body=row["raw_body"],
-        rendered_html=row["rendered_html"],
-        created_at=row["created_at"],
-        created_at_display=row["created_at_display"],
-        day_key=row["day_key"],
-        day_kicker=row["day_kicker"],
-        day_heading=row["day_heading"],
-        day_label=row["day_label"],
-        quote_excerpt=row["quote_excerpt"],
+        **required,
         picture_url=row.get("picture_url"),
         via_display_name=row.get("via_display_name"),
         is_bridged=bool(row.get("is_bridged", False)),
@@ -1921,12 +1941,12 @@ def group_message_from_dict(row: dict[str, Any]) -> GroupMessage:
         is_edited=row.get("is_edited", False),
         edited_at=row.get("edited_at"),
         deleted_at=row.get("deleted_at"),
-        reactions=list(row.get("reactions") or []),
-        link_previews=list(row.get("link_previews") or []),
-        attachments=list(row.get("attachments") or []),
-        mention_names=list(row.get("mention_names") or []),
+        reactions=_optional_list(row, "reactions", what),
+        link_previews=_optional_list(row, "link_previews", what),
+        attachments=_optional_list(row, "attachments", what),
+        mention_names=_optional_list(row, "mention_names", what),
         quote=row.get("quote"),
-        cards=[_group_card_from_dict(c) for c in row.get("cards") or []],
+        cards=[_group_card_from_dict(c) for c in _optional_list(row, "cards", what)],
         is_permalink_target=row.get("is_permalink_target", False),
         author_person_id=row.get("author_person_id"),
         mentions=_mention_ids(row.get("mentions")),
@@ -1939,35 +1959,70 @@ def group_message_from_dict(row: dict[str, Any]) -> GroupMessage:
     )
 
 
+def _roster_member_from_dict(row: dict[str, Any]) -> GroupRosterMember:
+    what = "group roster member"
+    row = _wire_row(row, what)
+    return GroupRosterMember(
+        person_id=_wire_get(row, "person_id", what, str),
+        display_name=_wire_get(row, "display_name", what, str),
+        picture_url=row.get("picture_url"),
+        is_pepper=row.get("is_pepper", False),
+        is_agent=bool(row.get("is_agent", False)),
+    )
+
+
+def _app_tile_from_dict(row: dict[str, Any]) -> GroupAppTile:
+    what = "group app tile"
+    row = _wire_row(row, what)
+    return GroupAppTile(
+        app_key=_wire_get(row, "app_key", what, str),
+        slug=_wire_get(row, "slug", what, str),
+        title=_wire_get(row, "title", what, str),
+        principal=_wire_get(row, "principal", what, str),
+        icon=row.get("icon"),
+    )
+
+
 def _group_list_from_dict(body: dict[str, Any]) -> GroupList:
+    """A malformed room fails the whole list, so no caller ever sees a partial list as
+    complete (the rail keeps its last list, and a name lookup cannot miss a room)."""
+    what = "group list"
+    body = _wire_row(body, what)
+    groups = _wire_rows(_optional_list(body, "groups", what), "group", _group_summary_from_dict)
     return GroupList(
-        enabled=body["enabled"],
-        degraded=body["degraded"],
-        total=body["total"],
-        archived_total=body["archived_total"],
-        groups=[_group_summary_from_dict(g) for g in body.get("groups") or []],
-        features=tuple(f for f in body.get("features") or () if isinstance(f, str)),
+        enabled=_wire_get(body, "enabled", what, bool),
+        degraded=_wire_get(body, "degraded", what, bool),
+        total=_wire_get(body, "total", what, int),
+        archived_total=_wire_get(body, "archived_total", what, int),
+        groups=groups,
+        features=tuple(f for f in _optional_list(body, "features", what) if isinstance(f, str)),
     )
 
 
 def _group_summary_from_dict(row: dict[str, Any]) -> GroupSummary:
+    what = "group"
+    row = _wire_row(row, what)
     return GroupSummary(
-        group_id=row["group_id"],
-        display_name=row["display_name"],
-        color=row["color"],
-        sub=row["sub"],
-        member_count=row["member_count"],
-        archived=row["archived"],
-        topics=[_group_topic_from_dict(t) for t in row.get("topics") or []],
+        group_id=_wire_get(row, "group_id", what, str),
+        display_name=_wire_get(row, "display_name", what, str),
+        color=_wire_get(row, "color", what, str),
+        sub=_wire_get(row, "sub", what, str),
+        member_count=_wire_get(row, "member_count", what, int),
+        archived=_wire_get(row, "archived", what, bool),
+        topics=_wire_rows(
+            _optional_list(row, "topics", what), "group topic", _group_topic_from_dict
+        ),
         mascot_url=mascot if isinstance(mascot := row.get("mascot_url"), str) else None,
     )
 
 
 def _group_topic_from_dict(row: dict[str, Any]) -> GroupTopicSummary:
+    what = "group topic"
+    row = _wire_row(row, what)
     return GroupTopicSummary(
-        topic_id=row["topic_id"],
-        name=row["name"],
-        last_activity_at=row["last_activity_at"],
+        topic_id=_wire_get(row, "topic_id", what, str),
+        name=_wire_get(row, "name", what, str),
+        last_activity_at=_wire_get(row, "last_activity_at", what, str, nullable=True),
         dedicated_conversation=row.get("dedicated_conversation", False),
         archived_at=row.get("archived_at"),
         imported_history=row.get("imported_history", False),
@@ -2066,17 +2121,22 @@ class NoteComments:
 
 
 def _note_comment_from_dict(row: dict[str, Any]) -> NoteComment:
+    what = "note comment"
+    row = _wire_row(row, what)
     anchor = row.get("anchor")
     resolver = row.get("resolved_by")
+    author = row.get("author")
+    if author is not None and not isinstance(author, dict):
+        raise _malformed(f"{what} field 'author' has the wrong type", row)
     return NoteComment(
-        id=str(row["id"]),
-        body=str(row.get("body") or ""),
-        author=str((row.get("author") or {}).get("display_name") or ""),
-        created_at=str(row.get("created_at") or ""),
+        id=str(_wire_get(row, "id", what, str, int)),
+        body=_wire_opt(row, "body", what, "", str),
+        author=_wire_opt(author or {}, "display_name", "note comment author", "", str),
+        created_at=_wire_opt(row, "created_at", what, "", str),
         mentions=_mention_ids(
             [
                 {"person_id": m["id"]} if isinstance(m, dict) and "id" in m else m
-                for m in row.get("mentions") or []
+                for m in _optional_list(row, "mentions", what)
             ]
         ),
         anchor=anchor if isinstance(anchor, dict) else None,
@@ -2087,24 +2147,32 @@ def _note_comment_from_dict(row: dict[str, Any]) -> NoteComment:
 
 
 def _note_thread_from_dict(t: dict[str, Any]) -> NoteCommentThread:
+    what = "note comment thread"
+    t = _wire_row(t, what)
     position = t.get("position")
     return NoteCommentThread(
-        message=_note_comment_from_dict(t["message"]),
+        message=_note_comment_from_dict(_wire_get(t, "message", what, dict)),
         position=position if isinstance(position, dict) else None,
         detached=bool(t.get("detached", False)),
-        replies=[_note_comment_from_dict(r) for r in t.get("replies") or []],
+        replies=_wire_rows(
+            _optional_list(t, "replies", what), "note comment", _note_comment_from_dict
+        ),
     )
 
 
 def _note_comments_from_dict(body: dict[str, Any]) -> NoteComments:
-    threads = [_note_thread_from_dict(t) for t in body.get("threads") or []]
+    what = "note comments response"
+    body = _wire_row(body, what)
+    threads = _wire_rows(
+        _optional_list(body, "threads", what), "note comment thread", _note_thread_from_dict
+    )
     return NoteComments(
-        artifact_id=str(body.get("artifact_id") or ""),
+        artifact_id=str(_wire_opt(body, "artifact_id", what, "", str, int)),
         group_id=body.get("group_id"),
         topic_id=body.get("topic_id"),
         etag=body.get("etag"),
         threads=threads,
-        resolved_count=int(body.get("resolved_count") or 0),
+        resolved_count=_wire_opt(body, "resolved_count", what, 0, int),
     )
 
 
@@ -2130,10 +2198,12 @@ class ImageDetails:
 
 
 def _image_details_from_dict(body: dict[str, Any]) -> ImageDetails:
+    what = "image details response"
+    body = _wire_row(body, what)
     sources = body.get("sources")
     last_run = body.get("last_run")
     return ImageDetails(
-        id=str(body["id"]),
+        id=str(_wire_get(body, "id", what, str, int)),
         alt_text=body.get("alt_text") or "",
         title=body.get("title") or "",
         caption=body.get("caption") or "",
@@ -2181,13 +2251,15 @@ class ArtifactDetail:
 
 
 def _artifact_list_item_from_dict(row: dict[str, Any]) -> ArtifactListItem:
+    what = "artifact list item"
+    row = _wire_row(row, what)
     return ArtifactListItem(
-        id=str(row["id"]),
-        name=row["name"],
-        kind=row["kind"],
-        updated_at=row["updated_at"],
-        etag=row["etag"],
-        labels=list(row.get("labels") or []),
+        id=str(_wire_get(row, "id", what, str, int)),
+        name=_wire_get(row, "name", what, str),
+        kind=_wire_get(row, "kind", what, str),
+        updated_at=_wire_get(row, "updated_at", what, str),
+        etag=_wire_get(row, "etag", what, str),
+        labels=_optional_list(row, "labels", what),
         summary=row.get("summary"),
     )
 
@@ -2202,15 +2274,17 @@ def _artifact_detail_from_dict(body: dict[str, Any]) -> ArtifactDetail:
     server's own ``read_detail`` — so parsing it once here means the two
     callers can't drift on which fields are required versus defaulted.
     """
+    what = "artifact detail"
+    body = _wire_row(body, what)
     return ArtifactDetail(
-        id=str(body["id"]),
-        name=body["name"],
-        kind=body["kind"],
-        updated_at=body["updated_at"],
-        etag=body["etag"],
+        id=str(_wire_get(body, "id", what, str, int)),
+        name=_wire_get(body, "name", what, str),
+        kind=_wire_get(body, "kind", what, str),
+        updated_at=_wire_get(body, "updated_at", what, str),
+        etag=_wire_get(body, "etag", what, str),
         shared=bool(body.get("shared", False)),
         body=body.get("body"),
-        labels=list(body.get("labels") or []),
+        labels=_optional_list(body, "labels", what),
         summary=body.get("summary"),
     )
 
@@ -2400,17 +2474,7 @@ class ApiClient:
         a freshly-pasted token, and by ``pepper whoami`` to show the
         identity behind the current credentials."""
         resp = self._request("GET", "/api/v1/whoami")
-        body = resp.json()
-        return Whoami(
-            user_id=body["user_id"],
-            email=body.get("email"),
-            display_name=body["display_name"],
-            timezone=body.get("timezone"),
-            merged_from=body.get("merged_from", []),
-            date_format=body.get("date_format", "mdy"),
-            time_format=body.get("time_format", "12h"),
-            person_id=body.get("person_id"),
-        )
+        return _whoami_from(_wire_row(resp.json(), "whoami response"), "whoami response")
 
     def get_agent_self(self) -> AgentSelf | None:
         """``GET /api/v1/groups/self``: who this agent token is. Agent tokens only (a PAT is a
@@ -2459,15 +2523,7 @@ class ApiClient:
         can choose to bail (401) or degrade to static-only completion
         (everything else)."""
         resp = self._request("GET", "/api/v1/skills")
-        body = resp.json()
-        return [
-            SkillSummary(
-                name=row["name"],
-                description=row["description"],
-                builtin=bool(row.get("builtin", False)),
-            )
-            for row in body
-        ]
+        return _wire_rows(resp.json(), "skill", _skill_summary_from_dict)
 
     def get_skill(self, name: str) -> SkillDetail:
         """``GET /api/v1/skills/{name}`` — full skill, yours or built-in.
@@ -2534,19 +2590,17 @@ class ApiClient:
         room, for any member — including ones a room turn cannot run now."""
         resp = self._request("GET", _room_skills_path(group_id))
         body = resp.json()
-        if not isinstance(body, list):
-            raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
-        return [_room_skill_from_dict(row) for row in body]
+        return _wire_rows(body, "room skill", _room_skill_from_dict)
 
     def get_room_skill(self, group_id: str, grant_id: str) -> RoomSkillDetail:
         """``GET /api/v1/groups/{id}/skills/{grant_id}``. 404 for an id that
         is not one of this room's grants."""
         resp = self._request("GET", f"{_room_skills_path(group_id)}/{grant_id}")
         body = resp.json()
-        if not isinstance(body, dict) or not isinstance(body.get("skill"), dict):
-            raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
+        body = _wire_row(body, "room skill response")
         return RoomSkillDetail(
-            row=_room_skill_from_dict(body), skill=_skill_detail_from_dict(body["skill"])
+            row=_room_skill_from_dict(body),
+            skill=_skill_detail_from_dict(_wire_get(body, "skill", "room skill response", dict)),
         )
 
     def share_room_skill(self, group_id: str, name: str) -> RoomSkill:
@@ -2557,8 +2611,7 @@ class ApiClient:
         skill a room cannot run."""
         resp = self._request("POST", _room_skills_path(group_id), json={"name": name})
         body = resp.json()
-        if not isinstance(body, dict):
-            raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
+        body = _wire_row(body, "share room skill response")
         return _room_skill_from_dict(body)
 
     def revoke_room_skill(self, group_id: str, grant_id: str) -> None:
@@ -2594,9 +2647,7 @@ class ApiClient:
             path += "&requester=me"
         resp = self._request("GET", path)
         body = resp.json()
-        if not isinstance(body, list):
-            raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
-        return [_todo_from_dict(row) for row in body]
+        return _wire_rows(body, "todo", _todo_from_dict)
 
     def list_room_todos(self, *, mine: bool = False) -> RoomTodosList:
         """``GET /api/v1/todos/rooms``: the todos on each of the caller's rooms.
@@ -2608,22 +2659,25 @@ class ApiClient:
         path = "/api/v1/todos/rooms" + ("?assignee=me" if mine else "")
         # MIRROR: src/pepper/api/router.py::list_room_todos
         body = self._request("GET", path).json()
-        raw_rooms = body.get("rooms") if isinstance(body, dict) else None
-        if not isinstance(raw_rooms, list):
-            raise ApiError(status=200, body="", detail="malformed response")
-        rooms = [
-            RoomTodos(
-                group_id=str(raw["group_id"]),
-                name=str(raw.get("name") or ""),
-                items=[
-                    _room_todo_from_dict(item)
-                    for item in raw.get("items") or []
-                    if isinstance(item, dict)
-                ],
+        what = "room todos response"
+        body = _wire_row(body, what)
+        rooms: list[RoomTodos] = []
+        # A room that is not an object, or has no id, and an item that is not an object are
+        # left out, as this read always has; a todo object of the wrong shape fails it.
+        for raw in _wire_get(body, "rooms", what, list):
+            if not isinstance(raw, dict) or "group_id" not in raw:
+                continue
+            raw_items = _optional_list(raw, "items", "room todos")
+            objects = [item for item in raw_items if isinstance(item, dict)]
+            # An object that is not a todo means the shape is not the one this client knows:
+            # that fails the whole read (the caller shows your own list and no rooms).
+            rooms.append(
+                RoomTodos(
+                    group_id=str(_wire_get(raw, "group_id", "room todos", str, int)),
+                    name=_wire_opt(raw, "name", "room todos", "", str),
+                    items=_wire_rows(objects, "room todo", _room_todo_from_dict),
+                )
             )
-            for raw in raw_rooms
-            if isinstance(raw, dict) and "group_id" in raw
-        ]
         return RoomTodosList(rooms=rooms, degraded=bool(body.get("degraded")))
 
     def calendar_range(
@@ -2657,9 +2711,7 @@ class ApiClient:
             path += f"&view={view}"
         resp = self._request("GET", path)
         body = resp.json()
-        if not isinstance(body, dict):
-            raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
-        return body
+        return _wire_row(body, "calendar object response")
 
     def calendar_environment(self, *, dates: list[str], focus: str) -> dict[str, Any]:
         """``GET /api/v1/calendars/environment``: per-day weather and daylight (read-only)."""
@@ -2711,9 +2763,7 @@ class ApiClient:
     ) -> dict[str, Any]:
         resp = self._request(method, f"/api/v1/calendars/feed{suffix}", json=json)
         body = resp.json()
-        if not isinstance(body, dict):
-            raise ApiError(status=resp.status_code, body="", detail="malformed response")
-        return body
+        return _wire_row(body, "feed object response")
 
     def graph_people(self, query: str | None = None, *, limit: int = 10) -> dict[str, Any]:
         """``GET /api/v1/graph/people``: people matching ``query``, else the strongest ties.
@@ -2840,23 +2890,17 @@ class ApiClient:
         """``DELETE /api/v1/graph/me``: take one address off the caller's marks."""
         resp = self._request("DELETE", "/api/v1/graph/me", json={"address": address})
         body = resp.json()
-        if not isinstance(body, dict):
-            raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
-        return body
+        return _wire_row(body, "graph me unmark response")
 
     def _post_object(self, path: str, payload: dict[str, Any] | None) -> dict[str, Any]:
         resp = self._request("POST", path, json=payload)
         body = resp.json()
-        if not isinstance(body, dict):
-            raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
-        return body
+        return _wire_row(body, "post object response")
 
     def _get_object(self, path: str) -> dict[str, Any]:
         resp = self._request("GET", path)
         body = resp.json()
-        if not isinstance(body, dict):
-            raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
-        return body
+        return _wire_row(body, "get object response")
 
     def create_todo(
         self,
@@ -2966,11 +3010,9 @@ class ApiClient:
         query = "?include_inactive=true" if include_inactive else ""
         resp = self._request("GET", f"{_scheduled_tasks_path(group_id)}{query}")
         body = resp.json()
-        if not isinstance(body, list):
-            raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
         if group_id:
-            return [_room_scheduled_task_from_dict(row) for row in body]
-        return [_scheduled_task_from_dict(row) for row in body]
+            return [*_wire_rows(body, "room scheduled task", _room_scheduled_task_from_dict)]
+        return _wire_rows(body, "scheduled task", _scheduled_task_from_dict)
 
     def get_scheduled_task(
         self, task_id: str, *, group_id: str | None = None
@@ -3016,9 +3058,7 @@ class ApiClient:
             params=_keyset_params(limit, before, before_id),
         )
         body = resp.json()
-        if not isinstance(body, list):
-            raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
-        return [_scheduled_run_from_dict(row) for row in body]
+        return _wire_rows(body, "scheduled task run", _scheduled_run_from_dict)
 
     def get_scheduled_task_thread(
         self,
@@ -3042,20 +3082,7 @@ class ApiClient:
             params=_keyset_params(limit, before, before_id),
         )
         body = resp.json()
-        if not isinstance(body, list):
-            raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
-        return [
-            ScheduledTaskMessage(
-                id=row["id"],
-                role=row["role"],
-                text=row["text"],
-                channel=row["channel"],
-                trajectory_id=row.get("trajectory_id"),
-                created_at=row["created_at"],
-                attachments=row.get("attachments") or [],
-            )
-            for row in body
-        ]
+        return _wire_rows(body, "scheduled task message", _scheduled_message_from_dict)
 
     def create_scheduled_task(
         self,
@@ -3284,9 +3311,7 @@ class ApiClient:
         format through unchanged."""
         resp = self._request("GET", f"/api/v1/trajectories/{trajectory_id}")
         body = resp.json()
-        if not isinstance(body, dict):
-            raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
-        return body
+        return _wire_row(body, "trajectory get raw response")
 
     def trajectory_list(
         self, *, limit: int = 20, offset: int = 0, principal: str | None = None
@@ -3305,22 +3330,7 @@ class ApiClient:
             params["principal"] = principal
         resp = self._request("GET", "/api/v1/trajectories", params=params)
         body = resp.json()
-        if not isinstance(body, list):
-            raise ApiError(status=resp.status_code, body=resp.text, detail="malformed response")
-        return [
-            TrajectoryListEntry(
-                id=row["id"],
-                channel=row["channel"],
-                created_at=row["created_at"],
-                closed_at=row.get("closed_at"),
-                meta=row.get("meta") or {},
-                event_count=row["event_count"],
-                first_user_message=row.get("first_user_message"),
-                group_id=row.get("group_id"),
-                group_name=row.get("group_name"),
-            )
-            for row in body
-        ]
+        return _wire_rows(body, "trajectory", _trajectory_list_entry)
 
     def chat_history(self) -> ChatHistory:
         """``GET /api/v1/chat/history`` — today's live Pepper thread, oldest first.
@@ -3410,13 +3420,14 @@ class ApiClient:
         if (capabilities := turn_capabilities(sys.stdout.isatty())) is not None:
             payload["capabilities"] = capabilities
         resp = self._request("POST", "/api/v1/chat/send", json=payload)
-        body = resp.json()
+        what = "chat send response"
+        body = _wire_row(resp.json(), what)
         return ChatReply(
-            reply=body["reply"],
+            reply=_wire_get(body, "reply", what, str),
             trajectory_id=body.get("trajectory_id"),
-            user_message_id=body["user_message_id"],
-            assistant_message_id=body["assistant_message_id"],
-            steps=body.get("steps") or [],
+            user_message_id=_wire_get(body, "user_message_id", what, str),
+            assistant_message_id=_wire_get(body, "assistant_message_id", what, str),
+            steps=_optional_list(body, "steps", what),
             client_tools_ignored=body.get("client_tools_ignored"),
             client_message_id=body.get("client_message_id") or None,
             replayed=body.get("replayed") is True,
@@ -3942,8 +3953,7 @@ class ApiClient:
         path = _research_path(group_id, project_id, "runs", run_id)
         resp = self._request("GET", path, timeout=timeout)
         body = resp.json()
-        if not isinstance(body, dict):
-            raise ApiError(status=200, body=str(body)[:200], detail="malformed response")
+        body = _wire_row(body, "poll research run response")
         return _research_run_detail(body), _retry_after(resp)
 
     def steer_research_project(
@@ -3996,17 +4006,11 @@ class ApiClient:
     ) -> dict[str, Any]:
         resp = self._request(method, path, json=body)
         parsed = resp.json()
-        if not isinstance(parsed, dict):
-            raise ApiError(
-                status=resp.status_code, body=str(parsed)[:200], detail="malformed response"
-            )
-        return parsed
+        return _wire_row(parsed, "research write response")
 
     def _research_get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         body = self._request("GET", path, params=params).json()
-        if not isinstance(body, dict):
-            raise ApiError(status=200, body=str(body)[:200], detail="malformed response")
-        return body
+        return _wire_row(body, "research get response")
 
     # ------------------------------------------------------------------
     # Groups (MIRROR: src/pepper/api/groups.py)
@@ -4036,8 +4040,11 @@ class ApiClient:
     def list_group_topics(self, group_id: str) -> list[GroupTopicSummary]:
         """``GET /api/v1/groups/{gid}/topics`` — every topic, archived
         included; hiding them is the client's fold over one full answer."""
-        body = self._request("GET", f"/api/v1/groups/{group_id}/topics").json()
-        return [_group_topic_from_dict(t) for t in body.get("topics") or []]
+        what = "group topics response"
+        body = _wire_row(self._request("GET", f"/api/v1/groups/{group_id}/topics").json(), what)
+        return _wire_rows(
+            _optional_list(body, "topics", what), "group topic", _group_topic_from_dict
+        )
 
     def list_group_messages(
         self,
@@ -4063,8 +4070,13 @@ class ApiClient:
         body = self._request(
             "GET", f"/api/v1/groups/{group_id}/topics/{topic_id}/messages", params=params
         ).json()
+        what = "group messages response"
+        body = _wire_row(body, what)
+        messages = _wire_rows(
+            _optional_list(body, "messages", what), "group message", group_message_from_dict
+        )
         return GroupMessagePage(
-            messages=[group_message_from_dict(m) for m in body.get("messages") or []],
+            messages=messages,
             next_before=body.get("next_before"),
             permalink_target_missing=body.get("permalink_target_missing", False),
         )
@@ -4113,7 +4125,7 @@ class ApiClient:
             json=payload,
             extra_headers=headers,
         )
-        return resp.json()["message"]
+        return _wire_field(resp.json(), "message", "group message response", dict)
 
     def upload_group_attachment(
         self, group_id: str, *, filename: str, content: bytes, content_type: str
@@ -4166,7 +4178,7 @@ class ApiClient:
             f"/api/v1/groups/{group_id}/messages/{message_id}/reactions",
             json={"emoji": emoji},
         )
-        return resp.json()["reactions"]
+        return _wire_field(resp.json(), "reactions", "group reactions response", list)
 
     def clear_group_reaction(
         self, group_id: str, message_id: str, *, emoji: str
@@ -4178,7 +4190,7 @@ class ApiClient:
             f"/api/v1/groups/{group_id}/messages/{message_id}/reactions/clear",
             json={"emoji": emoji},
         )
-        return resp.json()["reactions"]
+        return _wire_field(resp.json(), "reactions", "group reactions response", list)
 
     def create_group_topic(
         self, group_id: str, *, name: str, origin_message_id: str | None = None
@@ -4189,7 +4201,7 @@ class ApiClient:
         if origin_message_id:
             payload["origin_message_id"] = origin_message_id
         resp = self._request("POST", f"/api/v1/groups/{group_id}/topics", json=payload)
-        return resp.json()["topic"]
+        return _wire_field(resp.json(), "topic", "create group topic response", dict)
 
     def rename_group_topic(self, group_id: str, topic_id: str, *, name: str) -> dict[str, Any]:
         """``POST /api/v1/groups/{gid}/topics/{tid}/rename``."""
@@ -4273,8 +4285,9 @@ class ApiClient:
         has none. A server without the route answers 404 (an :class:`ApiError`)."""
         # MIRROR: src/pepper/api/groups.py::person_unread
         # (route handler; the response is an untyped dict, so no snapshot schema)
-        body = self._request("GET", "/api/v1/groups/unread").json()
-        raw_rows = [r for r in body.get("topics") or [] if isinstance(r, dict)]
+        what = "group unread response"
+        body = _wire_row(self._request("GET", "/api/v1/groups/unread").json(), what)
+        raw_rows = [r for r in _optional_list(body, "topics", what) if isinstance(r, dict)]
         total = body.get("unread_total")
         return GroupsUnread(
             marks={
@@ -4315,17 +4328,11 @@ class ApiClient:
     def group_roster(self, group_id: str) -> list[GroupRosterMember]:
         """``GET /api/v1/groups/{gid}/roster`` — the ``@``-mention roster,
         Pepper prepended."""
-        body = self._request("GET", f"/api/v1/groups/{group_id}/roster").json()
-        return [
-            GroupRosterMember(
-                person_id=m["person_id"],
-                display_name=m["display_name"],
-                picture_url=m.get("picture_url"),
-                is_pepper=m.get("is_pepper", False),
-                is_agent=bool(m.get("is_agent", False)),
-            )
-            for m in body.get("members") or []
-        ]
+        what = "group roster response"
+        body = _wire_row(self._request("GET", f"/api/v1/groups/{group_id}/roster").json(), what)
+        return _wire_rows(
+            _optional_list(body, "members", what), "group roster member", _roster_member_from_dict
+        )
 
     def create_group(self, *, people: list[str], name: str | None = None) -> dict[str, Any]:
         """``POST /api/v1/groups`` — start a room from a member set.
@@ -4360,15 +4367,15 @@ class ApiClient:
         params: dict[str, Any] = {"since": since}
         if topic_ids:
             params["topic_ids"] = ",".join(topic_ids)
-        return self._request("GET", "/api/v1/groups/activity", params=params).json()["topics"]
+        body = self._request("GET", "/api/v1/groups/activity", params=params).json()
+        return _wire_field(body, "topics", "group activity response", list)
 
     def search_group_topics(self, q: str) -> list[dict[str, Any]]:
         """``GET /api/v1/groups/topics/search`` — case-insensitive substring
         across the caller's unarchived rooms. An archived topic matches only
         on its exact name."""
-        return self._request("GET", "/api/v1/groups/topics/search", params={"q": q}).json()[
-            "topics"
-        ]
+        body = self._request("GET", "/api/v1/groups/topics/search", params={"q": q}).json()
+        return _wire_field(body, "topics", "group topic search response", list)
 
     def install_group_app(self, group_id: str, *, app_key: str) -> dict[str, Any]:
         """``POST /api/v1/groups/{gid}/apps``. A key this build does not know,
@@ -4392,17 +4399,13 @@ class ApiClient:
         a transient registry failure as "this room has no apps" wipes tiles it
         had already drawn correctly.
         """
-        body = self._request("GET", f"/api/v1/groups/{group_id}/apps/launcher").json()
-        tiles = [
-            GroupAppTile(
-                app_key=t["app_key"],
-                slug=t["slug"],
-                title=t["title"],
-                principal=t["principal"],
-                icon=t.get("icon"),
-            )
-            for t in body.get("tiles") or []
-        ]
+        what = "group app launcher response"
+        body = _wire_row(
+            self._request("GET", f"/api/v1/groups/{group_id}/apps/launcher").json(), what
+        )
+        tiles = _wire_rows(
+            _optional_list(body, "tiles", what), "group app tile", _app_tile_from_dict
+        )
         return tiles, body.get("installed_unavailable", False)
 
     def group_app_chat(
@@ -4433,9 +4436,8 @@ class ApiClient:
     def group_app_transcript(self, group_id: str, slug: str) -> list[dict[str, Any]]:
         """``GET /api/v1/groups/{gid}/apps/{slug}/chat`` — the last lines of
         the room's **shared** thread about this app, oldest-first."""
-        return self._request("GET", f"/api/v1/groups/{group_id}/apps/{slug}/chat").json()[
-            "exchanges"
-        ]
+        body = self._request("GET", f"/api/v1/groups/{group_id}/apps/{slug}/chat").json()
+        return _wire_field(body, "exchanges", "group app transcript response", list)
 
     def search_contacts(self, q: str) -> list[dict[str, Any]]:
         """``GET /api/v1/people/contacts/search`` — the create-group field's
@@ -4445,9 +4447,8 @@ class ApiClient:
 
         ``handle`` is the one field to fill into :meth:`create_group`.
         """
-        return self._request("GET", "/api/v1/people/contacts/search", params={"q": q}).json()[
-            "contacts"
-        ]
+        body = self._request("GET", "/api/v1/people/contacts/search", params={"q": q}).json()
+        return _wire_field(body, "contacts", "contact search response", list)
 
     def list_artifacts(
         self,
@@ -4483,11 +4484,12 @@ class ApiClient:
         ):
             if value is not None:
                 params[key] = value
-        body = self._request("GET", "/api/v1/artifacts", params=params).json()
-        return ArtifactListResponse(
-            truncated=body["truncated"],
-            items=[_artifact_list_item_from_dict(row) for row in body.get("items") or []],
+        what = "artifact list response"
+        body = _wire_row(self._request("GET", "/api/v1/artifacts", params=params).json(), what)
+        items = _wire_rows(
+            _optional_list(body, "items", what), "artifact list item", _artifact_list_item_from_dict
         )
+        return ArtifactListResponse(truncated=_wire_get(body, "truncated", what, bool), items=items)
 
     def get_artifact_detail(self, artifact_id: str) -> ArtifactDetail:
         """``GET /api/v1/artifacts/{id}/detail`` — one artifact's full text.
@@ -4510,8 +4512,7 @@ class ApiClient:
         link fields alone would make it look like a note with no links. The
         kind is checked on this same response, so the note is read once."""
         body = self._request("GET", f"/api/v1/artifacts/{artifact_id}/detail").json()
-        if not isinstance(body, dict):
-            raise ApiError(status=200, body=str(body), detail="malformed response")
+        body = _wire_row(body, "get note links response")
         if body.get("kind") != "inline_text":
             return None
         return _note_links_from_dict(body, artifact_id=artifact_id)
@@ -4519,8 +4520,7 @@ class ApiClient:
     def list_note_comments(self, artifact_id: str) -> NoteComments:
         """``GET /api/v1/artifacts/{id}/comments`` — a note's comment threads, oldest first."""
         body = self._request("GET", f"/api/v1/artifacts/{artifact_id}/comments").json()
-        if not isinstance(body, dict):
-            raise ApiError(status=200, body=str(body), detail="malformed response")
+        body = _wire_row(body, "list note comments response")
         return _note_comments_from_dict(body)
 
     def create_note_comment(
@@ -4548,9 +4548,7 @@ class ApiClient:
             json=payload,
             extra_headers=headers,
         ).json()
-        if not isinstance(resp, dict):
-            raise ApiError(status=200, body=str(resp), detail="malformed response")
-        return resp
+        return _wire_row(resp, "create note comment response")
 
     def _set_note_thread_resolved(
         self, artifact_id: str, thread_id: str, action: str
@@ -4559,8 +4557,7 @@ class ApiClient:
             "POST", f"/api/v1/artifacts/{artifact_id}/comments/{thread_id}/{action}"
         ).json()
         thread = resp.get("thread") if isinstance(resp, dict) else None
-        if not isinstance(thread, dict):
-            raise ApiError(status=200, body=str(resp), detail="malformed response")
+        thread = _wire_row(thread, "set note thread resolved response")
         return _note_thread_from_dict(thread)
 
     def resolve_note_thread(self, artifact_id: str, thread_id: str) -> NoteCommentThread:
@@ -4596,7 +4593,13 @@ class ApiClient:
             json={"name": name, "kind": "inline_text", "body": body},
             params=params or None,
         ).json()
-        return ArtifactCreateResult(id=str(resp["id"]), name=resp["name"], etag=resp["etag"])
+        what = "create artifact response"
+        resp = _wire_row(resp, what)
+        return ArtifactCreateResult(
+            id=str(_wire_get(resp, "id", what, str, int)),
+            name=_wire_get(resp, "name", what, str),
+            etag=_wire_get(resp, "etag", what, str),
+        )
 
     def edit_artifact(
         self,
@@ -4647,7 +4650,9 @@ class ApiClient:
                 current_etag=current.get("etag"),
                 current_updated_at=current.get("updated_at"),
             ) from exc
-        return _artifact_detail_from_dict(resp["artifact"])
+        return _artifact_detail_from_dict(
+            _wire_field(resp, "artifact", "edit artifact response", dict)
+        )
 
     def toggle_checklist(
         self,
@@ -4725,8 +4730,7 @@ class ApiClient:
         ``owner_scoped_actions``, ...). The list is the only place the server names an
         app's actions, and it names just the ``owner_scoped`` ones."""
         body = self._request("GET", "/api/v1/apps").json()
-        if not isinstance(body, list):
-            raise ApiError(status=200, body=str(body), detail="malformed response")
+        body = _wire_list(body, "list apps response")
         return [row for row in body if isinstance(row, dict)]
 
     def get_blog_stage(
@@ -4750,9 +4754,7 @@ class ApiClient:
         given = {"published_at": published_at, "publish_at": publish_at}
         params = {k: v for k, v in given.items() if v is not None} or None
         body = self._request("GET", self._blog_stage_path(group_id, note_id), params=params).json()
-        if not isinstance(body, dict):
-            raise ApiError(status=200, body=str(body), detail="malformed response")
-        return body
+        return _wire_row(body, "blog response")
 
     def update_blog_stage(
         self, group_id: str, note_id: str, fields: dict[str, Any]
@@ -4763,9 +4765,7 @@ class ApiClient:
         findings need ``acknowledge``; 422 for an unparseable or past time. Returns the stage.
         """
         body = self._request("PATCH", self._blog_stage_path(group_id, note_id), json=fields).json()
-        if not isinstance(body, dict):
-            raise ApiError(status=200, body=str(body), detail="malformed response")
-        return body
+        return _wire_row(body, "blog response")
 
     def delete_blog_stage(self, group_id: str, note_id: str) -> None:
         """``DELETE .../blog/notes/{note_id}/stage`` — remove the saved stage."""
@@ -4809,18 +4809,14 @@ class ApiClient:
         body = self._request(
             "POST", f"/api/v1/groups/{group_id}/blog/notes/{note_id}/publish", json=payload
         ).json()
-        if not isinstance(body, dict):
-            raise ApiError(status=200, body=str(body), detail="malformed response")
-        return body
+        return _wire_row(body, "blog response")
 
     def list_blog_posts(self, group_id: str) -> dict[str, Any]:
         """``GET /api/v1/groups/{group_id}/blog/posts`` — the room's posts (``id``, ``slug``,
         ``title``, ``url``, ``published_at``, ``withdrawn``, ``edited_since``, ...) newest first,
         and the ``unpublished`` notes. A person's token only; owner-only routes answer 403."""
         body = self._request("GET", f"/api/v1/groups/{group_id}/blog/posts").json()
-        if not isinstance(body, dict):
-            raise ApiError(status=200, body=str(body), detail="malformed response")
-        return body
+        return _wire_row(body, "blog response")
 
     def withdraw_blog_post(self, group_id: str, post_id: str) -> dict[str, Any]:
         """``POST /api/v1/groups/{group_id}/blog/posts/{post_id}/withdraw`` — take a post down.
@@ -4828,18 +4824,14 @@ class ApiClient:
         body = self._request(
             "POST", f"/api/v1/groups/{group_id}/blog/posts/{post_id}/withdraw"
         ).json()
-        if not isinstance(body, dict):
-            raise ApiError(status=200, body=str(body), detail="malformed response")
-        return body
+        return _wire_row(body, "blog response")
 
     def get_artifact_detail_raw(self, artifact_id: str) -> dict[str, Any]:
         """``GET /api/v1/artifacts/{id}/detail`` as the server's own dict (``kind_label``,
         ``mime_type``, ``size_label``, ``text_body``, ``link``, ``viewer``, ... for every kind),
         where :meth:`get_artifact_detail` keeps only the note fields."""
         body = self._request("GET", f"/api/v1/artifacts/{artifact_id}/detail").json()
-        if not isinstance(body, dict):
-            raise ApiError(status=200, body=str(body), detail="malformed response")
-        return body
+        return _wire_row(body, "get artifact detail raw response")
 
     def get_image_details(self, artifact_id: str, *, principal: str | None = None) -> ImageDetails:
         """``GET /api/v1/artifacts/{id}/image-details`` — a picture's alt text and captions.
@@ -4854,8 +4846,7 @@ class ApiClient:
         body = self._request(
             "GET", f"/api/v1/artifacts/{artifact_id}/image-details", params=params
         ).json()
-        if not isinstance(body, dict):
-            raise ApiError(status=200, body=str(body), detail="malformed response")
+        body = _wire_row(body, "get image details response")
         return _image_details_from_dict(body)
 
     def put_image_details(
@@ -4890,8 +4881,7 @@ class ApiClient:
             json=payload,
             params=params,
         ).json()
-        if not isinstance(body, dict):
-            raise ApiError(status=200, body=str(body), detail="malformed response")
+        body = _wire_row(body, "put image details response")
         return _image_details_from_dict(body)
 
     def suggest_image_details(
@@ -4910,11 +4900,10 @@ class ApiClient:
             json={"all": replace_all},
             params=params,
         ).json()
-        if not isinstance(body, dict):
-            raise ApiError(status=200, body=str(body), detail="malformed response")
+        body = _wire_row(body, "suggest image details response")
         run = body.get("run")
         return ImageSuggestion(
-            id=str(body["id"]),
+            id=str(_wire_get(body, "id", "suggest image details response", str, int)),
             started=bool(body.get("started")),
             run=run if isinstance(run, int) else None,
         )
@@ -4956,8 +4945,9 @@ class ApiClient:
             },
             params=params,
         ).json()
-        if not isinstance(resp, dict) or not resp.get("id"):
-            raise ApiError(status=200, body=str(resp), detail="malformed response")
+        resp = _wire_row(resp, "upload artifact response")
+        if not resp.get("id"):
+            raise _malformed("upload artifact response has no 'id'", resp)
         return resp
 
     def send_draft(self, draft_id: str) -> None:
@@ -4971,9 +4961,7 @@ class ApiClient:
         (addresses, timezone, work days and hours, meals, workout, weather switches) plus
         two page helpers, ``timezones`` (the allowed zone names) and ``maps``."""
         body = self._request("GET", "/api/v1/calendars/preferences").json()
-        if not isinstance(body, dict):
-            raise ApiError(status=200, body=str(body), detail="malformed response")
-        return body
+        return _wire_row(body, "get calendar preferences response")
 
     def set_calendar_preferences(self, changes: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/v1/calendars/preferences`` with only the keys given: the server keeps
@@ -4981,18 +4969,14 @@ class ApiClient:
         saved values. 422 for a value it refuses (unknown timezone, an address Maps cannot
         place, a bad time)."""
         body = self._request("POST", "/api/v1/calendars/preferences", json=changes).json()
-        if not isinstance(body, dict):
-            raise ApiError(status=200, body=str(body), detail="malformed response")
-        return body
+        return _wire_row(body, "set calendar preferences response")
 
     def get_app_data(self, slug: str, *, principal: str | None = None) -> dict[str, Any]:
         """``GET /api/v1/apps/{slug}/data[?principal=]``: ``{"rev": int, "data": {...}}``,
         the app's document for the caller, or for the room ``principal``."""
         params = {"principal": principal} if principal is not None else None
         body = self._request("GET", f"/api/v1/apps/{slug}/data", params=params).json()
-        if not isinstance(body, dict):
-            raise ApiError(status=200, body=str(body), detail="malformed response")
-        return body
+        return _wire_row(body, "get app data response")
 
     def run_app_action(
         self,
@@ -5011,9 +4995,7 @@ class ApiClient:
             json={"params": params},
             params=query,
         ).json()
-        if not isinstance(body, dict):
-            raise ApiError(status=200, body=str(body), detail="malformed response")
-        return body
+        return _wire_row(body, "run app action response")
 
     def download_takeout(self, *, out_path: str | None = None) -> str:
         """``GET /api/v1/takeout``. Streams the zip archive straight to
@@ -5130,6 +5112,25 @@ class ApiClient:
         return resp
 
 
+def _trajectory_list_entry(row: dict[str, Any]) -> TrajectoryListEntry:
+    what = "trajectory"
+    row = _wire_row(row, what)
+    meta = row.get("meta")
+    if meta is not None and not isinstance(meta, dict):
+        raise _malformed(f"{what} field 'meta' has the wrong type", row)
+    return TrajectoryListEntry(
+        id=_wire_get(row, "id", what, str),
+        channel=_wire_get(row, "channel", what, str),
+        created_at=_wire_get(row, "created_at", what, str),
+        closed_at=row.get("closed_at"),
+        meta=meta or {},
+        event_count=_wire_get(row, "event_count", what, int),
+        first_user_message=row.get("first_user_message"),
+        group_id=row.get("group_id"),
+        group_name=row.get("group_name"),
+    )
+
+
 def _trajectory_detail_from_dict(body: dict[str, Any]) -> TrajectoryDetail:
     """Parse a ``TrajectoryDetailResponse`` JSON body into dataclasses.
 
@@ -5178,6 +5179,11 @@ def _todos_path(group_id: str | None) -> str:
     return f"/api/v1/groups/{group_id}/todos" if group_id else "/api/v1/todos"
 
 
+def _wire_row_copy(row: dict[str, Any]) -> dict[str, Any]:
+    """The identity parser for :func:`_wire_rows`: each element only has to be an object."""
+    return row
+
+
 def _todo_from_dict(row: dict[str, Any]) -> TodoEntry:
     """Parse one ``TodoEntry`` JSON object into the dataclass.
 
@@ -5185,16 +5191,18 @@ def _todo_from_dict(row: dict[str, Any]) -> TodoEntry:
     single-row create/done/dismiss responses all parse through one
     place and can't drift on field handling.
     """
+    what = "todo"
+    row = _wire_row(row, what)
     return TodoEntry(
-        id=row["id"],
-        title=row["title"],
+        id=_wire_get(row, "id", what, str),
+        title=_wire_get(row, "title", what, str),
         details=row.get("details"),
-        status=row["status"],
-        source=row["source"],
+        status=_wire_get(row, "status", what, str),
+        source=_wire_get(row, "source", what, str),
         priority=row.get("priority"),
         due_date=row.get("due_date"),
         due_is_date_only=row.get("due_is_date_only"),
-        created_at=row["created_at"],
+        created_at=_wire_get(row, "created_at", what, str),
         done_at=row.get("done_at"),
         source_ref=row.get("source_ref"),
         remind_at=row.get("remind_at"),
@@ -5361,6 +5369,21 @@ def error_code(exc: ApiError) -> str | None:
     return code if isinstance(code, str) else None
 
 
+def _whoami_from(row: dict[str, Any], what: str, *, person_id: bool = True) -> Whoami:
+    """A :class:`Whoami` from ``/api/v1/whoami`` or the user object of an approved device poll.
+    ``merged_from``, the two formats and ``person_id`` may be missing (an older server)."""
+    return Whoami(
+        user_id=_wire_get(row, "user_id", what, str),
+        email=row.get("email"),
+        display_name=_wire_get(row, "display_name", what, str),
+        timezone=row.get("timezone"),
+        merged_from=_optional_list(row, "merged_from", what),
+        date_format=row.get("date_format", "mdy"),
+        time_format=row.get("time_format", "12h"),
+        person_id=row.get("person_id") if person_id else None,
+    )
+
+
 def _page_params(limit: int, before: str | None) -> dict[str, Any]:
     params: dict[str, Any] = {"limit": limit}
     if before is not None:
@@ -5369,9 +5392,10 @@ def _page_params(limit: int, before: str | None) -> dict[str, Any]:
 
 
 def _malformed(what: str, raw: object = None) -> ApiError:
-    """A malformed successful response: status 200, ``what`` names the shape or field that
-    failed, and the context is the first 200 characters of ``raw`` (never the whole payload)."""
-    return ApiError(status=200, body=str(raw)[:200], detail=f"malformed response: {what}")
+    """A malformed successful response: status 200 and ``what`` naming the shape or field that
+    failed. ``raw`` is never put in the error: a response body can carry a credential (the
+    device poll's token), and an ``ApiError`` is printed and logged."""
+    return ApiError(status=200, body="", detail=f"malformed response: {what}")
 
 
 def _wire_row(raw: object, what: str) -> dict[str, Any]:
@@ -5408,6 +5432,15 @@ def _optional_list(row: dict[str, Any], key: str, what: str) -> list[Any]:
     return _wire_get(row, key, what, list)
 
 
+def _wire_opt(row: dict[str, Any], key: str, what: str, default: Any, *types: type) -> Any:
+    """``row[key]`` when present and one of ``types``; ``default`` when it is missing or
+    ``null``. A value of any other type (a bool where an int is wanted, say) is a
+    malformed-response :class:`ApiError` naming the field, never a ``TypeError``."""
+    if row.get(key) is None:
+        return default
+    return _wire_get(row, key, what, *types)
+
+
 def _wire_get(
     row: dict[str, Any], key: str, what: str, *types: type, nullable: bool = False
 ) -> Any:
@@ -5420,9 +5453,28 @@ def _wire_get(
     value = row[key]
     if value is None and nullable:
         return None
-    if not isinstance(value, types) or (isinstance(value, bool) and bool not in types):
+    if types and (not isinstance(value, types) or (isinstance(value, bool) and bool not in types)):
         raise _malformed(f"{what} field {key!r} has the wrong type", row)
     return value
+
+
+def _wire_field(raw: object, key: str, what: str, *types: type) -> Any:
+    """``raw[key]`` for a response that is one object and carries the field wanted, of one of
+    ``types``; any other shape is a malformed-response :class:`ApiError`."""
+    return _wire_get(_wire_row(raw, what), key, what, *types)
+
+
+def _wire_list(raw: object, what: str) -> list[Any]:
+    """``raw`` as a JSON array, or a malformed-response :class:`ApiError` naming ``what``."""
+    if not isinstance(raw, list):
+        raise _malformed(f"{what} is not a list", raw)
+    return raw
+
+
+def _wire_rows[T](raw: object, what: str, parse: Callable[[dict[str, Any]], T]) -> list[T]:
+    """``parse`` over each element of the array ``raw``. A response that is not an array, or any
+    row that fails to parse, fails the whole response: no row is ever silently left out."""
+    return [parse(_wire_row(item, what)) for item in _wire_list(raw, what)]
 
 
 def _fields[T](cls: type[T], row: dict[str, Any], **parsed: Any) -> T:
@@ -5577,8 +5629,7 @@ def _research_page[T](
     body: dict[str, Any], parse: Callable[[dict[str, Any]], T]
 ) -> ResearchPage[T]:
     rows = body.get("items")
-    if not isinstance(rows, list):
-        raise ApiError(status=200, body=str(body)[:200], detail="malformed response")
+    rows = _wire_list(rows, "research page items")
     for i, r in enumerate(rows):
         if not isinstance(r, dict):
             raise _malformed(f"research page item {i} is not an object", r)
@@ -5586,6 +5637,21 @@ def _research_page[T](
     return ResearchPage(
         items=[parse(r) for r in rows],
         next_before=cursor if isinstance(cursor, str) else None,
+    )
+
+
+def _scheduled_message_from_dict(row: dict[str, Any]) -> ScheduledTaskMessage:
+    """Parse one row of a scheduled task's thread."""
+    what = "scheduled task message"
+    row = _wire_row(row, what)
+    return ScheduledTaskMessage(
+        id=_wire_get(row, "id", what, str),
+        role=_wire_get(row, "role", what, str),
+        text=_wire_get(row, "text", what, str),
+        channel=_wire_get(row, "channel", what, str),
+        trajectory_id=row.get("trajectory_id"),
+        created_at=_wire_get(row, "created_at", what, str),
+        attachments=_optional_list(row, "attachments", what),
     )
 
 

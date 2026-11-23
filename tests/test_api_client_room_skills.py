@@ -159,4 +159,4 @@ def test_a_body_of_the_wrong_shape_is_an_api_error_not_a_crash(call) -> None:
     _, handler = _capture(httpx.Response(200, json="nope"))
     with _client(handler) as api, pytest.raises(api_client.ApiError) as err:
         call(api)
-    assert err.value.detail == "malformed response"
+    assert str(err.value.detail).startswith("malformed response")
