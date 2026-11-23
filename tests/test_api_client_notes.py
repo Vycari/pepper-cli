@@ -709,3 +709,11 @@ def test_suggest_image_details_sends_all_and_parses_the_run() -> None:
         "body": {"all": True},
     }
     assert result == api_client.ImageSuggestion(id=_NID, started=True, run=4)
+
+
+@pytest.mark.parametrize("extra", [{"updated_at": None}, {}], ids=["null", "missing"])
+def test_get_artifact_detail_tolerates_no_updated_at(extra: dict[str, object]) -> None:
+    """``ArtifactDetail.updated_at`` is optional and nullable in the schema."""
+    body = {"id": _NID, "name": "n", "kind": "inline_text", "etag": "e", **extra}
+    with _client(lambda _r: httpx.Response(200, json=body)) as api:
+        assert api.get_artifact_detail(_NID).updated_at is None

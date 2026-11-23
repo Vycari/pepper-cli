@@ -2253,7 +2253,9 @@ class ArtifactDetail:
     id: str
     name: str
     kind: str
-    updated_at: str
+    #: When it last changed (ISO-8601); ``None`` when the server sends none, which the schema
+    #: allows (``ArtifactDetail.updated_at`` is optional and nullable).
+    updated_at: str | None
     etag: str
     shared: bool
     body: str | None = None
@@ -2291,7 +2293,11 @@ def _artifact_detail_from_dict(body: dict[str, Any]) -> ArtifactDetail:
         id=str(_wire_get(body, "id", what, str, int)),
         name=_wire_get(body, "name", what, str),
         kind=_wire_get(body, "kind", what, str),
-        updated_at=_wire_get(body, "updated_at", what, str),
+        updated_at=(
+            _wire_get(body, "updated_at", what, str, nullable=True)
+            if "updated_at" in body
+            else None
+        ),
         etag=_wire_get(body, "etag", what, str),
         shared=bool(body.get("shared", False)),
         body=body.get("body"),
