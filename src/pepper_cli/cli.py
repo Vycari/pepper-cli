@@ -391,6 +391,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         # ``RequestError``, so no per-command handler sees it; one line, no traceback.
         _emit_error(args if hasattr(args, "json") else None, "usage", str(exc))
         return 2
+    except credentials.InvalidServerUrlError as exc:
+        # The stored server URL failed ``validate_server_url``; its message never echoes
+        # userinfo or the token.
+        _emit_error(args if hasattr(args, "json") else None, "usage", str(exc))
+        return 2
     except httpx.InvalidURL:
         # Every client is built by ``make_http_client``, which turns a bad proxy
         # environment into the error above, so what reaches here is a request URL:
@@ -2711,7 +2716,13 @@ def cmd_login(args: argparse.Namespace) -> int:
         server_url = args.server or _DEFAULT_SERVER
     else:
         server_url = args.server or _prompt(f"Server URL [{_DEFAULT_SERVER}]: ") or _DEFAULT_SERVER
-    server_url = server_url.rstrip("/")
+    # Checked before any request: the token (or the device code that becomes one) only ever
+    # goes to a canonical https origin, or plain http on this machine (or with the opt-in).
+    try:
+        server_url = credentials.validate_server_url(server_url.strip())
+    except ValueError as exc:
+        _emit_error(args, "usage", str(exc), soft_wrap=True)
+        return 2
 
     if args.token or args.manual:
         if as_json and not args.token:
@@ -2955,6 +2966,11 @@ def _login_device(args: argparse.Namespace, server_url: str, *, open_browser: bo
     try:
         start = api_client.device_start(server_url, device_name)
     except api_client.ApiError as exc:
+        if exc.status < 400:  # a 2xx whose body failed validation (device_start)
+            _emit_error(
+                args, "server", f"The server's device-login response was unusable: {exc.detail}"
+            )
+            return 1
         _emit_error(
             args,
             _error_code_for_status(exc.status),
@@ -2979,10 +2995,16 @@ def _login_device(args: argparse.Namespace, server_url: str, *, open_browser: bo
         with contextlib.suppress(Exception):
             webbrowser.open(start.verification_url)
 
-    interval = max(start.interval, 1)
+    # ``device_start`` has already bounded both values (1..DEVICE_MAX_INTERVAL, 1..3600 s).
+    interval = start.interval
     deadline = time.monotonic() + start.expires_in
 
     while True:
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            # Never sleep past the authorization's lifetime: a long or grown interval would
+            # otherwise hold the CLI asleep well after the code has expired.
+            time.sleep(min(interval, remaining))
         if time.monotonic() >= deadline:
             _emit_error(
                 args,
@@ -2990,7 +3012,6 @@ def _login_device(args: argparse.Namespace, server_url: str, *, open_browser: bo
                 "Login expired before it was approved. Run 'pepper login' to try again.",
             )
             return 1
-        time.sleep(interval)
         try:
             poll = api_client.device_poll(server_url, start.device_code)
         except api_client.ApiError as exc:
@@ -3011,8 +3032,9 @@ def _login_device(args: argparse.Namespace, server_url: str, *, open_browser: bo
             # Back off: grow the CLI's own poll interval rather than
             # trusting the server's suggested one blindly — a
             # monotonically increasing local interval can't oscillate
-            # even if a buggy/mocked server sends inconsistent values.
-            interval += 5
+            # even if a buggy/mocked server sends inconsistent values. Capped, so repeated
+            # slow_downs cannot stretch one wait without limit.
+            interval = min(interval + 5, api_client.DEVICE_MAX_INTERVAL)
             continue
         if poll.status == "denied":
             _emit_error(args, "forbidden", "Login was denied.")
@@ -5681,6 +5703,8 @@ def _creds_or_fail(args: argparse.Namespace) -> credentials.Credentials | None:
     """:func:`_load_or_error` with the J8 error shape in JSON mode."""
     try:
         return credentials.load()
+    except credentials.InvalidServerUrlError:
+        raise  # a usage error, reported by ``main`` with exit 2
     except credentials.CredentialsError as exc:
         _emit_error(args, "auth", str(exc))
         return None
@@ -9662,6 +9686,8 @@ def _load_or_error(args: argparse.Namespace | None = None) -> credentials.Creden
     """
     try:
         return credentials.load()
+    except credentials.InvalidServerUrlError:
+        raise  # a usage error, reported by ``main`` with exit 2
     except credentials.CredentialsError as exc:
         _emit_error(args, "auth", str(exc))
         return None

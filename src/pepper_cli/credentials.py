@@ -20,13 +20,16 @@ import a library for. ``tomllib`` (stdlib) handles the read.
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import os
 import re
 import stat
 import sys
+import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pepper_cli.secret import SecretStr
 
@@ -38,6 +41,14 @@ class CredentialsError(Exception):
     Distinct from ``FileNotFoundError`` etc. so the CLI can surface a
     consistent "log in again" message at the call site without
     sniffing built-in exception types.
+    """
+
+
+class InvalidServerUrlError(CredentialsError):
+    """The stored ``server_url`` is not one the token may be sent to (:func:`validate_server_url`).
+
+    A subclass so the CLI can report it as a usage error (exit 2, like an unparseable
+    ``--server``) rather than as "log in again".
     """
 
 
@@ -102,6 +113,86 @@ def command_prefix() -> str:
     suggests, so following it runs as the same login (an agent's is always a named profile).
     Profile names are validated by :func:`set_profile`, so the name needs no quoting."""
     return f"pepper --profile {_profile}" if _profile else "pepper"
+
+
+#: Set to ``1`` to let a token travel over plain ``http`` to a host that is not this machine
+#: (a self-hosted server on a trusted private network). Loopback needs no opt-in.
+ALLOW_INSECURE_HTTP_ENV = "PEPPER_ALLOW_INSECURE_HTTP"
+
+
+def is_loopback_host(host: str) -> bool:
+    """``True`` for ``localhost``, ``*.localhost`` and loopback IP literals (``127.0.0.0/8``,
+    ``::1``): the hosts a plain-``http`` token never leaves the machine to reach."""
+    host = host.lower().rstrip(".")
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def insecure_http_allowed() -> bool:
+    """Whether the user opted in to plain ``http`` for a non-loopback server."""
+    return os.environ.get(ALLOW_INSECURE_HTTP_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def validate_server_url(url: str) -> str:
+    """Return ``url`` as the canonical API base the bearer token may be sent to.
+
+    The canonical form is ``scheme://host[:port][/prefix]`` with no trailing slash: every
+    request joins ``/api/v1/...`` to it directly, so a server behind a reverse proxy at a path
+    prefix (``https://example.com/pepper``) keeps working. Raises ``ValueError`` (with a
+    message fit for the terminal, never echoing userinfo) for anything else:
+
+    * a scheme other than ``http`` / ``https``, or no hostname;
+    * userinfo (``user:password@``), a query, a fragment, a path with an empty, ``.`` or
+      ``..`` segment, or a port that does not parse;
+    * plain ``http`` to a host that is not loopback, unless
+      :data:`ALLOW_INSECURE_HTTP_ENV` is set, because the token would cross the network in
+      the clear.
+    """
+    if not url or any(ch.isspace() or ord(ch) < 0x20 or ch == "\x7f" for ch in url):
+        raise ValueError(
+            "Invalid server URL: it is empty or contains spaces or control characters."
+        )
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        # The parser's own message can quote the netloc, userinfo included, so it is never
+        # echoed. ``from None`` keeps it out of a traceback too.
+        raise ValueError(
+            "Invalid server URL: it could not be parsed (check the host name and port)."
+        ) from None
+    scheme = parts.scheme.lower()
+    if scheme not in {"http", "https"}:
+        raise ValueError(
+            "Invalid server URL: it must start with https:// (or http:// for a local server)."
+        )
+    host = parts.hostname
+    if not host:
+        raise ValueError("Invalid server URL: it has no host name.")
+    if parts.username is not None or parts.password is not None or "@" in parts.netloc:
+        raise ValueError("Invalid server URL: it must not carry a user name or password.")
+    if parts.query or parts.fragment or "?" in url or "#" in url:
+        raise ValueError("Invalid server URL: it must not have a query (?) or fragment (#).")
+    prefix = parts.path.rstrip("/")
+    segments = prefix.split("/")[1:]
+    if any(seg in {"", ".", ".."} or "%2e" in seg.lower() for seg in segments):
+        raise ValueError(
+            "Invalid server URL: its path must be a plain prefix such as /pepper, "
+            "with no empty, '.' or '..' parts."
+        )
+    if scheme == "http" and not is_loopback_host(host) and not insecure_http_allowed():
+        raise ValueError(
+            f"Refusing to send your token to {host} over plain http. Use https://, or set "
+            f"{ALLOW_INSECURE_HTTP_ENV}=1 for a server on a network you trust."
+        )
+    netloc = f"[{host}]" if ":" in host else host
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    return f"{scheme}://{netloc}{prefix}"
 
 
 def _config_dir() -> Path:
@@ -175,19 +266,24 @@ def load() -> Credentials:
             f"Credentials file {path} is missing 'server_url' and/or 'token'. "
             f"Run 'pepper login' to recreate it."
         )
-    return Credentials(server_url=server_url.rstrip("/"), token=SecretStr(token))
+    # The file is user-editable, so its URL is checked before the token is ever sent to it.
+    try:
+        server_url = validate_server_url(server_url)
+    except ValueError as exc:
+        raise InvalidServerUrlError(
+            f"Credentials file {path}: {exc} Run `pepper login --server <url>` to replace it."
+        ) from exc
+    return Credentials(server_url=server_url, token=SecretStr(token))
 
 
 def save(server_url: str, token: SecretStr) -> Path:
-    """Write the credentials file with ``0600`` permissions.
+    """Write the credentials file with ``0600`` permissions, replacing any old one atomically.
 
-    Two-step write — ``open`` with ``O_CREAT|O_EXCL`` would fight an
-    existing file; we instead ``unlink`` any old file and re-open with
-    a fresh, mode-locked descriptor so the file is *never* visible to
-    the filesystem with default (often 0644) permissions. ``os.open``
-    + ``mode=0o600`` ensures the file's initial permission bits are
-    correct from the first byte — a ``Path.write_text`` + later
-    ``chmod`` has a race window where the file is world-readable.
+    The new content goes to a uniquely named temporary file in the same directory, created by
+    ``mkstemp`` with mode ``0600`` (so it is never visible with wider permissions, whatever the
+    umask), flushed and fsynced, and only then moved over the destination with ``os.replace``.
+    Until that rename the previous file is untouched, so a failed or interrupted write leaves
+    the last good login in place; the temporary file is removed on any failure.
 
     Returns the path that was written for the caller to surface.
     """
@@ -203,26 +299,23 @@ def save(server_url: str, token: SecretStr) -> Path:
     with contextlib.suppress(OSError):
         path.parent.chmod(0o700)
 
-    if path.exists():
-        path.unlink()
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".credentials.", suffix=".tmp")
+    tmp = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
             fh.write(_serialize(server_url, token))
-    except Exception:
-        # If the write fails partway, leave nothing behind — a half-
-        # written file would fail to parse on next load and just
-        # confuse the user. Best-effort cleanup; if the unlink itself
-        # fails, surfacing the original exception is more useful than
-        # masking it with a follow-up OSError.
+            fh.flush()
+            os.fsync(fh.fileno())
+        # Defense-in-depth: ``mkstemp`` already creates 0600, independent of the umask.
+        if not sys.platform.startswith("win"):
+            tmp.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        os.replace(tmp, path)
+    except BaseException:
+        # Best-effort cleanup; surfacing the original exception is more useful than masking
+        # it with a follow-up OSError.
         with contextlib.suppress(OSError):
-            path.unlink(missing_ok=True)
+            tmp.unlink(missing_ok=True)
         raise
-
-    # Defense-in-depth — make sure the mode is what we think even if
-    # the umask was permissive between open() and fdopen().
-    if not sys.platform.startswith("win"):
-        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
     return path
 
 

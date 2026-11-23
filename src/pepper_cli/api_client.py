@@ -37,7 +37,7 @@ import uuid
 from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field
 from typing import Any, NoReturn, Self, cast
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
 
@@ -1434,17 +1434,76 @@ def device_start(
         )
         if resp.status_code >= 400:
             _raise_for_error(resp)
-        body = resp.json()
-        return DeviceStart(
-            device_code=SecretStr(body["device_code"]),
-            user_code=body["user_code"],
-            verification_url=body["verification_url"],
-            expires_in=body["expires_in"],
-            interval=body["interval"],
-        )
+        try:
+            body = resp.json()
+        except ValueError:
+            body = None
+        return _device_start_from_body(body, server_url=server_url, status=resp.status_code)
     finally:
         if owns_client:
             http.close()
+
+
+#: Bounds on what ``POST /auth/device/start`` may ask the CLI to do. The server sends 600 s and
+#: 5 s; anything outside these is a broken or hostile response, not a deployment choice.
+DEVICE_MAX_EXPIRES_IN = 3600
+DEVICE_MAX_INTERVAL = 60
+
+
+def _device_start_from_body(body: object, *, server_url: str, status: int) -> DeviceStart:
+    """Validate a ``/auth/device/start`` body before the CLI prints, opens or polls with it.
+
+    Unknown extra keys are ignored (``/api/v1`` and ``/auth/device`` are additive-only). A
+    required field that is missing, of the wrong type or out of bounds raises :class:`ApiError`
+    with a ``malformed device-login response`` detail that names the field, never its value
+    (``device_code`` is a secret). The ``verification_url`` is opened in a browser, so it must
+    be ``http(s)`` with a host and no userinfo or control characters, and must not downgrade an
+    ``https`` server to plain ``http``.
+    """
+
+    def bad(why: str) -> ApiError:
+        return ApiError(status=status, body="", detail=f"malformed device-login response: {why}")
+
+    if not isinstance(body, dict):
+        raise bad("not a JSON object")
+    texts: dict[str, str] = {}
+    for key in ("device_code", "user_code", "verification_url"):
+        value = body.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise bad(f"{key} is missing or not a non-empty string")
+        texts[key] = value
+    numbers: dict[str, int] = {}
+    for key, ceiling in (("expires_in", DEVICE_MAX_EXPIRES_IN), ("interval", DEVICE_MAX_INTERVAL)):
+        value = body.get(key)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise bad(f"{key} is missing or not an integer")
+        if not 1 <= value <= ceiling:
+            raise bad(f"{key} must be between 1 and {ceiling} seconds")
+        numbers[key] = value
+    if numbers["interval"] > numbers["expires_in"]:
+        raise bad("interval is longer than expires_in")
+    url = texts["verification_url"]
+    if any(ch.isspace() or ord(ch) < 0x20 or ch == "\x7f" for ch in url):
+        raise bad("verification_url contains spaces or control characters")
+    try:
+        parts = urlsplit(url)
+        _ = parts.port
+    except ValueError as exc:
+        raise bad("verification_url is not a valid URL") from exc
+    scheme = parts.scheme.lower()
+    if scheme not in {"http", "https"} or not parts.hostname:
+        raise bad("verification_url must be an http(s) URL with a host")
+    if "@" in parts.netloc:
+        raise bad("verification_url must not carry a user name or password")
+    if scheme == "http" and urlsplit(server_url).scheme.lower() == "https":
+        raise bad("verification_url is plain http for an https server")
+    return DeviceStart(
+        device_code=SecretStr(texts["device_code"]),
+        user_code=texts["user_code"],
+        verification_url=url,
+        expires_in=numbers["expires_in"],
+        interval=numbers["interval"],
+    )
 
 
 def device_poll(
