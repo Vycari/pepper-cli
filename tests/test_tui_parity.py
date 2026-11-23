@@ -894,7 +894,10 @@ async def test_a_reset_clamped_to_a_shorter_end_is_marked_read(monkeypatch) -> N
         monkeypatch.setattr(app, "_note_viewed", lambda **kw: calls.append(kw.get("through")))
         old = scroller.scroll_y
         thread.show("short page", reset=True, through="2026-09-16T10:13:00+00:00")
-        await pilot.pause(0.2)  # the layout clamps the old position to the shorter end
+        # The landing comes two refreshes and a message after the show, so wait for the
+        # mark itself: a fixed pause ran out first on a loaded runner, with the clamp done
+        # and the mark still queued (main run 45212800550).
+        await until(pilot, lambda: bool(calls))
         assert scroller.scroll_y != old  # clamped, not a reader scroll
         assert thread.pinned
         assert calls == ["2026-09-16T10:13:00+00:00"]  # the reset landed at the new end
