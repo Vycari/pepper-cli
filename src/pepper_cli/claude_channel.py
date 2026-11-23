@@ -900,6 +900,10 @@ class ChannelWorker:
         if _watch_frame_shows_health(frame):
             self.delay = _WATCH_BACKOFF_START
             self.failures = 0
+        if frame.malformed is not None and not (
+            self.config.room is not None and self.scope is None
+        ):
+            return self._skip_malformed(frame)
         if frame.kind == "error":
             return self._frame_problem(frame)
         if frame.kind == "comment":
@@ -932,6 +936,19 @@ class ChannelWorker:
         self.head_pending = False
         self._advance(new_cursor)
         return None
+
+    def _skip_malformed(self, frame: api_client.FeedFrame) -> None:
+        """A frame the parser could not read: push nothing from it, move past its position, and
+        owe a ``resync`` naming it. Reconnecting instead would resume before it and read it
+        again on every connection, so no later event would ever arrive."""
+        where = f" at position {frame.id}" if frame.id is not None else ""
+        kind = sanitize_line(frame.kind)[:_CAUSE_CLIP]
+        cause = f"an unreadable {kind!r} frame{where} ({frame.malformed})"
+        render.warning(f"Skipped {cause}; the channel goes on with the next event.")
+        self._resync(cause)
+        if frame.id is not None:
+            self.head_pending = False
+            self._advance(frame.id)
 
     # -- the loop -------------------------------------------------------------------------
 

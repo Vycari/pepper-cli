@@ -282,6 +282,9 @@ class PepperApp(App[None]):
         self.current = state.PEPPER
         self.store = state.MessageStore()
         self.dm = state.DmTracker()
+        #: How many unreadable rows and drafts today's Pepper thread had at the last notice, so
+        #: a poll says so once, not on every tick.
+        self._dm_unreadable = 0
         self.manual: dict[str, bool] = {}
         self.show_all: set[str] = set()
         #: Which archived/inactive folds are open, and the topic rails read for the archived ones.
@@ -724,6 +727,7 @@ class PepperApp(App[None]):
             on_frame=lambda frame: self._post(self._on_stream_frame, frame),
             on_live=lambda healthy: self._post(self._on_stream_state, healthy),
             on_resync=lambda: self._post(self._catch_up),
+            on_skipped=lambda _frame: self._post(self._on_stream_skipped),
         )
         self._person_stream = stream.PersonStream(self._api, handler)
         self._person_stream.start()
@@ -761,6 +765,12 @@ class PepperApp(App[None]):
         self._rail.refetch_all()
         for kind in ("rail", "topic", "dm"):
             self._want(kind)
+
+    def _on_stream_skipped(self) -> None:
+        """The live stream skipped a frame it could not read: say so, and catch up with one
+        fetch, since whatever it carried is not coming again."""
+        self.notify("Skipped an unreadable update from the server; refreshing.", timeout=3)
+        self._catch_up()
 
     def _on_stream_frame(self, frame: FeedFrame) -> None:
         kind = frame.kind
@@ -903,6 +913,7 @@ class PepperApp(App[None]):
         return False
 
     def _on_dm(self, history: list[ChatHistoryEntry]) -> None:
+        self._note_dm_unreadable(history)
         # Your own pane sits over the DM without showing it: only the replies its strip
         # carries count as seen there; anything else still lights the dot (design §6.6).
         pane = self.pane
@@ -916,6 +927,19 @@ class PepperApp(App[None]):
         self._settle_turns()
         if self.current.is_pepper:
             self._render_dm(new_rows=len(new_ids), reset=False)
+
+    def _note_dm_unreadable(self, history: list[ChatHistoryEntry]) -> None:
+        """Say, once per change, that the thread had rows or drafts it could not read. The
+        rest of the thread still shows; those are left out (``ApiClient.chat_history``)."""
+        unreadable = getattr(history, "skipped", 0) + sum(e.skipped_drafts for e in history)
+        if unreadable > self._dm_unreadable:
+            self.notify(
+                f"{unreadable} item(s) in today's Pepper thread could not be read and are not "
+                "shown.",
+                severity="warning",
+                timeout=4,
+            )
+        self._dm_unreadable = unreadable
 
     def _on_topic_page(self, page: GroupMessagePage, *, newest: bool) -> None:
         """A poll's page. Only a read of the newest page says where the older ones start."""

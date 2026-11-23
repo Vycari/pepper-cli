@@ -193,6 +193,53 @@ def test_a_drop_reconnects_with_last_event_id_and_no_catch_up(sse) -> None:
     assert False in rec.live  # the drop was reported
 
 
+def test_a_malformed_positioned_frame_is_skipped_and_the_stream_goes_on(sse) -> None:
+    """VR-4266a8f0: the bad frame used to fail the connection, and every reconnect resumed
+    before it and failed there again, so nothing after it ever arrived."""
+    fake, api = sse
+    fake.scripts = [
+        Connection(
+            [
+                ts.CURSOR_HEAD,
+                advanced(3),
+                b"id: 4\nevent: message.created\ndata: [1]\n\n",
+                advanced(5),
+            ]
+        ),
+        Connection([ts.HEARTBEAT]),
+    ]
+    rec = Recorder()
+    skipped: list[api_client.FeedFrame] = []
+    handler = stream.StreamHandler(
+        on_frame=rec.frames.append,
+        on_live=rec.live.append,
+        on_resync=rec._resync,
+        on_skipped=skipped.append,
+    )
+    person = stream.PersonStream(api, handler, delay=lambda _failures: 0.0)
+    person.start()
+    assert fake.done.wait(timeout=10)
+    deadline = time.monotonic() + 10
+    while len(rec.frames) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    person.stop()
+    person.join(timeout=10)
+    assert [f.id for f in rec.frames] == [3, 5]
+    assert [(f.id, f.malformed) for f in skipped] == [(4, "frame data is not a valid JSON object")]
+    # The next connection resumes past everything, the skipped frame included.
+    assert fake.opens[1][1] == "5"
+
+
+def test_a_skipped_frame_falls_back_to_a_catch_up_without_its_own_handler(sse) -> None:
+    fake, api = sse
+    fake.scripts = [Connection([advanced(3), b"id: 4\nevent: message.created\n\n", advanced(5)])]
+    rec = Recorder()
+    person = run_until_done(fake, api, rec, frames=2)
+    assert [f.id for f in rec.frames] == [3, 5]
+    assert person.last_id == 5
+    assert rec.resyncs == 1
+
+
 def test_a_retryable_error_frame_reconnects_from_the_last_id(sse) -> None:
     fake, api = sse
     fake.scripts = [

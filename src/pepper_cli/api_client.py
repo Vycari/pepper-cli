@@ -499,11 +499,21 @@ class FeedFrame:
     ``id`` is the frame's SSE ``id:``: for an event frame the event id, for a
     ``cursor`` frame the cursor, ``None`` on ``error`` and ``scope``. Either
     of the first two is a valid ``Last-Event-ID`` to resume after.
+
+    ``malformed`` is ``None`` on every frame the parser could read. On a frame it could not
+    (data that is not a JSON object, a malformed ``id:``, a position with no data, or a frame
+    past :data:`MAX_SSE_FRAME_BYTES`) it is a short, payload-free description of the problem,
+    ``payload`` is empty and ``id`` is the frame's position when one could be read. The frame
+    is never an event: a caller moves its cursor past ``id`` (when there is one), says that it
+    skipped a frame, and delivers nothing from it. Skipping it, rather than failing the
+    connection, is what keeps one bad frame from stalling a watch: a reconnect would resume
+    before it and read it again, forever.
     """
 
     kind: str
     id: int | None
     payload: dict[str, Any]
+    malformed: str | None = None
 
 
 # MIRROR: src/pepper/gateway/channels/groups_service/agent_feed.py::scope_frame
@@ -701,26 +711,60 @@ class DraftCard:
 
 
 def draft_cards_from(raw: object) -> list[DraftCard]:
-    """The ``drafts`` list of a reply or history row; anything malformed is skipped."""
+    """The ``drafts`` list of a reply or history row; see :func:`parse_draft_cards`, which also
+    says how many drafts were skipped as malformed."""
+    return parse_draft_cards(raw)[0]
+
+
+def parse_draft_cards(raw: object) -> tuple[list[DraftCard], int]:
+    """The ``drafts`` list of a reply or history row, and how many malformed drafts were left
+    out. A draft with no id, or that is not an object, is skipped and not counted (nothing could
+    be sent from it, as before). A card's ``accounts`` is checked against the wire contract, a
+    list of ``[id, label]`` string pairs (a longer entry keeps its first two): a draft whose
+    ``accounts`` is malformed is left out and counted, rather than shown with an account choice
+    that may be wrong. One bad draft never costs the others, or the reply or row it came with;
+    the caller says how many were left out."""
     cards: list[DraftCard] = []
+    skipped = 0
     for d in raw if isinstance(raw, list) else []:
         if isinstance(d, dict) and d.get("draft_id"):
-            accounts = d.get("accounts")
+            try:
+                accounts = _draft_accounts(d)
+            except ApiError:
+                skipped += 1
+                continue
             cards.append(
                 DraftCard(
                     draft_id=str(d["draft_id"]),
                     to=str(d.get("to") or ""),
                     subject=str(d.get("subject") or ""),
                     body=str(d.get("body") or ""),
-                    accounts=[list(a) for a in accounts if isinstance(a, list)]
-                    if isinstance(accounts, list)
-                    else [],
+                    accounts=accounts,
                     account=str(d.get("account") or ""),
                     account_email=str(d.get("account_email") or ""),
                     sent=d.get("sent") is True,
                 )
             )
-    return cards
+    return cards, skipped
+
+
+def _draft_accounts(draft: dict[str, Any]) -> list[list[str]]:
+    """The ``[id, label]`` pairs of a draft card's ``accounts``; absent or ``null`` is none."""
+    raw = draft.get("accounts")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise _malformed("draft accounts is not a list", draft)
+    accounts: list[list[str]] = []
+    for entry in raw:
+        if (
+            not isinstance(entry, list)
+            or len(entry) < 2
+            or not all(isinstance(x, str) for x in entry[:2])
+        ):
+            raise _malformed("draft account entry is not an [id, label] string pair", draft)
+        accounts.append(entry[:2])
+    return accounts
 
 
 # MIRROR: src/pepper/api/router.py::ChatHistoryEntry
@@ -750,6 +794,16 @@ class ChatHistoryEntry:
     client_message_id: str | None = None
     #: Drafts this turn staged (assistant rows), oldest first.
     drafts: list[DraftCard] = field(default_factory=list)
+    #: Drafts on this row left out of ``drafts`` because they were malformed
+    #: (:func:`parse_draft_cards`), for the caller to mention.
+    skipped_drafts: int = 0
+
+
+class ChatHistory(list[ChatHistoryEntry]):
+    """``GET /api/v1/chat/history``'s rows, oldest first, plus ``skipped``: how many rows were
+    left out because they were malformed. A plain list otherwise."""
+
+    skipped: int = 0
 
 
 # MIRROR: src/pepper/gateway/channels/client_api/adapter.py::ChatSendResponse
@@ -2899,7 +2953,7 @@ class ApiClient:
         With ``group_id``, ``GET /api/v1/groups/{id}/scheduled-tasks/{task}``:
         a room task, readable by any member, with the ``group_*`` fields set."""
         resp = self._request("GET", f"{_scheduled_tasks_path(group_id)}/{task_id}")
-        row = resp.json()
+        row = _wire_row(resp.json(), "scheduled task")
         latest = row.get("latest_run")
         return ScheduledTaskDetail(
             **_scheduled_task_fields(row),
@@ -3238,28 +3292,25 @@ class ApiClient:
             for row in body
         ]
 
-    def chat_history(self) -> list[ChatHistoryEntry]:
+    def chat_history(self) -> ChatHistory:
         """``GET /api/v1/chat/history`` — today's live Pepper thread, oldest first.
 
-        No pagination and no ``since``: the whole day comes back each time.
+        No pagination and no ``since``: the whole day comes back each time. A response that is
+        not a list raises :class:`ApiError` (status 200). A row that is malformed (not an
+        object, or a required field missing or of the wrong type) is left out and counted in
+        the result's ``skipped``, so one bad row never hides the rest of the thread, which a
+        poller would otherwise fail to read on every poll for the rest of the day.
         """
         rows = self._request("GET", "/api/v1/chat/history").json()
-        return [
-            ChatHistoryEntry(
-                id=str(r["id"]),
-                role=r["role"],
-                text=r.get("text") or "",
-                channel=r.get("channel") or "",
-                created_at=r["created_at"],
-                attachments=list(r.get("attachments") or []),
-                reactions=list(r.get("reactions") or []),
-                trajectory_id=str(t) if (t := r.get("trajectory_id")) else None,
-                client_message_id=str(c) if (c := r.get("client_message_id")) else None,
-                drafts=draft_cards_from(r.get("drafts")),
-            )
-            for r in rows
-            if isinstance(r, dict)
-        ]
+        if not isinstance(rows, list):
+            raise _malformed("chat history is not a list", rows)
+        history = ChatHistory()
+        for r in rows:
+            try:
+                history.append(_chat_history_entry(_wire_row(r, "chat history row")))
+            except ApiError:
+                history.skipped += 1
+        return history
 
     def post_tool_result(
         self, *, call_id: str, content: list[dict[str, Any]], is_error: bool = False
@@ -5019,27 +5070,40 @@ def _trajectory_detail_from_dict(body: dict[str, Any]) -> TrajectoryDetail:
     raw-dict / parsed surfaces don't drift — both go through this
     when a caller wants the typed shape.
     """
-    traj_row = body["trajectory"]
+    body = _wire_row(body, "trajectory response")
+    traj_row = _wire_row(body.get("trajectory"), "trajectory")
+    events = body.get("events") or []
+    if not isinstance(events, list):
+        raise _malformed("trajectory events is not a list", body)
+    parsed: list[TrajectoryEvent] = []
+    for raw in events:
+        ev = _wire_row(raw, "trajectory event")
+        payload = ev.get("payload") or {}
+        if not isinstance(payload, dict):
+            raise _malformed("trajectory event payload is not an object", ev)
+        parsed.append(
+            TrajectoryEvent(
+                id=_wire_get(ev, "id", "trajectory event", str),
+                seq=_wire_get(ev, "seq", "trajectory event", int),
+                event_type=_wire_get(ev, "event_type", "trajectory event", str),
+                payload=payload,
+                created_at=_wire_get(ev, "created_at", "trajectory event", str),
+            )
+        )
+    meta = traj_row.get("meta") or {}
+    if not isinstance(meta, dict):
+        raise _malformed("trajectory meta is not an object", traj_row)
     return TrajectoryDetail(
         trajectory=TrajectoryRef(
-            id=traj_row["id"],
-            user_id=traj_row["user_id"],
-            channel=traj_row["channel"],
+            id=_wire_get(traj_row, "id", "trajectory", str),
+            user_id=_wire_get(traj_row, "user_id", "trajectory", str),
+            channel=_wire_get(traj_row, "channel", "trajectory", str),
             conversation_key=traj_row.get("conversation_key"),
-            created_at=traj_row["created_at"],
+            created_at=_wire_get(traj_row, "created_at", "trajectory", str),
             closed_at=traj_row.get("closed_at"),
-            meta=traj_row.get("meta") or {},
+            meta=meta,
         ),
-        events=[
-            TrajectoryEvent(
-                id=ev["id"],
-                seq=ev["seq"],
-                event_type=ev["event_type"],
-                payload=ev.get("payload") or {},
-                created_at=ev["created_at"],
-            )
-            for ev in body.get("events") or []
-        ],
+        events=parsed,
     )
 
 
@@ -5154,20 +5218,22 @@ def _scheduled_task_fields(row: dict[str, Any]) -> dict[str, Any]:
     response — which is the same shape plus ``latest_run`` — can reuse it
     instead of restating ten field names that would then drift.
     """
+    what = "scheduled task"
+    row = _wire_row(row, what)
     return {
-        "id": row["id"],
-        "name": row["name"],
+        "id": _wire_get(row, "id", what, str),
+        "name": _wire_get(row, "name", what, str),
         "description": row.get("description"),
         "cron": row.get("cron"),
         "timezone": row.get("timezone"),
         # ``.get`` would collapse a missing key onto ``None``, which is a
         # real state here (inherit) — but the server always sends the key,
         # so a missing one is a malformed response, not a silent task.
-        "destinations": row["destinations"],
-        "active": row["active"],
-        "one_shot": row["one_shot"],
+        "destinations": _wire_get(row, "destinations", what, list, nullable=True),
+        "active": _wire_get(row, "active", what, bool),
+        "one_shot": _wire_get(row, "one_shot", what, bool),
         "last_run_at": row.get("last_run_at"),
-        "next_run_at": row["next_run_at"],
+        "next_run_at": _wire_get(row, "next_run_at", what, str, nullable=True),
     }
 
 
@@ -5180,7 +5246,7 @@ def _room_scheduled_task_from_dict(row: dict[str, Any]) -> RoomScheduledTaskSumm
     """Parse one room task row — the room listing and every room write."""
     return RoomScheduledTaskSummary(
         **_scheduled_task_fields(row),
-        delivery=row["delivery"],
+        delivery=_wire_get(row, "delivery", "room scheduled task", str),
         last_run_status=row.get("last_run_status"),
     )
 
@@ -5233,6 +5299,63 @@ def _page_params(limit: int, before: str | None) -> dict[str, Any]:
     if before is not None:
         params["before"] = before
     return params
+
+
+def _malformed(what: str, raw: object = None) -> ApiError:
+    """A malformed successful response: status 200, ``what`` names the shape or field that
+    failed, and the context is the first 200 characters of ``raw`` (never the whole payload)."""
+    return ApiError(status=200, body=str(raw)[:200], detail=f"malformed response: {what}")
+
+
+def _wire_row(raw: object, what: str) -> dict[str, Any]:
+    """``raw`` as a JSON object, or a malformed-response :class:`ApiError` naming ``what``."""
+    if not isinstance(raw, dict):
+        raise _malformed(f"{what} is not an object", raw)
+    return raw
+
+
+def _chat_history_entry(r: dict[str, Any]) -> ChatHistoryEntry:
+    """One ``/api/v1/chat/history`` row. ``attachments``/``reactions`` may be missing or
+    ``null`` (an empty list), but a present value must be a list."""
+    what = "chat history row"
+    drafts, skipped_drafts = parse_draft_cards(r.get("drafts"))
+    return ChatHistoryEntry(
+        id=str(_wire_get(r, "id", what, str, int)),
+        role=_wire_get(r, "role", what, str),
+        text=r.get("text") or "",
+        channel=r.get("channel") or "",
+        created_at=_wire_get(r, "created_at", what, str),
+        attachments=list(_optional_list(r, "attachments", what)),
+        reactions=list(_optional_list(r, "reactions", what)),
+        trajectory_id=str(t) if (t := r.get("trajectory_id")) else None,
+        client_message_id=str(c) if (c := r.get("client_message_id")) else None,
+        drafts=drafts,
+        skipped_drafts=skipped_drafts,
+    )
+
+
+def _optional_list(row: dict[str, Any], key: str, what: str) -> list[Any]:
+    """``row[key]`` as a list: missing or ``null`` is empty, any other non-list is malformed."""
+    if row.get(key) is None:
+        return []
+    return _wire_get(row, key, what, list)
+
+
+def _wire_get(
+    row: dict[str, Any], key: str, what: str, *types: type, nullable: bool = False
+) -> Any:
+    """``row[key]``, required to be present and one of ``types`` (``None`` too, when
+    ``nullable``). A bool is never an int here. Anything else is a malformed-response
+    :class:`ApiError` naming the field, so a command handler never sees a ``KeyError`` or a
+    value of the wrong type."""
+    if key not in row:
+        raise _malformed(f"{what} has no {key!r}", row)
+    value = row[key]
+    if value is None and nullable:
+        return None
+    if not isinstance(value, types) or (isinstance(value, bool) and bool not in types):
+        raise _malformed(f"{what} field {key!r} has the wrong type", row)
+    return value
 
 
 def _fields[T](cls: type[T], row: dict[str, Any], **parsed: Any) -> T:
@@ -5389,20 +5512,25 @@ def _research_page[T](
     rows = body.get("items")
     if not isinstance(rows, list):
         raise ApiError(status=200, body=str(body)[:200], detail="malformed response")
+    for i, r in enumerate(rows):
+        if not isinstance(r, dict):
+            raise _malformed(f"research page item {i} is not an object", r)
     cursor = body.get("next_before")
     return ResearchPage(
-        items=[parse(r) for r in rows if isinstance(r, dict)],
+        items=[parse(r) for r in rows],
         next_before=cursor if isinstance(cursor, str) else None,
     )
 
 
 def _scheduled_run_from_dict(row: dict[str, Any]) -> ScheduledTaskRunEntry:
     """Parse one run row — the runs listing and ``latest_run``."""
+    what = "scheduled task run"
+    row = _wire_row(row, what)
     return ScheduledTaskRunEntry(
-        id=row["id"],
-        fired_at=row["fired_at"],
+        id=_wire_get(row, "id", what, str),
+        fired_at=_wire_get(row, "fired_at", what, str),
         finished_at=row.get("finished_at"),
-        status=row["status"],
+        status=_wire_get(row, "status", what, str),
         error=row.get("error"),
         delivered_channels=row.get("delivered_channels"),
         trajectory_id=row.get("trajectory_id"),
@@ -5575,6 +5703,32 @@ def _filename_from_content_disposition(value: str | None) -> str | None:
     return name
 
 
+#: The most one SSE frame may carry, in bytes of its ``event:`` / ``data:`` / ``id:`` lines
+#: (4 MiB, far above any frame the server sends). A frame past it is a broken or hostile stream,
+#: not data to buffer. The chat parser raises :class:`ApiError` (status 200) instead of growing
+#: without bound; the feed parser stops buffering the frame's data and hands it on as a
+#: :attr:`FeedFrame.malformed` frame, so the watch skips it, visibly, rather than reconnecting
+#: into it forever; one that has not ended after as much again raises, so a stream that never
+#: ends a frame cannot be read forever. A frame of exactly this size is accepted. Only the
+#: accumulated frame is bounded; a single line is already whole by the time ``httpx`` hands
+#: it over.
+MAX_SSE_FRAME_BYTES = 4 * 1024 * 1024
+
+
+def _stream_problem(what: str, body: str = "") -> ApiError:
+    """A malformed-stream failure: status 200 like any malformed successful response, with a
+    bounded, payload-free diagnostic (``body`` is cut to 200 characters)."""
+    return ApiError(status=200, body=body[:200], detail=f"malformed event stream: {what}")
+
+
+def _frame_size_after(size: int, line: str) -> int:
+    """``size`` plus ``line``'s bytes (and its newline); raises past :data:`MAX_SSE_FRAME_BYTES`."""
+    size += len(line.encode("utf-8", "replace")) + 1
+    if size > MAX_SSE_FRAME_BYTES:
+        raise _stream_problem(f"frame larger than {MAX_SSE_FRAME_BYTES} bytes")
+    return size
+
+
 def _iter_sse_events(lines: Iterator[str]) -> Iterator[StreamEvent]:
     r"""Parse a line-iterator into :class:`StreamEvent` frames.
 
@@ -5589,9 +5743,11 @@ def _iter_sse_events(lines: Iterator[str]) -> Iterator[StreamEvent]:
     a future heartbeat frame the client doesn't understand. Frames
     with no ``event:`` line default to ``"message"`` (the SSE
     default) so a non-pepper SSE stream wouldn't crash this parser.
+    A frame larger than :data:`MAX_SSE_FRAME_BYTES` raises :class:`ApiError`.
     """
     event_type: str | None = None
     data_lines: list[str] = []
+    size = 0
     for line in lines:
         if not line:
             # Blank line — end of frame. Emit if we have anything to
@@ -5602,10 +5758,12 @@ def _iter_sse_events(lines: Iterator[str]) -> Iterator[StreamEvent]:
                     yield event
             event_type = None
             data_lines = []
+            size = 0
             continue
         if line.startswith(":"):
             # SSE comment line — used for keep-alives. Ignore.
             continue
+        size = _frame_size_after(size, line)
         field_name, _, value = line.partition(":")
         # Per spec, a single optional space after the colon is part of
         # the separator, not the value.
@@ -5626,35 +5784,91 @@ def _iter_sse_events(lines: Iterator[str]) -> Iterator[StreamEvent]:
             yield event
 
 
+#: Frame kinds that carry no resume position of their own, so a malformed ``id:`` on one is
+#: ignored rather than reported as a skipped frame: the server closes after an ``error``, and
+#: a ``scope`` frame is not an event.
+_ID_OPTIONAL_KINDS = frozenset({"error", "scope"})
+
+
 def _iter_feed_frames(lines: Iterator[str]) -> Iterator[FeedFrame]:
     r"""Parse a line-iterator into :class:`FeedFrame`s.
 
     Unlike :func:`_iter_sse_events` this keeps the ``id:`` field, because the
-    feed's id *is* the resume cursor. A frame whose ``data:`` is not a JSON
-    object, or whose ``id:`` is not an integer, is dropped rather than fatal;
-    a comment line (``: ping``) becomes a ``"comment"`` frame.
+    feed's id *is* the resume cursor, and it never drops a positioned frame quietly: a later
+    valid frame would move the caller's cursor past the lost one unseen. A frame it cannot
+    read is handed on with :attr:`FeedFrame.malformed` set instead (and an empty payload): one
+    whose ``data:`` is not a JSON object (and that carries an ``id:``, or is a ``cursor``
+    frame), whose ``id:`` is present but not a decimal integer (except on an ``error`` or
+    ``scope`` frame), that has a position but no data, or that is larger than
+    :data:`MAX_SSE_FRAME_BYTES` (one that runs on for as much again without ending raises
+    :class:`ApiError`, status 200, so a stream that never ends a frame cannot be read forever
+    with nothing yielded). Its ``id`` is the position when one could be read, so the
+    caller moves past it and says it skipped it; raising instead would make the caller
+    reconnect from before it and meet it again on every connection.
+    An unknown ``event:`` kind or ``retry:`` / unknown field is not malformed and
+    passes through; an absent ``id:`` is fine too (control frames carry none, and
+    callers skip an event they cannot checkpoint). An unreadable ``scope`` frame (no event, no
+    position) reaches the caller with an empty payload, which fails scope confirmation. A
+    comment line (``: ping``) becomes a ``"comment"`` frame.
     """
     event_type: str | None = None
     event_id: int | None = None
+    bad_id = False
+    oversize = False
     data_lines: list[str] = []
 
+    def skipped(kind: str, problem: str) -> FeedFrame:
+        return FeedFrame(kind=kind, id=event_id, payload={}, malformed=problem)
+
     def build() -> FeedFrame | None:
+        kind = event_type or "message"
+        positioned = event_id is not None or kind == "cursor"
+        if oversize:
+            if kind == "scope":
+                # Unreadable scope: empty, so scope confirmation fails closed.
+                return FeedFrame(kind=kind, id=None, payload={})
+            return skipped(kind, f"frame larger than {MAX_SSE_FRAME_BYTES} bytes")
         if not data_lines:
+            if positioned or (bad_id and kind not in _ID_OPTIONAL_KINDS):
+                # A position with no body: dropping it quietly would let the next frame move
+                # the caller's cursor past an event it never saw.
+                return skipped(kind, "frame has a position but no data")
+            # No position (a bare ``event:``, ``retry:`` or ``id:`` reset): nothing to deliver.
             return None
         try:
             payload = _json.loads("\n".join(data_lines))
         except _json.JSONDecodeError:
-            return None
+            payload = None
         if not isinstance(payload, dict):
-            return None
-        return FeedFrame(kind=event_type or "message", id=event_id, payload=payload)
+            if kind == "scope":
+                # A scope frame carries no event and no position, so an unreadable one loses
+                # nothing: it reaches the caller empty, and the scope it fails to confirm
+                # stops the watch (fail closed) instead of retrying a stream that repeats it.
+                return FeedFrame(kind=kind, id=None, payload={})
+            if not positioned and not bad_id:
+                # No ``id:`` and not a position: nothing a caller could checkpoint past, so a
+                # frame of a kind this client does not know with an unreadable body is ignored,
+                # as an unknown kind always has been.
+                return None
+            return skipped(kind, "frame data is not a valid JSON object")
+        if bad_id and kind not in _ID_OPTIONAL_KINDS:
+            return skipped(kind, "frame has a malformed id")
+        return FeedFrame(kind=kind, id=event_id, payload=payload)
 
+    size = 0
     for line in lines:
         if not line:
             frame = build()
             if frame is not None:
                 yield frame
-            event_type, event_id, data_lines = None, None, []
+            event_type, event_id, bad_id, oversize, data_lines, size = (
+                None,
+                None,
+                False,
+                False,
+                [],
+                0,
+            )
             continue
         if line.startswith(":"):
             # ``: connected`` / ``: ping``: proof the connection is alive. The
@@ -5662,14 +5876,32 @@ def _iter_feed_frames(lines: Iterator[str]) -> Iterator[FeedFrame]:
             # that has stayed healthy long enough to send a heartbeat.
             yield FeedFrame(kind="comment", id=None, payload={"comment": line[1:].strip()})
             continue
+        size += len(line.encode("utf-8", "replace")) + 1
+        if size > 2 * MAX_SSE_FRAME_BYTES:
+            # Drained as far again past the limit and still no end of frame: a stream that
+            # never sends its blank line would otherwise be read forever, yielding nothing, so
+            # no caller could stop it or notice. End the connection; the caller retries.
+            raise _stream_problem(
+                f"frame larger than {MAX_SSE_FRAME_BYTES} bytes did not end within "
+                f"{MAX_SSE_FRAME_BYTES} more"
+            )
+        if size > MAX_SSE_FRAME_BYTES and not oversize:
+            # Stop buffering, but keep reading the frame's ``event:`` and ``id:`` so the
+            # caller can still move past it.
+            oversize = True
+            data_lines = []
         field_name, _, value = line.partition(":")
         value = value.removeprefix(" ")
         if field_name == "event":
             event_type = value
         elif field_name == "data":
-            data_lines.append(value)
+            if not oversize:
+                data_lines.append(value)
         elif field_name == "id":
-            event_id = int(value) if value.isdecimal() else None
+            # An empty ``id:`` resets the id (SSE spec): no position, not a malformed one.
+            valid = value.isascii() and value.isdecimal()
+            event_id = int(value) if valid else None
+            bad_id = bool(value) and not valid
     frame = build()
     if frame is not None:
         yield frame

@@ -187,3 +187,31 @@ def test_a_labelled_tool_call_shows_the_servers_words_and_keeps_them(tty, capsys
     assert "Searching your email…" in shown
     assert not any("search_gmail_messages" in line for line in shown)
     assert capsys.readouterr().out == "here you go\n"
+
+
+def test_a_malformed_draft_on_a_delivered_reply_is_noted_and_the_turn_still_succeeds(
+    capsys,
+) -> None:
+    """VR-1665bff2: the reply had rendered when the draft's bad ``accounts`` raised, so a
+    turn the server delivered was reported as failed."""
+    from pepper_cli import turn
+
+    drafts = [{"draft_id": "d1", "accounts": [["1", 2]]}, {"draft_id": "d2", "to": "a@x.com"}]
+    frames = [api_client.StreamEvent(kind="reply", payload={"reply": "ok", "drafts": drafts})]
+    api: Any = object()
+    sink = cli._ReplTurnSink(api, provider=None, trace=False, wait=None)
+
+    assert turn.dispatch(frames, sink) == "reply"
+
+    out, err = capsys.readouterr()
+    assert out.startswith("ok\n")
+    assert "pepper drafts send d2" in out
+    assert "d1" not in out
+    assert "1 draft(s) from this reply could not be read and are not shown" in err
+
+
+def test_a_one_shot_turn_with_a_malformed_draft_still_exits_as_a_success(capsys) -> None:
+    reply = {"reply": "ok", "drafts": [{"draft_id": "d1", "accounts": [["1", 2]]}]}
+    api: Any = _Api([api_client.StreamEvent(kind="reply", payload=reply)])
+    assert cli._stream_one_turn(api, "hi", trace=False) is True
+    assert capsys.readouterr().out == "ok\n"

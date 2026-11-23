@@ -394,10 +394,10 @@ def test_one_shot_reply_shows_each_unsent_draft_with_its_send_command(capsys) ->
     assert "pepper drafts send d1" in out and "d2" not in out
 
 
-def test_chat_history_reads_drafts_and_skips_malformed_ones() -> None:
+def test_chat_history_reads_drafts_and_skips_ones_with_no_id() -> None:
     row = {"id": "a1", "role": "assistant", "text": "t", "channel": "x", "created_at": "z"}
     good = {"draft_id": "d1", "to": "a@x.com", "subject": "s", "body": "b", "sent": True}
-    odd = {"draft_id": "d2", "accounts": 5}
+    odd = {"draft_id": "d2", "accounts": None}
     rows = [{**row, "drafts": [good, odd, {"to": "no id"}, "junk"]}, {**row, "id": "a2"}]
     with api_client.ApiClient(
         server_url="http://example.com",
@@ -410,8 +410,77 @@ def test_chat_history_reads_drafts_and_skips_malformed_ones() -> None:
 
 
 @pytest.mark.parametrize(
+    "accounts",
+    [5, "ab", {"a": 1}, [1], ["ab"], [["1"]], [[]], [["1", 2]], [[1, "Work"]], [["1", "W"], "x"]],
+)
+def test_a_draft_with_malformed_accounts_is_left_out_and_counted(accounts) -> None:
+    good = {"draft_id": "ok", "accounts": [["1", "Work"]]}
+    raw = {"draft_id": "d", "accounts": accounts}
+    cards, skipped = api_client.parse_draft_cards([raw, good])
+    # Never shown with an account choice that may be wrong, and never at the others' cost.
+    assert [c.draft_id for c in cards] == ["ok"]
+    assert skipped == 1
+    assert [c.draft_id for c in api_client.draft_cards_from([raw, good])] == ["ok"]
+
+
+def test_a_history_row_keeps_its_good_drafts_and_counts_a_malformed_one() -> None:
+    row = {"id": "a1", "role": "assistant", "text": "t", "channel": "x", "created_at": "z"}
+    drafts = [{"draft_id": "d1"}, {"draft_id": "d2", "accounts": [["1", 2]]}]
+    with api_client.ApiClient(
+        server_url="http://example.com",
+        token=SecretStr("pep_pat_abc"),
+        client=_mock(lambda _r: httpx.Response(200, json=[{**row, "drafts": drafts}])),
+    ) as api:
+        (entry,) = api.chat_history()
+    assert [d.draft_id for d in entry.drafts] == ["d1"]
+    assert entry.skipped_drafts == 1
+
+
+def test_valid_draft_accounts_are_unchanged_and_a_longer_entry_keeps_its_pair() -> None:
+    raw = {"draft_id": "d", "accounts": [["1", "Work"], ["2", "Home", "future"]]}
+    assert api_client.draft_cards_from([raw])[0].accounts == [["1", "Work"], ["2", "Home"]]
+    assert api_client.draft_cards_from([{"draft_id": "d"}])[0].accounts == []
+
+
+@pytest.mark.parametrize(
     ("accounts", "shown"), [([["1", "Work"]], ""), ([["1", "Work"], ["2", "Home"]], "Work")]
 )
 def test_a_draft_names_its_account_only_when_there_are_several(accounts, shown) -> None:
     raw = {"draft_id": "d", "account": "Work", "accounts": accounts}
     assert api_client.draft_cards_from([raw])[0].sends_from == shown
+
+
+# ---------------------------------------------------------------------------
+# Frame size bound (chat stream)
+
+
+def test_chat_parser_accepts_a_frame_at_the_limit_and_rejects_one_over(monkeypatch) -> None:
+    monkeypatch.setattr(api_client, "MAX_SSE_FRAME_BYTES", 40)
+    exact = "data: " + '{"k":"' + "x" * (40 - 1 - 6 - 8) + '"}'
+    assert len(exact.encode()) + 1 == 40
+    assert len(list(_iter_sse_events(iter([exact, ""])))) == 1
+    with pytest.raises(api_client.ApiError) as raised:
+        list(_iter_sse_events(iter([exact + "x", ""])))
+    assert raised.value.status == 200
+    assert "larger than 40 bytes" in str(raised.value)
+
+
+def test_chat_parser_bounds_an_unterminated_frame(monkeypatch) -> None:
+    monkeypatch.setattr(api_client, "MAX_SSE_FRAME_BYTES", 40)
+    consumed = 0
+
+    def lines():
+        nonlocal consumed
+        while True:
+            consumed += 1
+            yield "data: 0123456789"
+
+    with pytest.raises(api_client.ApiError):
+        list(_iter_sse_events(lines()))
+    assert consumed < 10
+
+
+def test_chat_parser_size_resets_between_frames(monkeypatch) -> None:
+    monkeypatch.setattr(api_client, "MAX_SSE_FRAME_BYTES", 40)
+    body = ("event: a\ndata: " + '{"k":1}' + "\n\n") * 20
+    assert len(list(_iter_sse_events(iter(body.split("\n"))))) == 20

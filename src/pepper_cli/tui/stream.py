@@ -61,6 +61,10 @@ class StreamHandler:
     on_live: Callable[[bool], None]
     #: Catch up with one fetch: the stream started at the head, or the server said ``cursor_ahead``.
     on_resync: Callable[[], None]
+    #: A frame the parser could not read (:attr:`FeedFrame.malformed`) was skipped. The stream
+    #: has already moved past it; the handler says so and catches up, since whatever the frame
+    #: carried is lost. ``None`` falls back to :attr:`on_resync`.
+    on_skipped: Callable[[FeedFrame], None] | None = None
 
 
 def reconnect_delay(failures: int) -> float:
@@ -152,6 +156,18 @@ class PersonStream:
         """Handle one frame. ``None`` keeps reading; a bool ends this connection, saying
         whether to open another."""
         kind = frame.kind
+        if frame.malformed is not None:
+            # Move past it: reconnecting instead would resume before it and meet it again on
+            # every connection, so no later event would ever arrive.
+            if frame.id is not None:
+                self.last_id = frame.id
+                self._since = None
+            self._from_head = False
+            if self._handler.on_skipped is not None:
+                self._handler.on_skipped(frame)
+            else:
+                self._handler.on_resync()
+            return None
         if kind == "error":
             return self._error(frame.payload)
         if kind in ("comment", "heartbeat", "scope"):
