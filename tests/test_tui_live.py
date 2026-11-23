@@ -547,6 +547,59 @@ async def test_a_send_that_lands_while_scrolled_up_marks_nothing_read(
         await until(pilot, lambda: any(_at(t) > _at(theirs) for _x, t in server.puts))
 
 
+async def test_a_scroll_reported_for_an_earlier_layout_marks_nothing_new(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``Scrolled`` names the region as the scroll left it, so it describes the layout of
+    the render it was posted under. A poll that re-renders the same conversation moves the
+    rows under that region: their row lands where the pending send was. Handled after that
+    render (a lagging Windows loop, main run 45109613881), the old region claimed their row,
+    unseen. Staged by hand: hold the scroll the send's render made, then deliver it late."""
+    server = ts.standard_server()
+    _long_topic(server)
+    post = f"POST /api/v1/groups/{ts.ROOM_A}/topics/{ts.TOPIC_A1}/messages"
+    gate = threading.Event()
+    server.gates[post] = gate
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 20)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: "row 39" in body_text(app))
+        thread = app.thread
+        scroller = thread.scroller
+        await until(pilot, lambda: scroller.max_scroll_y > 0 and thread.pinned)
+        await _quiet(pilot, app, monkeypatch)
+        held: list[ThreadView.Scrolled] = []
+        real_post = thread.post_message
+
+        def hold(message):
+            if isinstance(message, ThreadView.Scrolled):
+                held.append(message)
+                return True
+            return real_post(message)
+
+        monkeypatch.setattr(thread, "post_message", hold)
+        app.composer.focus()
+        app.composer.insert("mine")
+        await pilot.press("enter")
+        await until(pilot, lambda: "sending…" in body_text(app))
+        # The send's render grew the thread and stuck to the new end: that scroll is held.
+        await until(pilot, lambda: any(m.top == scroller.max_scroll_y for m in held))
+        stale = next(m for m in held if m.top == scroller.max_scroll_y)
+        monkeypatch.setattr(thread, "post_message", real_post)
+        scroller.scroll_home(animate=False)
+        await until(pilot, lambda: not thread.pinned)
+        theirs = "2026-09-16T17:59:30+00:00"
+        server.messages[ts.TOPIC_A1].append(ts.message("m-theirs", theirs, "theirs"))
+        gate.set()
+        await until(pilot, lambda: "theirs" in body_text(app))
+        await until(pilot, lambda: app._message_spans() is not None)
+        app.on_thread_view_scrolled(stale)
+        await pilot.pause(0.3)
+        assert all(_at(through) < _at(theirs) for _t, through in server.puts)
+        assert app.marks.marks[ts.TOPIC_A1] < _at(theirs)
+
+
 async def test_a_stale_scroll_to_the_end_does_not_drag_a_reader_back_down(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
