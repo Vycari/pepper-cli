@@ -660,6 +660,16 @@ def test_a_labelled_tool_call_holds_its_words_through_the_result() -> None:
     assert lines[-2:] == ["Calling x…", "x → ok"]
 
 
+def test_a_later_unlabelled_call_of_the_same_tool_still_shows_its_result() -> None:
+    lines: list[str] = []
+    sink = tui_app._TurnStatus(lines.append, ts.standard_server().client(), None)
+    sink.tool_call({"name": "web_search", "label": "Searching the web"})
+    sink.tool_result({"name": "web_search", "status": "ok"})
+    sink.tool_call({"name": "web_search"})
+    sink.tool_result({"name": "web_search", "status": "ok"})
+    assert lines == ["Searching the web…", "Calling web_search…", "web_search → ok"]
+
+
 def test_a_blank_label_still_shows_the_result() -> None:
     lines: list[str] = []
     sink = tui_app._TurnStatus(lines.append, ts.standard_server().client(), None)

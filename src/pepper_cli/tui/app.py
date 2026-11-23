@@ -37,6 +37,7 @@ import threading
 import time
 import uuid
 import webbrowser
+from collections import Counter
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -3263,10 +3264,11 @@ class _TurnStatus(turns.TurnSink):
         #: A ``status_phrase`` arrived this turn. Until one does (an older server sends none),
         #: a streaming thought paints its tail live, as it always has.
         self._phrases = False
-        #: Tools whose ``tool_call`` this turn carried the server's friendly ``label``. Their
-        #: results leave the line alone; keyed by name, so interleaved parallel calls never
-        #: bring a labelled tool's raw name back, and any other result still shows.
-        self._labelled: set[str] = set()
+        #: Labelled ``tool_call``s still waiting on their result, counted by tool name. Each
+        #: such result leaves the line alone and uses up one count, so interleaved parallel
+        #: calls never bring a labelled tool's raw name back, and any other result (an
+        #: unlabelled call, a local tool, a later unlabelled call of the same tool) shows.
+        self._labelled: Counter[str] = Counter()
         #: The terminal frame's payload (reply or error), read by the app when the turn ends.
         self.payload: dict[str, Any] = {}
 
@@ -3298,12 +3300,15 @@ class _TurnStatus(turns.TurnSink):
 
     def tool_call(self, payload: dict[str, Any]) -> None:
         if turns.tool_label(payload) is not None:
-            self._labelled.add(str(payload.get("name")))
+            self._labelled[str(payload.get("name"))] += 1
         self._show(turns.tool_call_status(payload))
 
     def tool_result(self, payload: dict[str, Any]) -> None:
         # A friendly label stays up until the next real status (see _ReplTurnSink).
-        if str(payload.get("name")) not in self._labelled:
+        name = str(payload.get("name"))
+        if self._labelled[name] > 0:
+            self._labelled[name] -= 1
+        else:
             self._show(turns.tool_result_status(payload))
 
     def client_tools(self, payload: dict[str, Any]) -> None:
