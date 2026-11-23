@@ -1198,6 +1198,18 @@
             "default": "",
             "type": "string"
           },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "kind": {
             "default": "inline_text",
             "type": "string"
@@ -1230,12 +1242,247 @@
           },
           "name": {
             "type": "string"
+          },
+          "replayed": {
+            "default": false,
+            "type": "boolean"
           }
         },
         "required": [
           "id",
           "name",
           "etag"
+        ],
+        "type": "object"
+      },
+      "ArtifactDetail": {
+        "additionalProperties": true,
+        "properties": {
+          "added_label": {
+            "type": "string"
+          },
+          "answering_reference": {
+            "type": "boolean"
+          },
+          "backlinks": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "body_html": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "checklist": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "etag": {
+            "type": "string"
+          },
+          "icon": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "kind_label": {
+            "type": "string"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "link": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "link_display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mime_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner_principal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "paints_inline": {
+            "type": "boolean"
+          },
+          "raw_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "shared": {
+            "type": "boolean"
+          },
+          "size_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text_body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text_truncated": {
+            "type": "boolean"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "versions": {
+            "type": "integer"
+          },
+          "viewer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "wiki_links": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "kind_label",
+          "labels",
+          "added_label",
+          "answering_reference",
+          "paints_inline",
+          "text_truncated",
+          "shared",
+          "etag",
+          "versions"
         ],
         "type": "object"
       },
@@ -1872,6 +2119,16 @@
           "enabled": {
             "type": "boolean"
           },
+          "flavor_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "wrapped_enabled": {
             "anyOf": [
               {
@@ -1914,6 +2171,16 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "flavor_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "max_days": {
             "type": "integer"
@@ -5008,16 +5275,6 @@
         "properties": {
           "handle": {
             "type": "string"
-          },
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "required": [
@@ -7846,6 +8103,690 @@
         ],
         "type": "object"
       },
+      "RoomLauncherResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "installed_unavailable": {
+            "type": "boolean"
+          },
+          "tiles": {
+            "items": {
+              "$ref": "#/components/schemas/RoomLauncherTile"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "installed_unavailable"
+        ],
+        "type": "object"
+      },
+      "RoomLauncherTile": {
+        "additionalProperties": true,
+        "properties": {
+          "app_key": {
+            "type": "string"
+          },
+          "icon": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "principal": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app_key",
+          "slug",
+          "title",
+          "principal"
+        ],
+        "type": "object"
+      },
+      "RoomListRow": {
+        "additionalProperties": true,
+        "properties": {
+          "archived": {
+            "type": "boolean"
+          },
+          "color": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "dm_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mascot_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "member_count": {
+            "type": "integer"
+          },
+          "sub": {
+            "type": "string"
+          },
+          "topics": {
+            "items": {
+              "$ref": "#/components/schemas/RoomTopicRow"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "group_id",
+          "display_name",
+          "color",
+          "sub",
+          "member_count",
+          "archived"
+        ],
+        "type": "object"
+      },
+      "RoomMessageCard": {
+        "additionalProperties": true,
+        "properties": {
+          "app_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "principal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "view": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "RoomMessageRow": {
+        "additionalProperties": true,
+        "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "attachments": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "author_blocked_by_reader": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "author_person_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "avatar_tint": {
+            "type": "string"
+          },
+          "blocked_full": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cards": {
+            "items": {
+              "$ref": "#/components/schemas/RoomMessageCard"
+            },
+            "type": "array"
+          },
+          "composed_via": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "created_at_display": {
+            "type": "string"
+          },
+          "day_heading": {
+            "type": "string"
+          },
+          "day_key": {
+            "type": "string"
+          },
+          "day_kicker": {
+            "type": "string"
+          },
+          "day_label": {
+            "type": "string"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "dm_link": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "edited_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "for_display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "initial": {
+            "type": "string"
+          },
+          "is_activity": {
+            "default": false,
+            "type": "boolean"
+          },
+          "is_agent": {
+            "type": "boolean"
+          },
+          "is_blocked_collapsed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "is_bridged": {
+            "type": "boolean"
+          },
+          "is_broken": {
+            "type": "boolean"
+          },
+          "is_deleted": {
+            "type": "boolean"
+          },
+          "is_edited": {
+            "type": "boolean"
+          },
+          "is_pepper": {
+            "type": "boolean"
+          },
+          "is_permalink_target": {
+            "default": false,
+            "type": "boolean"
+          },
+          "is_you": {
+            "type": "boolean"
+          },
+          "link_cards": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "link_previews": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "links": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "mention_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "mentions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "mentions_you": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parent_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "picture_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "quote": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "quote_excerpt": {
+            "type": "string"
+          },
+          "raw_body": {
+            "type": "string"
+          },
+          "reactions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "rendered_html": {
+            "type": "string"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resolved_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_start": {
+            "type": "boolean"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "via_display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "wiki_links": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "is_pepper",
+          "is_agent",
+          "is_you",
+          "is_deleted",
+          "is_broken",
+          "run_start",
+          "display_name",
+          "initial",
+          "avatar_tint",
+          "raw_body",
+          "rendered_html",
+          "created_at",
+          "created_at_display",
+          "day_key",
+          "day_kicker",
+          "day_heading",
+          "day_label",
+          "quote_excerpt",
+          "is_bridged",
+          "composed_via",
+          "is_edited"
+        ],
+        "type": "object"
+      },
+      "RoomMessagesResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/RoomMessageRow"
+            },
+            "type": "array"
+          },
+          "next_before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "permalink_target_missing": {
+            "default": false,
+            "type": "boolean"
+          },
+          "unavailable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "RoomRailTopicRow": {
+        "additionalProperties": true,
+        "properties": {
+          "archived_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dedicated_conversation": {
+            "type": "boolean"
+          },
+          "imported_history": {
+            "type": "boolean"
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "last_activity_at": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "subject_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "topic_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic_id",
+          "name",
+          "last_activity_at",
+          "dedicated_conversation",
+          "imported_history",
+          "is_default"
+        ],
+        "type": "object"
+      },
+      "RoomRosterMember": {
+        "additionalProperties": true,
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "is_agent": {
+            "type": "boolean"
+          },
+          "is_pepper": {
+            "type": "boolean"
+          },
+          "person_id": {
+            "type": "string"
+          },
+          "picture_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "person_id",
+          "display_name",
+          "is_pepper",
+          "is_agent"
+        ],
+        "type": "object"
+      },
+      "RoomRosterResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/RoomRosterMember"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
       "RoomSkillDetail": {
         "properties": {
           "builtin": {
@@ -8412,6 +9353,142 @@
         },
         "type": "object"
       },
+      "RoomTopicRow": {
+        "additionalProperties": true,
+        "properties": {
+          "archived_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dedicated_conversation": {
+            "type": "boolean"
+          },
+          "imported_history": {
+            "type": "boolean"
+          },
+          "last_activity_at": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "subject_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "topic_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic_id",
+          "name",
+          "last_activity_at",
+          "dedicated_conversation",
+          "imported_history"
+        ],
+        "type": "object"
+      },
+      "RoomTopicsGroup": {
+        "additionalProperties": true,
+        "properties": {
+          "color": {
+            "type": "string"
+          },
+          "default_topic_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "member_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "group_id",
+          "display_name",
+          "member_count",
+          "color"
+        ],
+        "type": "object"
+      },
+      "RoomTopicsResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "group": {
+            "$ref": "#/components/schemas/RoomTopicsGroup"
+          },
+          "topics": {
+            "items": {
+              "$ref": "#/components/schemas/RoomRailTopicRow"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "group"
+        ],
+        "type": "object"
+      },
+      "RoomsListResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "archived_total": {
+            "type": "integer"
+          },
+          "degraded": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "features": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/RoomListRow"
+            },
+            "type": "array"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "degraded",
+          "total",
+          "archived_total"
+        ],
+        "type": "object"
+      },
       "Row": {
         "properties": {
           "label": {
@@ -8551,6 +9628,25 @@
         "required": [
           "id",
           "name"
+        ],
+        "type": "object"
+      },
+      "SeasonMark": {
+        "properties": {
+          "glyph": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "glyph",
+          "title"
         ],
         "type": "object"
       },
@@ -11072,6 +12168,16 @@
             "default": "free",
             "type": "string"
           },
+          "season": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SeasonMark"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "time_format": {
             "type": "string"
           },
@@ -11219,10 +12325,6 @@
       "_Edit": {
         "properties": {
           "display_name": {
-            "default": "",
-            "type": "string"
-          },
-          "profiles": {
             "default": "",
             "type": "string"
           }
@@ -15174,7 +16276,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactDetail"
+                }
               }
             },
             "description": ""
@@ -21226,7 +22330,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/RoomsListResponse"
+                }
               }
             },
             "description": ""
@@ -21999,7 +23105,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/RoomLauncherResponse"
+                }
               }
             },
             "description": ""
@@ -26761,7 +27869,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/RoomRosterResponse"
+                }
               }
             },
             "description": ""
@@ -28284,7 +29394,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/RoomTopicsResponse"
+                }
               }
             },
             "description": ""
@@ -29040,7 +30152,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/RoomMessagesResponse"
+                }
               }
             },
             "description": ""
