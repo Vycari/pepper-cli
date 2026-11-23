@@ -163,6 +163,32 @@ def test_spinner_returns_idle_after_a_local_tool_not_the_stale_line(tty, monkeyp
     spy.stop()
 
 
+def test_a_labelled_tool_call_shows_the_servers_words_and_keeps_them(tty, capsys) -> None:
+    """A server past the friendly-tool-names rollout sends ``label``; the spinner shows it and
+    doesn't swap it for the raw name when the tool returns."""
+    api: Any = _Api(
+        [
+            api_client.StreamEvent(
+                kind="tool_call",
+                payload={
+                    "name": "search_gmail_messages",
+                    "args": {},
+                    "label": "Searching your email",
+                },
+            ),
+            api_client.StreamEvent(
+                kind="tool_result", payload={"name": "search_gmail_messages", "status": "ok"}
+            ),
+            api_client.StreamEvent(kind="reply", payload={"reply": "here you go"}),
+        ]
+    )
+    assert cli._stream_one_turn(api, "hi", trace=False) is True
+    shown = _Spy.last.log
+    assert "Searching your email…" in shown
+    assert not any("search_gmail_messages" in line for line in shown)
+    assert capsys.readouterr().out == "here you go\n"
+
+
 def test_a_malformed_draft_on_a_delivered_reply_is_noted_and_the_turn_still_succeeds(
     capsys,
 ) -> None:
