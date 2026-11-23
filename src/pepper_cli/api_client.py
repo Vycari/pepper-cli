@@ -947,17 +947,6 @@ class RoomTodos:
     items: list[TodoEntry]
 
 
-class TodoList(list[TodoEntry]):
-    """``GET /api/v1/todos``'s rows, plus ``skipped``: how many rows were left out because they
-    were malformed (only when the caller asked to skip them). A plain list otherwise."""
-
-    skipped: int = 0
-
-    def __init__(self, rows: list[TodoEntry] | None = None, *, skipped: int = 0) -> None:
-        super().__init__(rows or [])
-        self.skipped = skipped
-
-
 @dataclass(frozen=True)
 class RoomTodosList:
     """``GET /api/v1/todos/rooms``: the rooms with todos, and whether the list is partial."""
@@ -965,8 +954,6 @@ class RoomTodosList:
     rooms: list[RoomTodos]
     #: The server could not read the caller's rooms: ``rooms`` is empty, not "no todos".
     degraded: bool = False
-    #: Rooms or items the server sent that could not be read and were left out.
-    skipped: int = 0
 
 
 # MIRROR: src/pepper/api/scheduled_tasks.py::TaskSummary
@@ -1694,9 +1681,6 @@ class GroupList:
     archived_total: int
     groups: list[GroupSummary] = field(default_factory=list)
     features: tuple[str, ...] = ()
-    #: Rooms the server sent that could not be read and were left out, so a poller can say the
-    #: list is partial rather than show it as complete.
-    skipped: int = 0
 
 
 # MIRROR: src/pepper/api/groups.py::topic_messages
@@ -1822,8 +1806,6 @@ class GroupMessagePage:
     messages: list[GroupMessage] = field(default_factory=list)
     next_before: str | None = None
     permalink_target_missing: bool = False
-    #: Messages that could not be read and were left out, so one bad row never hides the page.
-    skipped: int = 0
 
 
 # MIRROR: src/pepper/api/groups.py::room_roster
@@ -1973,13 +1955,11 @@ def _app_tile_from_dict(row: dict[str, Any]) -> GroupAppTile:
 
 
 def _group_list_from_dict(body: dict[str, Any]) -> GroupList:
-    """The poller reads this on a timer, so a malformed room is left out and counted in
-    ``skipped`` rather than hiding every other room."""
+    """A malformed room fails the whole list, so no caller ever sees a partial list as
+    complete (the rail keeps its last list, and a name lookup cannot miss a room)."""
     what = "group list"
     body = _wire_row(body, what)
-    groups, skipped = _wire_rows(
-        _optional_list(body, "groups", what), "group", _group_summary_from_dict, skip_bad_rows=True
-    )
+    groups = _wire_rows(_optional_list(body, "groups", what), "group", _group_summary_from_dict)
     return GroupList(
         enabled=_wire_get(body, "enabled", what, bool),
         degraded=_wire_get(body, "degraded", what, bool),
@@ -1987,7 +1967,6 @@ def _group_list_from_dict(body: dict[str, Any]) -> GroupList:
         archived_total=_wire_get(body, "archived_total", what, int),
         groups=groups,
         features=tuple(f for f in _optional_list(body, "features", what) if isinstance(f, str)),
-        skipped=skipped,
     )
 
 
@@ -2003,7 +1982,7 @@ def _group_summary_from_dict(row: dict[str, Any]) -> GroupSummary:
         archived=_wire_get(row, "archived", what, bool),
         topics=_wire_rows(
             _optional_list(row, "topics", what), "group topic", _group_topic_from_dict
-        )[0],
+        ),
         mascot_url=mascot if isinstance(mascot := row.get("mascot_url"), str) else None,
     )
 
@@ -2069,14 +2048,6 @@ class ArtifactListResponse:
 
     truncated: bool
     items: list[ArtifactListItem] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class ArtifactListPage(ArtifactListResponse):
-    """:class:`ArtifactListResponse` plus ``skipped``: rows that could not be read and were left
-    out (the notes pane polls this list). Not a server model, so not mirrored."""
-
-    skipped: int = 0
 
 
 # The note-comment routes answer untyped JSON the server has not published in the vendored
@@ -2156,7 +2127,7 @@ def _note_thread_from_dict(t: dict[str, Any]) -> NoteCommentThread:
         detached=bool(t.get("detached", False)),
         replies=_wire_rows(
             _optional_list(t, "replies", what), "note comment", _note_comment_from_dict
-        )[0],
+        ),
     )
 
 
@@ -2165,7 +2136,7 @@ def _note_comments_from_dict(body: dict[str, Any]) -> NoteComments:
     body = _wire_row(body, what)
     threads = _wire_rows(
         _optional_list(body, "threads", what), "note comment thread", _note_thread_from_dict
-    )[0]
+    )
     return NoteComments(
         artifact_id=str(body.get("artifact_id") or ""),
         group_id=body.get("group_id"),
@@ -2523,7 +2494,7 @@ class ApiClient:
         can choose to bail (401) or degrade to static-only completion
         (everything else)."""
         resp = self._request("GET", "/api/v1/skills")
-        return _wire_rows(resp.json(), "skill", _skill_summary_from_dict)[0]
+        return _wire_rows(resp.json(), "skill", _skill_summary_from_dict)
 
     def get_skill(self, name: str) -> SkillDetail:
         """``GET /api/v1/skills/{name}`` — full skill, yours or built-in.
@@ -2590,7 +2561,7 @@ class ApiClient:
         room, for any member — including ones a room turn cannot run now."""
         resp = self._request("GET", _room_skills_path(group_id))
         body = resp.json()
-        return _wire_rows(body, "room skill", _room_skill_from_dict)[0]
+        return _wire_rows(body, "room skill", _room_skill_from_dict)
 
     def get_room_skill(self, group_id: str, grant_id: str) -> RoomSkillDetail:
         """``GET /api/v1/groups/{id}/skills/{grant_id}``. 404 for an id that
@@ -2627,8 +2598,7 @@ class ApiClient:
         group_id: str | None = None,
         mine: bool = False,
         asked: bool = False,
-        skip_bad_rows: bool = False,
-    ) -> TodoList:
+    ) -> list[TodoEntry]:
         """``GET /api/v1/todos?status=`` (a room's: ``/api/v1/groups/{id}/todos``).
 
         ``status`` is one of ``open`` (default) / ``done`` / ``dismissed``
@@ -2648,8 +2618,7 @@ class ApiClient:
             path += "&requester=me"
         resp = self._request("GET", path)
         body = resp.json()
-        rows, skipped = _wire_rows(body, "todo", _todo_from_dict, skip_bad_rows=skip_bad_rows)
-        return TodoList(rows, skipped=skipped)
+        return _wire_rows(body, "todo", _todo_from_dict)
 
     def list_room_todos(self, *, mine: bool = False) -> RoomTodosList:
         """``GET /api/v1/todos/rooms``: the todos on each of the caller's rooms.
@@ -2663,27 +2632,24 @@ class ApiClient:
         body = self._request("GET", path).json()
         what = "room todos response"
         body = _wire_row(body, what)
-        raw_rooms, skipped = _wire_rows(
-            _wire_get(body, "rooms", what, list), "room todos", _wire_row_copy, skip_bad_rows=True
-        )
         rooms: list[RoomTodos] = []
-        for raw in raw_rooms:
-            if "group_id" not in raw:
-                skipped += 1
+        # A room that is not an object, or has no id, and an item that is not an object are
+        # left out, as this read always has; a todo object of the wrong shape fails it.
+        for raw in _wire_get(body, "rooms", what, list):
+            if not isinstance(raw, dict) or "group_id" not in raw:
                 continue
             raw_items = _optional_list(raw, "items", "room todos")
             objects = [item for item in raw_items if isinstance(item, dict)]
-            skipped += len(raw_items) - len(objects)
             # An object that is not a todo means the shape is not the one this client knows:
             # that fails the whole read (the caller shows your own list and no rooms).
             rooms.append(
                 RoomTodos(
                     group_id=str(_wire_get(raw, "group_id", "room todos", str, int)),
                     name=str(raw.get("name") or ""),
-                    items=_wire_rows(objects, "room todo", _room_todo_from_dict)[0],
+                    items=_wire_rows(objects, "room todo", _room_todo_from_dict),
                 )
             )
-        return RoomTodosList(rooms=rooms, degraded=bool(body.get("degraded")), skipped=skipped)
+        return RoomTodosList(rooms=rooms, degraded=bool(body.get("degraded")))
 
     def calendar_range(
         self, *, start: str, days: int, principal: str | None = None, view: str | None = None
@@ -3016,8 +2982,8 @@ class ApiClient:
         resp = self._request("GET", f"{_scheduled_tasks_path(group_id)}{query}")
         body = resp.json()
         if group_id:
-            return [*_wire_rows(body, "room scheduled task", _room_scheduled_task_from_dict)[0]]
-        return _wire_rows(body, "scheduled task", _scheduled_task_from_dict)[0]
+            return [*_wire_rows(body, "room scheduled task", _room_scheduled_task_from_dict)]
+        return _wire_rows(body, "scheduled task", _scheduled_task_from_dict)
 
     def get_scheduled_task(
         self, task_id: str, *, group_id: str | None = None
@@ -3063,7 +3029,7 @@ class ApiClient:
             params=_keyset_params(limit, before, before_id),
         )
         body = resp.json()
-        return _wire_rows(body, "scheduled task run", _scheduled_run_from_dict)[0]
+        return _wire_rows(body, "scheduled task run", _scheduled_run_from_dict)
 
     def get_scheduled_task_thread(
         self,
@@ -3087,7 +3053,7 @@ class ApiClient:
             params=_keyset_params(limit, before, before_id),
         )
         body = resp.json()
-        return _wire_rows(body, "scheduled task message", _scheduled_message_from_dict)[0]
+        return _wire_rows(body, "scheduled task message", _scheduled_message_from_dict)
 
     def create_scheduled_task(
         self,
@@ -3335,7 +3301,7 @@ class ApiClient:
             params["principal"] = principal
         resp = self._request("GET", "/api/v1/trajectories", params=params)
         body = resp.json()
-        return _wire_rows(body, "trajectory", _trajectory_list_entry)[0]
+        return _wire_rows(body, "trajectory", _trajectory_list_entry)
 
     def chat_history(self) -> ChatHistory:
         """``GET /api/v1/chat/history`` — today's live Pepper thread, oldest first.
@@ -4049,7 +4015,7 @@ class ApiClient:
         body = _wire_row(self._request("GET", f"/api/v1/groups/{group_id}/topics").json(), what)
         return _wire_rows(
             _optional_list(body, "topics", what), "group topic", _group_topic_from_dict
-        )[0]
+        )
 
     def list_group_messages(
         self,
@@ -4077,15 +4043,11 @@ class ApiClient:
         ).json()
         what = "group messages response"
         body = _wire_row(body, what)
-        messages, skipped = _wire_rows(
-            _optional_list(body, "messages", what),
-            "group message",
-            group_message_from_dict,
-            skip_bad_rows=True,
+        messages = _wire_rows(
+            _optional_list(body, "messages", what), "group message", group_message_from_dict
         )
         return GroupMessagePage(
             messages=messages,
-            skipped=skipped,
             next_before=body.get("next_before"),
             permalink_target_missing=body.get("permalink_target_missing", False),
         )
@@ -4341,7 +4303,7 @@ class ApiClient:
         body = _wire_row(self._request("GET", f"/api/v1/groups/{group_id}/roster").json(), what)
         return _wire_rows(
             _optional_list(body, "members", what), "group roster member", _roster_member_from_dict
-        )[0]
+        )
 
     def create_group(self, *, people: list[str], name: str | None = None) -> dict[str, Any]:
         """``POST /api/v1/groups`` — start a room from a member set.
@@ -4415,7 +4377,7 @@ class ApiClient:
         tiles = _wire_rows(
             _optional_list(body, "tiles", what), "group app tile", _app_tile_from_dict
         )
-        return tiles[0], body.get("installed_unavailable", False)
+        return tiles, body.get("installed_unavailable", False)
 
     def group_app_chat(
         self,
@@ -4469,7 +4431,7 @@ class ApiClient:
         name: str | None = None,
         name_prefix: str | None = None,
         limit: int | None = None,
-    ) -> ArtifactListPage:
+    ) -> ArtifactListResponse:
         """``GET /api/v1/artifacts`` — list and search one owner's artifacts.
 
         ``principal`` omitted (or equal to the caller) is self-access with no
@@ -4495,15 +4457,10 @@ class ApiClient:
                 params[key] = value
         what = "artifact list response"
         body = _wire_row(self._request("GET", "/api/v1/artifacts", params=params).json(), what)
-        items, skipped = _wire_rows(
-            _optional_list(body, "items", what),
-            "artifact list item",
-            _artifact_list_item_from_dict,
-            skip_bad_rows=True,
+        items = _wire_rows(
+            _optional_list(body, "items", what), "artifact list item", _artifact_list_item_from_dict
         )
-        return ArtifactListPage(
-            truncated=_wire_get(body, "truncated", what, bool), items=items, skipped=skipped
-        )
+        return ArtifactListResponse(truncated=_wire_get(body, "truncated", what, bool), items=items)
 
     def get_artifact_detail(self, artifact_id: str) -> ArtifactDetail:
         """``GET /api/v1/artifacts/{id}/detail`` — one artifact's full text.
@@ -5379,9 +5336,10 @@ def _page_params(limit: int, before: str | None) -> dict[str, Any]:
 
 
 def _malformed(what: str, raw: object = None) -> ApiError:
-    """A malformed successful response: status 200, ``what`` names the shape or field that
-    failed, and the context is the first 200 characters of ``raw`` (never the whole payload)."""
-    return ApiError(status=200, body=str(raw)[:200], detail=f"malformed response: {what}")
+    """A malformed successful response: status 200 and ``what`` naming the shape or field that
+    failed. ``raw`` is never put in the error: a response body can carry a credential (the
+    device poll's token), and an ``ApiError`` is printed and logged."""
+    return ApiError(status=200, body="", detail=f"malformed response: {what}")
 
 
 def _wire_row(raw: object, what: str) -> dict[str, Any]:
@@ -5448,24 +5406,10 @@ def _wire_list(raw: object, what: str) -> list[Any]:
     return raw
 
 
-def _wire_rows[T](
-    raw: object, what: str, parse: Callable[[dict[str, Any]], T], *, skip_bad_rows: bool = False
-) -> tuple[list[T], int]:
-    """``parse`` over each element of the array ``raw``: the parsed rows and how many were left
-    out. A response that is not an array always fails. With ``skip_bad_rows`` (a list a poller or
-    stream reads on every tick) a row that fails to parse is left out and counted, so one bad row
-    never costs the rest; without it the first bad row fails the whole response. Only the
-    malformed-response :class:`ApiError` is caught, never a programmer error."""
-    parsed: list[T] = []
-    skipped = 0
-    for item in _wire_list(raw, what):
-        try:
-            parsed.append(parse(_wire_row(item, what)))
-        except ApiError:
-            if not skip_bad_rows:
-                raise
-            skipped += 1
-    return parsed, skipped
+def _wire_rows[T](raw: object, what: str, parse: Callable[[dict[str, Any]], T]) -> list[T]:
+    """``parse`` over each element of the array ``raw``. A response that is not an array, or any
+    row that fails to parse, fails the whole response: no row is ever silently left out."""
+    return [parse(_wire_row(item, what)) for item in _wire_list(raw, what)]
 
 
 def _fields[T](cls: type[T], row: dict[str, Any], **parsed: Any) -> T:

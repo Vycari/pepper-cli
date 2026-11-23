@@ -1,16 +1,19 @@
 """The rest of the typed parsers (todos, groups, artifacts, notes, skills, chat send, sign-in)
 turn a malformed successful response into ``ApiError`` (status 200) naming the field or shape,
-never a ``KeyError``/``TypeError``, and never echo the offending value. Lists a poller reads on
-a timer skip and count a bad row; every other list fails whole."""
+never a ``KeyError``/``TypeError``, and never echo the offending value. A bad row fails the
+whole list, so nothing is silently left out."""
 
 from __future__ import annotations
 
 import httpx
 import pytest
 
-from pepper_cli import api_client
+from pepper_cli import api_client, cli
 from pepper_cli.api_client import ApiError
 from pepper_cli.secret import SecretStr
+from pepper_cli.tui import app as tui_app
+from pepper_cli.tui import poller
+from tests import tui_support as ts
 
 
 def _api(body: object) -> api_client.ApiClient:
@@ -213,36 +216,38 @@ def test_older_server_rows_keep_their_defaults() -> None:
     )
     with _api(_groups(groups=[_group(topics=None, future=1)])) as api:
         listed = api.list_groups()
-    assert (listed.groups[0].topics, listed.skipped, listed.features) == ([], 0, ())
+    assert (listed.groups[0].topics, listed.features) == ([], ())
     with _api({"truncated": False}) as api:
         assert api.list_artifacts().items == []
 
 
-# --- polled lists skip and count a bad row; the others fail whole -----------------------------
+# --- every list fails whole on a bad row: nothing is silently left out ------------------------
 
 
-def test_the_group_list_skips_and_counts_a_malformed_room() -> None:
-    body = _groups(groups=[_group(), _group(group_id=None), "x", _group(group_id="g3")])
-    with _api(body) as api:
-        listed = api.list_groups()
-    assert [g.group_id for g in listed.groups] == ["g1", "g3"]
-    assert listed.skipped == 2
+@pytest.mark.parametrize(
+    "rooms",
+    [
+        [_group(), _group(group_id=None)],
+        [_group(), "x"],
+        [_group(topics=[{"topic_id": "x"}]), _group(group_id="g2")],
+    ],
+)
+def test_a_malformed_room_fails_the_group_list(rooms: list) -> None:
+    with _api(_groups(groups=rooms)) as api, pytest.raises(ApiError) as raised:
+        api.list_groups()
+    _malformed(raised)
 
 
-def test_a_room_with_a_malformed_topic_is_skipped_not_the_whole_list() -> None:
-    body = _groups(groups=[_group(topics=[{"topic_id": "x"}]), _group(group_id="g2")])
-    with _api(body) as api:
-        listed = api.list_groups()
-    assert [g.group_id for g in listed.groups] == ["g2"]
-    assert listed.skipped == 1
-
-
-def test_group_messages_skip_and_count_a_malformed_row() -> None:
-    body = {"messages": [_message(), _message(id=None), 4, _message(id="m3")]}
-    with _api(body) as api:
-        page = api.list_group_messages("g", "tp")
-    assert [m.id for m in page.messages] == ["s", "m3"]
-    assert page.skipped == 2
+@pytest.mark.parametrize(
+    "messages", [[_message(), _message(id=None)], [_message(), 4], [_message(cards=[{"a": 1}])]]
+)
+def test_a_malformed_group_message_fails_the_page(messages: list) -> None:
+    with _api({"messages": messages}) as api, pytest.raises(ApiError) as raised:
+        api.list_group_messages("g", "tp", at="m1")
+    _malformed(raised)
+    # A refresh that fails this way is retried (200 is not a permanent refusal), so a stale
+    # row is never left in place as if it had been read again.
+    assert raised.value.status not in tui_app._PUBLISH_PERMANENT
 
 
 @pytest.mark.parametrize("bad", [{"messages": "x"}, []])
@@ -251,43 +256,31 @@ def test_group_messages_that_are_not_a_list_fail_the_page(bad: object) -> None:
         api.list_group_messages("g", "tp")
 
 
-def test_a_group_message_with_a_malformed_card_is_a_bad_row() -> None:
-    body = {"messages": [_message(cards=[{"app_key": "k"}]), _message(id="ok")]}
-    with _api(body) as api:
-        page = api.list_group_messages("g", "tp")
-    assert [m.id for m in page.messages] == ["ok"]
-    assert page.skipped == 1
-
-
-def test_artifacts_skip_and_count_a_malformed_item() -> None:
+def test_a_malformed_artifact_fails_the_list() -> None:
     good = {"id": "a", "name": "n", "kind": "k", "updated_at": "u", "etag": "e"}
-    with _api({"truncated": False, "items": [good, {"id": "b"}, good]}) as api:
-        listed = api.list_artifacts()
-    assert (len(listed.items), listed.skipped) == (2, 1)
+    body = {"truncated": False, "items": [good, {"id": "b"}]}
+    with _api(body) as api, pytest.raises(ApiError) as raised:
+        api.list_artifacts()
+    _malformed(raised)
 
 
-def test_todos_skip_only_when_the_caller_polls() -> None:
-    rows = [_todo(), _without(_todo(id="t2"), "status"), _todo(id="t3")]
-    with _api(rows) as api:
-        polled = api.list_todos(skip_bad_rows=True)
-    assert ([t.id for t in polled], polled.skipped) == (["t1", "t3"], 1)
+def test_a_malformed_todo_fails_the_list_and_the_pane_read() -> None:
+    rows = [_todo(), _todo(id="t2", title=None)]
     with _api(rows) as api, pytest.raises(ApiError):
+        api.list_todos()
+    with _api(rows) as api, pytest.raises(ApiError):
+        poller.fetch_todos(api, None, mine=True)
+    with _api({"todos": []}) as api, pytest.raises(ApiError):
         api.list_todos()
 
 
-def test_a_todo_list_that_is_not_a_list_fails_even_when_skipping() -> None:
-    with _api({"todos": []}) as api, pytest.raises(ApiError):
-        api.list_todos(skip_bad_rows=True)
-
-
-def test_room_todos_skip_non_objects_but_a_malformed_todo_fails_the_read() -> None:
+def test_room_todos_leave_out_non_objects_but_a_malformed_todo_fails_the_read() -> None:
     body = {
         "rooms": [{"name": "no id", "items": []}, "junk", {"group_id": "g", "items": [_todo(), 1]}]
     }
     with _api(body) as api:
         listed = api.list_room_todos()
     assert [(r.group_id, len(r.items)) for r in listed.rooms] == [("g", 1)]
-    assert listed.skipped == 3
     bad = {"rooms": [{"group_id": "g", "items": [{"id": "x"}]}]}
     with _api(bad) as api, pytest.raises(ApiError) as raised:
         api.list_room_todos()
@@ -295,6 +288,45 @@ def test_room_todos_skip_non_objects_but_a_malformed_todo_fails_the_read() -> No
     with _api({"rooms": "x"}) as api, pytest.raises(ApiError) as raised:
         api.list_room_todos()
     assert "'rooms'" in _malformed(raised)
+
+
+def test_a_malformed_same_named_note_fails_the_lookup_rather_than_resolving_the_other() -> None:
+    good = {"id": "A", "name": "Runbook", "kind": "note", "updated_at": "u", "etag": "e"}
+    bad = {"id": "B", "name": "Runbook", "kind": "note", "updated_at": "u"}
+    with _api({"truncated": False, "items": [good, bad]}) as api, pytest.raises(ApiError):
+        cli._resolve_note(api, room_principal=None, value="Runbook")
+
+
+def test_the_rail_keeps_its_etag_when_a_room_is_malformed() -> None:
+    server = ts.standard_server()
+    with server.client() as api:
+        rail = poller.RailPoller(api)
+        first = rail.step()
+        assert first.groups is not None
+        rail.commit(first)
+        kept = first.etag
+        assert len(first.groups.groups) == 2
+        good_topic = dict(server.rooms[1]["topics"][0])
+        server.rooms[1]["topics"][0] = {"topic_id": "x"}  # no name
+        server.bump()
+        with pytest.raises(ApiError):
+            rail.step()
+        assert rail._etag == kept  # nothing committed: the partial list is never adopted
+        server.rooms[1]["topics"][0] = good_topic
+        server.bump()
+        again = rail.step()
+    assert again.groups is not None
+    assert len(again.groups.groups) == 2
+
+
+def test_a_malformed_device_poll_never_carries_the_token_in_the_error() -> None:
+    body = {"status": "approved", "token": "pep_pat_sentinel"}
+    client = httpx.Client(transport=httpx.MockTransport(lambda _r: httpx.Response(200, json=body)))
+    with pytest.raises(ApiError) as raised:
+        api_client.device_poll("http://example.com", SecretStr("dc"), client=client)
+    assert "pep_pat_sentinel" not in raised.value.body
+    assert "pep_pat_sentinel" not in str(raised.value)
+    assert "pep_pat_sentinel" not in repr(raised.value)
 
 
 # --- sign-in ----------------------------------------------------------------------------------

@@ -284,7 +284,7 @@ def fetch_room_shelf(api: ApiClient, room_id: str) -> tuple[list[GroupAppTile], 
 def fetch_todos(api: ApiClient, owner: str | None, *, mine: bool) -> list[TodoEntry]:
     """Every todo of one owner, open and closed, in one call: a room's (``owner`` is its id) or
     your own (``None``). ``mine`` keeps what someone asked of you."""
-    return api.list_todos(status="all", group_id=owner, mine=mine, skip_bad_rows=True)
+    return api.list_todos(status="all", group_id=owner, mine=mine)
 
 
 @dataclass(frozen=True)
@@ -303,7 +303,7 @@ def fetch_own_todos(api: ApiClient, *, mine: bool) -> OwnTodos:
     A failure of your own list raises, as any pane read does; a 401 on either one too, so
     the app takes its login path (an upgrade-required answer is not caught here either).
     """
-    todos = api.list_todos(status="all", mine=mine, skip_bad_rows=True)
+    todos = api.list_todos(status="all", mine=mine)
     try:
         listed = api.list_room_todos(mine=mine)
     except ApiError as exc:
