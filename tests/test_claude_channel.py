@@ -1137,9 +1137,17 @@ def test_the_cursor_file_moves_after_the_notification_is_handed_over(monkeypatch
     events: list[str] = []
     real_write = claude_channel._advance_cursor_file
 
+    stop = threading.Event()
+
     def recording_write(path, cursor, **kwargs):
-        events.append(f"cursor:{getattr(cursor, 'cursor', cursor)}")
-        return real_write(path, cursor, **kwargs)
+        value = getattr(cursor, "cursor", cursor)
+        events.append(f"cursor:{value}")
+        result = real_write(path, cursor, **kwargs)
+        # Stop on the last write rather than after a fixed pause: on a slow
+        # runner 0.3s ended the worker between cursor 7 and cursor 9.
+        if value == 9:
+            stop.set()
+        return result
 
     class Sink:
         def push(self, content, meta):
@@ -1164,7 +1172,6 @@ def test_the_cursor_file_moves_after_the_notification_is_handed_over(monkeypatch
         self_id=None,
         started_at=_now(),
     )
-    stop = threading.Event()
     worker = claude_channel.ChannelWorker(
         api,
         config,
@@ -1178,7 +1185,8 @@ def test_the_cursor_file_moves_after_the_notification_is_handed_over(monkeypatch
         allowed_rooms={_ROOM},
         stop=stop,
     )
-    threading.Timer(0.3, stop.set).start()
+    # A backstop so a regression fails the assertion instead of hanging.
+    threading.Timer(10, stop.set).start()
 
     assert worker.run() == 0
 
