@@ -1860,6 +1860,26 @@ class GroupAppTile:
     icon: str | None = None
 
 
+#: The fields an app card carries. ``RoomMessageCard`` requires only ``kind``: a conversation,
+#: a Following feed item or an HTML card may leave any of these out or null.
+_APP_CARD_FIELDS = ("app_key", "slug", "title", "principal", "url")
+
+
+def _group_cards(raw: list[Any]) -> list[GroupCard]:
+    """The app cards on a message. Every entry must be an object with a string ``kind`` (the
+    schema's one required field), or the page is malformed. An entry without every app-card
+    field is a kind this client does not draw, so it is skipped (the message body still carries
+    its markdown link) rather than failing the whole page."""
+    what = "group card"
+    cards: list[GroupCard] = []
+    for c in raw:
+        row = _wire_row(c, what)
+        _wire_get(row, "kind", what, str)
+        if all(isinstance(row.get(k), str) for k in _APP_CARD_FIELDS):
+            cards.append(_group_card_from_dict(row))
+    return cards
+
+
 def _group_card_from_dict(row: dict[str, Any]) -> GroupCard:
     what = "group card"
     row = _wire_row(row, what)
@@ -1938,7 +1958,7 @@ def group_message_from_dict(row: dict[str, Any]) -> GroupMessage:
         attachments=_optional_list(row, "attachments", what),
         mention_names=_optional_list(row, "mention_names", what),
         quote=row.get("quote"),
-        cards=[_group_card_from_dict(c) for c in _optional_list(row, "cards", what)],
+        cards=_group_cards(_optional_list(row, "cards", what)),
         is_permalink_target=row.get("is_permalink_target", False),
         author_person_id=row.get("author_person_id"),
         mentions=_mention_ids(row.get("mentions")),

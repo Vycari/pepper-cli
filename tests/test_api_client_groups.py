@@ -1028,3 +1028,29 @@ def test_the_streams_send_start_only_when_asked_and_never_with_a_position() -> N
     assert seen[2].url.path == "/api/v1/groups/r1/topics/t1/events/stream"
     assert all("last-event-id" not in r.headers for r in seen[:3])
     assert seen[3].headers["last-event-id"] == "4"
+
+
+def test_a_card_that_is_not_an_app_card_is_skipped_not_fatal() -> None:
+    """``RoomMessageCard`` requires only ``kind``: a conversation or feed card may leave the
+    app-card fields out or null. The message (and its page) still parses; only full app cards
+    are kept."""
+    app_card = {
+        "kind": "card",
+        "app_key": "todo",
+        "slug": "todo",
+        "title": "Todo",
+        "principal": "g1",
+        "url": "/apps/todo",
+        "summary": {"lines": ["2 open"]},
+    }
+    message = api_client.group_message_from_dict(
+        _message_json(
+            cards=[
+                {"kind": "following", "title": None, "url": None},
+                {"kind": "card", "app_key": "x", "slug": "s", "title": None, "principal": "p"},
+                app_card,
+            ]
+        )
+    )
+    assert [c.app_key for c in message.cards] == ["todo"]
+    assert message.cards[0].summary_lines == ["2 open"]
