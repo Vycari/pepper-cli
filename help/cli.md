@@ -239,6 +239,12 @@ ever want to look back at a specific conversation in detail.
 - **A fortune:** `pepper fortune` prints a short fortune from Pepper. It works
   offline and needs no sign-in. Now and then a small pepper also appears when
   you start a session; set `PEPPER_NO_WHIMSY=1` if you'd rather it didn't.
+<!-- rollout: seasonal-marks -->
+- **Seasonal marks:** on a solstice, an equinox or Leap Day, the chat session's
+  opening lines include a small mark for the day, in your own timezone and
+  hemisphere. Turn it off with the seasonal marks setting in Pepper, or with
+  `PEPPER_NO_WHIMSY=1`.
+<!-- /rollout -->
 - **Your scheduled prompts:** `pepper scheduled-tasks list` shows the ones
   currently running; add `--all` to include paused ones and one-offs that have
   already fired. `show` prints one in full, and `runs` / `thread` show what it has
