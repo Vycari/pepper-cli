@@ -284,6 +284,28 @@ ever want to look back at a specific conversation in detail.
   overwrite, or quit if someone else changed the note first. `pepper notes
   delete <note>` deletes one (asks first, unless `--yes`). Same notes as the
   **Notes** app on the web — see [Notes](#artifacts).
+<!-- rollout: blog -->
+- **Publishing a note to a room's blog:** if you own the room and its blog is
+  set up, `pepper blog stage --room <room> <note>` shows what publishing would
+  do (the address, anything to look over first) and what is saved for the post so
+  far, without changing anything. `--slug my-post` saves the address (the date is
+  put in front of it), `--summary "…"` saves a summary of up to 280 characters,
+  and `--at "2026-11-21 09:00"` schedules the post: it shows the same look-over,
+  asks, and then publishes by itself at that time (a time without a zone is read
+  in the blog's timezone; `--yes` skips the question). `pepper blog unschedule`
+  stops a scheduled post and keeps what you saved, and `pepper blog unstage`
+  throws it away. `pepper blog publish --room <room> <note>` publishes now, using
+  what you saved unless you give `--slug` or `--summary` again; it shows the
+  look-over, asks, and publishes. If the note changed after the check, nothing is
+  published; run it again. `pepper blog list --room <room>` lists the room's
+  posts (title, address, date, and whether one is withdrawn or its note was
+  edited since) and the notes not yet published. `pepper blog withdraw --room
+  <room> <post>` takes a post down (`<post>` is its id or exact title, asks
+  first; `--yes` skips the question). To import an old post under its
+  original date, add `--published-at 2019-04-02T09:30:00-07:00` to `publish`:
+  it backdates the post and is refused for a time in the future or for a post
+  that is already published. These need your own login, not an agent's.
+<!-- /rollout -->
 - **Pictures in a note:** upload the picture with `pepper artifacts create
   --file chart.png` and it prints a line like `![](/artifacts/<id>/raw)`. Put
   that line in the note, on a line of its own, and write a short description
@@ -316,9 +338,12 @@ ever want to look back at a specific conversation in detail.
   yet published, and `pepper blog publish --room <room> <note>` publishes
   one. It first shows what it found, like links that will turn into plain
   words or text Pepper wrote that you haven't read, and asks before it goes
-  out. `pepper blog check` shows the same without publishing, and
-  `pepper blog withdraw --room <room> <post>` takes a post down. Publishing
-  the note again puts it back.
+  out. `pepper blog stage --room <room> <note>` shows the same without
+  publishing, saves the post's address and summary (`--slug`, `--summary`),
+  and with `--at` schedules it to publish the note as it stands then.
+  `pepper blog unschedule` cancels the time, `pepper blog unstage` drops the
+  saved details, and `pepper blog withdraw --room <room> <post>` takes a post
+  down. Publishing the note again puts it back.
 - **Moving an old blog over:** create a note for each post, then publish it
   with `--published-at` set to the day it first went out, like
   `--published-at 2014-03-02T09:00:00-08:00`. The post keeps that date and

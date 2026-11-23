@@ -6,6 +6,9 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 
 ## Unreleased
 
+- `pepper blog list --room ROOM` lists a room's blog posts and the notes not yet published, `pepper blog withdraw --room ROOM POST [--yes]` takes a post down (it asks first), and `pepper blog publish --published-at ISO` backdates an imported post (sent as typed; the server refuses a future time or a republish).
+- `pepper blog stage --room ROOM NOTE [--slug NAME] [--summary TEXT] [--at TIME] [--yes]` shows what publishing a room note to the room's blog would do and its saved stage, or saves a slug, summary or scheduled time (`--at` goes to the server as typed); `pepper blog unschedule` and `pepper blog unstage` undo it. `pepper blog publish --room ROOM NOTE [--slug NAME] [--summary TEXT] [--yes]` shows the check, asks, and publishes exactly what it showed, using the saved stage unless a flag overrides it. Needs a person's own token and a server with the blog routes.
+
 ## 0.10.0 — 2026-11-18
 
 The entity graph arrives (`pepper graph`), along with `pepper run FILE` shebang scripts, calendar
