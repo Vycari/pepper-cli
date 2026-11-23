@@ -649,6 +649,17 @@ def test_a_refusal_notice_holds_against_phrases_until_a_real_status() -> None:
     assert lines[-2:] == ["Calling x…", "Counting electrons"]
 
 
+def test_a_labelled_tool_call_holds_its_words_through_the_result() -> None:
+    lines: list[str] = []
+    sink = tui_app._TurnStatus(lines.append, ts.standard_server().client(), None)
+    sink.tool_call({"name": "lookup_weather", "label": "Checking the weather"})
+    sink.tool_result({"name": "lookup_weather", "status": "ok"})
+    assert lines == ["Checking the weather…"]
+    sink.tool_call({"name": "x"})
+    sink.tool_result({"name": "x", "status": "ok"})
+    assert lines[-2:] == ["Calling x…", "x → ok"]
+
+
 async def test_quitting_mid_stream_stops_reading_and_closes_the_stream(monkeypatch) -> None:
     server = ts.standard_server()
     gate = threading.Event()

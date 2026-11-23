@@ -34,6 +34,24 @@ type TurnOutcome = Literal["reply", "error", "ended", "stopped"]
 NO_LOCAL_TOOLS = "No local tools are shared with this session."
 
 
+def tool_call_status(payload: dict[str, Any]) -> str:
+    """The status line while a tool runs.
+
+    The server's friendly ``label`` ("Searching your email") when the frame carries one, else
+    the tool's own name. An older server, or a person the server's rollout hasn't reached,
+    sends no ``label``, and the line reads as it always has.
+    """
+    label = payload.get("label")
+    if isinstance(label, str) and label.strip():
+        return f"{label.strip()}…"
+    return f"Calling {payload.get('name') or 'a tool'}…"
+
+
+def tool_result_status(payload: dict[str, Any]) -> str:
+    """The status line once a tool returns: its name and outcome."""
+    return f"{payload.get('name') or 'tool'} → {payload.get('status') or 'ok'}"
+
+
 class TurnSink:
     """Receives a turn's events. Every method is a no-op here; override what you draw.
 

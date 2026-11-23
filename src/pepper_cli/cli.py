@@ -3566,6 +3566,8 @@ class _ReplTurnSink(turn.TurnSink):
         #: (``_stream_one_turn`` decides). It starts and stops around the turn there; this sink
         #: updates its line and pauses it for anything that prints.
         self.wait = wait
+        #: The last ``tool_call`` carried the server's friendly ``label``.
+        self._labelled = False
 
     def _status(self, text: str) -> None:
         if self.wait is not None:
@@ -3599,12 +3601,16 @@ class _ReplTurnSink(turn.TurnSink):
     def tool_call(self, payload: dict) -> None:
         if self.trace:
             render.render_tool_call(payload)
-        self._status(f"Calling {payload.get('name') or 'a tool'}…")
+        self._labelled = bool(payload.get("label"))
+        self._status(turn.tool_call_status(payload))
 
     def tool_result(self, payload: dict) -> None:
         if self.trace:
             render.render_tool_result(payload)
-        self._status(f"{payload.get('name') or 'tool'} → {payload.get('status') or 'ok'}")
+        # A friendly label stays up until the next real status; the raw name and outcome
+        # would undo it the moment the tool returned.
+        if not self._labelled:
+            self._status(turn.tool_result_status(payload))
 
     def client_tools(self, payload: dict) -> None:
         if self.trace:

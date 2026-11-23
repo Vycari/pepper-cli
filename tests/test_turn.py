@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
+import pytest
 
 from pepper_cli import turn
 from pepper_cli.api_client import ApiError, StreamEvent
@@ -165,3 +166,16 @@ def test_a_failed_post_is_returned_not_raised() -> None:
             provider=FakeProvider(),
         )
         assert answer is not None and answer.post_error is exc
+
+
+@pytest.mark.parametrize(
+    ("payload", "line"),
+    [
+        ({"name": "web_search", "label": "Searching the web"}, "Searching the web…"),
+        ({"name": "web_search", "label": "  "}, "Calling web_search…"),
+        ({"name": "web_search"}, "Calling web_search…"),
+        ({}, "Calling a tool…"),
+    ],
+)
+def test_tool_call_status_prefers_the_servers_label(payload, line) -> None:
+    assert turn.tool_call_status(payload) == line
