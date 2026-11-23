@@ -34,6 +34,14 @@ type TurnOutcome = Literal["reply", "error", "ended", "stopped"]
 NO_LOCAL_TOOLS = "No local tools are shared with this session."
 
 
+def tool_label(payload: dict[str, Any]) -> str | None:
+    """The server's friendly ``label`` on a ``tool_call`` frame, or None when absent or blank."""
+    label = payload.get("label")
+    if isinstance(label, str) and label.strip():
+        return label.strip()
+    return None
+
+
 def tool_call_status(payload: dict[str, Any]) -> str:
     """The status line while a tool runs.
 
@@ -41,9 +49,9 @@ def tool_call_status(payload: dict[str, Any]) -> str:
     the tool's own name. An older server, or a person the server's rollout hasn't reached,
     sends no ``label``, and the line reads as it always has.
     """
-    label = payload.get("label")
-    if isinstance(label, str) and label.strip():
-        return f"{label.strip()}…"
+    label = tool_label(payload)
+    if label is not None:
+        return f"{label}…"
     return f"Calling {payload.get('name') or 'a tool'}…"
 
 

@@ -657,7 +657,15 @@ def test_a_labelled_tool_call_holds_its_words_through_the_result() -> None:
     assert lines == ["Checking the weather…"]
     sink.tool_call({"name": "x"})
     sink.tool_result({"name": "x", "status": "ok"})
-    assert lines[-1] == "Calling x…"
+    assert lines[-2:] == ["Calling x…", "x → ok"]
+
+
+def test_a_blank_label_still_shows_the_result() -> None:
+    lines: list[str] = []
+    sink = tui_app._TurnStatus(lines.append, ts.standard_server().client(), None)
+    sink.tool_call({"name": "web_search", "label": "  "})
+    sink.tool_result({"name": "web_search", "status": "ok"})
+    assert lines == ["Calling web_search…", "web_search → ok"]
 
 
 def test_parallel_calls_never_bring_a_labelled_tools_raw_name_back() -> None:
