@@ -2101,9 +2101,9 @@ def _note_comment_from_dict(row: dict[str, Any]) -> NoteComment:
         raise _malformed(f"{what} field 'author' has the wrong type", row)
     return NoteComment(
         id=str(_wire_get(row, "id", what, str, int)),
-        body=str(row.get("body") or ""),
-        author=str((author or {}).get("display_name") or ""),
-        created_at=str(row.get("created_at") or ""),
+        body=_wire_opt(row, "body", what, "", str),
+        author=_wire_opt(author or {}, "display_name", "note comment author", "", str),
+        created_at=_wire_opt(row, "created_at", what, "", str),
         mentions=_mention_ids(
             [
                 {"person_id": m["id"]} if isinstance(m, dict) and "id" in m else m
@@ -2138,12 +2138,12 @@ def _note_comments_from_dict(body: dict[str, Any]) -> NoteComments:
         _optional_list(body, "threads", what), "note comment thread", _note_thread_from_dict
     )
     return NoteComments(
-        artifact_id=str(body.get("artifact_id") or ""),
+        artifact_id=str(_wire_opt(body, "artifact_id", what, "", str, int)),
         group_id=body.get("group_id"),
         topic_id=body.get("topic_id"),
         etag=body.get("etag"),
         threads=threads,
-        resolved_count=int(body.get("resolved_count") or 0),
+        resolved_count=_wire_opt(body, "resolved_count", what, 0, int),
     )
 
 
@@ -2645,7 +2645,7 @@ class ApiClient:
             rooms.append(
                 RoomTodos(
                     group_id=str(_wire_get(raw, "group_id", "room todos", str, int)),
-                    name=str(raw.get("name") or ""),
+                    name=_wire_opt(raw, "name", "room todos", "", str),
                     items=_wire_rows(objects, "room todo", _room_todo_from_dict),
                 )
             )
@@ -4744,7 +4744,7 @@ class ApiClient:
             slug=_wire_get(body, "slug", what, str),
             url=_wire_get(body, "url", what, str),
             republished=_wire_get(body, "republished", what, bool),
-            card=str(body.get("card", "")),
+            card=_wire_opt(body, "card", what, "", str),
             copy=body.get("copy"),
         )
 
@@ -4758,7 +4758,7 @@ class ApiClient:
         return BlogWithdrawn(
             post_id=str(_wire_get(body, "post_id", what, str, int)),
             already=_wire_get(body, "already", what, bool),
-            card=str(body.get("card", "")),
+            card=_wire_opt(body, "card", what, "", str),
             copy=body.get("copy"),
         )
 
@@ -5374,6 +5374,15 @@ def _optional_list(row: dict[str, Any], key: str, what: str) -> list[Any]:
     if row.get(key) is None:
         return []
     return _wire_get(row, key, what, list)
+
+
+def _wire_opt(row: dict[str, Any], key: str, what: str, default: Any, *types: type) -> Any:
+    """``row[key]`` when present and one of ``types``; ``default`` when it is missing or
+    ``null``. A value of any other type (a bool where an int is wanted, say) is a
+    malformed-response :class:`ApiError` naming the field, never a ``TypeError``."""
+    if row.get(key) is None:
+        return default
+    return _wire_get(row, key, what, *types)
 
 
 def _wire_get(

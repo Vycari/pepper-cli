@@ -329,6 +329,53 @@ def test_a_malformed_device_poll_never_carries_the_token_in_the_error() -> None:
     assert "pep_pat_sentinel" not in repr(raised.value)
 
 
+# --- an optional scalar keeps its default when absent, and fails typed when wrong ------------
+
+
+@pytest.mark.parametrize("bad", [{"bad": 1}, True, "3", 1.5])
+def test_a_wrong_typed_resolved_count_fails_the_comment_read(bad: object) -> None:
+    with _api({"threads": [], "resolved_count": bad}) as api, pytest.raises(ApiError) as raised:
+        api.list_note_comments("a")
+    assert "'resolved_count'" in _malformed(raised)
+
+
+def test_an_absent_resolved_count_keeps_its_default() -> None:
+    for body in ({"threads": []}, {"threads": [], "resolved_count": None}):
+        with _api(body) as api:
+            assert api.list_note_comments("a").resolved_count == 0
+    with _api({"threads": [], "resolved_count": 2}) as api:
+        assert api.list_note_comments("a").resolved_count == 2
+
+
+@pytest.mark.parametrize(
+    ("message", "names"),
+    [
+        ({"id": "c", "body": {"x": 1}}, "'body'"),
+        ({"id": "c", "created_at": 5}, "'created_at'"),
+        ({"id": "c", "author": {"display_name": ["x"]}}, "'display_name'"),
+    ],
+)
+def test_a_wrong_typed_comment_field_fails_the_read(message: dict, names: str) -> None:
+    with _api({"threads": [{"message": message}]}) as api, pytest.raises(ApiError) as raised:
+        api.list_note_comments("a")
+    assert names in _malformed(raised)
+
+
+def test_a_wrong_typed_blog_card_or_room_todos_name_fails_the_read() -> None:
+    with (
+        _api({"post_id": "p", "already": False, "card": 1}) as api,
+        pytest.raises(ApiError) as raised,
+    ):
+        api.blog_withdraw("g", "p")
+    assert "'card'" in _malformed(raised)
+    with (
+        _api({"rooms": [{"group_id": "g", "name": 3, "items": []}]}) as api,
+        pytest.raises(ApiError) as raised,
+    ):
+        api.list_room_todos()
+    assert "'name'" in _malformed(raised)
+
+
 # --- sign-in ----------------------------------------------------------------------------------
 
 
