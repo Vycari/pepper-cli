@@ -3566,7 +3566,8 @@ class _ReplTurnSink(turn.TurnSink):
         #: (``_stream_one_turn`` decides). It starts and stops around the turn there; this sink
         #: updates its line and pauses it for anything that prints.
         self.wait = wait
-        #: The last ``tool_call`` carried the server's friendly ``label``.
+        #: A ``tool_call`` this turn carried the server's friendly ``label``; per turn,
+        #: not per call, so interleaved parallel calls never bring a raw name back.
         self._labelled = False
 
     def _status(self, text: str) -> None:
@@ -3601,7 +3602,7 @@ class _ReplTurnSink(turn.TurnSink):
     def tool_call(self, payload: dict) -> None:
         if self.trace:
             render.render_tool_call(payload)
-        self._labelled = bool(payload.get("label"))
+        self._labelled = self._labelled or bool(payload.get("label"))
         self._status(turn.tool_call_status(payload))
 
     def tool_result(self, payload: dict) -> None:

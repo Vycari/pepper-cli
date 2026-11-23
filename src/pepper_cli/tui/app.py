@@ -3263,7 +3263,8 @@ class _TurnStatus(turns.TurnSink):
         #: A ``status_phrase`` arrived this turn. Until one does (an older server sends none),
         #: a streaming thought paints its tail live, as it always has.
         self._phrases = False
-        #: The last ``tool_call`` carried the server's friendly ``label``.
+        #: A ``tool_call`` this turn carried the server's friendly ``label``; per turn,
+        #: not per call, so interleaved parallel calls never bring a raw name back.
         self._labelled = False
         #: The terminal frame's payload (reply or error), read by the app when the turn ends.
         self.payload: dict[str, Any] = {}
@@ -3295,7 +3296,7 @@ class _TurnStatus(turns.TurnSink):
             self._show(text)
 
     def tool_call(self, payload: dict[str, Any]) -> None:
-        self._labelled = bool(payload.get("label"))
+        self._labelled = self._labelled or bool(payload.get("label"))
         self._show(turns.tool_call_status(payload))
 
     def tool_result(self, payload: dict[str, Any]) -> None:
