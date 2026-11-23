@@ -1145,7 +1145,10 @@ class PepperApp(App[None]):
         (the first render lands before anything is marked), and not across a gap of older
         unread pages (the rows between the cursor and the oldest row held were never shown).
         A region given with ``show_id`` counts only against that render's layout: once a later
-        render has moved the rows, its lines no longer say which rows were on screen.
+        render has moved the rows, its lines no longer say which rows were on screen, so the
+        live position is read instead (what is on screen now), with the height the scroll
+        measured. Dropping it would leave the rows the reader did see unmarked until they
+        scrolled again (VR-6a37bf4b).
         """
         if not self.query(ThreadView) or self.thread.going or not self.loaded_topic:
             return
@@ -1155,7 +1158,7 @@ class PepperApp(App[None]):
         if render_id != self.thread.render_id or self._opening or self._opening_deferred:
             return
         if show_id is not None and show_id != self.thread.show_id:
-            return
+            top = None
         cursor = self.marks.marks.get(conv.topic_id)
         if cursor is None or self._cursor_gap(cursor):
             return  # first sight never marks (§5.3); and no mark claims across a gap
