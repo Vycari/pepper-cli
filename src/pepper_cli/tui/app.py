@@ -1147,8 +1147,8 @@ class PepperApp(App[None]):
         A region given with ``show_id`` counts only against that render's layout: once a later
         render has moved the rows, its lines no longer say which rows were on screen, so the
         live position is read instead (what is on screen now), with the height the scroll
-        measured. Dropping it would leave the rows the reader did see unmarked until they
-        scrolled again (VR-6a37bf4b).
+        measured or the live one if that is smaller. Dropping it would leave the rows the
+        reader did see unmarked until they scrolled again (VR-6a37bf4b).
         """
         if not self.query(ThreadView) or self.thread.going or not self.loaded_topic:
             return
@@ -1159,6 +1159,11 @@ class PepperApp(App[None]):
             return
         if show_id is not None and show_id != self.thread.show_id:
             top = None
+            live = self.thread.scroller.scrollable_content_region.height
+            if height is not None:
+                # The viewport may have shrunk since (a poll's ``N new`` line): never count
+                # past the screen as it is now.
+                height = min(height, live)
         cursor = self.marks.marks.get(conv.topic_id)
         if cursor is None or self._cursor_gap(cursor):
             return  # first sight never marks (§5.3); and no mark claims across a gap

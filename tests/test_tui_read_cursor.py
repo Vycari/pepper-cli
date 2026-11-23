@@ -125,11 +125,13 @@ async def test_scrolling_down_marks_the_newest_fully_visible_row_each_time() -> 
         assert app.marks.marks[ts.TOPIC_A1] == state.parse_ts(_stamp(newest_visible))
 
 
+@pytest.mark.parametrize("taller", [False, True])
 async def test_a_scroll_handled_after_a_redraw_marks_from_the_live_position(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, taller: bool
 ) -> None:
     """VR-6a37bf4b: a ``Scrolled`` handled after a poll redrew the topic names lines of the old
-    layout. It is not dropped: the rows on screen now, at the live position, are marked."""
+    layout. It is not dropped: the rows on screen now, at the live position, are marked, and
+    no further than the live viewport reaches."""
     server = ts.standard_server()
     _backlog(server)
     app = tui_app.PepperApp(server.client())
@@ -156,6 +158,10 @@ async def test_a_scroll_handled_after_a_redraw_marks_from_the_live_position(
         app._render_topic(new_rows=0, reset=False)  # a poll's redraw: same rows, new layout
         assert thread.show_id != shown
         await until(pilot, lambda: app._message_spans() is not None)
+        if taller:
+            # The viewport was taller when it scrolled (a ``N new`` line has since taken a
+            # row): the old height must not reach below the screen as it is now.
+            held[-1].height = height + 5
         app.on_thread_view_scrolled(held[-1])
         top, bottom = scroller.scroll_y, scroller.scroll_y + height
         newest_visible = max(
