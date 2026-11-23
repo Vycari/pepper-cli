@@ -1185,10 +1185,15 @@ def test_the_cursor_file_moves_after_the_notification_is_handed_over(monkeypatch
         allowed_rooms={_ROOM},
         stop=stop,
     )
-    # A backstop so a regression fails the assertion instead of hanging.
-    threading.Timer(10, stop.set).start()
-
-    assert worker.run() == 0
+    # A backstop so a regression fails the assertion instead of hanging. Cancelled once the
+    # worker returns, so a passing run does not hold the process open for ten seconds.
+    backstop = threading.Timer(10, stop.set)
+    backstop.daemon = True
+    backstop.start()
+    try:
+        assert worker.run() == 0
+    finally:
+        backstop.cancel()
 
     assert events == ["push:message", "cursor:7", "cursor:9"]
 
