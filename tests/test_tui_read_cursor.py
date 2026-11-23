@@ -15,6 +15,7 @@ from textual import events
 
 from pepper_cli.tui import app as tui_app
 from pepper_cli.tui import poller, state, stream
+from pepper_cli.tui.thread import ThreadView
 from tests import tui_support as ts
 from tests.tui_support import body_text, until
 
@@ -122,6 +123,52 @@ async def test_scrolling_down_marks_the_newest_fully_visible_row_each_time() -> 
         # Rows below it have not been on screen, however far down they are: never claimed.
         assert max(_put_rows(server)) < 39
         assert app.marks.marks[ts.TOPIC_A1] == state.parse_ts(_stamp(newest_visible))
+
+
+@pytest.mark.parametrize("taller", [False, True])
+async def test_a_scroll_handled_after_a_redraw_marks_from_the_live_position(
+    monkeypatch: pytest.MonkeyPatch, taller: bool
+) -> None:
+    """VR-6a37bf4b: a ``Scrolled`` handled after a poll redrew the topic names lines of the old
+    layout. It is not dropped: the rows on screen now, at the live position, are marked, and
+    no further than the live viewport reaches."""
+    server = ts.standard_server()
+    _backlog(server)
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 20)) as pilot:
+        await _open(pilot, app)
+        thread = app.thread
+        scroller = thread.scroller
+        height = scroller.scrollable_content_region.height
+        before = max(_put_rows(server))
+        held: list[ThreadView.Scrolled] = []
+        real_post = thread.post_message
+
+        def hold(message):
+            if isinstance(message, ThreadView.Scrolled):
+                held.append(message)
+                return True
+            return real_post(message)
+
+        monkeypatch.setattr(thread, "post_message", hold)
+        scroller.scroll_to(y=scroller.scroll_y + 10, animate=False)
+        await until(pilot, lambda: bool(held))
+        monkeypatch.setattr(thread, "post_message", real_post)
+        shown = thread.show_id
+        app._render_topic(new_rows=0, reset=False)  # a poll's redraw: same rows, new layout
+        assert thread.show_id != shown
+        await until(pilot, lambda: app._message_spans() is not None)
+        if taller:
+            # The viewport was taller when it scrolled (a ``N new`` line has since taken a
+            # row): the old height must not reach below the screen as it is now.
+            held[-1].height = height + 5
+        app.on_thread_view_scrolled(held[-1])
+        top, bottom = scroller.scroll_y, scroller.scroll_y + height
+        newest_visible = max(
+            _index(s) for s, start, end in _spans(app) if start >= top and end <= bottom
+        )
+        await until(pilot, lambda: max(_put_rows(server)) == newest_visible)
+        assert newest_visible > before
 
 
 async def test_a_row_cut_by_either_edge_is_not_seen() -> None:

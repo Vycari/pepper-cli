@@ -135,13 +135,19 @@ class ThreadView(Vertical):
         left it: the first line shown and the viewport's height. The height is read at the
         scroll, not when the message is handled, because reaching the bottom clears the
         ``N new`` line and gives the viewport that line back; a row that line was hiding
-        when the reader arrived must not count as seen (pepper-cli#279)."""
+        when the reader arrived must not count as seen (pepper-cli#279).
 
-        def __init__(self, render_id: int, top: float, height: int) -> None:
+        ``show_id`` names the ``show`` whose layout ``top`` and ``height`` are lines of. A live
+        refresh of the same conversation keeps ``render_id`` but moves rows under a region
+        (a poll puts someone else's row where the pending send was), so a region handled after
+        a later ``show`` describes lines that now hold other rows (main run 45109613881)."""
+
+        def __init__(self, render_id: int, top: float, height: int, show_id: int) -> None:
             super().__init__()
             self.render_id = render_id
             self.top = top
             self.height = height
+            self.show_id = show_id
 
     def __init__(self) -> None:
         super().__init__(id="thread")
@@ -158,6 +164,8 @@ class ThreadView(Vertical):
         #: The newest timestamp the current render put on screen. A mark is only published
         #: for rows this render actually showed, so a queued event cannot claim a newer one.
         self._through: str | None = None
+        #: Bumped by every ``show``: which layout a ``Scrolled`` region's lines belong to.
+        self._shows = 0
         #: Bumped on every ``scroll_y`` change, so a deferred callback knows the reader moved
         #: even if they scrolled away and back to the offset it captured.
         self._scrolls = 0
@@ -195,6 +203,11 @@ class ThreadView(Vertical):
         return self._render_id
 
     @property
+    def show_id(self) -> int:
+        """The current ``show``: a ``Scrolled`` that names an older one describes old lines."""
+        return self._shows
+
+    @property
     def through(self) -> str | None:
         """The newest timestamp the current render put on screen, or None for no rows."""
         return self._through
@@ -228,6 +241,7 @@ class ThreadView(Vertical):
             self._render_id += 1
         render_id = self._render_id
         self._through = through
+        self._shows += 1
         self.query_one("#thread-body", Static).update(body)
         if prepended and not reset:
 
@@ -323,7 +337,10 @@ class ThreadView(Vertical):
                 self.post_message(self.Landed(render_id, through))
             self.post_message(
                 self.Scrolled(
-                    render_id, scroller.scroll_y, scroller.scrollable_content_region.height
+                    render_id,
+                    scroller.scroll_y,
+                    scroller.scrollable_content_region.height,
+                    self._shows,
                 )
             )
 
@@ -336,7 +353,12 @@ class ThreadView(Vertical):
     def _scrolled(self, _old: float, new: float) -> None:
         self._scrolls += 1
         self.post_message(
-            self.Scrolled(self._render_id, new, self.scroller.scrollable_content_region.height)
+            self.Scrolled(
+                self._render_id,
+                new,
+                self.scroller.scrollable_content_region.height,
+                self._shows,
+            )
         )
         if new <= 0 and self.scroller.max_scroll_y > 0:
             self.post_message(self.AtTop())

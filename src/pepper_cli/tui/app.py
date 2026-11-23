@@ -1129,7 +1129,12 @@ class PepperApp(App[None]):
         return seen[-1] if seen else None
 
     def _note_seen(
-        self, render_id: int, *, top: float | None = None, height: int | None = None
+        self,
+        render_id: int,
+        *,
+        top: float | None = None,
+        height: int | None = None,
+        show_id: int | None = None,
     ) -> None:
         """Progressive read mark (read-state-sync §5.1 (b), decision Q8): move the cursor to the
         newest message that has been fully on screen, even with rows below it unread. It never
@@ -1139,6 +1144,11 @@ class PepperApp(App[None]):
         thread, a replaced render), plus: not while a topic is still being opened at its cursor
         (the first render lands before anything is marked), and not across a gap of older
         unread pages (the rows between the cursor and the oldest row held were never shown).
+        A region given with ``show_id`` counts only against that render's layout: once a later
+        render has moved the rows, its lines no longer say which rows were on screen, so the
+        live position is read instead (what is on screen now), with the height the scroll
+        measured or the live one if that is smaller. Dropping it would leave the rows the
+        reader did see unmarked until they scrolled again (VR-6a37bf4b).
         """
         if not self.query(ThreadView) or self.thread.going or not self.loaded_topic:
             return
@@ -1147,6 +1157,13 @@ class PepperApp(App[None]):
             return
         if render_id != self.thread.render_id or self._opening or self._opening_deferred:
             return
+        if show_id is not None and show_id != self.thread.show_id:
+            top = None
+            live = self.thread.scroller.scrollable_content_region.height
+            if height is not None:
+                # The viewport may have shrunk since (a poll's ``N new`` line): never count
+                # past the screen as it is now.
+                height = min(height, live)
         cursor = self.marks.marks.get(conv.topic_id)
         if cursor is None or self._cursor_gap(cursor):
             return  # first sight never marks (§5.3); and no mark claims across a gap
@@ -2057,7 +2074,7 @@ class PepperApp(App[None]):
 
     def on_thread_view_scrolled(self, event: ThreadView.Scrolled) -> None:
         """The visible region moved: mark what has been fully on screen (progressive, §5.1 (b))."""
-        self._note_seen(event.render_id, top=event.top, height=event.height)
+        self._note_seen(event.render_id, top=event.top, height=event.height, show_id=event.show_id)
 
     def on_thread_view_landed(self, event: ThreadView.Landed) -> None:
         """A guarded scroll put the newest row of ``event``'s render on screen: the topic is
