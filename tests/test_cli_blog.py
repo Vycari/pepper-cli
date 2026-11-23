@@ -1,7 +1,8 @@
-"""``pepper blog``: list, check, publish and withdraw a room blog's posts.
+"""``pepper blog stage`` / ``unschedule`` / ``unstage`` / ``publish`` against a faked ``ApiClient``.
 
-Same approach as ``test_cli_notes.py``: ``cli.main([...])`` against a fake ``ApiClient``. The
-room and note are given as UUIDs, which pass through their resolvers untouched.
+Same approach as ``test_cli_notes.py``: ``cli.main([...])`` with ``api_client.ApiClient``
+replaced, so no network. The server's own rules (owner only, the blog rollout, what a finding is)
+are the server's tests; here the CLI is held to fetching, rendering, confirming and sending.
 """
 
 from __future__ import annotations
@@ -13,33 +14,101 @@ import pytest
 from pepper_cli import api_client, cli, credentials
 from pepper_cli.secret import SecretStr
 
-_ROOM = "00000000-0000-0000-0000-0000000000a1"
-_NOTE = "00000000-0000-0000-0000-0000000000d1"
-_POST = "00000000-0000-0000-0000-0000000000e1"
+_GID = "00000000-0000-0000-0000-0000000000a1"
+_NID = "00000000-0000-0000-0000-0000000000d1"
+_SOURCE = "a" * 64 + "." + "b" * 64 + "." + "c" * 64
 
-_CHECK = {
-    "note_id": _NOTE,
-    "title": "An Old Letter",
-    "slug": "2014/03/02/an-old-letter",
-    "republish": False,
-    "source": "n.f.s",
-    "refusal": None,
-    "warnings": [],
-    "flattened_links": ["Some Note"],
-    "linked_posts": [],
-    "other_images": [],
-    "copied_images": 0,
-    "review": {"human_version_found": False, "diff": "", "body": "Dear reader."},
+
+def _login(tmp_home) -> None:
+    credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
+
+
+def _check(**over) -> dict:
+    base = {
+        "note_id": _NID,
+        "title": "Hello World",
+        "slug": "2026/11/19/hello-world",
+        "republish": False,
+        "summary": "",
+        "max_summary": 280,
+        "source": _SOURCE,
+        "findings": False,
+        "refusal": None,
+        "flattened_links": [],
+        "linked_posts": [],
+        "other_images": [],
+        "copied_images": 0,
+        "unreviewed_images": 0,
+        "warnings": [],
+        "review": {"human_version_found": True, "diff": "", "body": ""},
+    }
+    base.update(over)
+    return base
+
+
+def _stage(**over) -> dict:
+    base = {
+        "slug": None,
+        "summary": None,
+        "publish_at": None,
+        "publish_at_display": None,
+        "timezone": "America/Los_Angeles",
+        "updated_at": None,
+        "staged_by": None,
+    }
+    base.update(over)
+    return base
+
+
+_SCHEDULED = _stage(
+    slug="my-post",
+    summary="A greeting.",
+    publish_at="2026-11-21T17:00:00+00:00",
+    publish_at_display="Sat, Nov 21, 9:00 AM \u00b7 America/Los_Angeles",
+)
+
+_PUBLISHED = {
+    "post_id": "00000000-0000-0000-0000-0000000000f1",
+    "slug": "2026/11/19/hello-world",
+    "url": f"/blog/{_GID}/2026/11/19/hello-world",
+    "republished": False,
+    "card": "posted",
+}
+
+
+_PID = "00000000-0000-0000-0000-0000000000f1"
+_POSTS = {
+    "posts": [
+        {
+            "id": _PID,
+            "title": "Hello World",
+            "slug": "2026/11/19/hello-world",
+            "published_at": "2026-11-19T10:00:00+00:00",
+            "withdrawn": False,
+            "edited_since": True,
+        },
+        {
+            "id": "00000000-0000-0000-0000-0000000000f2",
+            "title": "Old News",
+            "slug": "2019/04/02/old-news",
+            "published_at": "2019-04-02T16:30:00+00:00",
+            "withdrawn": True,
+            "edited_since": False,
+            "scheduled_for": "2026-12-01T09:00:00+00:00",
+        },
+    ],
+    "unpublished": [{"note_id": _NID, "title": "Draft"}],
 }
 
 
 class _FakeBlogApi:
     instances: list[_FakeBlogApi] = []
 
-    def __init__(self, *, server_url, token, check=None, publish_error=None) -> None:
+    def __init__(self, *, server_url, token, **canned) -> None:
+        self._canned = canned
         self.calls: list[tuple] = []
-        self._check = check or _CHECK
-        self._publish_error = publish_error
+        self.stage_reads: list[str | None] = []
+        self.schedule_previews: list[str | None] = []
         _FakeBlogApi.instances.append(self)
 
     def __enter__(self):
@@ -48,228 +117,895 @@ class _FakeBlogApi:
     def __exit__(self, *exc_info):
         return None
 
-    def blog_posts(self, group_id):
-        self.calls.append(("blog_posts", group_id))
-        return {
-            "room_id": group_id,
-            "enabled": True,
-            "may_publish": True,
-            "may_withdraw": True,
-            "posts": [
-                {
-                    "id": _POST,
-                    "note_id": _NOTE,
-                    "slug": "2014/03/02/an-old-letter",
-                    "title": "An Old Letter",
-                    "url": "https://example.com/b/2014/03/02/an-old-letter",
-                    "published_at": "2014-03-02T17:00:00+00:00",
-                    "withdrawn": False,
-                }
-            ],
-            "unpublished": [{"note_id": "n2", "title": "Draft"}],
-        }
+    def _result(self, key):
+        value = self._canned[key]
+        if isinstance(value, Exception):
+            raise value
+        return value
 
-    def blog_check(self, group_id, note_id, *, published_at=None):
-        self.calls.append(("blog_check", group_id, note_id, published_at))
-        return self._check
-
-    def blog_publish(self, group_id, note_id, **kwargs):
-        self.calls.append(("blog_publish", group_id, note_id, kwargs))
-        if self._publish_error is not None:
-            raise self._publish_error
-        return api_client.BlogPublished(
-            post_id=_POST,
-            slug=self._check["slug"],
-            url="https://example.com/b/" + self._check["slug"],
-            republished=False,
-            card="none",
+    def list_groups(self, *, archived=False):
+        return api_client.GroupList(
+            enabled=True, degraded=False, total=0, archived_total=0, groups=[]
         )
 
-    def blog_withdraw(self, group_id, post_id):
-        self.calls.append(("blog_withdraw", group_id, post_id))
-        return api_client.BlogWithdrawn(post_id=post_id, already=False, card="edited")
+    def list_artifacts(self, *, principal=None, kind=None, name=None, name_prefix=None, **_):
+        self.calls.append(("list_artifacts", principal, name, name_prefix))
+        return self._result("notes")
+
+    def get_blog_stage(self, group_id, note_id, published_at=None, publish_at=None):
+        self.calls.append(("get_stage", group_id, note_id))
+        self.stage_reads.append(published_at)
+        self.schedule_previews.append(publish_at)
+        updated = self._canned.get("updated")
+        if self.sent("update_stage") and isinstance(updated, dict) and "check" in updated:
+            return updated  # the read-back after a PATCH sees what was saved
+        check = self._result("check")
+        return {**self._result("stage"), "check": check}
+
+    def update_blog_stage(self, group_id, note_id, fields):
+        self.calls.append(("update_stage", group_id, note_id, fields))
+        return self._result("updated")
+
+    def delete_blog_stage(self, group_id, note_id):
+        self.calls.append(("delete_stage", group_id, note_id))
+        self._result("deleted")
+
+    def list_blog_posts(self, group_id):
+        self.calls.append(("list_posts", group_id))
+        return self._result("posts")
+
+    def withdraw_blog_post(self, group_id, post_id):
+        self.calls.append(("withdraw", group_id, post_id))
+        return self._result("withdrawn")
+
+    def publish_blog_note(self, group_id, note_id, **kwargs):
+        self.calls.append(("publish", group_id, note_id, kwargs))
+        return self._result("publish")
+
+    def sent(self, name: str) -> list[tuple]:
+        return [c for c in self.calls if c[0] == name]
 
 
 @pytest.fixture
-def fake(tmp_home, monkeypatch):
-    credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
+def patch_api(monkeypatch):
     _FakeBlogApi.instances.clear()
 
     def install(**canned):
+        canned.setdefault("check", _check())
+        canned.setdefault("publish", _PUBLISHED)
+        canned.setdefault("stage", _stage())
+        canned.setdefault("updated", _SCHEDULED)
+        canned.setdefault("deleted", None)
+        canned.setdefault("posts", _POSTS)
+        canned.setdefault("withdrawn", {"post_id": _PID, "already": False, "card": "posted"})
         monkeypatch.setattr(api_client, "ApiClient", lambda **kw: _FakeBlogApi(**canned, **kw))
 
-    install()
     return install
 
 
-def _calls() -> list[tuple]:
-    return _FakeBlogApi.instances[-1].calls
+def _api() -> _FakeBlogApi:
+    return _FakeBlogApi.instances[-1]
 
 
-def _published(calls: list[tuple]) -> list[tuple]:
-    return [c for c in calls if c[0] == "blog_publish"]
+def _tty(monkeypatch, answer: str | None) -> list[str]:
+    """A terminal answering ``answer`` (``None``: no terminal); the prompts asked are returned."""
+    asked: list[str] = []
+    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: answer is not None)
+
+    def prompt(text: str) -> str:
+        asked.append(text)
+        return answer or ""
+
+    monkeypatch.setattr(cli, "_prompt", prompt)
+    return asked
 
 
-def test_list_json_is_the_envelope_with_the_unpublished_notes(fake, capsys) -> None:
-    assert cli.main(["blog", "list", "--room", _ROOM, "--json"]) == 0
-    body = json.loads(capsys.readouterr().out)
-    assert [p["id"] for p in body["items"]] == [_POST]
-    assert body["next_before"] is None
-    assert body["unpublished"] == [{"note_id": "n2", "title": "Draft"}]
-    assert body["may_publish"] is True
+def _error_lines(stderr: str) -> int:
+    """How many error lines were printed: the check shown before a failed publish is not one."""
+    return sum(1 for line in stderr.splitlines() if line.startswith("error:"))
 
 
-def test_list_human_shows_posts_and_notes_not_yet_published(fake, capsys) -> None:
-    assert cli.main(["blog", "list", "--room", _ROOM]) == 0
+def _err(status: int, detail: str | None = "nope", body: str = "") -> api_client.ApiError:
+    return api_client.ApiError(status=status, body=body, detail=detail)
+
+
+# ---------------------------------------------------------------------------
+# stage (no flags): the check and the saved stage
+
+
+def test_stage_show_renders_what_publishing_would_do(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(
+        check=_check(
+            summary="A greeting.",
+            flattened_links=["Nowhere"],
+            other_images=["https://example.com/a.png"],
+            copied_images=2,
+            warnings=["1 image has suggested descriptions nobody has reviewed."],
+            findings=True,
+            review={"human_version_found": True, "diff": "-old line\n+new line", "body": ""},
+        )
+    )
+    rc = cli.main(["blog", "stage", "--room", _GID, _NID])
+    assert rc == 0
     out = capsys.readouterr().out
-    assert "An Old Letter" in out
-    assert "https://example.com/b/2014/03/02/an-old-letter" in out
-    assert "Not yet published" in out
-    assert "Draft" in out
+    assert "First publish: Hello World" in out
+    assert "Address: 2026/11/19/hello-world" in out
+    assert "Summary: A greeting." in out
+    assert "Nowhere" in out
+    assert "https://example.com/a.png" in out
+    assert "Images copied into the blog: 2" in out
+    assert "suggested descriptions nobody has reviewed" in out
+    assert "-old line" in out and "+new line" in out
+    assert "review before this goes public" in out
+    assert _api().calls == [("get_stage", _GID, _NID)]
 
 
-def test_check_passes_the_date_and_prints_the_review(fake, capsys) -> None:
-    when = "2014-03-02T09:00:00-08:00"
-    assert cli.main(["blog", "check", "--room", _ROOM, _NOTE, "--published-at", when]) == 0
-    assert ("blog_check", _ROOM, _NOTE, when) in _calls()
+def test_stage_show_without_a_human_version_shows_the_whole_body_to_review(
+    tmp_home, patch_api, capsys
+) -> None:
+    _login(tmp_home)
+    patch_api(
+        check=_check(
+            findings=True,
+            review={"human_version_found": False, "diff": "", "body": "The whole draft.\nLine 2."},
+        )
+    )
+    assert cli.main(["blog", "stage", "--room", _GID, _NID]) == 0
     out = capsys.readouterr().out
-    assert "2014/03/02/an-old-letter" in out
-    assert "Some Note" in out
-    assert "Dear reader." in out
-    assert not _published(_calls())
+    assert "whole text is unreviewed" in out
+    assert "The whole draft." in out and "Line 2." in out
 
 
-def test_publish_with_yes_checks_then_hands_back_the_source(fake, capsys) -> None:
-    when = "2014-03-02T09:00:00-08:00"
-    argv = ["blog", "publish", "--room", _ROOM, _NOTE, "--published-at", when, "--yes", "--json"]
-    assert cli.main(argv) == 0
-    calls = _calls()
-    assert calls[0] == ("blog_check", _ROOM, _NOTE, when)
-    ((_, _, _, sent),) = _published(calls)
-    assert sent == {
-        "source": "n.f.s",
+def test_stage_show_says_republish_and_a_refusal(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(check=_check(republish=True, refusal="Only a text note can be published."))
+    assert cli.main(["blog", "stage", "--room", _GID, _NID]) == 0
+    out = capsys.readouterr().out
+    assert "Republish: Hello World" in out
+    assert "Cannot be published: Only a text note can be published." in out
+
+
+def test_stage_show_strips_terminal_escapes_from_server_text(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(check=_check(title="Evil\x1b[31m title\nsecond line"))
+    assert cli.main(["blog", "stage", "--room", _GID, _NID]) == 0
+    out = capsys.readouterr().out
+    assert "\x1b" not in out
+    assert "second line" in out.splitlines()[0]
+
+
+def test_stage_show_json_passes_the_server_answer_through(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    check = {**_check(), "added_later": {"x": 1}}
+    server = {**_stage(), "check": check}
+    patch_api(check=check)
+    assert cli.main(["blog", "stage", "--room", _GID, _NID, "--json"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == server
+    assert captured.err == ""
+
+
+def test_stage_show_resolves_the_note_by_name_in_the_room(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    item = api_client.ArtifactListItem(
+        id=_NID,
+        name="Hello World",
+        kind="inline_text",
+        updated_at="2026-09-16T17:30:00+00:00",
+        etag="e",
+        labels=[],
+        summary=None,
+    )
+    patch_api(notes=api_client.ArtifactListResponse(truncated=False, items=[item]))
+    assert cli.main(["blog", "stage", "--room", _GID, "Hello World"]) == 0
+    assert _api().calls[0] == ("list_artifacts", _GID, "Hello World", None)
+    assert _api().sent("get_stage") == [("get_stage", _GID, _NID)]
+
+
+def test_stage_show_unknown_note_name_is_exit_2(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(notes=api_client.ArtifactListResponse(truncated=False, items=[]))
+    assert cli.main(["blog", "stage", "--room", _GID, "nope"]) == 2
+    assert "no note named 'nope'" in capsys.readouterr().err
+    assert not _api().sent("get_stage")
+
+
+def test_stage_show_requires_a_room() -> None:
+    with pytest.raises(SystemExit) as ei:
+        cli.main(["blog", "stage", _NID])
+    assert ei.value.code == 2
+
+
+def test_stage_show_empty_prints_check_then_no_stage(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api()
+    assert cli.main(["blog", "stage", "--room", _GID, _NID]) == 0
+    out = capsys.readouterr().out
+    assert out.index("First publish: Hello World") < out.index("Address:")
+    assert "Address: 2026/11/19/hello-world" in out
+    assert out.count("Address:") == 1
+    assert "Not scheduled \u2014 publish with `pepper blog publish NOTE`" in out
+    assert [c[0] for c in _api().calls] == ["get_stage"]
+
+
+def test_stage_show_set_prints_slug_summary_and_schedule(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(stage=_SCHEDULED)
+    assert cli.main(["blog", "stage", "--room", _GID, _NID]) == 0
+    out = capsys.readouterr().out
+    assert "Address: my-post" in out
+    assert "Summary: A greeting." in out
+    assert "Scheduled: Sat, Nov 21, 9:00 AM \u00b7 America/Los_Angeles" in out
+    assert "Not scheduled" not in out
+
+
+# ---------------------------------------------------------------------------
+# stage (flags): PATCH only what was given
+
+
+def test_stage_patches_only_the_given_fields(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api()
+    assert cli.main(["blog", "stage", "--room", _GID, _NID, "--slug", "my-post"]) == 0
+    assert _api().sent("update_stage")[0][3] == {"slug": "my-post"}
+    captured = capsys.readouterr()
+    assert "Address: my-post" in captured.out
+    assert "First publish: Hello World" in captured.err
+    assert cli.main(["blog", "stage", "--room", _GID, _NID, "--summary", ""]) == 0
+    assert _api().sent("update_stage")[0][3] == {"summary": ""}
+
+
+def test_stage_at_is_sent_verbatim_with_acknowledge_after_yes(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(check=_check(findings=True, flattened_links=["Nowhere"]))
+    rc = cli.main(["blog", "stage", "--room", _GID, _NID, "--at", "tomorrow 9am", "--yes"])
+    assert rc == 0
+    assert _api().sent("update_stage")[0][3] == {
+        "publish_at": "tomorrow 9am",
+        "acknowledge": True,
+    }
+    captured = capsys.readouterr()
+    assert "Nowhere" in captured.err
+    assert "Scheduled: Sat, Nov 21" in captured.out
+
+
+def test_stage_at_asks_and_a_yes_saves(tmp_home, patch_api, monkeypatch) -> None:
+    _login(tmp_home)
+    patch_api()
+    asked = _tty(monkeypatch, "y")
+    assert cli.main(["blog", "stage", "--room", _GID, _NID, "--at", "2026-11-21 09:00"]) == 0
+    assert len(asked) == 1
+    assert _api().sent("update_stage")[0][3]["acknowledge"] is True
+    assert _api().sent("update_stage")[0][3]["publish_at"] == "2026-11-21 09:00"
+
+
+def test_stage_at_declined_saves_nothing(tmp_home, patch_api, monkeypatch, capsys) -> None:
+    _login(tmp_home)
+    patch_api()
+    _tty(monkeypatch, "n")
+    assert cli.main(["blog", "stage", "--room", _GID, _NID, "--at", "2026-11-21 09:00"]) == 0
+    assert "Aborted." in capsys.readouterr().err
+    assert not _api().sent("update_stage")
+
+
+def test_stage_at_shows_the_address_and_summary_before_asking(
+    tmp_home, patch_api, monkeypatch, capsys
+) -> None:
+    _login(tmp_home)
+    patch_api(stage={**_stage(summary="Saved."), "address": "2026/12/01/hello-world"})
+    prompts = _tty(monkeypatch, "n")
+    assert cli.main(["blog", "stage", "--room", _GID, _NID, "--at", "2026-12-01 09:00"]) == 0
+    api = _api()
+    assert api.schedule_previews == ["2026-12-01 09:00"]  # the address is that day's
+    err = capsys.readouterr().err
+    assert err.index("Address: 2026/12/01/hello-world") < err.index("Aborted.")
+    assert "Summary: Saved." in err
+    assert "Not scheduled" not in err
+    assert prompts
+
+
+def test_stage_at_with_a_slug_saves_it_first_so_the_preview_shows_it(
+    tmp_home, patch_api, monkeypatch, capsys
+) -> None:
+    _login(tmp_home)
+    staged = {**_stage(slug="mine"), "address": "2026/12/01/mine", "check": _check()}
+    patch_api(updated=staged)
+    rc = cli.main(
+        [
+            "blog", "stage", "--room", _GID, _NID,
+            "--slug", "mine", "--at", "2026-12-01 09:00", "--yes",
+        ]
+    )  # fmt: skip
+    assert rc == 0
+    api = _api()
+    assert [c[0] for c in api.calls[-3:]] == ["update_stage", "get_stage", "update_stage"]
+    assert api.sent("update_stage")[0][3] == {"slug": "mine"}
+    assert api.sent("update_stage")[1][3]["publish_at"] == "2026-12-01 09:00"
+    assert "Address: 2026/12/01/mine" in capsys.readouterr().err
+
+
+def test_stage_at_refused_check_exits_1_without_saving(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(check=_check(refusal="Only a text note can be published."))
+    rc = cli.main(["blog", "stage", "--room", _GID, _NID, "--at", "2026-11-21 09:00", "--yes"])
+    assert rc == 1
+    assert "Only a text note can be published." in capsys.readouterr().err
+    assert not _api().sent("update_stage")
+
+
+def test_stage_at_json_without_yes_refuses(tmp_home, patch_api, monkeypatch, capsys) -> None:
+    _login(tmp_home)
+    patch_api()
+    _tty(monkeypatch, "y")
+    rc = cli.main(["blog", "stage", "--room", _GID, _NID, "--at", "2026-11-21 09:00", "--json"])
+    assert rc == 2
+    assert json.loads(capsys.readouterr().err)["error"]["code"] == "usage"
+    assert not _api().sent("update_stage")
+
+
+def test_stage_at_422_message_surfaces(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(updated=_err(422, "That time is in the past."))
+    rc = cli.main(["blog", "stage", "--room", _GID, _NID, "--at", "2001-01-01", "--yes"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "422: That time is in the past." in err
+    assert _error_lines(err) == 1
+
+
+def test_stage_server_409_refusal_is_one_line(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(updated=_err(409, "Only a text note can be published."))
+    rc = cli.main(["blog", "stage", "--room", _GID, _NID, "--at", "2026-11-21 09:00", "--yes"])
+    assert rc == 1
+    assert _error_lines(capsys.readouterr().err) == 1
+
+
+def test_stage_flags_json_prints_the_stage(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api()
+    assert cli.main(["blog", "stage", "--room", _GID, _NID, "--slug", "my-post", "--json"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == _SCHEDULED
+    assert captured.err == ""
+
+
+def test_unschedule_clears_the_time_and_prints_the_stage(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(updated=_stage(slug="my-post"))
+    assert cli.main(["blog", "unschedule", "--room", _GID, _NID]) == 0
+    assert _api().sent("update_stage")[0][3] == {"publish_at": None}
+    assert "Not scheduled" in capsys.readouterr().out
+
+
+def test_unstage_deletes_the_stage(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api()
+    assert cli.main(["blog", "unstage", "--room", _GID, _NID]) == 0
+    assert _api().sent("delete_stage") == [("delete_stage", _GID, _NID)]
+    assert "Stage removed." in capsys.readouterr().out
+
+
+def test_removed_check_command_is_gone() -> None:
+    with pytest.raises(SystemExit) as ei:
+        cli.main(["blog", "check", "--room", _GID, _NID])
+    assert ei.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# publish
+
+
+def test_publish_yes_checks_then_publishes_with_the_source(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api()
+    rc = cli.main(["blog", "publish", "--room", _GID, _NID, "--yes"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    # The check is shown on stderr, the result on stdout.
+    assert "First publish: Hello World" in captured.err
+    assert "Published." in captured.out
+    assert f"/blog/{_GID}/2026/11/19/hello-world" in captured.out
+    api = _api()
+    assert [c[0] for c in api.calls] == ["get_stage", "publish"]
+    assert api.sent("publish")[0][3] == {
+        "source": _SOURCE,
         "acknowledge": True,
         "slug": None,
-        "summary": None,
-        "published_at": when,
+        "summary": "",  # what was shown: none, so readers get an excerpt
+        "published_at": None,
     }
-    body = json.loads(capsys.readouterr().out)
-    assert body["slug"] == "2014/03/02/an-old-letter"
-    assert body["card"] == "none"
 
 
-def test_publish_asks_on_a_terminal_and_a_no_publishes_nothing(fake, capsys, monkeypatch) -> None:
-    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
-    asked: list[str] = []
-    monkeypatch.setattr(cli, "_prompt", lambda prompt: asked.append(prompt) or "n")
-    assert cli.main(["blog", "publish", "--room", _ROOM, _NOTE]) == 0
-    assert "An Old Letter" in asked[0]
-    assert "Dear reader." in capsys.readouterr().out
-    assert not _published(_calls())
-
-
-def test_publish_a_yes_at_the_prompt_publishes(fake, capsys, monkeypatch) -> None:
-    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
-    monkeypatch.setattr(cli, "_prompt", lambda prompt: "y")
-    assert cli.main(["blog", "publish", "--room", _ROOM, _NOTE, "--slug", "letter"]) == 0
-    ((_, _, _, sent),) = _published(_calls())
-    assert sent["slug"] == "letter"
-    assert "Published" in capsys.readouterr().out
-
-
-def test_publish_without_yes_off_a_terminal_reads_nothing_and_exits_2(
-    fake, capsys, monkeypatch
+def test_publish_without_slug_or_summary_leaves_them_out_for_the_saved_stage(
+    tmp_home, patch_api
 ) -> None:
-    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
-    assert cli.main(["blog", "publish", "--room", _ROOM, _NOTE]) == 2
-    assert "--yes" in capsys.readouterr().err
-    assert _FakeBlogApi.instances == []
+    _login(tmp_home)
+    patch_api(stage=_SCHEDULED)
+    assert cli.main(["blog", "publish", "--room", _GID, _NID, "--yes"]) == 0
+    api = _api()
+    assert api.sent("update_stage") == []
 
 
-def test_a_refused_note_is_exit_2_and_nothing_is_published(fake, capsys) -> None:
-    fake(check={**_CHECK, "refusal": "This note links to a private room."})
-    assert cli.main(["blog", "publish", "--room", _ROOM, _NOTE, "--yes"]) == 2
-    assert "private room" in capsys.readouterr().err
-    assert not _published(_calls())
-
-
-def test_a_note_changed_since_the_check_is_exit_2_with_the_servers_reason(fake, capsys) -> None:
-    fake(publish_error=api_client.ApiError(status=409, body="", detail="The note changed."))
-    assert cli.main(["blog", "publish", "--room", _ROOM, _NOTE, "--yes", "--json"]) == 2
-    err = json.loads(capsys.readouterr().err.strip())
-    assert err["error"]["code"] == "conflict"
-    assert err["error"]["message"] == "The note changed."
-
-
-def test_a_missing_blog_is_one_not_found_answer(fake, capsys) -> None:
-    fake(publish_error=api_client.ApiError(status=404, body="", detail="Not Found"))
-    assert cli.main(["blog", "publish", "--room", _ROOM, _NOTE, "--yes"]) == 2
-    assert "not found" in capsys.readouterr().err
-
-
-def test_withdraw_with_yes(fake, capsys) -> None:
-    assert cli.main(["blog", "withdraw", "--room", _ROOM, _POST, "--yes"]) == 0
-    assert ("blog_withdraw", _ROOM, _POST) in _calls()
-    assert "Withdrawn" in capsys.readouterr().out
-
-
-def test_the_prompt_and_preview_show_the_slug_and_summary_asked_for(
-    fake, capsys, monkeypatch
+def test_publish_slug_and_summary_are_staged_first_so_the_preview_is_what_publishes(
+    tmp_home, patch_api, capsys
 ) -> None:
-    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
-    asked: list[str] = []
-    monkeypatch.setattr(cli, "_prompt", lambda prompt: asked.append(prompt) or "n")
-    argv = ["blog", "publish", "--room", _ROOM, _NOTE, "--slug", "letter", "--summary", "Hi."]
-    assert cli.main(argv) == 0
-    out = capsys.readouterr().out
-    assert "2014/03/02/letter" in asked[0]
-    assert "Publishes at 2014/03/02/letter" in out
-    assert "an-old-letter" not in out
-    assert "Summary: Hi." in out
-
-
-def test_without_yes_off_a_terminal_room_and_note_names_are_never_looked_up(
-    tmp_home, capsys, monkeypatch
-) -> None:
-    def no_client(**kw):
-        raise AssertionError("no request should be made")
-
-    credentials.save(server_url="http://example.com", token=SecretStr("pep_pat_abc"))
-    monkeypatch.setattr(api_client, "ApiClient", no_client)
-    monkeypatch.setattr(cli, "_stdin_is_tty", lambda: False)
-    assert cli.main(["blog", "publish", "--room", "Trip", "Letter"]) == 2
-    assert cli.main(["blog", "withdraw", "--room", "Trip", _POST]) == 2
-    assert capsys.readouterr().err.count("--yes") == 2
-
-
-def test_a_card_or_public_copy_that_did_not_go_through_is_a_warning(capsys) -> None:
-    from pepper_cli import blog_view
-
-    blog_view.published(
-        api_client.BlogPublished(
-            post_id=_POST, slug="s", url="u", republished=False, card="unavailable", copy="written"
-        )
-    )
-    blog_view.withdrawn(
-        api_client.BlogWithdrawn(post_id=_POST, already=False, card="edited", copy="unavailable")
-    )
-    blog_view.withdrawn(
-        api_client.BlogWithdrawn(
-            post_id=_POST, already=False, card="edited", copy="links_unavailable"
-        )
-    )
+    _login(tmp_home)
+    staged = {
+        **_stage(slug="my-post", summary="A short one."),
+        "address": "2026/11/19/my-post",
+        "check": _check(),
+    }
+    patch_api(updated=staged)
+    rc = cli.main(
+        [
+            "blog", "publish", "--room", _GID, _NID, "--yes",
+            "--slug", "my-post", "--summary", "A short one.",
+        ]
+    )  # fmt: skip
+    assert rc == 0
+    api = _api()
+    assert [c[0] for c in api.calls] == ["get_stage", "update_stage", "get_stage", "publish"]
+    assert api.sent("update_stage")[0][3] == {"slug": "my-post", "summary": "A short one."}
     err = capsys.readouterr().err
-    assert "card in the room's comments couldn't be updated" in err
-    assert "copy in the public room couldn't be updated" in err
-    assert "other posts that link to it" in err
+    # The preview is the server's answer for the values given, and only that address shows.
+    assert "Address: 2026/11/19/my-post" in err
+    assert "hello-world" not in err
+    assert "A short one." in err
+    sent = api.sent("publish")[0][3]
+    # The values shown are pinned, so a stage changed during the question cannot replace them.
+    assert sent["slug"] == "my-post"
+    assert sent["summary"] == "A short one."
 
 
-def test_a_clean_publish_prints_no_warning(capsys) -> None:
-    from pepper_cli import blog_view
+def test_publish_pins_the_saved_stage_it_showed(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(stage=_stage(slug="saved-name", summary="Saved."))
+    assert cli.main(["blog", "publish", "--room", _GID, _NID, "--yes"]) == 0
+    sent = _api().sent("publish")[0][3]
+    assert sent["slug"] == "saved-name"
+    assert sent["summary"] == "Saved."
 
-    blog_view.published(
-        api_client.BlogPublished(
-            post_id=_POST, slug="s", url="u", republished=False, card="posted", copy="written"
-        )
+
+def test_publish_with_nothing_saved_pins_the_servers_default_it_showed(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(
+        stage={**_stage(), "address": "2026/11/19/hello-world"},
+        check=_check(summary="The post's own."),
     )
-    assert capsys.readouterr().err == ""
+    assert cli.main(["blog", "publish", "--room", _GID, _NID, "--yes"]) == 0
+    sent = _api().sent("publish")[0][3]
+    assert sent["slug"] == "hello-world"
+    assert sent["summary"] == "The post's own."
+
+
+def test_publish_published_at_previews_the_backdated_address(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(stage={**_stage(), "address": "2014/03/02/hello-world"})
+    when = "2014-03-02T17:00:00Z"
+    rc = cli.main(["blog", "publish", "--room", _GID, _NID, "--yes", "--published-at", when])
+    assert rc == 0
+    api = _api()
+    assert api.stage_reads == [when]  # the preview is the server's for that day
+    assert "Address: 2014/03/02/hello-world" in capsys.readouterr().err
+    assert api.sent("publish")[0][3]["published_at"] == when
+
+
+def test_publish_a_republish_sends_no_slug(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(check=_check(republish=True), stage=_stage(slug="saved-name"))
+    assert cli.main(["blog", "publish", "--room", _GID, _NID, "--yes"]) == 0
+    assert _api().sent("publish")[0][3]["slug"] is None
+
+
+def test_publish_declined_after_staging_publishes_nothing(
+    tmp_home, patch_api, monkeypatch, capsys
+) -> None:
+    _login(tmp_home)
+    patch_api(updated={**_stage(slug="my-post"), "check": _check()})
+    _tty(monkeypatch, "n")
+    assert cli.main(["blog", "publish", "--room", _GID, _NID, "--slug", "my-post"]) == 0
+    api = _api()
+    assert api.sent("update_stage")[0][3] == {"slug": "my-post"}
+    assert api.sent("publish") == []
+
+
+def test_publish_slug_on_a_published_post_exits_2_and_sends_nothing(
+    tmp_home, patch_api, capsys
+) -> None:
+    _login(tmp_home)
+    patch_api(check=_check(republish=True))
+    rc = cli.main(["blog", "publish", "--room", _GID, _NID, "--yes", "--slug", "other"])
+    assert rc == 2
+    assert "keeps its address" in capsys.readouterr().err
+    assert [c[0] for c in _api().calls] == ["get_stage"]
+
+
+def test_publish_an_empty_summary_is_staged_not_dropped(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api(updated={**_stage(summary=""), "check": _check()})
+    assert cli.main(["blog", "publish", "--room", _GID, _NID, "--yes", "--summary", ""]) == 0
+    assert _api().sent("update_stage")[0][3] == {"summary": ""}
+
+
+def test_publish_confirm_yes_publishes_and_acknowledges(tmp_home, patch_api, monkeypatch, capsys):
+    _login(tmp_home)
+    patch_api(check=_check(findings=True, flattened_links=["Nowhere"]))
+    asked = _tty(monkeypatch, "y")
+    assert cli.main(["blog", "publish", "--room", _GID, _NID]) == 0
+    assert len(asked) == 1
+    assert "Publish 'Hello World'" in asked[0]
+    assert "Nowhere" in capsys.readouterr().err
+    assert _api().sent("publish")[0][3]["acknowledge"] is True
+
+
+def test_publish_confirm_no_publishes_nothing(tmp_home, patch_api, monkeypatch, capsys) -> None:
+    _login(tmp_home)
+    patch_api(check=_check(findings=True, flattened_links=["Nowhere"]))
+    _tty(monkeypatch, "n")
+    rc = cli.main(["blog", "publish", "--room", _GID, _NID])
+    assert rc == 0
+    assert "Aborted." in capsys.readouterr().err
+    assert not _api().sent("publish")
+
+
+def test_publish_a_republish_asks_to_republish(tmp_home, patch_api, monkeypatch) -> None:
+    _login(tmp_home)
+    patch_api(check=_check(republish=True))
+    asked = _tty(monkeypatch, "y")
+    assert cli.main(["blog", "publish", "--room", _GID, _NID]) == 0
+    assert asked[0].startswith("Republish 'Hello World'")
+
+
+def test_publish_without_a_terminal_needs_yes_and_sends_nothing(
+    tmp_home, patch_api, monkeypatch, capsys
+) -> None:
+    _login(tmp_home)
+    patch_api(check=_check(findings=True))
+    _tty(monkeypatch, None)
+    assert cli.main(["blog", "publish", "--room", _GID, _NID]) == 2
+    assert "--yes" in capsys.readouterr().err
+    assert not _api().sent("publish")
+
+
+def test_publish_json_never_prompts_and_needs_yes(tmp_home, patch_api, monkeypatch, capsys) -> None:
+    _login(tmp_home)
+    patch_api()
+    _tty(monkeypatch, "y")  # a terminal is there, but --json never asks
+    assert cli.main(["blog", "publish", "--room", _GID, _NID, "--json"]) == 2
+    err = json.loads(capsys.readouterr().err)
+    assert err["error"]["code"] == "usage"
+    assert not _api().sent("publish")
+
+
+def test_publish_json_yes_prints_only_the_server_answer(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(publish={**_PUBLISHED, "copy": "written"})
+    assert cli.main(["blog", "publish", "--room", _GID, _NID, "--yes", "--json"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {**_PUBLISHED, "copy": "written"}
+    assert captured.err == ""
+
+
+def test_publish_stops_on_a_refused_check_without_asking(
+    tmp_home, patch_api, monkeypatch, capsys
+) -> None:
+    _login(tmp_home)
+    patch_api(check=_check(refusal="Only a text note can be published."))
+    asked = _tty(monkeypatch, "y")
+    assert cli.main(["blog", "publish", "--room", _GID, _NID, "--yes"]) == 1
+    err = capsys.readouterr().err
+    assert "Only a text note can be published." in err
+    assert asked == []
+    assert not _api().sent("publish")
+
+
+def test_publish_notes_a_card_or_copy_that_could_not_be_written(
+    tmp_home, patch_api, capsys
+) -> None:
+    _login(tmp_home)
+    patch_api(publish={**_PUBLISHED, "card": "unavailable", "copy": "unavailable"})
+    assert cli.main(["blog", "publish", "--room", _GID, _NID, "--yes"]) == 0
+    out = capsys.readouterr().out
+    assert "comments card could not be posted" in out
+    assert "public room" in out
+    assert "Republish to try again." in out
+
+
+def test_publish_says_republished(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(publish={**_PUBLISHED, "republished": True})
+    assert cli.main(["blog", "publish", "--room", _GID, _NID, "--yes"]) == 0
+    assert "Republished." in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# errors: one line each, from the check or the publish
+
+
+@pytest.mark.parametrize("step", ["check", "publish"])
+def test_401_says_blog_needs_a_persons_token(tmp_home, patch_api, capsys, step) -> None:
+    _login(tmp_home)
+    patch_api(**{step: _err(401, "invalid bearer token")})
+    argv = ["blog", "stage" if step == "check" else "publish", "--room", _GID, _NID]
+    if step == "publish":
+        argv.append("--yes")
+    assert cli.main(argv) == 1
+    err = capsys.readouterr().err
+    assert "401" in err and "your own token" in err
+    assert _error_lines(err) == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "detail", "code", "expect"),
+    [
+        (403, "Only an owner of this room can publish.", 1, "403: Only an owner"),
+        (404, "Publishing is not available yet.", 2, "Publishing is not available yet."),
+        (409, "The note changed since the check.", 1, "409: The note changed"),
+    ],
+)  # fmt: skip
+def test_stage_show_and_publish_errors_are_one_line(
+    tmp_home, patch_api, capsys, status, detail, code, expect
+) -> None:
+    _login(tmp_home)
+    for step, argv in (
+        ("check", ["blog", "stage", "--room", _GID, _NID]),
+        ("publish", ["blog", "publish", "--room", _GID, _NID, "--yes"]),
+    ):
+        patch_api(**{"check": _err(status, detail)} if step == "check" else {})
+        if step == "publish":
+            patch_api(publish=_err(status, detail))
+        assert cli.main(argv) == code
+        err = capsys.readouterr().err
+        assert expect in err
+        assert _error_lines(err) == 1
+
+
+def test_404_without_a_detail_uses_the_uniform_message(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(check=_err(404, None))
+    assert cli.main(["blog", "stage", "--room", _GID, _NID]) == 2
+    assert "no such room or note, or you are not a member" in capsys.readouterr().err
+
+
+def test_422_surfaces_the_first_validation_message(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    body = json.dumps({"detail": [{"loc": ["body", "source"], "msg": "Field required"}]})
+    patch_api(publish=_err(422, None, body=body))
+    assert cli.main(["blog", "publish", "--room", _GID, _NID, "--yes"]) == 1
+    err = capsys.readouterr().err
+    assert "Server returned 422: Field required (body.source)" in err
+    assert _error_lines(err) == 1
+
+
+def test_422_with_an_unreadable_body_is_still_one_line(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(check=_err(422, None, body="<html>"))
+    assert cli.main(["blog", "stage", "--room", _GID, _NID]) == 1
+    assert capsys.readouterr().err.strip() == "error: Server returned 422."
+
+
+def test_a_summary_the_server_refuses_is_its_message(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(updated=_err(422, "A summary is at most 280 characters."))
+    rc = cli.main(["blog", "publish", "--room", _GID, _NID, "--yes", "--summary", "x" * 400])
+    assert rc == 1
+    assert "A summary is at most 280 characters." in capsys.readouterr().err
+
+
+def test_errors_are_json_on_stderr_under_json(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(check=_err(403, "Only an owner of this room can publish or withdraw its posts."))
+    assert cli.main(["blog", "stage", "--room", _GID, _NID, "--json"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    error = json.loads(captured.err)["error"]
+    assert error["code"] == "forbidden" and error["status"] == 403
+
+
+def test_publish_prints_the_full_addresses_the_server_names() -> None:
+    from pepper_cli.blog_view import published_lines
+
+    lines = published_lines(
+        {
+            **_PUBLISHED,
+            "post_url": f"https://pepper.vycari.ai/blog/{_GID}/2026/11/19/hello-world",
+            "public_url": "https://blog.vycari.ai/2026/11/19/hello-world",
+        }
+    )
+    assert "Public: https://blog.vycari.ai/2026/11/19/hello-world" in lines
+    assert f"Members: https://pepper.vycari.ai/blog/{_GID}/2026/11/19/hello-world" in lines
+    assert f"/blog/{_GID}/2026/11/19/hello-world" not in lines
+
+
+def test_publish_names_only_the_members_page_while_the_blog_is_not_public() -> None:
+    from pepper_cli.blog_view import published_lines
+
+    members = f"https://pepper.vycari.ai/blog/{_GID}/2026/11/19/hello-world"
+    lines = published_lines({**_PUBLISHED, "post_url": members, "public_url": None})
+    assert f"Members: {members}" in lines
+    assert not any(line.startswith("Public:") for line in lines)
+
+
+def test_stage_show_prints_the_one_address_the_server_names(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(stage={**_SCHEDULED, "address": "2026/11/21/my-post"})
+    assert cli.main(["blog", "stage", "--room", _GID, _NID]) == 0
+    out = capsys.readouterr().out
+    # The check's own address (today's date, the title's name) is not shown beside it.
+    assert "Address: 2026/11/21/my-post" in out
+    assert out.count("Address:") == 1 and "hello-world" not in out
+
+
+# ---------------------------------------------------------------------------
+# list
+
+
+def test_list_prints_title_address_date_and_tags(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api()
+    assert cli.main(["blog", "list", "--room", _GID]) == 0
+    out = capsys.readouterr().out
+    assert "Hello World" in out and "2026/11/19/hello-world" in out
+    assert "2026-11-19T10:00:00+00:00" in out and "note edited since" in out
+    assert "withdrawn" in out and "scheduled for 2026-12-01T09:00:00+00:00" in out
+    assert "Not published yet:" in out and "Draft" in out
+    assert _api().sent("list_posts") == [("list_posts", _GID)]
+
+
+def test_list_omits_scheduled_for_when_the_server_does_not_send_it(
+    tmp_home, patch_api, capsys
+) -> None:
+    _login(tmp_home)
+    patch_api(posts={"posts": [_POSTS["posts"][0]], "unpublished": []})
+    assert cli.main(["blog", "list", "--room", _GID]) == 0
+    out = capsys.readouterr().out
+    assert "scheduled" not in out and "Not published" not in out
+
+
+def test_list_empty_and_json_and_escapes(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(posts={"posts": [], "unpublished": []})
+    assert cli.main(["blog", "list", "--room", _GID]) == 0
+    assert "No posts yet." in capsys.readouterr().out
+    patch_api()
+    assert cli.main(["blog", "list", "--room", _GID, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "items": _POSTS["posts"],
+        "next_before": None,
+        "unpublished": _POSTS["unpublished"],
+    }
+    patch_api(posts={"posts": [{**_POSTS["posts"][0], "title": "Hi\x1b[31m"}]})
+    assert cli.main(["blog", "list", "--room", _GID]) == 0
+    assert "\x1b" not in capsys.readouterr().out
+
+
+def test_list_requires_a_room() -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["blog", "list"])
+    assert exc.value.code == 2
+
+
+def test_list_401_and_403_are_one_line(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(posts=_err(401))
+    assert cli.main(["blog", "list", "--room", _GID]) == 1
+    assert "need your own token" in capsys.readouterr().err
+    patch_api(posts=_err(403, "Only an owner"))
+    assert cli.main(["blog", "list", "--room", _GID]) == 1
+    assert "403" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# publish --published-at
+
+
+def test_publish_sends_published_at_as_typed(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(publish={**_PUBLISHED, "card": "none"})
+    when = "2019-04-02 09:30"  # not even valid ISO: the server decides, the CLI does not parse
+    argv = ["blog", "publish", "--room", _GID, _NID, "--yes", "--published-at", when]
+    assert cli.main(argv) == 0
+    assert _api().sent("publish")[0][3]["published_at"] == when
+
+
+def test_publish_without_published_at_sends_none(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api()
+    assert cli.main(["blog", "publish", "--room", _GID, _NID, "--yes"]) == 0
+    assert _api().sent("publish")[0][3]["published_at"] is None
+
+
+def test_publish_published_at_422_message_surfaces(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(publish=_err(422, "published_at must be in the past"))
+    argv = ["blog", "publish", "--room", _GID, _NID, "--yes", "--published-at", "2999-01-01T00:00Z"]
+    assert cli.main(argv) == 1
+    assert "published_at must be in the past" in capsys.readouterr().err
+
+
+def test_publish_help_says_it_backdates_and_what_is_refused(capsys) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["blog", "publish", "--help"])
+    text = " ".join(capsys.readouterr().out.split())
+    assert "Backdate an import" in text and "future" in text and "republish" in text
+
+
+# ---------------------------------------------------------------------------
+# withdraw
+
+
+def test_withdraw_yes_by_id_posts_without_listing(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api()
+    assert cli.main(["blog", "withdraw", "--room", _GID, _PID, "--yes"]) == 0
+    assert _api().sent("withdraw") == [("withdraw", _GID, _PID)]
+    assert _api().sent("list_posts") == []
+    assert "Withdrawn." in capsys.readouterr().out
+
+
+def test_withdraw_resolves_title_or_address(tmp_home, patch_api) -> None:
+    _login(tmp_home)
+    patch_api()
+    for value in ("hello world", "2026/11/19/hello-world"):
+        assert cli.main(["blog", "withdraw", "--room", _GID, value, "--yes"]) == 0
+        assert _api().sent("withdraw") == [("withdraw", _GID, _PID)]
+
+
+def test_withdraw_unknown_and_ambiguous_titles_are_exit_2(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api()
+    assert cli.main(["blog", "withdraw", "--room", _GID, "Nope", "--yes"]) == 2
+    assert "no post" in capsys.readouterr().err
+    dup = {"posts": [_POSTS["posts"][0], {**_POSTS["posts"][1], "title": "Hello World"}]}
+    patch_api(posts=dup)
+    assert cli.main(["blog", "withdraw", "--room", _GID, "Hello World", "--yes"]) == 2
+    assert "more than one post" in capsys.readouterr().err
+    assert _api().sent("withdraw") == []
+
+
+def test_withdraw_confirm_yes_and_no(tmp_home, patch_api, monkeypatch, capsys) -> None:
+    _login(tmp_home)
+    patch_api()
+    asked = _tty(monkeypatch, "n")
+    assert cli.main(["blog", "withdraw", "--room", _GID, _PID]) == 0
+    assert "Aborted." in capsys.readouterr().err
+    assert _api().sent("withdraw") == [] and "Withdraw" in asked[0]
+    _tty(monkeypatch, "y")
+    patch_api()
+    assert cli.main(["blog", "withdraw", "--room", _GID, _PID]) == 0
+    assert len(_api().sent("withdraw")) == 1
+
+
+def test_withdraw_without_terminal_or_under_json_needs_yes(
+    tmp_home, patch_api, monkeypatch, capsys
+) -> None:
+    _login(tmp_home)
+    patch_api()
+    _tty(monkeypatch, None)
+    assert cli.main(["blog", "withdraw", "--room", _GID, _PID]) == 2
+    assert cli.main(["blog", "withdraw", "--room", _GID, _PID, "--json"]) == 2
+    assert "--yes" in capsys.readouterr().err
+    assert _api().sent("withdraw") == []
+
+
+def test_withdraw_json_prints_the_answer_and_notes_already(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    answer = {"post_id": _PID, "already": True, "card": "unavailable"}
+    patch_api(withdrawn=answer)
+    assert cli.main(["blog", "withdraw", "--room", _GID, _PID, "--yes", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == answer
+    assert cli.main(["blog", "withdraw", "--room", _GID, _PID, "--yes"]) == 0
+    out = capsys.readouterr().out
+    assert "Already withdrawn." in out and "could not be brought in step" in out
+
+
+def test_withdraw_errors_are_one_line(tmp_home, patch_api, capsys) -> None:
+    _login(tmp_home)
+    patch_api(withdrawn=_err(404, "No such post"))
+    assert cli.main(["blog", "withdraw", "--room", _GID, _PID, "--yes"]) == 2
+    assert "No such post" in capsys.readouterr().err
+    patch_api(withdrawn=_err(401))
+    assert cli.main(["blog", "withdraw", "--room", _GID, _PID, "--yes"]) == 1
+    assert "need your own token" in capsys.readouterr().err

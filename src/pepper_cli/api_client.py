@@ -1612,35 +1612,6 @@ class GroupTopicSummary:
     subject_artifact_id: str | None = None
 
 
-# MIRROR: src/pepper/api/blog.py::PublishedOut
-@dataclass(frozen=True)
-class BlogPublished:
-    """``POST /api/v1/groups/{id}/blog/notes/{note}/publish``: the post the note became.
-
-    ``card`` is how the post's card in the room's comments topic went (``none`` for a post
-    dated in the past). ``copy`` is set only for a blog with a public room.
-    """
-
-    post_id: str
-    slug: str
-    url: str
-    republished: bool
-    card: str
-    copy: str | None = None
-
-
-# MIRROR: src/pepper/api/blog.py::WithdrawnOut
-@dataclass(frozen=True)
-class BlogWithdrawn:
-    """``POST /api/v1/groups/{id}/blog/posts/{post}/withdraw``. ``already`` means the post was
-    already withdrawn, so nothing changed."""
-
-    post_id: str
-    already: bool
-    card: str
-    copy: str | None = None
-
-
 # MIRROR: src/pepper/api/groups.py::list_groups
 # (route handler; untyped dict response, no snapshot schema)
 @dataclass(frozen=True)
@@ -4754,38 +4725,81 @@ class ApiClient:
         result = resp.get("result") or {}
         return str(result.get("name", ""))
 
-    def blog_posts(self, group_id: str) -> dict[str, Any]:
-        """``GET /api/v1/groups/{id}/blog/posts``: the room blog's posts and, for an owner, the
-        room's notes not yet published, as the server's own dict."""
-        body = self._request("GET", f"/api/v1/groups/{group_id}/blog/posts").json()
-        return _wire_row(body, "blog posts response")
+    def list_apps(self) -> list[dict[str, Any]]:
+        """``GET /api/v1/apps``: every app's summary (``slug``, ``title``, ``description``,
+        ``owner_scoped_actions``, ...). The list is the only place the server names an
+        app's actions, and it names just the ``owner_scoped`` ones."""
+        body = self._request("GET", "/api/v1/apps").json()
+        body = _wire_list(body, "list apps response")
+        return [row for row in body if isinstance(row, dict)]
 
-    def blog_check(
-        self, group_id: str, note_id: str, *, published_at: str | None = None
+    def get_blog_stage(
+        self,
+        group_id: str,
+        note_id: str,
+        *,
+        published_at: str | None = None,
+        publish_at: str | None = None,
     ) -> dict[str, Any]:
-        """``GET /api/v1/groups/{id}/blog/notes/{note}/check``: what publishing the note would
-        do, and the ``source`` that :meth:`blog_publish` must hand back unchanged.
-        ``published_at`` previews the address a post dated then would get."""
-        params = {"published_at": published_at} if published_at else None
-        body = self._request(
-            "GET", f"/api/v1/groups/{group_id}/blog/notes/{note_id}/check", params=params
-        ).json()
-        return _wire_row(body, "blog check response")
+        """``GET /api/v1/groups/{group_id}/blog/notes/{note_id}/stage`` — the note's saved stage
+        (``slug``, ``summary``, ``publish_at``, ``publish_at_display``, ``timezone``, ...; all
+        null when nothing is staged) with the publish check under ``check`` (including the
+        ``source`` token a publish must hand back).
 
-    def blog_publish(
+        A person's token only (an agent token is a 401) and a room owner's (403 otherwise). The
+        schema is open in the contract: the CLI renders what it finds and passes the rest through.
+        ``published_at`` (sent as typed) previews a backdated publish: ``address`` is that day's.
+        ``publish_at`` (sent as typed) previews scheduling at that time before it is saved.
+        """
+        given = {"published_at": published_at, "publish_at": publish_at}
+        params = {k: v for k, v in given.items() if v is not None} or None
+        body = self._request("GET", self._blog_stage_path(group_id, note_id), params=params).json()
+        return _wire_row(body, "blog response")
+
+    def update_blog_stage(
+        self, group_id: str, note_id: str, fields: dict[str, Any]
+    ) -> dict[str, Any]:
+        """``PATCH .../blog/notes/{note_id}/stage`` — change only the keys in ``fields``
+        (``slug``, ``summary``, ``publish_at``, ``acknowledge``); an explicit ``None`` clears.
+        ``publish_at`` is sent exactly as given: the server parses it. 409 on a refusal or when
+        findings need ``acknowledge``; 422 for an unparseable or past time. Returns the stage.
+        """
+        body = self._request("PATCH", self._blog_stage_path(group_id, note_id), json=fields).json()
+        return _wire_row(body, "blog response")
+
+    def delete_blog_stage(self, group_id: str, note_id: str) -> None:
+        """``DELETE .../blog/notes/{note_id}/stage`` — remove the saved stage."""
+        self._request("DELETE", self._blog_stage_path(group_id, note_id))
+
+    @staticmethod
+    def _blog_stage_path(group_id: str, note_id: str) -> str:
+        return f"/api/v1/groups/{group_id}/blog/notes/{note_id}/stage"
+
+    def publish_blog_note(
         self,
         group_id: str,
         note_id: str,
         *,
         source: str,
-        acknowledge: bool,
+        acknowledge: bool = False,
         slug: str | None = None,
         summary: str | None = None,
         published_at: str | None = None,
-    ) -> BlogPublished:
-        """``POST /api/v1/groups/{id}/blog/notes/{note}/publish``. Optional fields are sent only
-        when given, so an omitted summary leaves the post's summary as it is."""
-        payload: dict[str, Any] = {"source": source, "acknowledge": acknowledge}
+    ) -> dict[str, Any]:
+        """``POST /api/v1/groups/{group_id}/blog/notes/{note_id}/publish`` — publish (or
+        republish) the note as the check (``GET .../stage``, under ``check``) that returned
+        ``source`` saw it.
+
+        ``slug`` is a bare name, honoured on a first publish only; the server puts a
+        ``YYYY/MM/DD/`` prefix in front. ``summary`` is validated server-side (at most 280
+        characters). Both are left out of the body when ``None``; ``acknowledge`` is sent only
+        when true. ``published_at`` is sent exactly as given (the server parses it) and dates an
+        imported post: 422 for a future time, a time without a zone, or a republish. 409 when the
+        note changed since the check, or the check had findings and ``acknowledge`` is not true.
+        """
+        payload: dict[str, Any] = {"source": source}
+        if acknowledge:
+            payload["acknowledge"] = True
         if slug is not None:
             payload["slug"] = slug
         if summary is not None:
@@ -4795,38 +4809,22 @@ class ApiClient:
         body = self._request(
             "POST", f"/api/v1/groups/{group_id}/blog/notes/{note_id}/publish", json=payload
         ).json()
-        what = "blog publish response"
-        body = _wire_row(body, what)
-        return BlogPublished(
-            post_id=str(_wire_get(body, "post_id", what, str, int)),
-            slug=_wire_get(body, "slug", what, str),
-            url=_wire_get(body, "url", what, str),
-            republished=_wire_get(body, "republished", what, bool),
-            card=_wire_opt(body, "card", what, "", str),
-            copy=body.get("copy"),
-        )
+        return _wire_row(body, "blog response")
 
-    def blog_withdraw(self, group_id: str, post_id: str) -> BlogWithdrawn:
-        """``POST /api/v1/groups/{id}/blog/posts/{post}/withdraw``: take a post down."""
+    def list_blog_posts(self, group_id: str) -> dict[str, Any]:
+        """``GET /api/v1/groups/{group_id}/blog/posts`` — the room's posts (``id``, ``slug``,
+        ``title``, ``url``, ``published_at``, ``withdrawn``, ``edited_since``, ...) newest first,
+        and the ``unpublished`` notes. A person's token only; owner-only routes answer 403."""
+        body = self._request("GET", f"/api/v1/groups/{group_id}/blog/posts").json()
+        return _wire_row(body, "blog response")
+
+    def withdraw_blog_post(self, group_id: str, post_id: str) -> dict[str, Any]:
+        """``POST /api/v1/groups/{group_id}/blog/posts/{post_id}/withdraw`` — take a post down.
+        Answers ``post_id``, ``already`` (it was withdrawn before), ``card`` and ``copy``."""
         body = self._request(
             "POST", f"/api/v1/groups/{group_id}/blog/posts/{post_id}/withdraw"
         ).json()
-        what = "blog withdraw response"
-        body = _wire_row(body, what)
-        return BlogWithdrawn(
-            post_id=str(_wire_get(body, "post_id", what, str, int)),
-            already=_wire_get(body, "already", what, bool),
-            card=_wire_opt(body, "card", what, "", str),
-            copy=body.get("copy"),
-        )
-
-    def list_apps(self) -> list[dict[str, Any]]:
-        """``GET /api/v1/apps``: every app's summary (``slug``, ``title``, ``description``,
-        ``owner_scoped_actions``, ...). The list is the only place the server names an
-        app's actions, and it names just the ``owner_scoped`` ones."""
-        body = self._request("GET", "/api/v1/apps").json()
-        body = _wire_list(body, "list apps response")
-        return [row for row in body if isinstance(row, dict)]
+        return _wire_row(body, "blog response")
 
     def get_artifact_detail_raw(self, artifact_id: str) -> dict[str, Any]:
         """``GET /api/v1/artifacts/{id}/detail`` as the server's own dict (``kind_label``,

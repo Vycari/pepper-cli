@@ -361,13 +361,11 @@ def test_a_wrong_typed_comment_field_fails_the_read(message: dict, names: str) -
     assert names in _malformed(raised)
 
 
-def test_a_wrong_typed_blog_card_or_room_todos_name_fails_the_read() -> None:
-    with (
-        _api({"post_id": "p", "already": False, "card": 1}) as api,
-        pytest.raises(ApiError) as raised,
-    ):
-        api.blog_withdraw("g", "p")
-    assert "'card'" in _malformed(raised)
+def test_a_non_object_blog_reply_or_wrong_typed_room_todos_name_fails_the_read() -> None:
+    with _api(["not", "an", "object"]) as api, pytest.raises(ApiError) as raised:
+        api.withdraw_blog_post("g", "p")
+    assert raised.value.body == ""
+    assert "blog response" in _malformed(raised)
     with (
         _api({"rooms": [{"group_id": "g", "name": 3, "items": []}]}) as api,
         pytest.raises(ApiError) as raised,
