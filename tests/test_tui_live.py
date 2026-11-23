@@ -376,6 +376,30 @@ async def test_a_pin_change_delivered_after_the_thread_is_gone_is_ignored(
         app.on_thread_view_pin_changed(ThreadView.PinChanged(True, True, 0, None))
 
 
+@pytest.mark.parametrize("cue", ["pin_changed", "landed"])
+async def test_a_cue_delivered_after_the_sidebar_is_gone_is_ignored(
+    monkeypatch: pytest.MonkeyPatch, cue: str
+) -> None:
+    """Teardown closes the widgets one by one, so a cue can find the thread still mounted and
+    the sidebar gone: in Windows queue run 45063121569 a ``Landed`` raised ``NoMatches`` for
+    ``Sidebar`` in ``refresh_chrome``. Staged by hand: remove only the sidebar."""
+    server = ts.standard_server()
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 20)) as pilot:
+        await until(pilot, lambda: len(app.rooms) == 2)
+        app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+        await until(pilot, lambda: app.loaded_topic)
+        await _quiet(pilot, app, monkeypatch)
+        await app.sidebar.remove()
+        assert app.query(ThreadView)  # the state the failing run delivered into
+        if cue == "landed":
+            app.on_thread_view_landed(ThreadView.Landed(app.thread.render_id, None))
+        else:
+            app.on_thread_view_pin_changed(
+                ThreadView.PinChanged(True, True, app.thread.render_id, None)
+            )
+
+
 async def test_a_topic_page_delivered_while_the_thread_is_being_removed_is_dropped() -> None:
     """A poll result can land between the start of the thread's removal and its end (#177): the
     children are gone and the thread is still in the tree, so painting it raised ``NoMatches``.

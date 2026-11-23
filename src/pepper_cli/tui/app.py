@@ -2043,9 +2043,11 @@ class PepperApp(App[None]):
         away from it (rows below are unseen: the open topic shows as unread). ``pinned``
         tolerates one line for the marker; the decision function requires the true end, so
         scrolling back to one line short does not mark the row that line hides."""
-        if not self.query(ThreadView):
+        if not self._mounted():
             # A message queued as the app tears down is dispatched after the screen's widgets
-            # are gone; there is no thread left to read or mark (#139).
+            # are gone; there is no thread left to read or mark (#139). Teardown removes the
+            # widgets one by one, so the thread can outlive the sidebar ``refresh_chrome``
+            # paints: Windows queue run 45063121569 found it so and raised ``NoMatches``.
             return
         self._note_viewed(
             render_id=event.render_id,
@@ -2063,8 +2065,8 @@ class PepperApp(App[None]):
         """A guarded scroll put the newest row of ``event``'s render on screen: the topic is
         read through it. The decision function drops a landing whose render has been
         replaced, whose timestamp is missing, or that the reader has since scrolled past."""
-        if not self.query(ThreadView):
-            # Same teardown window as ``PinChanged`` (#139).
+        if not self._mounted():
+            # Same teardown window as ``PinChanged`` (#139, queue run 45063121569).
             return
         self._note_viewed(render_id=event.render_id, through=event.through)
         self._run("publish")
