@@ -26541,7 +26541,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
                 }
               }
             },
@@ -26614,7 +26614,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
                 }
               }
             },
@@ -26698,7 +26698,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
                 }
               }
             },
@@ -26780,7 +26780,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
                 }
               }
             },
@@ -26874,7 +26874,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
                 }
               }
             },
@@ -26992,7 +26992,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
                 }
               }
             },
@@ -27075,7 +27075,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
                 }
               }
             },
@@ -27168,7 +27168,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
                 }
               }
             },
@@ -27261,7 +27261,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
                 }
               }
             },
@@ -27390,7 +27390,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
                 }
               }
             },
@@ -27464,7 +27464,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
                 }
               }
             },
@@ -27548,7 +27548,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
                 }
               }
             },
@@ -27622,7 +27622,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
                 }
               }
             },
@@ -27732,7 +27732,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
                 }
               }
             },
@@ -27804,7 +27804,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
                 }
               }
             },
@@ -27897,7 +27897,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
                 }
               }
             },
@@ -27971,7 +27971,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
                 }
               }
             },
@@ -28063,7 +28063,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
                 }
               }
             },
@@ -28156,7 +28156,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
                 }
               }
             },
@@ -28238,7 +28238,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchDisabledBody"
+                  "$ref": "#/components/schemas/ResearchForbiddenBody"
                 }
               }
             },
