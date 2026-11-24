@@ -32,8 +32,11 @@ from pepper_cli.api_client import (
 )
 from pepper_cli.secret import SecretStr
 from pepper_cli.tui import poller
+from pepper_cli.tui import state as tui_state
 from pepper_cli.tui.app import PepperApp
 from pepper_cli.tui.state import AppPaneState, Conversation
+from tests import tui_support as ts
+from tests.tui_support import body_text, until
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -229,6 +232,19 @@ class TestReq2SkipBadRows:
         assert page.skipped == 1
         assert len(page.messages) == 1
         assert page.messages[0].id == "m-good"
+
+    def test_list_group_messages_bounds_the_row_it_skipped(self) -> None:
+        before = _message(id="m-before", created_at="2026-09-16T18:00:00+00:00")
+        bad = _message(id=99, created_at="2026-09-16T18:01:00+00:00")
+        first = _message(id="m-first", created_at="2026-09-16T18:02:00+00:00")
+        last = _message(id="m-last", created_at="2026-09-16T18:03:00+00:00")
+        api = _api(_messages_body(before, bad, first, last))
+        page = api.list_group_messages("r1", "tp1", skip_bad_rows=True)
+        assert [message.id for message in page.messages] == ["m-before", "m-first", "m-last"]
+        assert page.skipped_at == [bad["created_at"]]
+        assert page.skipped_before_last == before["created_at"]
+        assert page.skipped_after_first == first["created_at"]
+        assert page.skipped_after_last == last["created_at"]
 
     def test_list_artifacts_skip_one_bad_item(self) -> None:
         good = _artifact(id="a-good")
@@ -582,3 +598,76 @@ class TestReq6StaleMessageRetryOnError:
         assert exc.value.status == 200
         assert on_error(exc.value) is False
         assert app._stale_rows == ["m-stale"]
+
+
+# ---------------------------------------------------------------------------
+# A dropped message stays unread until a complete page recovers its range
+# ---------------------------------------------------------------------------
+
+
+def _quiet_polls(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("ACTIVE_INTERVAL", "COOLING_INTERVAL", "IDLE_INTERVAL", "DM_INTERVAL"):
+        monkeypatch.setattr(tui_state, name, 1000.0)
+    monkeypatch.setattr(tui_state, "RAIL_INTERVAL", 1000.0)
+    monkeypatch.setattr(tui_state, "RAIL_INTERVAL_LIVE", 1000.0)
+
+
+def _gap_server() -> tuple[ts.FakeServer, list[str]]:
+    stamps = [f"2026-09-16T18:{i:02d}:00+00:00" for i in range(5)]
+    rows = [ts.message(f"m{i}", stamp, f"row {i}") for i, stamp in enumerate(stamps)]
+    rows[2] = {**rows[2], "display_name": 42}  # between readable rows, and unparseable
+    server = ts.standard_server()
+    server.messages[ts.TOPIC_A1] = rows
+    server.marks[ts.TOPIC_A1] = stamps[1]
+    server.rooms[0]["topics"][0]["last_activity_at"] = stamps[-1]
+    server.bump()
+    return server, stamps
+
+
+class TestTopicPartialReadMark:
+    async def test_viewing_a_newer_message_does_not_mark_the_missing_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _quiet_polls(monkeypatch)
+        server, stamps = _gap_server()
+        app = PepperApp(server.client())
+        async with app.run_test(size=(120, 20)) as pilot:
+            await until(pilot, lambda: len(app.rooms) == 2 and app.marks.unread)
+            app.open_conversation(Conversation(ts.ROOM_A, ts.TOPIC_A1))
+            await until(pilot, lambda: app.loaded_topic and "row 4" in body_text(app))
+            await pilot.pause(0.3)
+            assert app._topic_skipped == 1
+            assert "this topic" in app._partial_notice
+            assert app.store.read_held
+            assert [through for topic, through in server.puts if topic == ts.TOPIC_A1] == []
+            assert app.marks.marks[ts.TOPIC_A1] == tui_state.parse_ts(stamps[1])
+
+    async def test_a_complete_page_releases_the_hold_before_marking(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _quiet_polls(monkeypatch)
+        server, stamps = _gap_server()
+        app = PepperApp(server.client())
+        async with app.run_test(size=(120, 20)) as pilot:
+            await until(pilot, lambda: len(app.rooms) == 2 and app.marks.unread)
+            app.open_conversation(Conversation(ts.ROOM_A, ts.TOPIC_A1))
+            await until(pilot, lambda: app.loaded_topic and "row 4" in body_text(app))
+            await pilot.pause(0.3)
+            assert app.store.read_held
+
+            server.messages[ts.TOPIC_A1][2] = ts.message("m2", stamps[2], "row 2")
+            conv = Conversation(ts.ROOM_A, ts.TOPIC_A1)
+            page = poller.fetch_topic(app._api, conv, since=stamps[1])
+            assert page.skipped == 0
+            app._on_topic_page(page, newest=False, reconcile=False)
+            assert not app.store.read_held
+            assert "this topic" in app._partial_notice  # only a full reconcile clears it
+
+            app._note_viewed(render_id=app.thread.render_id, through=app.thread.through)
+            app._run("publish")
+            await until(
+                pilot,
+                lambda: any(
+                    through == stamps[4] for topic, through in server.puts if topic == ts.TOPIC_A1
+                ),
+            )

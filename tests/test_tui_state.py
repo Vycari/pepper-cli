@@ -274,6 +274,65 @@ def test_a_late_committed_row_inside_the_lookback_is_still_fetched_and_ordered()
     assert store.newest_created_at() == "2026-01-01T10:00:05Z"
 
 
+def test_partial_read_hold_widens_and_needs_the_skipped_row_returned() -> None:
+    store = state.MessageStore()
+    store.hold_reads(
+        skipped_at=["2026-01-01T10:02:00Z"],
+        before_last="2026-01-01T10:01:00Z",
+        after_first="2026-01-01T10:03:00Z",
+        after_last="2026-01-01T10:04:00Z",
+    )
+    store.hold_reads(
+        skipped_at=["2026-01-01T10:05:00Z"],
+        before_last="2026-01-01T10:04:00Z",
+        after_first="2026-01-01T10:06:00Z",
+        after_last="2026-01-01T10:07:00Z",
+    )
+    assert store.read_hold_from == "2026-01-01T10:02:00Z"
+    assert store.read_hold_through == "2026-01-01T10:07:00Z"
+    store.release_read_hold(
+        [_msg(f"m{i}", f"2026-01-01T10:0{i}:00Z") for i in range(3, 8)],
+        reconcile=False,
+        next_before="older",
+    )
+    assert store.read_held  # a truncated page can span readable rows yet omit the gap
+    store.release_read_hold(
+        [_msg(f"m{i}", f"2026-01-01T10:0{i}:00Z") for i in range(2, 8)],
+        reconcile=False,
+        next_before="older",
+    )
+    assert not store.read_held
+    assert store.read_hold_from is None
+    assert store.read_hold_through is None
+
+
+def test_partial_read_hold_without_a_timestamp_waits_for_the_whole_topic() -> None:
+    store = state.MessageStore()
+    store.hold_reads(
+        skipped_at=["not-a-time"],
+        before_last="2026-01-01T10:01:00Z",
+        after_first="2026-01-01T10:03:00Z",
+        after_last="2026-01-01T10:04:00Z",
+    )
+    rows = [_msg(f"m{i}", f"2026-01-01T10:0{i}:00Z") for i in (1, 3, 4)]
+    store.release_read_hold(rows, reconcile=False, next_before="older")
+    assert store.read_held  # the anchors alone cannot prove every row between them returned
+    store.release_read_hold(rows, reconcile=False, next_before=None)
+    assert store.read_held  # a clean incremental page is still not the whole topic
+
+    store.hold_reads(
+        skipped_at=["2026-01-01T10:05:00Z"],
+        before_last="2026-01-01T10:04:00Z",
+        after_first="2026-01-01T10:06:00Z",
+        after_last="2026-01-01T10:07:00Z",
+    )
+    rows = [_msg(f"m{i}", f"2026-01-01T10:0{i}:00Z") for i in (1, 3, 4, 5, 6, 7)]
+    store.release_read_hold(rows, reconcile=False, next_before="older")
+    assert store.read_held  # one unreadable gap makes the whole hold need a full read
+    store.release_read_hold(rows, reconcile=True, next_before=None)
+    assert not store.read_held
+
+
 def test_every_fifth_tick_is_a_reconcile() -> None:
     store = state.MessageStore()
     assert [store.next_is_reconcile() for _ in range(10)] == [

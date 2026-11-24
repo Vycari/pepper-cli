@@ -1877,13 +1877,24 @@ class GroupMessagePage:
     ``next_before`` is the cursor for the page *older* than this one, and
     ``None`` once there is nothing older. ``permalink_target_missing`` says an
     ``at=`` anchor was not found and this is the newest page instead — a note,
-    never an error: the room is real, only the anchor was not.
+    never an error: the room is real, only the anchor was not. The ``skipped_*``
+    fields keep the timestamp of a dropped row when the wire still carries it,
+    plus the readable rows beside the gap, so a caller can hold a read mark
+    until a clean page actually covers the missing row.
     """
 
     messages: list[GroupMessage] = field(default_factory=list)
     next_before: str | None = None
     permalink_target_missing: bool = False
     skipped: int = 0
+    #: ``created_at`` values recovered from skipped rows that still carry one.
+    skipped_at: list[str] = field(default_factory=list)
+    #: Last readable row before any skipped row, when there is one.
+    skipped_before_last: str | None = None
+    #: First readable row after any skipped row, when there is one.
+    skipped_after_first: str | None = None
+    #: Last readable row after any skipped row, when there is one.
+    skipped_after_last: str | None = None
 
 
 # MIRROR: src/pepper/api/groups/_responses.py::RoomRosterMember
@@ -4186,6 +4197,12 @@ class ApiClient:
         what = "group messages response"
         body = _wire_row(body, what)
         raw_messages = _optional_list(body, "messages", what)
+        skipped_at: list[str] = []
+        before_last: str | None = None
+        after_first: str | None = None
+        after_last: str | None = None
+        last_readable: str | None = None
+        saw_skipped = False
         if not skip_bad_rows:
             messages = _wire_rows(raw_messages, "group message", group_message_from_dict)
             skipped = 0
@@ -4194,14 +4211,33 @@ class ApiClient:
             skipped = 0
             for item in _wire_list(raw_messages, what):
                 try:
-                    messages.append(group_message_from_dict(_wire_row(item, "group message")))
+                    message = group_message_from_dict(_wire_row(item, "group message"))
                 except ApiError:
                     skipped += 1
+                    if not saw_skipped:
+                        before_last = last_readable
+                        saw_skipped = True
+                    if isinstance(item, dict):
+                        at = item.get("created_at")
+                        if isinstance(at, str):
+                            skipped_at.append(at)
+                    continue
+                messages.append(message)
+                if saw_skipped:
+                    if after_first is None:
+                        after_first = message.created_at
+                    after_last = message.created_at
+                else:
+                    last_readable = message.created_at
         return GroupMessagePage(
             messages=messages,
             next_before=body.get("next_before"),
             permalink_target_missing=body.get("permalink_target_missing", False),
             skipped=skipped,
+            skipped_at=skipped_at,
+            skipped_before_last=before_last,
+            skipped_after_first=after_first,
+            skipped_after_last=after_last,
         )
 
     def post_group_message(

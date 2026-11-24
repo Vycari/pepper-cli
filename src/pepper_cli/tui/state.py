@@ -588,6 +588,13 @@ class MessageStore:
     older: str | None = None
     #: A "load older" page has been merged, so the newest page's cursor no longer applies.
     paged_back: bool = False
+    #: A partial poll left rows out, so read marks stand still until a clean page covers
+    #: ``read_hold_from`` through ``read_hold_through``. A gap whose own timestamp was
+    #: unreadable needs a whole-topic read instead of a bounded page.
+    read_held: bool = False
+    read_hold_from: str | None = None
+    read_hold_through: str | None = None
+    read_hold_needs_full: bool = False
 
     def add(self, incoming: Iterable[GroupMessage]) -> list[str]:
         """Merge server rows. Returns the ids that are new (an edit replaces, it is not new)."""
@@ -608,6 +615,65 @@ class MessageStore:
         paged back, a later reconcile read of the newest page must not move that cursor."""
         if not self.paged_back:
             self.older = next_before
+
+    def hold_reads(
+        self,
+        *,
+        skipped_at: Iterable[str],
+        before_last: str | None,
+        after_first: str | None,
+        after_last: str | None,
+    ) -> None:
+        """Hold read marks while a partial poll leaves rows unseen.
+
+        A skipped row's own timestamp is the strongest boundary: a clean page that spans
+        it must have returned that row again. Without one, the readable rows beside the
+        gap only bracket it, so only a whole-topic read can prove the gap is gone.
+        """
+        self.read_held = True
+        stamps = [at for at in skipped_at if parse_ts(at) is not None]
+        if stamps:
+            bounds = [*stamps, after_first, after_last]
+        else:
+            bounds = [before_last, after_first, after_last]
+            self.read_hold_needs_full = True
+        from_at, through = parse_ts(self.read_hold_from), parse_ts(self.read_hold_through)
+        for at in [*bounds, self.read_hold_from, self.read_hold_through]:
+            stamp = parse_ts(at)
+            if stamp is None:
+                continue
+            if from_at is None or stamp < from_at:
+                self.read_hold_from, from_at = at, stamp
+            if through is None or stamp > through:
+                self.read_hold_through, through = at, stamp
+
+    def release_read_hold(
+        self,
+        incoming: Iterable[GroupMessage],
+        *,
+        reconcile: bool,
+        next_before: str | None,
+    ) -> None:
+        """Let read marks move again once a clean read proves the gap is covered."""
+        if not self.read_held:
+            return
+        first = parse_ts(self.read_hold_from)
+        last = parse_ts(self.read_hold_through)
+        stamps = [stamp for message in incoming if (stamp := parse_ts(message.created_at))]
+        covered = (
+            not self.read_hold_needs_full
+            and first is not None
+            and last is not None
+            and bool(stamps)
+            and min(stamps) <= first
+            and max(stamps) >= last
+        )
+        whole_topic = reconcile and next_before is None
+        if covered or whole_topic:
+            self.read_held = False
+            self.read_hold_from = None
+            self.read_hold_through = None
+            self.read_hold_needs_full = False
 
     def add_older(self, incoming: Iterable[GroupMessage], next_before: str | None) -> list[str]:
         """Merge a "load older" page. Rows are deduped by id; the poll cursor is untouched

@@ -1089,7 +1089,20 @@ class PepperApp(App[None]):
         if newest or reconcile:
             self.store.note_newest_page(page.next_before)
         # An incremental poll can omit a malformed row from its window without proving the
-        # topic is complete. Keep that partial state until a full reconcile reports zero.
+        # topic is complete. Keep that partial state until a full reconcile reports zero, and
+        # hold the read mark before the rows that were left out until a complete page covers
+        # them.
+        if page.skipped > 0:
+            self.store.hold_reads(
+                skipped_at=page.skipped_at,
+                before_last=page.skipped_before_last,
+                after_first=page.skipped_after_first,
+                after_last=page.skipped_after_last,
+            )
+        else:
+            self.store.release_read_hold(
+                page.messages, reconcile=reconcile, next_before=page.next_before
+            )
         if reconcile or page.skipped > 0:
             self._note_pane_skipped(page.skipped, "_topic_skipped", "this topic")
         self._on_topic(page.messages)
@@ -1659,6 +1672,8 @@ class PepperApp(App[None]):
         conv = self.current
         if conv.is_pepper or conv.topic_id is None or self._blurred or self.pane is not None:
             return
+        if self.store.read_held:
+            return  # a malformed row is missing: the mark waits for a complete read
         if render_id != self.thread.render_id or self._opening or self._opening_deferred:
             return
         if show_id is not None and show_id != self.thread.show_id:
@@ -2010,6 +2025,8 @@ class PepperApp(App[None]):
         conv = self.current
         if conv.is_pepper or conv.topic_id is None or self._blurred or self.pane is not None:
             return False  # an open Todos/Notes pane hides the thread: its rows are not on screen
+        if self.store.read_held:
+            return False  # a malformed row is missing: the mark waits for a complete read
         if render_id != self.thread.render_id or not at_end or not self.thread.at_end:
             return False
         if self._opening or self._opening_deferred:
@@ -2349,6 +2366,7 @@ class PepperApp(App[None]):
                 and self.open_card is None
                 and not self._blurred
                 and not self._scrolled_up()
+                and not self.store.read_held
             )
             if conv.topic_id is not None and on_screen:
                 # Not past a reply a fold still hides, as for any other read mark.
