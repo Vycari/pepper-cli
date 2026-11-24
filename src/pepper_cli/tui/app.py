@@ -1089,9 +1089,18 @@ class PepperApp(App[None]):
         """The open conversation's rows: what its own read gave, and every row of the topic
         whose chain of parents reaches its root (so a reply the poll brings shows at once)."""
         root = self.open_card
-        held = {**self.fetched_roots, **self.card_rows, **self.store.rows}
+        # One copy per message, the newest version: a later edit or a delete wins whichever
+        # read brought it (a copy as new as another is taken from the loaded rows).
+        held: dict[str, GroupMessage] = {}
+        for source in (self.fetched_roots, self.card_rows, self.store.rows):
+            for mid, m in source.items():
+                if mid not in held or not state.is_stale_copy(m, held[mid]):
+                    held[mid] = m
         out: list[GroupMessage] = []
         for m in held.values():
+            if m.id in self.card_rows:
+                out.append(m)  # the conversation's own read: it is in it, parent loaded or not
+                continue
             node, seen = m, set()
             while node.parent_message_id and node.id not in seen and node.id != root:
                 seen.add(node.id)
@@ -1111,9 +1120,33 @@ class PepperApp(App[None]):
         messages = self._card_messages()
         if not any(m.id == self.open_card for m in messages):
             return [(None, Text("Loading…", style="dim"))]
-        laid = cards.build_stream(messages, takes_cards=True)
+        # A reply whose parent is on an older page not read yet still belongs here: it is
+        # drawn in the conversation, with its quote line saying what it answers.
+        ids = {m.id for m in messages}
+        orphans = {
+            m.id: m
+            for m in messages
+            if m.id != self.open_card and m.parent_message_id and m.parent_message_id not in ids
+        }
+        laid = cards.build_stream(
+            [
+                replace(m, parent_message_id=self.open_card) if m.id in orphans else m
+                for m in messages
+            ],
+            takes_cards=True,
+        )
         laid.entries = [
-            e for e in laid.entries if isinstance(e, cards.Card) and e.id == self.open_card
+            replace(
+                e,
+                replies=[
+                    replace(r, message=orphans[r.message.id], to_card=False)
+                    if r.message.id in orphans
+                    else r
+                    for r in e.replies
+                ],
+            )
+            for e in laid.entries
+            if isinstance(e, cards.Card) and e.id == self.open_card
         ]
         older = (
             [(None, Text("↑ earlier replies load as you scroll up", style="dim italic"))]
@@ -1202,7 +1235,9 @@ class PepperApp(App[None]):
     def _got_card(self, page: GroupMessagePage, *, older: bool) -> None:
         self._learn_from_messages(page.messages)
         for m in page.messages:
-            self.card_rows[m.id] = m
+            held = self.card_rows.get(m.id)
+            if held is None or not state.is_stale_copy(m, held):
+                self.card_rows[m.id] = m  # a late page never undoes a newer edit or a delete
         self.card_older = page.next_before
         self._render_topic(new_rows=0, reset=not older, prepended=older)
 
@@ -2497,6 +2532,11 @@ class PepperApp(App[None]):
     # load older
 
     def on_thread_view_at_top(self, _event: ThreadView.AtTop) -> None:
+        if self.open_card is not None:
+            # The full view pages its own conversation, never the topic behind it.
+            if self.card_older:
+                self._read_card(before=self.card_older)
+            return
         self._load_older()
 
     def on_thread_view_pin_changed(self, event: ThreadView.PinChanged) -> None:

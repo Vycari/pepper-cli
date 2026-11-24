@@ -517,3 +517,73 @@ async def test_a_conversation_read_lost_to_the_connection_is_asked_again() -> No
         await pilot.press("enter")
         await until(pilot, lambda: lost and app.card_rows)
         assert "Loading" not in body_text(app)
+
+
+async def test_scrolling_to_the_top_of_a_conversation_pages_the_conversation() -> None:
+    replies = [
+        ts.message(f"r{i}", _at(i + 1), f"reply number {i}", parent_message_id="m1")
+        for i in range(6)
+    ]
+    server = _server([ts.message("m1", _at(0), "Plans"), *replies])
+    server.page_size = 4
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _open(pilot, app, "reply number 5")
+        app._open_card("m1")
+        await until(pilot, lambda: app.card_older is not None)
+        topic_before = sum(
+            1 for _, _, q in server.requests if "before" in q and not q.get("conversation")
+        )
+        app.on_thread_view_at_top(None)  # type: ignore[arg-type]
+        await until(pilot, lambda: "reply number 0" in body_text(app))
+        topic_after = sum(
+            1 for _, _, q in server.requests if "before" in q and not q.get("conversation")
+        )
+        assert topic_after == topic_before
+
+
+async def test_a_reply_to_an_unloaded_reply_shows_in_the_conversation() -> None:
+    replies = [
+        ts.message("r0", _at(1), "first answer", parent_message_id="m1"),
+        *(ts.message(f"f{i}", _at(i + 2), f"filler {i}", parent_message_id="m1") for i in range(3)),
+        ts.message(
+            "r9",
+            _at(9),
+            "answer to the first",
+            parent_message_id="r0",
+            quote={"id": "r0", "author": "Ada", "excerpt": "first answer"},
+        ),
+    ]
+    server = _server([ts.message("m1", _at(0), "Plans"), *replies])
+    server.page_size = 2
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _open(pilot, app, "answer to the first")
+        await until(pilot, lambda: not app._loops["roots"].busy and "r0" in app._root_attempts)
+        app.fetched_roots.pop("r0", None)  # as if that read had failed: r0 is held nowhere
+        app._open_card("m1")
+        await until(pilot, lambda: "r9" in app.card_rows and "r0" not in app.card_rows)
+        text = body_text(app)
+        assert "answer to the first" in text and "Ada: first answer" in text
+
+
+async def test_a_late_conversation_page_does_not_undo_a_delete() -> None:
+    server = _server(
+        [
+            ts.message("m1", _at(0), "Plans"),
+            ts.message("r1", _at(1), "oops", parent_message_id="m1"),
+        ]
+    )
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _open(pilot, app, "oops")
+        app._open_card("m1")
+        await until(pilot, lambda: "r1" in app.card_rows)
+        from pepper_cli import api_client
+
+        stale = api_client.group_message_from_dict(server.messages[ts.TOPIC_A1][1])
+        app._patch_row("r1", lambda rows: rows.apply_delete("r1", {}))
+        assert app.store.rows["r1"].is_deleted and app.card_rows["r1"].is_deleted
+        app._got_card(api_client.GroupMessagePage(messages=[stale], next_before=None), older=False)
+        assert app.card_rows["r1"].is_deleted
+        assert all(m.is_deleted for m in app._card_messages() if m.id == "r1")

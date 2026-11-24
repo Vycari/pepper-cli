@@ -623,6 +623,20 @@ class FakeServer:
                 return row["id"] == root
 
             rows = [r for r in rows if _in(r)]
+            # The root comes with every page, however old it is; ``before`` pages its replies.
+            head = [r for r in rows if r["id"] == root]
+            replies = [r for r in rows if r["id"] != root]
+            limit = int(query["limit"]) if "limit" in query else self.page_size
+            end = int(query["before"]) if "before" in query else len(replies)
+            start = max(0, end - limit) if limit else 0
+            return httpx.Response(
+                200,
+                json={
+                    "messages": head + replies[start:end],
+                    "next_before": str(start) if start > 0 else None,
+                    "permalink_target_missing": False,
+                },
+            )
         if (since := query.get("since")) is not None:
             from pepper_cli.tui.state import parse_ts
 
