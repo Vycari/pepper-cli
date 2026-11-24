@@ -3998,6 +3998,13 @@
           },
           "sensitive": {
             "type": "boolean"
+          },
+          "suggestions": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/SuggestionOut"
+            },
+            "type": "array"
           }
         },
         "required": [
