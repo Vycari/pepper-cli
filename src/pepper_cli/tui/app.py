@@ -498,7 +498,14 @@ class PepperApp(App[None]):
             contextlib.suppress(RuntimeError, concurrent.futures.CancelledError),
             warnings.catch_warnings(),
         ):
-            warnings.simplefilter("ignore", RuntimeWarning)
+            warnings.filterwarnings(
+                "ignore",
+                message=(
+                    r"coroutine 'App\.call_from_thread\.<locals>\.run_callback' "
+                    r"was never awaited"
+                ),
+                category=RuntimeWarning,
+            )
             self.call_from_thread(callback, *args)
 
     def exit(self, *args: Any, **kwargs: Any) -> None:
