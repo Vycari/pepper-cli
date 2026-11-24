@@ -2829,6 +2829,13 @@ class ApiClient:
         body = resp.json()
         return _wire_row(body, "feed object response")
 
+    def achievements(self) -> dict[str, Any]:
+        """``GET /api/v1/achievements``: the token's own sticker book, every sticker in order.
+
+        404 when the ``achievements`` rollout does not reach the caller (or an older server).
+        """
+        return self._get_object("/api/v1/achievements")
+
     def graph_people(self, query: str | None = None, *, limit: int = 10) -> dict[str, Any]:
         """``GET /api/v1/graph/people``: people matching ``query``, else the strongest ties.
 

@@ -154,6 +154,7 @@ from pepper_cli import (
     render,
     research_view,
     skill_doc,
+    stickers_view,
     todos_view,
     turn,
     whimsy,
@@ -1057,6 +1058,21 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         help="Open the item's link in your default browser (the link is printed too).",
     )
     p.set_defaults(handler=cmd_feed_show)
+
+    p = sub.add_parser(
+        "stickers",
+        help="Your sticker book: the stickers Pepper's weekly Wrapped has awarded you.",
+        description=(
+            "List the stickers you have earned in the Sunday Wrapped, with each one's tier and how "
+            "many weeks you earned it. --all adds the ones you have not earned yet and how to earn "
+            "them. Only available once stickers are turned on for your account."
+        ),
+        parents=[_json_parent],
+    )
+    p.add_argument(
+        "--all", action="store_true", help="Also list the stickers you have not earned yet."
+    )
+    p.set_defaults(handler=cmd_stickers)
 
     p_graph = sub.add_parser(
         "graph",
@@ -10910,6 +10926,34 @@ def _feed_error_body(exc: api_client.ApiError) -> dict[str, Any]:
     except (ValueError, AttributeError):
         return {}
     return detail if isinstance(detail, dict) else {}
+
+
+def _report_stickers_error(args: argparse.Namespace, exc: api_client.ApiError) -> int:
+    """A 404 means the ``achievements`` rollout does not reach this account (or an older server
+    has no such route); say so rather than printing a bare "Not Found"."""
+    if exc.status == 404:
+        _emit_error(
+            args,
+            "not_found",
+            "Stickers are not available for your account yet (or this server is too old).",
+            status=404,
+        )
+        return 1
+    return _fail_api(args, exc)
+
+
+def cmd_stickers(args: argparse.Namespace) -> int:
+    """``pepper stickers [--all] [--json]``: ``GET /api/v1/achievements``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.achievements()
+        rows = body.get("stickers") or []
+        shown = rows if args.all else [r for r in rows if r.get("earned")]
+        envelope = _list_envelope(shown, earned=body.get("earned"), total=body.get("total"))
+        _emit(envelope, args, lambda: stickers_view.book(body, show_all=args.all))
+        return 0
+
+    return _run_personal(args, run, _report_stickers_error)
 
 
 def _report_graph_error(args: argparse.Namespace, exc: api_client.ApiError) -> int:
