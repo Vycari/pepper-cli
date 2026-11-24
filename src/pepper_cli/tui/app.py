@@ -133,6 +133,8 @@ _LOOPS = ("startup", "rail", "dm", "topic", "publish")
 #: say "retrying"; the roster retries quietly; the turn reports in the status line.
 #: P3 adds one-at-a-time requests started by a key: an older page, a reaction, an edit or
 #: delete (``mutate``), a new topic, the room-info card, and a room's full topic rail.
+#: How many times one opening of a topic asks again for a card's root after a lost read.
+ROOT_RETRIES = 3
 _ON_DEMAND = (
     "send",
     "roster",
@@ -364,6 +366,11 @@ class PepperApp(App[None]):
         self.fetched_roots: dict[str, GroupMessage] = {}
         #: Ids asked for that way, found or not: each is asked once per opening of a topic.
         self._root_attempts: set[str] = set()
+        #: Lost reads (a dropped connection, a 429 or a 5xx) per root id, this opening.
+        self._root_failures: Counter[str] = Counter()
+        #: ``created_at`` of the replies the last render folded away (a card's earlier replies,
+        #: behind its fold line). They were never on screen, so no read mark passes them.
+        self._folded_stamps: list[str] = []
         #: Pepper turns, oldest first. At most one is streaming or being checked at a time.
         self.turns: list[state.DmTurn] = []
         #: Every history id a reply frame has named this session. Each new turn's snapshot
@@ -1079,16 +1086,30 @@ class PepperApp(App[None]):
         )
 
     def _root_failed(self, target: str, exc: Exception) -> bool:
-        """A root read failed. A refusal (a 4xx) or an answer that would not parse is final:
-        its replies stay plain rows and the next root is read at once. A lost connection or a
-        server error is not: the root is asked again after the loop's backoff."""
+        """A root read failed. The loop always moves on to the next root at once (True), so one
+        root that keeps failing never holds up the others. A refusal (a 4xx but 429) or an
+        answer that would not parse is final: its replies stay plain rows. A lost connection,
+        a 429 or a 5xx is not: the root is asked again after a backoff, up to
+        :data:`ROOT_RETRIES` times in one opening of the topic."""
         transient = isinstance(exc, httpx.RequestError) or (
-            isinstance(exc, ApiError) and exc.status >= 500
+            isinstance(exc, ApiError) and (exc.status >= 500 or exc.status == 429)
         )
         if not transient:
             return True
-        self._root_attempts.discard(target)
-        return False
+        self._root_failures[target] += 1
+        failures = self._root_failures[target]
+        if failures > ROOT_RETRIES:
+            return True
+        conv = self.current
+
+        def again() -> None:
+            if self.current != conv or target in self.fetched_roots:
+                return  # another topic is open now, or the root arrived some other way
+            self._root_attempts.discard(target)
+            self._fetch_roots()
+
+        self.set_timer(state.backoff_delay(failures), again)
+        return True
 
     def _got_root(self, target: str, page: GroupMessagePage) -> None:
         found = next((m for m in page.messages if m.id == target), None)
@@ -1098,15 +1119,43 @@ class PepperApp(App[None]):
         self._fetch_roots()
 
     def _topic_items(self) -> list[tuple[str | None, Any]]:
+        laid = self._stream()
+        self._folded_stamps = [
+            reply.message.created_at
+            for entry in laid.entries
+            if isinstance(entry, cards.Card)
+            for reply in entry.replies[: entry.shown(expanded=entry.id in self.expanded_cards)[0]]
+        ]
         return rows.thread_items(
             self.store.ordered(),
             you_id=self.you_person_id,
             pending=self.pending.in_conversation(self.current),
             selected=self.selected,
             new_before=self._new_from,
-            stream=self._stream(),
+            stream=laid,
             expanded=self.expanded_cards,
         )
+
+    def _below_folded(self, through: str | None, cursor: datetime | None) -> str | None:
+        """``through``, or the newest held row older than the first reply a fold hides that is
+        newer than ``cursor``: a read mark never claims a reply the reader has not opened."""
+        stamp = state.parse_ts(through) if through is not None else None
+        if stamp is None:
+            return through
+        hidden = [
+            moment
+            for raw in self._folded_stamps
+            if (moment := state.parse_ts(raw)) is not None and (cursor is None or moment > cursor)
+        ]
+        if not hidden or stamp < min(hidden):
+            return through
+        floor = min(hidden)
+        best: tuple[datetime, str] | None = None
+        for m in self.store.ordered():
+            moment = state.parse_ts(m.created_at)
+            if moment is not None and moment < floor and (best is None or moment > best[0]):
+                best = (moment, m.created_at)
+        return best[1] if best else None
 
     def _begin_opening(self) -> None:
         """A topic's first page landed: open it at the read cursor if it has unread messages.
@@ -1293,7 +1342,7 @@ class PepperApp(App[None]):
         cursor = self.marks.marks.get(conv.topic_id)
         if cursor is None or self._cursor_gap(cursor):
             return  # first sight never marks (§5.3); and no mark claims across a gap
-        through = self._seen_through(top, height)
+        through = self._below_folded(self._seen_through(top, height), cursor)
         stamp = state.parse_ts(through) if through is not None else None
         if through is None or stamp is None or not self.marks.merge(conv.topic_id, stamp):
             return
@@ -1436,6 +1485,7 @@ class PepperApp(App[None]):
         self.selected = None
         self.expanded_cards, self.card_holds = set(), {}
         self.fetched_roots, self._root_attempts = {}, set()
+        self._root_failures = Counter()
         self._load_draft()
         self.store = state.MessageStore()
         self.loaded_topic = False
@@ -1634,6 +1684,14 @@ class PepperApp(App[None]):
         stamp, shown = state.parse_ts(through), state.parse_ts(rendered)
         if stamp is None or shown is None or stamp > shown:
             return False  # the event claims a row this render never put on screen
+        cursor = self.marks.marks.get(conv.topic_id)
+        capped = self._below_folded(through, cursor)
+        if capped != through:
+            # Everything newer than the first folded-away reply stays unread.
+            capped_at = state.parse_ts(capped) if capped is not None else None
+            if capped is None or capped_at is None or (cursor is not None and capped_at <= cursor):
+                return False
+            through, stamp = capped, capped_at
         self.marks.merge(conv.topic_id, stamp)
         self._owe(conv, through)
         return True

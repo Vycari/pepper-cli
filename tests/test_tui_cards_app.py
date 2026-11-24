@@ -206,3 +206,58 @@ async def test_a_root_read_by_id_stays_drawn_once_an_older_page_brings_it() -> N
         app._render_topic(new_rows=0, reset=False)
         await pilot.pause()
         assert "the original question" in body_text(app)
+
+
+async def test_the_read_mark_never_passes_a_reply_behind_the_fold() -> None:
+    replies = [
+        ts.message(f"r{i}", _at(i + 1), f"reply number {i}", parent_message_id="m1")
+        for i in range(5)
+    ]
+    server = _server([ts.message("m1", _at(0), "Plans"), *replies])
+    server.marks[ts.TOPIC_A1] = _at(0)  # read through the card's root only
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _open(pilot, app, "reply number 4")
+        await pilot.pause(0.3)
+        marked = [at for topic, at in server.puts if topic == ts.TOPIC_A1]
+        assert all(at < _at(1) for at in marked), marked
+        await _select(pilot, app, "fold:m1")
+        await pilot.press("enter")
+        await until(pilot, lambda: "reply number 0" in body_text(app))
+        app.thread.focus_scroller()
+        await pilot.press("end")
+        await until(pilot, lambda: (ts.TOPIC_A1, _at(5)) in server.puts)
+
+
+async def test_a_root_that_keeps_failing_does_not_hold_up_the_next() -> None:
+    import httpx
+
+    rows = [
+        ts.message("m0", _at(0), "# First plan\nold", title="First plan"),
+        ts.message("m1", _at(1), "# Second plan\nold", title="Second plan"),
+        ts.message("x1", _at(2), "filler one"),
+        ts.message("r0", _at(3), "about the first", parent_message_id="m0"),
+        ts.message("r1", _at(4), "about the second", parent_message_id="m1"),
+    ]
+    server = _server(rows)
+    server.page_size = 3
+    answer = server.handler
+    asked: list[str] = []
+
+    def failing(request: httpx.Request) -> httpx.Response:
+        at = request.url.params.get("at")
+        if at:
+            asked.append(at)
+        if at == "m0":
+            return httpx.Response(429, json={"detail": "slow down"})
+        return answer(request)
+
+    server.handler = failing  # type: ignore[method-assign]
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _open(pilot, app, "about the second")
+        await until(pilot, lambda: "Second plan" in body_text(app))
+        # The throttled root is asked again, a bounded number of times.
+        await until(pilot, lambda: asked.count("m0") == tui_app.ROOT_RETRIES + 1)
+        await pilot.pause(0.3)
+        assert asked.count("m0") == tui_app.ROOT_RETRIES + 1
