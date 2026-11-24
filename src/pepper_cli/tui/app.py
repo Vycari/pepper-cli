@@ -378,6 +378,7 @@ class PepperApp(App[None]):
         #: page of its replies older than those held (``None`` once there are none).
         self.open_card: str | None = None
         self.card_rows: dict[str, GroupMessage] = {}
+        self._card_failures = 0
         self.card_older: str | None = None
         #: Pepper turns, oldest first. At most one is streaming or being checked at a time.
         self.turns: list[state.DmTurn] = []
@@ -1063,20 +1064,26 @@ class PepperApp(App[None]):
         return laid
 
     def _held_row(self, message_id: str) -> GroupMessage | None:
-        """A message drawn in the open topic: a loaded row, or a root read by id."""
-        return self.store.rows.get(message_id) or self.fetched_roots.get(message_id)
+        """A message drawn in the open topic: a loaded row, a root read by id, or a row the
+        open conversation's own read gave."""
+        return (
+            self.store.rows.get(message_id)
+            or self.fetched_roots.get(message_id)
+            or self.card_rows.get(message_id)
+        )
 
     def _patch_row(self, message_id: str, change: Callable[[state.MessageStore], object]) -> None:
         """Apply ``change`` to the row ``message_id`` wherever it is held. A root read by id is
         changed in place, outside the loaded rows, so it never moves the poll cursor or the
-        start of older pages."""
-        if message_id in self.store.rows or message_id not in self.fetched_roots:
+        start of older pages. The same holds for a row the open conversation's read gave."""
+        others = [held for held in (self.fetched_roots, self.card_rows) if message_id in held]
+        if message_id in self.store.rows or not others:
             change(self.store)
-            return
-        side = state.MessageStore(rows={message_id: self.fetched_roots[message_id]})
-        change(side)
-        if (row := side.rows.get(message_id)) is not None:
-            self.fetched_roots[message_id] = row
+        for held in others:
+            side = state.MessageStore(rows={message_id: held[message_id]})
+            change(side)
+            if (row := side.rows.get(message_id)) is not None:
+                held[message_id] = row
 
     def _card_messages(self) -> list[GroupMessage]:
         """The open conversation's rows: what its own read gave, and every row of the topic
@@ -1136,7 +1143,13 @@ class PepperApp(App[None]):
 
     def _open_card(self, card_id: str) -> None:
         """Open one conversation in full view, over the topic."""
+        draft = self._draft()
+        if draft.quote_id is not None and cards.card_of(self._stream(), draft.quote_id) != card_id:
+            # A quote left from another conversation would send the reply there, not into the
+            # one on screen: it is dropped.
+            draft.quote_id, draft.quote_name, draft.quote_text = None, "", ""
         self.open_card, self.card_rows, self.card_older = card_id, {}, None
+        self._card_failures = 0
         self.selected = f"msg:{card_id}"
         loop = self._loops["card"]
         loop.generation += 1
@@ -1164,8 +1177,27 @@ class PepperApp(App[None]):
             "card",
             lambda: poller.fetch_conversation(self._api, conv, root, before=before),
             lambda page: self._got_card(page, older=before is not None),
-            on_error=lambda exc: self._action_failed("open this conversation", exc),
+            on_error=lambda exc: self._card_failed(root, before, exc),
         )
+
+    def _card_failed(self, root: str, before: str | None, exc: Exception) -> bool:
+        """A conversation read failed. A lost connection, a 429 or a 5xx is asked again after
+        a backoff, up to :data:`ROOT_RETRIES` times; anything else, or the last retry, says
+        so (Esc goes back, Enter on the card asks again)."""
+        transient = isinstance(exc, httpx.RequestError) or (
+            isinstance(exc, ApiError) and (exc.status >= 500 or exc.status == 429)
+        )
+        self._card_failures += 1
+        if not transient or self._card_failures > ROOT_RETRIES:
+            return self._action_failed("open this conversation", exc)
+        generation = self._loops["card"].generation
+
+        def again() -> None:
+            if self.open_card == root and self._loops["card"].generation == generation:
+                self._read_card(before=before)
+
+        self.set_timer(state.backoff_delay(self._card_failures), again)
+        return True
 
     def _got_card(self, page: GroupMessagePage, *, older: bool) -> None:
         self._learn_from_messages(page.messages)
@@ -2160,7 +2192,13 @@ class PepperApp(App[None]):
         if item is not None:
             item.status, item.server_id, item.created_at = "sent", message.id, message.created_at
             conv = item.conversation
-            on_screen = conv == self.current and not self._blurred and not self._scrolled_up()
+            # Not from the full view either: it shows one conversation, not the topic's rows.
+            on_screen = (
+                conv == self.current
+                and self.open_card is None
+                and not self._blurred
+                and not self._scrolled_up()
+            )
             if conv.topic_id is not None and on_screen:
                 # Not past a reply a fold still hides, as for any other read mark.
                 through = self._below_folded(

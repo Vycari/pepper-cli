@@ -445,3 +445,75 @@ async def test_a_conversation_view_does_not_move_the_read_mark() -> None:
         await _open(pilot, app, "ok")
         app._open_card("m1")
         assert app._note_viewed(render_id=app.thread.render_id, through=_at(1)) is False
+
+
+def _two_cards() -> list[dict]:
+    return [
+        ts.message("mx", _at(0), "# Cabin\ndates?", title="Cabin", title_source="heading"),
+        ts.message("rx", _at(1), "June", parent_message_id="mx", display_name="Bo"),
+        ts.message("my", _at(2), "# Lunch\nwhere?", title="Lunch", title_source="heading"),
+    ]
+
+
+async def test_a_quote_from_another_conversation_does_not_follow_into_the_full_view() -> None:
+    server = _server(_two_cards())
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _open(pilot, app, "where?")
+        await _select(pilot, app, "msg:rx")
+        await pilot.press("r")
+        await until(pilot, lambda: "Replying in" in plain(app, "#quote"))
+        app.thread.focus_scroller()  # focus moved back to the thread, no Esc
+        await pilot.press("down")
+        assert app.selected == "msg:my"
+        await pilot.press("enter")
+        await until(pilot, lambda: app.open_card == "my")
+        app.composer.focus()
+        await pilot.pause()
+        app.composer.insert("noon")
+        await pilot.press("enter")
+        await until(pilot, lambda: server.posts)
+        assert server.posts[0]["parent_message_id"] == "my"
+
+
+async def test_a_reply_from_the_full_view_does_not_move_the_topic_read_mark() -> None:
+    server = _server(_two_cards())
+    server.marks[ts.TOPIC_A1] = _at(0)
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _open(pilot, app, "where?")
+        await until(pilot, lambda: (ts.TOPIC_A1, _at(2)) in server.puts)  # read on screen
+        before = list(server.puts)
+        await _select(pilot, app, "msg:mx")
+        await pilot.press("enter")
+        await until(pilot, lambda: app.open_card == "mx" and "June" in body_text(app))
+        app.composer.focus()
+        await pilot.pause()
+        app.composer.insert("works for me")
+        await pilot.press("enter")
+        await until(pilot, lambda: server.posts)
+        await pilot.pause(0.3)
+        assert server.puts == before
+
+
+async def test_a_conversation_read_lost_to_the_connection_is_asked_again() -> None:
+    import httpx
+
+    server = _server(_two_cards())
+    answer = server.handler
+    lost = []
+
+    def flaky(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("conversation") == "mx" and not lost:
+            lost.append(request)
+            raise httpx.ConnectError("connection lost", request=request)
+        return answer(request)
+
+    server.handler = flaky  # type: ignore[method-assign]
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _open(pilot, app, "where?")
+        await _select(pilot, app, "msg:mx")
+        await pilot.press("enter")
+        await until(pilot, lambda: lost and app.card_rows)
+        assert "Loading" not in body_text(app)
