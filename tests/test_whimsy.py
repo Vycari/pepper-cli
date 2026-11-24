@@ -8,7 +8,7 @@ import random
 
 import pytest
 
-from pepper_cli import cli, whimsy
+from pepper_cli import api_client, cli, whimsy
 
 
 class _Rolls(random.Random):
@@ -156,3 +156,36 @@ def test_json_mode_never_gets_the_hint(
     line = capsys.readouterr().err.strip()
     assert json.loads(line)["error"]["code"] == "network"
     assert whimsy.NETWORK_HINT not in line
+
+
+_SOLSTICE = api_client.SeasonMark(key="summer_solstice", glyph="☀️", title="Summer solstice")
+
+
+def test_season_line_draws_the_glyph_and_title(monkeypatch):
+    monkeypatch.delenv("PEPPER_NO_WHIMSY", raising=False)
+    assert whimsy.season_line(_SOLSTICE, is_tty=True) == "☀️ Summer solstice"
+
+
+@pytest.mark.parametrize(
+    ("mark", "is_tty", "no_whimsy"),
+    [(None, True, ""), (_SOLSTICE, False, ""), (_SOLSTICE, True, "1")],
+    ids=["ordinary-day", "not-a-terminal", "whimsy-off"],
+)
+def test_season_line_stays_quiet(monkeypatch, mark, is_tty, no_whimsy):
+    monkeypatch.setenv("PEPPER_NO_WHIMSY", no_whimsy)
+    assert whimsy.season_line(mark, is_tty=is_tty) is None
+
+
+def test_season_line_cleans_server_text(monkeypatch):
+    monkeypatch.delenv("PEPPER_NO_WHIMSY", raising=False)
+    mark = api_client.SeasonMark(key="k", glyph="\x1b[31m*", title="Leap\nDay")
+    line = whimsy.season_line(mark, is_tty=True)
+    assert line is not None
+    assert "\x1b" not in line
+    assert "\n" not in line
+
+
+def test_season_line_drops_a_blank_title(monkeypatch):
+    monkeypatch.delenv("PEPPER_NO_WHIMSY", raising=False)
+    mark = api_client.SeasonMark(key="k", glyph="☀️", title="  ")
+    assert whimsy.season_line(mark, is_tty=True) is None

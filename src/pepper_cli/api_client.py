@@ -317,6 +317,34 @@ class AgentSelf:
     expires_at: str | None = None
 
 
+# MIRROR: src/pepper/api/router.py::SeasonMark
+@dataclass(frozen=True)
+class SeasonMark:
+    """Today's seasonal mark for the account (``Whoami.season``): a solstice, an equinox.
+
+    ``key`` is the stable id, ``glyph`` the small emoji drawn beside the name, ``title`` the
+    words it stands for. The server decides the day in the account's timezone and hemisphere.
+    """
+
+    key: str
+    glyph: str
+    title: str
+
+
+def _season_mark(raw: object) -> SeasonMark | None:
+    """``Whoami.season`` from the wire, or ``None`` when absent or not the shape we know.
+
+    A server older than the field sends nothing; a malformed value is treated the same, because
+    a seasonal glyph is never worth failing ``whoami`` over.
+    """
+    if not isinstance(raw, dict):
+        return None
+    key, glyph, title = raw.get("key"), raw.get("glyph"), raw.get("title")
+    if not (isinstance(key, str) and isinstance(glyph, str) and isinstance(title, str)):
+        return None
+    return SeasonMark(key=key, glyph=glyph, title=title)
+
+
 # MIRROR: src/pepper/api/router.py::WhoamiResponse
 # This package deliberately doesn't depend on pepper-server — the
 # pydantic model on the server has a plain-dataclass twin here so
@@ -348,6 +376,9 @@ class Whoami:
     #: ``author_person_id``), distinct from ``user_id``. ``None`` when the server does not
     #: know it or is older than the field.
     person_id: str | None = None
+    #: Today's seasonal mark (a solstice, an equinox) in the account's timezone; ``None`` on
+    #: an ordinary day, when the account has seasonal marks off, or from an older server.
+    season: SeasonMark | None = None
 
 
 # MIRROR: src/pepper/api/router.py::SkillSummary
@@ -2485,11 +2516,12 @@ class ApiClient:
     # ------------------------------------------------------------------
     # Endpoint methods
 
-    def whoami(self) -> Whoami:
+    def whoami(self, *, timeout: float | None = None) -> Whoami:
         """``GET /api/v1/whoami``. Used by ``pepper login`` to validate
         a freshly-pasted token, and by ``pepper whoami`` to show the
-        identity behind the current credentials."""
-        resp = self._request("GET", "/api/v1/whoami")
+        identity behind the current credentials. ``timeout`` shortens the
+        wait for a caller that can do without the answer (the REPL banner)."""
+        resp = self._request("GET", "/api/v1/whoami", timeout=timeout)
         return _whoami_from(_wire_row(resp.json(), "whoami response"), "whoami response")
 
     def get_agent_self(self) -> AgentSelf | None:
@@ -5387,7 +5419,8 @@ def error_code(exc: ApiError) -> str | None:
 
 def _whoami_from(row: dict[str, Any], what: str, *, person_id: bool = True) -> Whoami:
     """A :class:`Whoami` from ``/api/v1/whoami`` or the user object of an approved device poll.
-    ``merged_from``, the two formats and ``person_id`` may be missing (an older server)."""
+    ``merged_from``, the two formats, ``person_id`` and ``season`` may be missing (an older
+    server)."""
     return Whoami(
         user_id=_wire_get(row, "user_id", what, str),
         email=row.get("email"),
@@ -5397,6 +5430,7 @@ def _whoami_from(row: dict[str, Any], what: str, *, person_id: bool = True) -> W
         date_format=row.get("date_format", "mdy"),
         time_format=row.get("time_format", "12h"),
         person_id=row.get("person_id") if person_id else None,
+        season=_season_mark(row.get("season")),
     )
 
 

@@ -8,6 +8,7 @@ can assert what dispatch fired per line.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Self
@@ -51,6 +52,12 @@ class _FakeApi:
         # the call. Tests that exercise skill completion override
         # this attribute before invoking the REPL.
         self.skills_response: list[api_client.SkillSummary] | Exception = []
+        #: What ``whoami`` answers (the REPL asks it only for the seasonal banner line).
+        self.whoami_response: api_client.Whoami | Exception = api_client.Whoami(
+            user_id="u", email=None, display_name="A", timezone=None
+        )
+        self.whoami_calls = 0
+        self.whoami_timeouts: list[float | None] = []
         _FakeApi.instances.append(self)
 
     def __enter__(self) -> Self:
@@ -63,6 +70,13 @@ class _FakeApi:
         if isinstance(self.skills_response, Exception):
             raise self.skills_response
         return self.skills_response
+
+    def whoami(self, *, timeout: float | None = None) -> api_client.Whoami:
+        self.whoami_calls += 1
+        self.whoami_timeouts.append(timeout)
+        if isinstance(self.whoami_response, Exception):
+            raise self.whoami_response
+        return self.whoami_response
 
     def chat_send_stream(
         self,
@@ -781,3 +795,82 @@ def test_repl_banner_has_no_pepper_on_most_starts(
     _patch_prompt(monkeypatch, lines=[])
     assert cli.main(["chat"]) == 0
     assert whimsy.PEPPER_ART not in capsys.readouterr().err
+
+
+_SOLSTICE_WHO = api_client.Whoami(
+    user_id="u",
+    email=None,
+    display_name="A",
+    timezone=None,
+    season=api_client.SeasonMark(key="summer_solstice", glyph="*", title="Summer solstice"),
+)
+
+
+def _tty_stderr(monkeypatch) -> None:
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    monkeypatch.delenv("PEPPER_NO_WHIMSY", raising=False)
+
+
+def _arm_whoami(monkeypatch, response: api_client.Whoami | Exception) -> None:
+    """Set what every ``_FakeApi`` the REPL builds answers to ``whoami``."""
+    original = _FakeApi.__init__
+
+    def init(self, **kwargs: Any) -> None:
+        original(self, **kwargs)
+        self.whoami_response = response
+
+    monkeypatch.setattr(_FakeApi, "__init__", init)
+
+
+def test_repl_banner_shows_todays_seasonal_mark(logged_in, patch_api_factory, monkeypatch, capsys):
+    _tty_stderr(monkeypatch)
+    _arm_whoami(monkeypatch, _SOLSTICE_WHO)
+    _patch_prompt(monkeypatch, lines=[])
+    assert cli.main(["chat"]) == 0
+    out = capsys.readouterr()
+    assert "* Summer solstice" in out.err
+    assert "Summer solstice" not in out.out
+
+
+def test_repl_banner_has_no_mark_on_an_ordinary_day(
+    logged_in, patch_api_factory, monkeypatch, capsys
+):
+    _tty_stderr(monkeypatch)
+    _patch_prompt(monkeypatch, lines=[])
+    assert cli.main(["chat"]) == 0
+    assert "solstice" not in capsys.readouterr().err
+    assert _FakeApi.instances[-1].whoami_calls == 1
+    # Decoration only: a slow server must not hold up the first prompt.
+    assert _FakeApi.instances[-1].whoami_timeouts == [cli._SEASON_LOOKUP_TIMEOUT]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        api_client.ApiError(500, "boom"),
+        httpx.ConnectError("offline"),
+    ],
+    ids=["http-error", "network-error"],
+)
+def test_repl_opens_when_the_seasonal_lookup_fails(
+    logged_in, patch_api_factory, monkeypatch, capsys, error
+):
+    _tty_stderr(monkeypatch)
+    _arm_whoami(monkeypatch, error)
+    _patch_prompt(monkeypatch, lines=[])
+    assert cli.main(["chat"]) == 0
+
+
+def test_repl_skips_the_seasonal_lookup_off_a_terminal_or_with_whimsy_off(
+    logged_in, patch_api_factory, monkeypatch
+):
+    _arm_whoami(monkeypatch, _SOLSTICE_WHO)
+    _patch_prompt(monkeypatch, lines=[])
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: False)
+    assert cli.main(["chat"]) == 0
+    assert _FakeApi.instances[-1].whoami_calls == 0
+
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    monkeypatch.setenv("PEPPER_NO_WHIMSY", "1")
+    assert cli.main(["chat"]) == 0
+    assert _FakeApi.instances[-1].whoami_calls == 0

@@ -109,6 +109,33 @@ def test_whoami_parses_the_groups_person_id_and_tolerates_its_absence() -> None:
     assert whoami({}).person_id is None
 
 
+def test_whoami_parses_the_seasonal_mark_and_tolerates_its_absence() -> None:
+    body = {
+        "user_id": "00000000-0000-0000-0000-000000000001",
+        "email": None,
+        "display_name": "Alice",
+        "timezone": "Australia/Sydney",
+    }
+
+    def whoami(extra: dict[str, object]) -> api_client.Whoami:
+        with api_client.ApiClient(
+            server_url="http://example.com",
+            token=SecretStr("pep_pat_abc"),
+            client=_mock(lambda _r: httpx.Response(200, json={**body, **extra})),
+        ) as api:
+            return api.whoami()
+
+    mark = {"key": "summer_solstice", "glyph": "\u2600\ufe0f", "title": "Summer solstice"}
+    assert whoami({"season": mark}).season == api_client.SeasonMark(
+        key="summer_solstice", glyph="\u2600\ufe0f", title="Summer solstice"
+    )
+    assert whoami({"season": None}).season is None
+    # A server older than the field omits it; a shape we do not know is no mark, not an error.
+    assert whoami({}).season is None
+    assert whoami({"season": "solstice"}).season is None
+    assert whoami({"season": {"key": "k", "glyph": 1, "title": "t"}}).season is None
+
+
 def test_whoami_handles_null_optional_fields() -> None:
     """Email + timezone are nullable on the server; client mirrors that."""
 

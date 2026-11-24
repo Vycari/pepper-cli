@@ -1,7 +1,9 @@
-"""Small, optional bits of fun: ``pepper fortune`` and the rare pepper at REPL start.
+"""Small, optional bits of fun: ``pepper fortune``, the rare pepper at REPL start, and the
+seasonal mark in the REPL banner.
 
 Everything here is local. Nothing calls the server, reads credentials or writes a file,
-so ``pepper fortune`` works logged out and offline.
+so ``pepper fortune`` works logged out and offline. The seasonal mark is the server's
+answer (``Whoami.season``), which the REPL fetches and hands to :func:`season_line`.
 
 The rare startup pepper only ever appears on an interactive terminal, goes to stderr (so
 it never reaches a pipe), and is switched off by ``PEPPER_NO_WHIMSY`` set to any truthy
@@ -13,6 +15,12 @@ from __future__ import annotations
 
 import os
 import random
+from typing import TYPE_CHECKING
+
+from pepper_cli.terminal_text import sanitize_line
+
+if TYPE_CHECKING:
+    from pepper_cli.api_client import SeasonMark
 
 #: Short, original lines in Pepper's voice. Keep each to one line that reads well at
 #: 80 columns, and keep them kind: no jokes at anyone's expense.
@@ -143,3 +151,17 @@ def splash_fortune(*, rng: random.Random | None = None) -> str | None:
     if gen.random() >= STARTUP_PEPPER_CHANCE:
         return None
     return pick_fortune(rng)
+
+
+def season_line(mark: SeasonMark | None, *, is_tty: bool) -> str | None:
+    """The banner line for today's seasonal mark, such as ``☀️ Summer solstice``, or ``None``.
+
+    ``None`` on an ordinary day, off a terminal, or with ``PEPPER_NO_WHIMSY`` set. The glyph
+    and title are server text, so both are cleaned to one line before they reach the terminal.
+    """
+    if mark is None or not is_tty or whimsy_disabled():
+        return None
+    glyph, title = sanitize_line(mark.glyph).strip(), sanitize_line(mark.title).strip()
+    if not title:
+        return None
+    return f"{glyph} {title}" if glyph else title
