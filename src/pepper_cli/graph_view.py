@@ -158,10 +158,15 @@ def entity_page(body: dict[str, Any], *, history: bool) -> None:
         _line(f"  catalog: {_ref(cat)}  [dim]{_s(cat.get('id'))}[/dim]")
         _line(f"  [dim]pepper graph catalog {_s(cat.get('id'))}[/dim]")
     edges = page.get("edges") or []
-    if not edges:
+    if edges:
+        _edges(edges, history=history)
+    else:
         _line("[dim](no edges)[/dim]")
-        return
-    _edges(edges, history=history)
+    asks = page.get("suggestions") or []
+    if asks:
+        _line("[bold]Open questions[/bold]")
+        for q in asks:
+            _suggestion(q, indent="  ")
 
 
 def catalog_page(body: dict[str, Any], *, history: bool) -> None:
@@ -242,6 +247,47 @@ def not_same(body: dict[str, Any]) -> None:
         _line("Marked as different people; they will not be joined automatically.")
     else:
         _line("Already marked as different people; nothing changed.")
+
+
+#: What a ``graph decide`` answer did, by the status the server returns.
+_DECIDED = {
+    "accepted": "Joined: they are one entity now.",
+    "rejected": "Kept apart: Pepper will not ask about this pair again.",
+    "snoozed": "Snoozed: Pepper will ask again in 30 days.",
+}
+
+
+def _suggestion(q: dict[str, Any], *, indent: str = "") -> None:
+    a, b = q.get("a") or {}, q.get("b") or {}
+    conf = q.get("confidence")
+    sure = f"  [dim]{round(conf * 100)}% sure[/dim]" if isinstance(conf, int | float) else ""
+    _line(f"{indent}Is [bold]{_ref(a)}[/bold] the same as [bold]{_ref(b)}[/bold]?{sure}")
+    _line(
+        f"{indent}  [dim]{_s(a.get('entity_id'))}  ·  {_s(b.get('entity_id'))}  ·  asked "
+        f"{_stamp(q.get('created_at'))}[/dim]"
+    )
+    sid = _s(q.get("suggestion_id"))
+    _line(f"{indent}  [dim]pepper graph decide {sid} same|different|not-sure[/dim]")
+
+
+def suggestions(body: dict[str, Any]) -> None:
+    """The caller's open "same thing?" questions, newest first."""
+    rows = body.get("suggestions") or []
+    if not rows:
+        _line("[dim](no open questions)[/dim]")
+        return
+    for q in rows:
+        _suggestion(q)
+
+
+def decided(body: dict[str, Any]) -> None:
+    """The result of answering a question; a join names its undo."""
+    status = body.get("status")
+    _line(_DECIDED.get(str(status), f"Answered ({_s(status)})."))
+    log_id = body.get("merge_log_id")
+    if log_id:
+        _line(f"  survivor {_s(body.get('survivor_id'))}  ·  log {_s(log_id)}")
+        _line(f"  [dim]undo with: pepper graph undo {_s(log_id)}[/dim]")
 
 
 def households(body: dict[str, Any]) -> None:

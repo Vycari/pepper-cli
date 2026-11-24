@@ -175,6 +175,17 @@ ever want to look back at a specific conversation in detail.
   own; `pepper graph not-same <id> <id>` does the same without a merge. If
   Pepper refuses a change it says why (for example the two are different kinds
   of thing) and changes nothing.
+<!-- /rollout -->
+<!-- rollout: entity-graph-extraction -->
+- **When Pepper isn't sure two things are the same:** when Pepper reads a name
+  that looks like one you already have (a project called "Kitchen redo" next to
+  "Kitchen remodel", say), it keeps both and asks you once. `pepper graph
+  suggestions` lists those questions, and `pepper graph entity <id>` shows the
+  ones about that entity. Answer with `pepper graph decide <question id> same`
+  to join them (you can undo it with `pepper graph undo`), `different` to keep
+  them apart for good, or `not-sure` to be asked again in a month.
+<!-- /rollout -->
+<!-- rollout: entity-graph -->
 - **Households:** a household keeps a shared address, such as a home mailbox,
   off any one person, so mail to it lands on the household. `pepper graph
   households` lists yours. `pepper graph household-create <name> <address>`

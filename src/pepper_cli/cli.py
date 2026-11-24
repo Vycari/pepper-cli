@@ -1208,6 +1208,31 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
     p.add_argument("b_id", metavar="B_ID", help="The other entity id.")
     p.set_defaults(handler=cmd_graph_not_same)
     p = sub_graph.add_parser(
+        "suggestions",
+        help='Pepper\'s open "same thing?" questions about your entities.',
+        description=(
+            "Pairs Pepper half-matched (a new name that looks like one you already have), "
+            "newest first. Answer one with 'graph decide'."
+        ),
+        parents=[_json_parent],
+    )
+    p.add_argument("--entity", metavar="ID", help="Only the questions about this entity.")
+    p.set_defaults(handler=cmd_graph_suggestions)
+    p = sub_graph.add_parser(
+        "decide",
+        help='Answer one "same thing?" question.',
+        description=(
+            "same joins the pair (undo it with 'graph undo'), different keeps them apart for "
+            "good, and not-sure asks again in 30 days."
+        ),
+        parents=[_json_parent],
+    )
+    p.add_argument(
+        "suggestion_id", metavar="SUGGESTION_ID", help="A question id (see 'graph suggestions')."
+    )
+    p.add_argument("answer", choices=_GRAPH_ANSWERS, help="Your answer.")
+    p.set_defaults(handler=cmd_graph_decide)
+    p = sub_graph.add_parser(
         "households",
         help="Your households: shared addresses kept off every person.",
         parents=[_json_parent],
@@ -11130,7 +11155,13 @@ _GRAPH_REASONS = {
     "no_target": "there is no person to give the address back to; pass --into",
     "member_of_household": "the address sits on a member of a household, so it cannot become one",
     "merge_undoable": "the address came in a merge that can still be undone; undo that first",
+    "decided": "that question is already answered",
+    "gone": "an entity in that question no longer exists",
 }
+
+#: ``graph decide`` answers, as typed, and the wire value each one sends.
+_GRAPH_ANSWER_WIRE = {"same": "same", "different": "different", "not-sure": "not_sure"}
+_GRAPH_ANSWERS = tuple(_GRAPH_ANSWER_WIRE)
 
 
 def _report_graph_write_error(args: argparse.Namespace, exc: api_client.ApiError) -> int:
@@ -11217,6 +11248,53 @@ def cmd_graph_not_same(args: argparse.Namespace) -> int:
         return 0
 
     return _run_personal(args, run, _report_graph_write_error)
+
+
+def cmd_graph_suggestions(args: argparse.Namespace) -> int:
+    """``pepper graph suggestions [--entity ID] [--json]``: ``GET /api/v1/graph/suggestions``."""
+    entity = str(args.entity or "").strip() or None
+    if args.entity is not None and entity is None:
+        _emit_error(args, "usage", "--entity must not be blank.")
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.graph_suggestions(entity)
+        envelope = _list_envelope(body.get("suggestions") or [])
+        _emit(envelope, args, lambda: graph_view.suggestions(body))
+        return 0
+
+    return _run_personal(args, run, _report_graph_error)
+
+
+def cmd_graph_decide(args: argparse.Namespace) -> int:
+    """``pepper graph decide SUGGESTION_ID ANSWER [--json]``:
+    ``POST /api/v1/graph/suggestions/{id}/decide``."""
+    if (ids := _graph_ids(args, "suggestion_id")) is None:
+        return 2
+    answer = _GRAPH_ANSWER_WIRE[args.answer]
+
+    def run(api: api_client.ApiClient) -> int:
+        body = api.graph_decide(ids[0], answer)
+        _emit(body, args, lambda: graph_view.decided(body))
+        return 0
+
+    return _run_personal(args, run, _report_decide_error)
+
+
+def _report_decide_error(args: argparse.Namespace, exc: api_client.ApiError) -> int:
+    """The server answers a question that is unknown or not yours with a bare 404, the same as
+    an account the graph is off for, so name the question first. A 409 is a refusal with a
+    reason, as for every other graph write."""
+    if exc.status == 404:
+        _emit_error(
+            args,
+            "not_found",
+            "Not found: there is no such question for you (see 'pepper graph suggestions'), or "
+            "the entity graph is not available for your account (or this server is too old).",
+            status=404,
+        )
+        return 1
+    return _report_graph_write_error(args, exc)
 
 
 def cmd_graph_households(args: argparse.Namespace) -> int:
