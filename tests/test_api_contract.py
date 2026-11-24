@@ -165,6 +165,9 @@ FIELD_EXCEPTIONS: dict[tuple[str, str], str] = {
     ("GroupMessagePage", "skipped_at"): (
         "Client-computed: timestamps recovered from rows skipped when skip_bad_rows=True."
     ),
+    ("GroupMessagePage", "skipped_at_unknown"): (
+        "Client-computed: a skipped row had no created_at string when skip_bad_rows=True."
+    ),
     ("GroupMessagePage", "skipped_before_last"): (
         "Client-computed: last readable row before any row skipped when skip_bad_rows=True."
     ),

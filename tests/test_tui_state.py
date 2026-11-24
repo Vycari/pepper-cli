@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from pepper_cli import api_client
 from pepper_cli.tui import state
 from tests import tui_support as ts
@@ -278,12 +280,14 @@ def test_partial_read_hold_widens_and_needs_the_skipped_row_returned() -> None:
     store = state.MessageStore()
     store.hold_reads(
         skipped_at=["2026-01-01T10:02:00Z"],
+        skipped_at_unknown=False,
         before_last="2026-01-01T10:01:00Z",
         after_first="2026-01-01T10:03:00Z",
         after_last="2026-01-01T10:04:00Z",
     )
     store.hold_reads(
         skipped_at=["2026-01-01T10:05:00Z"],
+        skipped_at_unknown=False,
         before_last="2026-01-01T10:04:00Z",
         after_first="2026-01-01T10:06:00Z",
         after_last="2026-01-01T10:07:00Z",
@@ -310,6 +314,7 @@ def test_partial_read_hold_without_a_timestamp_waits_for_the_whole_topic() -> No
     store = state.MessageStore()
     store.hold_reads(
         skipped_at=["not-a-time"],
+        skipped_at_unknown=False,
         before_last="2026-01-01T10:01:00Z",
         after_first="2026-01-01T10:03:00Z",
         after_last="2026-01-01T10:04:00Z",
@@ -322,6 +327,7 @@ def test_partial_read_hold_without_a_timestamp_waits_for_the_whole_topic() -> No
 
     store.hold_reads(
         skipped_at=["2026-01-01T10:05:00Z"],
+        skipped_at_unknown=False,
         before_last="2026-01-01T10:04:00Z",
         after_first="2026-01-01T10:06:00Z",
         after_last="2026-01-01T10:07:00Z",
@@ -331,6 +337,117 @@ def test_partial_read_hold_without_a_timestamp_waits_for_the_whole_topic() -> No
     assert store.read_held  # one unreadable gap makes the whole hold need a full read
     store.release_read_hold(rows, reconcile=True, next_before=None)
     assert not store.read_held
+
+
+def test_partial_read_hold_needs_the_skipped_timestamp_returned_not_just_its_range() -> None:
+    store = state.MessageStore()
+    store.hold_reads(
+        skipped_at=["2026-01-01T10:02:00Z"],
+        skipped_at_unknown=False,
+        before_last="2026-01-01T10:01:00Z",
+        after_first="2026-01-01T10:03:00Z",
+        after_last="2026-01-01T10:04:00Z",
+    )
+    spanning = [
+        _msg("before", "2026-01-01T10:01:00Z"),
+        _msg("after", "2026-01-01T10:03:00Z"),
+        _msg("later", "2026-01-01T10:04:00Z"),
+    ]
+    store.release_read_hold(spanning, reconcile=False, next_before=None)
+    assert store.read_held  # the range spans the gap, but the missing row is still absent
+    store.release_read_hold(
+        [*spanning, _msg("gap", "2026-01-01T10:02:00Z")],
+        reconcile=False,
+        next_before=None,
+    )
+    assert not store.read_held
+
+
+@pytest.mark.parametrize(
+    ("skipped_at", "skipped_at_unknown"),
+    [
+        (["2026-01-01T10:02:00Z"], True),
+        (["2026-01-01T10:02:00Z", "not-a-time"], False),
+    ],
+)
+def test_partial_read_hold_with_mixed_timestamp_quality_needs_full_reconcile(
+    skipped_at: list[str], skipped_at_unknown: bool
+) -> None:
+    store = state.MessageStore()
+    store.hold_reads(
+        skipped_at=skipped_at,
+        skipped_at_unknown=skipped_at_unknown,
+        before_last="2026-01-01T10:01:00Z",
+        after_first="2026-01-01T10:03:00Z",
+        after_last="2026-01-01T10:04:00Z",
+    )
+    rows = [
+        _msg("before", "2026-01-01T10:01:00Z"),
+        _msg("gap", "2026-01-01T10:02:00Z"),
+        _msg("after", "2026-01-01T10:03:00Z"),
+        _msg("later", "2026-01-01T10:04:00Z"),
+    ]
+    store.release_read_hold(rows, reconcile=False, next_before=None)
+    assert store.read_held  # the known gap returned, but one gap still has no timestamp
+    store.release_read_hold(rows, reconcile=True, next_before="older")
+    assert store.read_held  # a bounded reconcile still cannot prove the unreadable gap
+    store.release_read_hold(rows, reconcile=True, next_before=None)
+    assert not store.read_held
+
+
+def test_partial_read_hold_releases_after_clean_multi_page_history() -> None:
+    store = state.MessageStore()
+    store.hold_reads(
+        skipped_at=["not-a-time"],
+        skipped_at_unknown=True,
+        before_last="2026-01-01T10:01:00Z",
+        after_first="2026-01-01T10:03:00Z",
+        after_last="2026-01-01T10:04:00Z",
+    )
+    newest = [_msg("repaired", "2026-01-01T10:02:00Z"), _msg("newest", "2026-01-01T10:05:00Z")]
+    store.add(newest)
+    store.note_clean_topic_page(newest, reconcile=True, next_before="page-1")
+    assert store.read_held  # older pages still exist
+
+    older = [_msg("older-1", "2026-01-01T10:00:00Z")]
+    store.add_older(older, "page-2")
+    store.note_clean_older_page(older, next_before="page-2")
+    assert store.read_held  # the history read is not complete yet
+
+    last = [_msg("older-2", "2026-01-01T09:59:00Z")]
+    store.add_older(last, None)
+    store.note_clean_older_page(last, next_before=None)
+    assert not store.read_held
+
+
+def test_partial_read_hold_ignores_older_pages_until_a_clean_reconcile_starts() -> None:
+    store = state.MessageStore()
+    store.hold_reads(
+        skipped_at=["not-a-time"],
+        skipped_at_unknown=False,
+        before_last="2026-01-01T10:01:00Z",
+        after_first="2026-01-01T10:03:00Z",
+        after_last="2026-01-01T10:04:00Z",
+    )
+    rows = [_msg("repaired", "2026-01-01T10:02:00Z")]
+    store.add_older(rows, None)
+    store.note_clean_older_page(rows, next_before=None)
+    assert store.read_held  # reaching the oldest page alone proves nothing about the newest one
+    store.note_clean_topic_page(rows, reconcile=False, next_before=None)
+    assert store.read_held  # an incremental poll does not start a whole-topic read
+
+    store.note_clean_topic_page(rows, reconcile=True, next_before="page-1")
+    assert store.read_hold_clean_pass
+    store.hold_reads(
+        skipped_at=["2026-01-01T10:06:00Z"],
+        skipped_at_unknown=False,
+        before_last="2026-01-01T10:05:00Z",
+        after_first="2026-01-01T10:07:00Z",
+        after_last="2026-01-01T10:08:00Z",
+    )
+    assert not store.read_hold_clean_pass
+    store.note_clean_older_page(rows, next_before=None)
+    assert store.read_held  # another partial page invalidated the clean pass
 
 
 def test_every_fifth_tick_is_a_reconcile() -> None:

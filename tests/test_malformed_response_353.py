@@ -242,9 +242,20 @@ class TestReq2SkipBadRows:
         page = api.list_group_messages("r1", "tp1", skip_bad_rows=True)
         assert [message.id for message in page.messages] == ["m-before", "m-first", "m-last"]
         assert page.skipped_at == [bad["created_at"]]
+        assert page.skipped_at_unknown is False
         assert page.skipped_before_last == before["created_at"]
         assert page.skipped_after_first == first["created_at"]
         assert page.skipped_after_last == last["created_at"]
+
+    def test_list_group_messages_flags_mixed_timestamp_quality_in_skipped_rows(self) -> None:
+        with_at = _message(id=99, created_at="2026-09-16T18:01:00+00:00")
+        without_at = _message(id=100)
+        without_at.pop("created_at")
+        api = _api(_messages_body(with_at, without_at))
+        page = api.list_group_messages("r1", "tp1", skip_bad_rows=True)
+        assert page.skipped == 2
+        assert page.skipped_at == [with_at["created_at"]]
+        assert page.skipped_at_unknown is True
 
     def test_list_artifacts_skip_one_bad_item(self) -> None:
         good = _artifact(id="a-good")
@@ -671,3 +682,50 @@ class TestTopicPartialReadMark:
                     through == stamps[4] for topic, through in server.puts if topic == ts.TOPIC_A1
                 ),
             )
+
+    def test_pagination_releases_the_hold_after_a_repaired_row_is_loaded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _quiet_polls(monkeypatch)
+        server = ts.standard_server()
+        server.page_size = 2
+        stamps = [f"2026-09-16T18:{i:02d}:00+00:00" for i in range(6)]
+        rows = [ts.message(f"m{i}", stamp, f"row {i}") for i, stamp in enumerate(stamps)]
+        rows[4] = {**rows[4], "display_name": 42}
+        rows[4].pop("created_at")  # no usable timestamp, so only a full read can release
+        server.messages[ts.TOPIC_A1] = rows
+        server.marks[ts.TOPIC_A1] = stamps[-1]
+        server.rooms[0]["topics"][0]["last_activity_at"] = stamps[-1]
+        server.bump()
+
+        app = PepperApp(server.client())
+        app.current = Conversation(ts.ROOM_A, ts.TOPIC_A1)
+        app._on_topic = lambda messages: None
+        app._render_topic = lambda **_: None
+        app._fetch_roots = lambda: None
+        app._opening = False
+        conv = app.current
+
+        partial = poller.fetch_topic(app._api, conv, since=None)
+        assert partial.skipped == 1
+        assert partial.skipped_at_unknown is True
+        app._on_topic_page(partial, newest=True, reconcile=True)
+        assert app.store.read_held
+
+        server.messages[ts.TOPIC_A1][4] = ts.message("m4", stamps[4], "row 4")
+        clean = poller.fetch_topic(app._api, conv, since=None)
+        assert clean.skipped == 0
+        assert clean.next_before == "4"
+        app._on_topic_page(clean, newest=True, reconcile=True)
+        assert app.store.read_held  # older pages have not been read in this pass yet
+        assert app.store.read_hold_clean_pass
+
+        older = poller.fetch_older(app._api, conv, before=app.store.older, limit=2)
+        assert older.next_before == "2"
+        app._got_older(older)
+        assert app.store.read_held
+
+        last = poller.fetch_older(app._api, conv, before=app.store.older, limit=2)
+        assert last.next_before is None
+        app._got_older(last)
+        assert not app.store.read_held

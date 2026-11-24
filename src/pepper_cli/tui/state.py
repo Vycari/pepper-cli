@@ -588,13 +588,17 @@ class MessageStore:
     older: str | None = None
     #: A "load older" page has been merged, so the newest page's cursor no longer applies.
     paged_back: bool = False
-    #: A partial poll left rows out, so read marks stand still until a clean page covers
-    #: ``read_hold_from`` through ``read_hold_through``. A gap whose own timestamp was
-    #: unreadable needs a whole-topic read instead of a bounded page.
+    #: A partial poll left rows out, so read marks stand still until a clean page returns
+    #: every known ``read_hold_at`` and covers ``read_hold_from`` through
+    #: ``read_hold_through``. One unreadable gap makes the whole hold need a full read.
     read_held: bool = False
+    read_hold_at: set[datetime] = field(default_factory=set)
     read_hold_from: str | None = None
     read_hold_through: str | None = None
     read_hold_needs_full: bool = False
+    #: A clean newest reconcile started a full-history read and every older page since has
+    #: also been clean. Only the last older page can release a hold that needs full history.
+    read_hold_clean_pass: bool = False
 
     def add(self, incoming: Iterable[GroupMessage]) -> list[str]:
         """Merge server rows. Returns the ids that are new (an edit replaces, it is not new)."""
@@ -620,23 +624,36 @@ class MessageStore:
         self,
         *,
         skipped_at: Iterable[str],
+        skipped_at_unknown: bool,
         before_last: str | None,
         after_first: str | None,
         after_last: str | None,
     ) -> None:
         """Hold read marks while a partial poll leaves rows unseen.
 
-        A skipped row's own timestamp is the strongest boundary: a clean page that spans
-        it must have returned that row again. Without one, the readable rows beside the
-        gap only bracket it, so only a whole-topic read can prove the gap is gone.
+        Each readable skipped timestamp must be returned again before the hold clears. A
+        gap without one, in this page or an earlier one, requires a whole-topic read because
+        the readable rows beside it only bracket where the missing message was.
         """
         self.read_held = True
-        stamps = [at for at in skipped_at if parse_ts(at) is not None]
-        if stamps:
-            bounds = [*stamps, after_first, after_last]
-        else:
-            bounds = [before_last, after_first, after_last]
+        self.read_hold_clean_pass = False
+        known: set[datetime] = set()
+        readable: list[str] = []
+        for at in skipped_at:
+            stamp = parse_ts(at)
+            if stamp is None:
+                self.read_hold_needs_full = True
+            else:
+                known.add(stamp)
+                readable.append(at)
+        if skipped_at_unknown:
             self.read_hold_needs_full = True
+        self.read_hold_at.update(known)
+        bounds = (
+            [*readable, after_first, after_last]
+            if readable
+            else [before_last, after_first, after_last]
+        )
         from_at, through = parse_ts(self.read_hold_from), parse_ts(self.read_hold_through)
         for at in [*bounds, self.read_hold_from, self.read_hold_through]:
             stamp = parse_ts(at)
@@ -654,26 +671,55 @@ class MessageStore:
         reconcile: bool,
         next_before: str | None,
     ) -> None:
-        """Let read marks move again once a clean read proves the gap is covered."""
+        """Let read marks move again once a clean read returns the missing rows."""
         if not self.read_held:
             return
         first = parse_ts(self.read_hold_from)
         last = parse_ts(self.read_hold_through)
         stamps = [stamp for message in incoming if (stamp := parse_ts(message.created_at))]
+        returned = set(stamps)
+        known_returned = not self.read_hold_at or self.read_hold_at <= returned
         covered = (
             not self.read_hold_needs_full
+            and bool(self.read_hold_at)
+            and known_returned
             and first is not None
             and last is not None
             and bool(stamps)
             and min(stamps) <= first
             and max(stamps) >= last
         )
-        whole_topic = reconcile and next_before is None
+        whole_topic = reconcile and next_before is None and known_returned
         if covered or whole_topic:
             self.read_held = False
+            self.read_hold_at.clear()
             self.read_hold_from = None
             self.read_hold_through = None
             self.read_hold_needs_full = False
+            self.read_hold_clean_pass = False
+
+    def note_clean_topic_page(
+        self,
+        incoming: Iterable[GroupMessage],
+        *,
+        reconcile: bool,
+        next_before: str | None,
+    ) -> None:
+        """Start a clean whole-topic read with the newest page of a reconcile poll."""
+        if not self.read_held or not reconcile:
+            return
+        self.read_hold_clean_pass = True
+        rows = {message.id: message for message in [*self.ordered(), *incoming]}
+        self.release_read_hold(rows.values(), reconcile=True, next_before=next_before)
+
+    def note_clean_older_page(
+        self, incoming: Iterable[GroupMessage], *, next_before: str | None
+    ) -> None:
+        """Continue a clean whole-topic read; release only when no older page remains."""
+        if not self.read_held or not self.read_hold_clean_pass:
+            return
+        rows = {message.id: message for message in [*self.ordered(), *incoming]}
+        self.release_read_hold(rows.values(), reconcile=True, next_before=next_before)
 
     def add_older(self, incoming: Iterable[GroupMessage], next_before: str | None) -> list[str]:
         """Merge a "load older" page. Rows are deduped by id; the poll cursor is untouched

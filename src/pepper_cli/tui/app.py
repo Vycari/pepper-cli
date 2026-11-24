@@ -1076,6 +1076,15 @@ class PepperApp(App[None]):
         else:
             self._partial_notice = " ".join(notices.values())
 
+    def _hold_topic_reads(self, page: GroupMessagePage) -> None:
+        self.store.hold_reads(
+            skipped_at=page.skipped_at,
+            skipped_at_unknown=page.skipped_at_unknown,
+            before_last=page.skipped_before_last,
+            after_first=page.skipped_after_first,
+            after_last=page.skipped_after_last,
+        )
+
     def _on_topic_page(
         self, page: GroupMessagePage, *, newest: bool = False, reconcile: bool = False
     ) -> None:
@@ -1090,17 +1099,15 @@ class PepperApp(App[None]):
             self.store.note_newest_page(page.next_before)
         # An incremental poll can omit a malformed row from its window without proving the
         # topic is complete. Keep that partial state until a full reconcile reports zero, and
-        # hold the read mark before the rows that were left out until a complete page covers
-        # them.
+        # hold the read mark before the rows that were left out until a clean page returns
+        # the missing messages.
         if page.skipped > 0:
-            self.store.hold_reads(
-                skipped_at=page.skipped_at,
-                before_last=page.skipped_before_last,
-                after_first=page.skipped_after_first,
-                after_last=page.skipped_after_last,
-            )
+            self._hold_topic_reads(page)
         else:
             self.store.release_read_hold(
+                page.messages, reconcile=reconcile, next_before=page.next_before
+            )
+            self.store.note_clean_topic_page(
                 page.messages, reconcile=reconcile, next_before=page.next_before
             )
         if reconcile or page.skipped > 0:
@@ -2731,6 +2738,10 @@ class PepperApp(App[None]):
     def _got_older(self, page: GroupMessagePage) -> None:
         self._learn_from_messages(page.messages)
         added = self.store.add_older(page.messages, page.next_before)
+        if page.skipped > 0:
+            self._hold_topic_reads(page)
+        else:
+            self.store.note_clean_older_page(page.messages, next_before=page.next_before)
         if self._opening:
             # Still reaching the read cursor: this render re-anchors (or reads another page).
             self._open_pages += 1
