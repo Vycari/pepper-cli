@@ -143,7 +143,7 @@ def test_invite_reports_an_agent_pick_as_not_added(api, capsys) -> None:
     assert cli.main(["members", "invite", "--room", "Trip", address]) == 1
     assert api.calls == [("invite_to_group", GID, {"handle": address})]
     err = capsys.readouterr().err
-    assert "The server didn't add this agent. Try again." in err
+    assert "The server didn't add this agent. Ask its sponsor to add it." in err
     assert "Invited" not in err
 
 

@@ -6804,7 +6804,9 @@ def cmd_members_invite(args: argparse.Namespace) -> int:
     def call(api: api_client.ApiClient, g: str) -> tuple[object, str]:
         result = api.invite_to_group(g, handle=args.handle)
         if "agent_pick" in result:  # the server did not add the agent
-            _emit_error(args, "server", "The server didn't add this agent. Try again.")
+            _emit_error(
+                args, "server", "The server didn't add this agent. Ask its sponsor to add it."
+            )
             raise _UnavailableError
         return result, g
 
