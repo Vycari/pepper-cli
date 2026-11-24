@@ -240,10 +240,10 @@ ever want to look back at a specific conversation in detail.
   offline and needs no sign-in. Now and then a small pepper also appears when
   you start a session; set `PEPPER_NO_WHIMSY=1` if you'd rather it didn't.
 <!-- rollout: seasonal-marks -->
-- **Seasonal marks:** on a solstice, an equinox or Leap Day, the chat session's
-  opening lines include a small mark for the day, in your own timezone and
-  hemisphere. Turn it off with the seasonal marks setting in Pepper, or with
-  `PEPPER_NO_WHIMSY=1`.
+- **Seasonal marks:** on New Year's Day, the solstices, the equinoxes and Leap
+  Day, the chat session's opening lines include a small mark for the day, by
+  your own timezone and hemisphere. Turn it off by clearing **Seasonal
+  touches** in your profile settings on the web, or with `PEPPER_NO_WHIMSY=1`.
 <!-- /rollout -->
 - **Your scheduled prompts:** `pepper scheduled-tasks list` shows the ones
   currently running; add `--all` to include paused ones and one-offs that have
