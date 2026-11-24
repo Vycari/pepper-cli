@@ -708,13 +708,14 @@ class MessageStore:
         """Start a clean whole-topic read with the newest page of a reconcile poll."""
         if not self.read_held or not reconcile:
             return
+        starting_pass = not self.read_hold_clean_pass
         self.read_hold_clean_pass = True
         rows = {message.id: message for message in [*self.ordered(), *incoming]}
         self.release_read_hold(rows.values(), reconcile=True, next_before=next_before)
-        if self.read_held and next_before is not None:
-            # The user may have paged back before the malformed row appeared. Restart the
-            # older-page walk at this clean page's cursor so the recovery pass covers the
-            # whole topic instead of continuing from a cursor captured before the gap.
+        if starting_pass and self.read_held and next_before is not None:
+            # The user may have paged back before the malformed row appeared. A new pass
+            # restarts the older-page walk at this clean page's cursor; later reconciles in
+            # the same pass must not reset the pages already loaded.
             self.older = next_before
             self.paged_back = True
 

@@ -438,6 +438,29 @@ def test_clean_reconcile_restarts_the_older_cursor_after_paging_back() -> None:
     assert store.paged_back
 
 
+def test_reconcile_during_a_clean_pass_preserves_the_older_cursor() -> None:
+    store = state.MessageStore()
+    store.hold_reads(
+        skipped_at=["not-a-time"],
+        skipped_at_unknown=True,
+        before_last="2026-01-01T10:01:00Z",
+        after_first="2026-01-01T10:03:00Z",
+        after_last="2026-01-01T10:04:00Z",
+    )
+    newest = [_msg("repaired", "2026-01-01T10:02:00Z")]
+    store.note_clean_topic_page(newest, reconcile=True, next_before="newest-cursor")
+    assert store.older == "newest-cursor"
+
+    older = [_msg("older", "2026-01-01T09:59:00Z")]
+    store.add_older(older, "older-cursor")
+    store.note_clean_older_page(older, next_before="older-cursor")
+    assert store.older == "older-cursor"
+
+    store.note_clean_topic_page(newest, reconcile=True, next_before="newest-cursor")
+    assert store.read_held
+    assert store.older == "older-cursor"
+
+
 def test_partial_read_hold_ignores_older_pages_until_a_clean_reconcile_starts() -> None:
     store = state.MessageStore()
     store.hold_reads(

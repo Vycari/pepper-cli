@@ -730,6 +730,14 @@ class TestTopicPartialReadMark:
         assert older.next_before == "2"
         app._got_older(older)
         assert app.store.read_held
+        assert app.store.older == "2"
+
+        periodic = poller.fetch_topic(app._api, conv, since=None)
+        assert periodic.skipped == 0
+        assert periodic.next_before == "4"
+        app._on_topic_page(periodic, newest=True, reconcile=True)
+        assert app.store.read_held
+        assert app.store.older == "2"  # a reconcile inside this pass must not reset progress
 
         last = poller.fetch_older(app._api, conv, before=app.store.older, limit=2)
         assert last.next_before is None
