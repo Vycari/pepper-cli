@@ -3408,6 +3408,11 @@ class _SlashCompleter:
             yield completion
 
 
+#: How long the REPL banner waits for today's seasonal mark. It is decoration, so a slow
+#: server costs the banner its glyph rather than holding up the first prompt.
+_SEASON_LOOKUP_TIMEOUT = 3.0
+
+
 def _repl_season_line(api: api_client.ApiClient) -> str | None:
     """Today's seasonal mark for the REPL banner (``☀️ Summer solstice``), or ``None``.
 
@@ -3418,7 +3423,7 @@ def _repl_season_line(api: api_client.ApiClient) -> str | None:
     if not is_tty or whimsy.whimsy_disabled():
         return None
     try:
-        mark = api.whoami().season
+        mark = api.whoami(timeout=_SEASON_LOOKUP_TIMEOUT).season
     except (api_client.ApiError, httpx.RequestError, KeyError, ValueError):
         return None
     return whimsy.season_line(mark, is_tty=is_tty)

@@ -2516,11 +2516,12 @@ class ApiClient:
     # ------------------------------------------------------------------
     # Endpoint methods
 
-    def whoami(self) -> Whoami:
+    def whoami(self, *, timeout: float | None = None) -> Whoami:
         """``GET /api/v1/whoami``. Used by ``pepper login`` to validate
         a freshly-pasted token, and by ``pepper whoami`` to show the
-        identity behind the current credentials."""
-        resp = self._request("GET", "/api/v1/whoami")
+        identity behind the current credentials. ``timeout`` shortens the
+        wait for a caller that can do without the answer (the REPL banner)."""
+        resp = self._request("GET", "/api/v1/whoami", timeout=timeout)
         return _whoami_from(_wire_row(resp.json(), "whoami response"), "whoami response")
 
     def get_agent_self(self) -> AgentSelf | None:

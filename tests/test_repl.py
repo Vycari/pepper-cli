@@ -57,6 +57,7 @@ class _FakeApi:
             user_id="u", email=None, display_name="A", timezone=None
         )
         self.whoami_calls = 0
+        self.whoami_timeouts: list[float | None] = []
         _FakeApi.instances.append(self)
 
     def __enter__(self) -> Self:
@@ -70,8 +71,9 @@ class _FakeApi:
             raise self.skills_response
         return self.skills_response
 
-    def whoami(self) -> api_client.Whoami:
+    def whoami(self, *, timeout: float | None = None) -> api_client.Whoami:
         self.whoami_calls += 1
+        self.whoami_timeouts.append(timeout)
         if isinstance(self.whoami_response, Exception):
             raise self.whoami_response
         return self.whoami_response
@@ -838,6 +840,8 @@ def test_repl_banner_has_no_mark_on_an_ordinary_day(
     assert cli.main(["chat"]) == 0
     assert "solstice" not in capsys.readouterr().err
     assert _FakeApi.instances[-1].whoami_calls == 1
+    # Decoration only: a slow server must not hold up the first prompt.
+    assert _FakeApi.instances[-1].whoami_timeouts == [cli._SEASON_LOOKUP_TIMEOUT]
 
 
 @pytest.mark.parametrize(
