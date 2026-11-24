@@ -233,7 +233,7 @@ def test_an_answer_that_is_not_an_events_page_is_an_error(monkeypatch, capsys, t
     assert cursor_file.read_text(encoding="utf-8").strip() == "3"
 
 
-@pytest.mark.parametrize("body", [b"[1, 2]", b"null", b"<html>oops</html>"])
+@pytest.mark.parametrize("body", [b"[1, 2]", b"null"])
 def test_the_client_hands_a_non_object_body_back_as_no_page(body):
     transport = httpx.MockTransport(lambda _r: httpx.Response(200, content=body))
     client = httpx.Client(transport=transport, base_url="http://example.com")
@@ -241,6 +241,19 @@ def test_the_client_hands_a_non_object_body_back_as_no_page(body):
         server_url="http://example.com", token=SecretStr("pep_agt_x"), client=client
     ) as api:
         assert api.get_agent_events_page() == {}
+
+
+def test_a_non_json_body_on_the_events_page_is_an_api_error_200():
+    transport = httpx.MockTransport(lambda _r: httpx.Response(200, content=b"<html>oops</html>"))
+    client = httpx.Client(transport=transport, base_url="http://example.com")
+    with (
+        api_client.ApiClient(
+            server_url="http://example.com", token=SecretStr("pep_agt_x"), client=client
+        ) as api,
+        pytest.raises(api_client.ApiError) as exc,
+    ):
+        api.get_agent_events_page()
+    assert exc.value.status == 200
 
 
 def test_a_scoped_cursor_file_only_moves_forward_for_the_same_watch(tmp_path):

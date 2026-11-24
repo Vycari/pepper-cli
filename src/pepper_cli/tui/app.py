@@ -291,6 +291,14 @@ class PepperApp(App[None]):
         #: How many unreadable rows and drafts today's Pepper thread had at the last notice, so
         #: a poll says so once, not on every tick.
         self._dm_unreadable = 0
+        #: How many malformed rows the TUI panes had at the last notice, so each pane says so
+        #: once per count change, not on every poll tick.
+        self._rail_skipped = 0
+        self._topic_skipped = 0
+        self._todos_skipped = 0
+        self._notes_skipped = 0
+        self._partial_notices: dict[str, str] = {}
+        self._partial_notice = ""
         self.manual: dict[str, bool] = {}
         self.show_all: set[str] = set()
         #: Which archived/inactive folds are open, and the topic rails read for the archived ones.
@@ -886,6 +894,7 @@ class PepperApp(App[None]):
     def _apply_groups(self, groups: GroupList, update: poller.RailUpdate) -> None:
         had = self.marks.mentioned_topics(self.rooms) if self._bell else set()
         self.rooms = groups.groups
+        self._note_pane_skipped(groups.skipped, "_rail_skipped", "the sidebar")
         self.marks.merge_unread(
             update.unread,
             update.server_marks,
@@ -973,10 +982,31 @@ class PepperApp(App[None]):
             )
         self._dm_unreadable = unreadable
 
+    def _note_pane_skipped(self, skipped: int, attr: str, label: str) -> None:
+        """Say, once per count change, that a TUI-polled list left out malformed rows.
+        ``attr`` is the instance variable that tracks the last-noticed count. Partial
+        results are never presented as complete: the notice fires whenever the count rises."""
+        last = getattr(self, attr)
+        if skipped > last:
+            self.notify(
+                f"{skipped} item(s) could not be read and are not shown in {label}.",
+                severity="warning",
+                timeout=4,
+            )
+        setattr(self, attr, skipped)
+        if skipped > 0:
+            self._partial_notices[attr] = (
+                f"{skipped} item(s) could not be read and are not shown in {label}."
+            )
+        else:
+            self._partial_notices.pop(attr, None)
+        self._partial_notice = " ".join(self._partial_notices.values())
+
     def _on_topic_page(self, page: GroupMessagePage, *, newest: bool) -> None:
         """A poll's page. Only a read of the newest page says where the older ones start."""
         if newest:
             self.store.note_newest_page(page.next_before)
+        self._note_pane_skipped(page.skipped, "_topic_skipped", "this topic")
         self._on_topic(page.messages)
 
     def _on_topic(self, messages: list[GroupMessage]) -> None:
@@ -1598,7 +1628,7 @@ class PepperApp(App[None]):
         for header_box in base_screen.query("#header"):
             if isinstance(header_box, Static):
                 header_box.update(Text(header))
-        notice = self._notice()
+        notice = " ".join(part for part in (self._partial_notice, self._notice()) if part)
         for notice_box in base_screen.query("#notice"):
             if isinstance(notice_box, Static):
                 notice_box.update(Text(notice))
@@ -2924,6 +2954,7 @@ class PepperApp(App[None]):
     def _got_todos(self, pane: state.AppPaneState, todos: list[TodoEntry]) -> None:
         if pane is not self.pane:
             return
+        self._note_pane_skipped(getattr(todos, "skipped", 0), "_todos_skipped", "todos")
         pane.todos, pane.error = state.keep_placeholders(pane, todos), None
         pane.selected = state.settle_selection(state.pane_rows(pane), pane.selected)
         self._render_pane()
@@ -2931,6 +2962,7 @@ class PepperApp(App[None]):
     def _got_notes(self, pane: state.AppPaneState, found: ArtifactListResponse) -> None:
         if pane is not self.pane:
             return
+        self._note_pane_skipped(found.skipped, "_notes_skipped", "notes")
         pane.notes, pane.truncated, pane.error = found.items, found.truncated, None
         pane.selected = state.settle_selection(state.pane_rows(pane), pane.selected)
         self._render_pane()
