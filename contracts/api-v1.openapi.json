@@ -23,6 +23,170 @@
         ],
         "type": "object"
       },
+      "AchievementEntry": {
+        "properties": {
+          "citation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "earned": {
+            "type": "boolean"
+          },
+          "first_week": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "how": {
+            "type": "string"
+          },
+          "image_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "last_week": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_tier": {
+            "type": "integer"
+          },
+          "secret": {
+            "type": "boolean"
+          },
+          "sensitive": {
+            "type": "boolean"
+          },
+          "tier": {
+            "type": "integer"
+          },
+          "tier_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tiers": {
+            "items": {
+              "$ref": "#/components/schemas/AchievementTier"
+            },
+            "type": "array"
+          },
+          "times": {
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "how",
+          "kind",
+          "earned",
+          "tier",
+          "tier_name",
+          "max_tier",
+          "times",
+          "first_week",
+          "last_week",
+          "citation",
+          "secret",
+          "sensitive",
+          "image_path",
+          "tiers"
+        ],
+        "type": "object"
+      },
+      "AchievementTier": {
+        "properties": {
+          "earned_week": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "threshold": {
+            "type": "integer"
+          },
+          "tier": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tier",
+          "name",
+          "threshold",
+          "earned_week"
+        ],
+        "type": "object"
+      },
+      "AchievementsResponse": {
+        "properties": {
+          "earned": {
+            "type": "integer"
+          },
+          "stickers": {
+            "items": {
+              "$ref": "#/components/schemas/AchievementEntry"
+            },
+            "type": "array"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stickers",
+          "earned",
+          "total"
+        ],
+        "type": "object"
+      },
       "AcknowledgementResponse": {
         "properties": {
           "acknowledgement": {
@@ -5353,6 +5517,17 @@
       },
       "JoinLinkRequest": {
         "properties": {
+          "fingerprint": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "max_redemptions": {
             "anyOf": [
               {
@@ -5439,6 +5614,22 @@
           "entity",
           "edges"
         ],
+        "type": "object"
+      },
+      "MakePublicRequest": {
+        "properties": {
+          "fingerprint": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
         "type": "object"
       },
       "MarkIn": {
@@ -14148,6 +14339,52 @@
         },
         "tags": [
           "native"
+        ]
+      }
+    },
+    "/api/v1/achievements": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AchievementsResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-achievements"
         ]
       }
     },
@@ -26043,6 +26280,22 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/MakePublicRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "content": {
