@@ -405,8 +405,14 @@ topic, Enter posts as you; type `@` and part of a name to mention someone.
 Alt+Enter (or Ctrl+J) starts a new line, and each conversation keeps its own
 half-written draft while you look elsewhere.
 
-In the thread, Up and Down pick a message. Then `r` quotes it in your reply,
-`+` reacts, `e` and `d` edit or delete one of yours, and `o` opens its first
+In a room, each message that starts a conversation is drawn as a card, with
+its replies inside it. A card shows its latest three replies; select the
+"earlier replies" line and press Enter to see the rest. When someone answers,
+the card moves down to the latest reply so new conversation is always at the
+bottom.
+
+In the thread, Up and Down pick a message. Then `r` replies to it: on a card,
+or on a reply inside one, your message goes into that conversation. `+` reacts, `e` and `d` edit or delete one of yours, and `o` opens its first
 link or attachment in your browser. If a draft from Pepper appears under a
 reply, `s` sends it after you confirm.
 

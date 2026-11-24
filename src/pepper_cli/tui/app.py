@@ -57,7 +57,7 @@ from pepper_cli import note_edit
 from pepper_cli import turn as turns
 from pepper_cli.api_client import ApiError, ArtifactConflictError, UpgradeRequiredError
 from pepper_cli.terminal_text import sanitize_line
-from pepper_cli.tui import apps_pane, poller, rows, state, stream
+from pepper_cli.tui import apps_pane, cards, poller, rows, state, stream
 from pepper_cli.tui.apps_pane import AppPane, PaneScroll
 from pepper_cli.tui.composer import PLACEHOLDER, Composer, MentionMenu
 from pepper_cli.tui.screens import (
@@ -133,6 +133,8 @@ _LOOPS = ("startup", "rail", "dm", "topic", "publish")
 #: say "retrying"; the roster retries quietly; the turn reports in the status line.
 #: P3 adds one-at-a-time requests started by a key: an older page, a reaction, an edit or
 #: delete (``mutate``), a new topic, the room-info card, and a room's full topic rail.
+#: How many times one opening of a topic asks again for a card's root after a lost read.
+ROOT_RETRIES = 3
 _ON_DEMAND = (
     "send",
     "roster",
@@ -153,6 +155,8 @@ _ON_DEMAND = (
     "todo",
     # A note write (new, edit, delete, tick): one at a time, started by a key.
     "notewrite",
+    # A conversation card's root older than the loaded page, read by id so its replies nest.
+    "roots",
 )
 #: Transport failures that mean a turn's request never reached the server, so it is safe to
 #: give the text back for the user to send again.
@@ -349,8 +353,24 @@ class PepperApp(App[None]):
         self.rosters: dict[str, list[GroupRosterMember]] = {}
         #: Draft ids sent this session, hidden at once rather than at the next history read.
         self.sent_drafts: set[str] = set()
-        #: The selected thread row (``msg:<id>`` or ``pending:<key>``), the target of ``r``.
+        #: The selected thread row (``msg:<id>``, ``pending:<key>`` or ``fold:<card id>``),
+        #: the target of ``r``.
         self.selected: str | None = None
+        #: Cards of the open topic whose fold is open (all their replies shown).
+        self.expanded_cards: set[str] = set()
+        #: Cards the reader is busy with, to the message each was placed at when the hold
+        #: began (``cards.settle_holds``): another person's reply does not move them.
+        self.card_holds: dict[str, str] = {}
+        #: Messages read by id from before the open topic's loaded page (a card's root, or a
+        #: reply on the way to it), so replies on the page can nest (``cards.missing_parents``).
+        self.fetched_roots: dict[str, GroupMessage] = {}
+        #: Ids asked for that way, found or not: each is asked once per opening of a topic.
+        self._root_attempts: set[str] = set()
+        #: Lost reads (a dropped connection, a 429 or a 5xx) per root id, this opening.
+        self._root_failures: Counter[str] = Counter()
+        #: ``created_at`` of the replies the last render folded away (a card's earlier replies,
+        #: behind its fold line). They were never on screen, so no read mark passes them.
+        self._folded_stamps: list[str] = []
         #: Pepper turns, oldest first. At most one is streaming or being checked at a time.
         self.turns: list[state.DmTurn] = []
         #: Every history id a reply frame has named this session. Each new turn's snapshot
@@ -676,6 +696,8 @@ class PepperApp(App[None]):
             self._start_turn()
         elif kind == "apps":
             self._read_pane()
+        elif kind == "roots":
+            self._fetch_roots()
         elif kind == "topic" and not self.current.is_pepper:
             conv = self.current
             reconcile = self.store.next_is_reconcile()
@@ -810,7 +832,7 @@ class PepperApp(App[None]):
         if kind.startswith("message.") and self.current.topic_id is not None:
             topic_id = event.get("topic_id") if isinstance(event, dict) else None
             message_id = event.get("message_id") if isinstance(event, dict) else None
-            held = isinstance(message_id, str) and message_id in self.store.rows
+            held = isinstance(message_id, str) and self._held_row(message_id) is not None
             if kind != "message.created" and topic_id == self.current.topic_id and held:
                 # A row held here, maybe from an older page no poll re-reads: read it again
                 # by itself. Paused like the topic poll while blurred; focus reads it.
@@ -881,7 +903,7 @@ class PepperApp(App[None]):
         conv = self.current
         while self._stale_rows:
             message_id = self._stale_rows.pop(0)
-            if message_id in self.store.rows and conv.room_id and conv.topic_id:
+            if self._held_row(message_id) is not None and conv.room_id and conv.topic_id:
                 break
         else:
             return
@@ -896,9 +918,10 @@ class PepperApp(App[None]):
     def _refreshed(self, message_id: str, page: GroupMessagePage) -> None:
         fresh = [m for m in page.messages if m.id == message_id]
         if fresh:
-            self.store.add(fresh)
+            self._patch_row(message_id, lambda rows: rows.add(fresh))
         elif page.permalink_target_missing:
-            self.store.apply_delete(message_id, {})  # gone for good: show its tombstone
+            # gone for good: show its tombstone
+            self._patch_row(message_id, lambda rows: rows.apply_delete(message_id, {}))
         self._render_topic(new_rows=0, reset=False)
         self._run("refresh")
 
@@ -961,6 +984,7 @@ class PepperApp(App[None]):
         if first:
             self._begin_opening()
         self._render_topic(new_rows=len(fresh), reset=first)
+        self._fetch_roots()
         if not self._blurred:
             # Every mark waits for its guarded scroll to land (``Landed``): a pinned poll
             # the reader interrupts restores its cue, and those rows must stay unread.
@@ -993,14 +1017,184 @@ class PepperApp(App[None]):
                 out.append(("assistant", turn.reply, ""))
         return out
 
+    def _takes_cards(self) -> bool:
+        """Whether the open topic draws conversation cards: any room topic but a bridged
+        thread (``dedicated_conversation``), whose messages stay plain rows."""
+        conv = self.current
+        if conv.is_pepper or conv.topic_id is None:
+            return False
+        room = next((r for r in self.rooms if r.group_id == conv.room_id), None)
+        topic = (
+            next((t for t in room.topics if t.topic_id == conv.topic_id), None) if room else None
+        )
+        return not (topic is not None and topic.dedicated_conversation)
+
+    def _stream(self) -> cards.Stream:
+        """The open topic as cards and plain rows, with the cards the reader is busy with held
+        in place (the holds are settled here, so every caller sees the same layout)."""
+        messages = self._with_fetched_roots()
+        takes = self._takes_cards()
+        # A root read by id that has since joined the loaded rows (an older page brought it) is
+        # an ordinary row again: it is drawn from the store and placed by the usual rule.
+        fetched = {mid for mid in self.fetched_roots if mid not in self.store.rows}
+        laid = cards.build_stream(
+            messages, takes_cards=takes, holds=self.card_holds, fetched=fetched
+        )
+        selected = self.selected or ""
+        if selected.startswith("fold:"):
+            selected = selected.removeprefix("fold:")
+        elif selected.startswith("msg:"):
+            selected = selected.removeprefix("msg:")
+        else:
+            selected = ""
+        busy = cards.hold_ids(laid, selected=selected or None, replying_to=self._draft().quote_id)
+        holds = cards.settle_holds(self.card_holds, busy, laid.placement)
+        if holds != self.card_holds:
+            self.card_holds = holds
+            laid = cards.build_stream(messages, takes_cards=takes, holds=holds, fetched=fetched)
+        return laid
+
+    def _held_row(self, message_id: str) -> GroupMessage | None:
+        """A message drawn in the open topic: a loaded row, or a root read by id."""
+        return self.store.rows.get(message_id) or self.fetched_roots.get(message_id)
+
+    def _patch_row(self, message_id: str, change: Callable[[state.MessageStore], object]) -> None:
+        """Apply ``change`` to the row ``message_id`` wherever it is held. A root read by id is
+        changed in place, outside the loaded rows, so it never moves the poll cursor or the
+        start of older pages."""
+        if message_id in self.store.rows or message_id not in self.fetched_roots:
+            change(self.store)
+            return
+        side = state.MessageStore(rows={message_id: self.fetched_roots[message_id]})
+        change(side)
+        if (row := side.rows.get(message_id)) is not None:
+            self.fetched_roots[message_id] = row
+
+    def _with_fetched_roots(self) -> list[GroupMessage]:
+        """The open topic's rows with the roots read by id before them, in time order."""
+        rows_held = self.store.ordered()
+        extra = [m for mid, m in self.fetched_roots.items() if mid not in self.store.rows]
+        if not extra:
+            return rows_held
+        return sorted(
+            [*extra, *rows_held],
+            key=lambda m: (state.parse_ts(m.created_at) or datetime.min.replace(tzinfo=UTC), m.id),
+        )
+
+    def _fetch_roots(self) -> None:
+        """Read, one at a time, the next message a reply on the page needs to reach its card."""
+        conv = self.current
+        loop = self._loops["roots"]
+        if conv.is_pepper or conv.room_id is None or conv.topic_id is None or loop.busy:
+            return
+        if not self._takes_cards():
+            # A bridged thread draws its replies as plain rows: a root read here would never
+            # be shown. (A note comment there whose root is older than the page is a plain row
+            # too, like everything else in that topic.)
+            return
+        missing = cards.missing_parents(
+            self.store.ordered(), held=self.fetched_roots, attempted=self._root_attempts
+        )
+        if not missing:
+            return
+        target = missing[0]
+        self._root_attempts.add(target)
+        room, topic = conv.room_id, conv.topic_id
+        self._start(
+            "roots",
+            lambda: self._api.list_group_messages(room, topic, at=target, limit=1),
+            lambda page, target=target: self._got_root(target, page),
+            on_error=lambda exc, target=target: self._root_failed(target, exc),
+        )
+
+    def _root_failed(self, target: str, exc: Exception) -> bool:
+        """A root read failed. The loop always moves on to the next root at once (True), so one
+        root that keeps failing never holds up the others. A refusal (a 4xx but 429) or an
+        answer that would not parse is final: its replies stay plain rows. A lost connection,
+        a 429 or a 5xx is not: the root is asked again after a backoff, up to
+        :data:`ROOT_RETRIES` times in one opening of the topic."""
+        transient = isinstance(exc, httpx.RequestError) or (
+            isinstance(exc, ApiError) and (exc.status >= 500 or exc.status == 429)
+        )
+        if not transient:
+            return True
+        self._root_failures[target] += 1
+        failures = self._root_failures[target]
+        if failures > ROOT_RETRIES:
+            return True
+        conv = self.current
+
+        def again() -> None:
+            if self.current != conv or target in self.fetched_roots:
+                return  # another topic is open now, or the root arrived some other way
+            self._root_attempts.discard(target)
+            self._fetch_roots()
+
+        self.set_timer(state.backoff_delay(failures), again)
+        return True
+
+    def _got_root(self, target: str, page: GroupMessagePage) -> None:
+        found = next((m for m in page.messages if m.id == target), None)
+        if found is not None and found.id not in self.store.rows:
+            self.fetched_roots[found.id] = found
+            self._render_topic(new_rows=0, reset=False)
+        self._fetch_roots()
+
     def _topic_items(self) -> list[tuple[str | None, Any]]:
+        laid = self._stream()
+        self._keep_selected_unfolded(laid)
+        self._folded_stamps = [
+            reply.message.created_at
+            for entry in laid.entries
+            if isinstance(entry, cards.Card)
+            for reply in entry.replies[: entry.shown(expanded=entry.id in self.expanded_cards)[0]]
+        ]
         return rows.thread_items(
             self.store.ordered(),
             you_id=self.you_person_id,
             pending=self.pending.in_conversation(self.current),
             selected=self.selected,
             new_before=self._new_from,
+            stream=laid,
+            expanded=self.expanded_cards,
         )
+
+    def _keep_selected_unfolded(self, laid: cards.Stream) -> None:
+        """A newer reply never pushes the selected reply behind its card's fold: the fold
+        opens instead, so the selection stays where the reader left it."""
+        selected = (self.selected or "").removeprefix("msg:")
+        card_id = cards.card_of(laid, selected) if self.selected else None
+        if card_id is None or card_id in self.expanded_cards:
+            return
+        card = next(
+            (e for e in laid.entries if isinstance(e, cards.Card) and e.id == card_id), None
+        )
+        if card is None:
+            return
+        hidden = card.shown(expanded=False)[0]
+        if any(reply.message.id == selected for reply in card.replies[:hidden]):
+            self.expanded_cards.add(card_id)
+
+    def _below_folded(self, through: str | None, cursor: datetime | None) -> str | None:
+        """``through``, or the newest held row older than the first reply a fold hides that is
+        newer than ``cursor``: a read mark never claims a reply the reader has not opened."""
+        stamp = state.parse_ts(through) if through is not None else None
+        if stamp is None:
+            return through
+        hidden = [
+            moment
+            for raw in self._folded_stamps
+            if (moment := state.parse_ts(raw)) is not None and (cursor is None or moment > cursor)
+        ]
+        if not hidden or stamp < min(hidden):
+            return through
+        floor = min(hidden)
+        best: tuple[datetime, str] | None = None
+        for m in self.store.ordered():
+            moment = state.parse_ts(m.created_at)
+            if moment is not None and moment < floor and (best is None or moment > best[0]):
+                best = (moment, m.created_at)
+        return best[1] if best else None
 
     def _begin_opening(self) -> None:
         """A topic's first page landed: open it at the read cursor if it has unread messages.
@@ -1093,9 +1287,13 @@ class PepperApp(App[None]):
     def _divider_line(self) -> int | None:
         """The body line of the ``new messages`` divider (the top of what opens in view)."""
         keys = [key for key, _ in self._rendered_items]
-        if self._new_from is None or f"msg:{self._new_from}" not in keys:
+        if self._new_from is None:
             return None
-        index = keys.index(f"msg:{self._new_from}") - 1  # the divider sits right above it
+        # Inside a card the divider sits above the card's head.
+        target = cards.card_of(self._stream(), self._new_from) or self._new_from
+        if f"msg:{target}" not in keys:
+            return None
+        index = keys.index(f"msg:{target}") - 1  # the divider sits right above it
         return sum(self._item_lines()[:index])
 
     def _message_spans(self) -> list[tuple[str, int, int]] | None:
@@ -1126,8 +1324,23 @@ class PepperApp(App[None]):
         scroller = self.thread.scroller
         top = scroller.scroll_y if top is None else top
         bottom = top + (scroller.scrollable_content_region.height if height is None else height)
-        seen = [stamp for stamp, start, end in spans if start >= top and end <= bottom]
-        return seen[-1] if seen else None
+        # Cards put rows out of time order (a reply sits in its card, a card moves to its
+        # latest reply), so the newest row seen is not simply the last one: it is the newest
+        # seen row older than every row still below the region, which is the last seen row
+        # when the rows are in time order.
+        below = [
+            parsed for stamp, _, end in spans if end > bottom and (parsed := state.parse_ts(stamp))
+        ]
+        floor = min(below) if below else None
+        best: tuple[datetime, str] | None = None
+        for stamp, start, end in spans:
+            if start < top or end > bottom or (moment := state.parse_ts(stamp)) is None:
+                continue
+            if floor is not None and moment >= floor:
+                continue
+            if best is None or moment >= best[0]:
+                best = (moment, stamp)
+        return best[1] if best else None
 
     def _note_seen(
         self,
@@ -1168,7 +1381,7 @@ class PepperApp(App[None]):
         cursor = self.marks.marks.get(conv.topic_id)
         if cursor is None or self._cursor_gap(cursor):
             return  # first sight never marks (§5.3); and no mark claims across a gap
-        through = self._seen_through(top, height)
+        through = self._below_folded(self._seen_through(top, height), cursor)
         stamp = state.parse_ts(through) if through is not None else None
         if through is None or stamp is None or not self.marks.merge(conv.topic_id, stamp):
             return
@@ -1309,6 +1522,9 @@ class PepperApp(App[None]):
         self._draft().text = self.composer.text
         self.current = conv
         self.selected = None
+        self.expanded_cards, self.card_holds = set(), {}
+        self.fetched_roots, self._root_attempts = {}, set()
+        self._root_failures = Counter()
         self._load_draft()
         self.store = state.MessageStore()
         self.loaded_topic = False
@@ -1330,6 +1546,7 @@ class PepperApp(App[None]):
         refresh.generation += 1
         self._dirty.discard("topic")
         self._loops["older"].generation += 1
+        self._loops["roots"].generation += 1
         # A launcher still being read was asked for where the user was: its answer would
         # open a picker or a pane for a place they have left.
         self._loops["shelf"].generation += 1
@@ -1506,6 +1723,14 @@ class PepperApp(App[None]):
         stamp, shown = state.parse_ts(through), state.parse_ts(rendered)
         if stamp is None or shown is None or stamp > shown:
             return False  # the event claims a row this render never put on screen
+        cursor = self.marks.marks.get(conv.topic_id)
+        capped = self._below_folded(through, cursor)
+        if capped != through:
+            # Everything newer than the first folded-away reply stays unread.
+            capped_at = state.parse_ts(capped) if capped is not None else None
+            if capped is None or capped_at is None or (cursor is not None and capped_at <= cursor):
+                return False
+            through, stamp = capped, capped_at
         self.marks.merge(conv.topic_id, stamp)
         self._owe(conv, through)
         return True
@@ -1590,6 +1815,25 @@ class PepperApp(App[None]):
         if draft.quote_id is None:
             box.update("")
             box.set_class(True, "empty")
+            return
+        laid = self._stream() if not self.current.is_pepper else None
+        card_id = cards.card_of(laid, draft.quote_id) if laid is not None else None
+        card = laid.card(card_id) if laid is not None and card_id is not None else None
+        if card is not None:
+            title = (
+                cards.note_comment_face(card.root)
+                if cards.is_note_comment(card.root)
+                else cards.face(card.root)
+            ).title
+            line = Text("↳ Replying in ", style="dim")
+            line.append(f"“{sanitize_line(title)}”", style="bold")
+            if draft.quote_id != card.id:
+                line.append(" to ", style="dim")
+                line.append(sanitize_line(draft.quote_name) or "message", style="bold")
+                line.append(": " + sanitize_line(draft.quote_text), style="dim")
+            line.append("  (Esc cancels)", style="dim italic")
+            box.update(line)
+            box.set_class(False, "empty")
             return
         line = Text("┃ Replying to ", style="dim")
         line.append(sanitize_line(draft.quote_name) or "message", style="bold")
@@ -1693,8 +1937,22 @@ class PepperApp(App[None]):
         top = height([r for _, r in items[:index]]) if index else 0
         self.thread.reveal_lines(top, top + height([items[index][1]]))
 
+    def on_thread_scroll_activate(self, _event: ThreadScroll.Activate) -> None:
+        """``Enter`` on a card's fold opens its earlier replies, or folds them again."""
+        key = self.selected or ""
+        if not key.startswith("fold:"):
+            return
+        card_id = key.removeprefix("fold:")
+        if card_id in self.expanded_cards:
+            self.expanded_cards.discard(card_id)
+        else:
+            self.expanded_cards.add(card_id)
+        self._render_topic(new_rows=0, reset=False)
+        self._reveal_selected()
+
     def on_thread_scroll_reply(self, _event: ThreadScroll.Reply) -> None:
-        """``r``: retry a failed send, or quote the selected message in the composer."""
+        """``r``: retry a failed send, or reply to the selected message: into its card when it
+        is one or is in one, else as a quote-reply."""
         if self.current.is_pepper:
             self.notify("Quote-reply works in rooms.", timeout=2)
             return
@@ -1702,13 +1960,15 @@ class PepperApp(App[None]):
         if key is None:
             self.notify("Select a message with ↑/↓ first.", timeout=2)
             return
+        if key.startswith("fold:"):
+            key = "msg:" + key.removeprefix("fold:")  # the fold replies to its card
         if key.startswith("pending:"):
             pending_key = key.removeprefix("pending:")
             if self.pending.retry(pending_key):
                 self._render_topic(new_rows=0, reset=False)
                 self._run("send")
             return
-        message = self.store.rows.get(key.removeprefix("msg:"))
+        message = self._held_row(key.removeprefix("msg:"))
         if message is None or message.is_deleted or message.is_broken:
             return
         draft = self._draft()
@@ -1767,9 +2027,15 @@ class PepperApp(App[None]):
             conv = item.conversation
             on_screen = conv == self.current and not self._blurred and not self._scrolled_up()
             if conv.topic_id is not None and on_screen:
-                self.marks.merge(conv.topic_id, state.parse_ts(message.created_at))
-                self._owe(conv, message.created_at)
-                self._run("publish")
+                # Not past a reply a fold still hides, as for any other read mark.
+                through = self._below_folded(
+                    message.created_at, self.marks.marks.get(conv.topic_id)
+                )
+                stamp = state.parse_ts(through) if through is not None else None
+                if through is not None and stamp is not None:
+                    self.marks.merge(conv.topic_id, stamp)
+                    self._owe(conv, through)
+                    self._run("publish")
             if conv == self.current:
                 self.pending.confirm(conv, self.store.rows)
                 self._last_input = time.monotonic()
@@ -1834,10 +2100,14 @@ class PepperApp(App[None]):
             self.notify("This works on room messages.", timeout=2)
         elif key is None:
             self.notify("Select a message with ↑/↓ first.", timeout=2)
+        elif key.startswith("fold:"):
+            # The fold line only opens and closes the earlier replies (and r replies into its
+            # card, handled before this): it is not the root, so nothing acts on the root here.
+            self.notify("Select a message with ↑/↓ first.", timeout=2)
         elif not key.startswith("msg:"):
             self.notify("That message hasn't been sent yet.", timeout=2)
         else:
-            return self.store.rows.get(key.removeprefix("msg:"))
+            return self._held_row(key.removeprefix("msg:"))
         return None
 
     def _own_message(self, verb: str) -> GroupMessage | None:
@@ -1866,7 +2136,7 @@ class PepperApp(App[None]):
 
     def _react(self, message_id: str, emoji: str | None) -> None:
         room = self.current.room_id
-        message = self.store.rows.get(message_id)
+        message = self._held_row(message_id)
         if emoji is None or room is None or message is None:
             return
         if self._loops["react"].busy:
@@ -1881,7 +2151,7 @@ class PepperApp(App[None]):
         )
 
     def _reacted(self, message_id: str, chips: list[dict[str, Any]]) -> None:
-        self.store.set_reactions(message_id, chips)
+        self._patch_row(message_id, lambda rows: rows.set_reactions(message_id, chips))
         self._render_topic(new_rows=0, reset=False)
 
     # edit and delete
@@ -1915,7 +2185,7 @@ class PepperApp(App[None]):
         if self.editing is None:
             return
         conv, message_id = self.editing
-        original = self.store.rows.get(message_id)
+        original = self._held_row(message_id)
         if not text.strip() or (original is not None and text.strip() == original.raw_body.strip()):
             self._end_edit()  # nothing changed (an empty edit is not a delete)
             return
@@ -1967,9 +2237,9 @@ class PepperApp(App[None]):
         older page no poll re-reads), leave edit mode, and re-read the newest page."""
         reply = answer if isinstance(answer, dict) else {}
         if deleted:
-            self.store.apply_delete(message_id, reply)
+            self._patch_row(message_id, lambda rows: rows.apply_delete(message_id, reply))
         else:
-            self.store.apply_edit(message_id, reply)
+            self._patch_row(message_id, lambda rows: rows.apply_edit(message_id, reply))
             if self.editing is not None and self.editing[1] == message_id:
                 self._end_edit()
         if not self.current.is_pepper:
@@ -2120,6 +2390,7 @@ class PepperApp(App[None]):
             self._render_topic(new_rows=0, reset=True)
             return
         self._render_topic(new_rows=0, reset=False, prepended=bool(added))
+        self._fetch_roots()
 
     # new topic and the topic rail
 

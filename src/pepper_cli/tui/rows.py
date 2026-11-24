@@ -10,6 +10,7 @@ neither style nor link anything. That is an invariant, not a habit: do not feed 
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from rich.box import ROUNDED
@@ -17,18 +18,20 @@ from rich.console import Group
 from rich.markdown import Markdown
 from rich.padding import Padding
 from rich.panel import Panel
+from rich.segment import Segment
 from rich.styled import Styled
 from rich.table import Table
 from rich.text import Text
 
 from pepper_cli import render
 from pepper_cli.terminal_text import sanitize_line, sanitize_text
+from pepper_cli.tui import cards
 from pepper_cli.tui.state import draw_checklist, parse_ts, url_domain
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable
 
-    from rich.console import RenderableType
+    from rich.console import Console, ConsoleOptions, RenderableType, RenderResult
 
     from pepper_cli.api_client import ChatHistoryEntry, DraftCard, GroupCard, GroupMessage
     from pepper_cli.tui.state import PendingSend
@@ -246,29 +249,45 @@ def _quote_line(quote: object) -> Text | None:
     return Text(f"{INDENT}┃ {author + ': ' if author else ''}{excerpt}", style="dim")
 
 
+def _name_line(m: GroupMessage, *, mentions_you: bool) -> RenderableType:
+    """``Name (via X) (for Y) @`` with the time right-aligned."""
+    name = Text(sanitize_line(m.display_name), style=f"bold {safe_color(m.avatar_tint) or ''}")
+    via, agent = render.group_message_tags(m)
+    for tag in (via, agent):
+        if tag:
+            name.append(" " + sanitize_line(tag), style="dim")
+    if mentions_you:
+        name.append(" @", style=ACCENT)
+    return _header(name, m.created_at_display)
+
+
 def message_renderable(
-    m: GroupMessage, *, you_id: str | None = None, show_name: bool | None = None
+    m: GroupMessage,
+    *,
+    you_id: str | None = None,
+    show_name: bool | None = None,
+    show_quote: bool = True,
+    show_body: bool = True,
+    show_reactions: bool = True,
 ) -> RenderableType:
-    """One room message: optional name line (only on ``run_start``), quote, body, extras."""
+    """One room message: optional name line (only on ``run_start``), quote, body, extras.
+
+    ``show_quote`` is ``False`` for a reply straight to the card it is drawn in, whose quote
+    would only repeat the card. ``show_body`` is ``False`` for a card whose title took the
+    whole message, so only its extras (previews, cards, files, reactions) are drawn."""
     mentions_you = bool(you_id) and you_id in m.mentions
     parts: list[RenderableType] = []
     if m.run_start if show_name is None else show_name:
-        name = Text(sanitize_line(m.display_name), style=f"bold {safe_color(m.avatar_tint) or ''}")
-        via, agent = render.group_message_tags(m)
-        for tag in (via, agent):
-            if tag:
-                name.append(" " + sanitize_line(tag), style="dim")
-        if mentions_you:
-            name.append(" @", style=ACCENT)
-        parts.append(_header(name, m.created_at_display))
+        parts.append(_name_line(m, mentions_you=mentions_you))
     if not (m.is_deleted or m.is_broken):
-        if line := _quote_line(m.quote):
+        if show_quote and (line := _quote_line(m.quote)):
             parts.append(line)
-        parts.append(_body(m, mentions_you=mentions_you))
+        if show_body:
+            parts.append(_body(m, mentions_you=mentions_you))
         parts.extend(_preview_lines(m.link_previews))
         parts.extend(_card_panel(c) for c in m.cards)
         parts.extend(_attachment_lines(m.attachments))
-        if m.reactions and (line := _reaction_line(m.reactions)):
+        if show_reactions and m.reactions and (line := _reaction_line(m.reactions)):
             parts.append(line)
     else:
         parts.append(_body(m, mentions_you=False))
@@ -299,6 +318,183 @@ def pending_renderable(p: PendingSend) -> RenderableType:
     return Group(*parts)
 
 
+#: Style of a card's frame.
+FRAME = "dim"
+
+
+class _Frame:
+    """``inner`` between a card's side rules: ``│ …  │``, two columns of the width each side."""
+
+    def __init__(self, inner: RenderableType) -> None:
+        self.inner = inner
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        width = options.max_width
+        inner = options.update_width(max(width - 4, 1))
+        for line in console.render_lines(self.inner, inner, pad=True):
+            yield Segment("│ ", console.get_style(FRAME))
+            yield from line
+            yield Segment(" │", console.get_style(FRAME))
+            yield Segment.line()
+
+
+class _Edge:
+    """A card's top or bottom rule, with ``label`` near its left end: ``╭─ label ────╮``."""
+
+    def __init__(self, left: str, right: str, label: Text | None = None) -> None:
+        self.left, self.right, self.label = left, right, label
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        width = max(options.max_width, 4)
+        line = Text(self.left + "─", style=FRAME)
+        if self.label is not None and self.label.plain:
+            label = self.label.copy()
+            label.truncate(max(width - 6, 1), overflow="ellipsis")
+            line.append(" ")
+            line.append_text(label)
+            line.append(" ")
+        line.append("─" * max(width - line.cell_len - 1, 0), style=FRAME)
+        line.append(self.right, style=FRAME)
+        line.truncate(width)
+        yield line
+
+
+def _chip_line(root: GroupMessage) -> Text | None:
+    """``Linked: Note · Trip plan   Source · airbnb.com/…  +1``, or ``None`` with no links."""
+    shown, more = cards.chips(root)
+    if not shown:
+        return None
+    line = Text(INDENT + "Linked: ", style="dim")
+    for i, (kind, label) in enumerate(shown):
+        if i:
+            line.append("   ")
+        if kind:
+            line.append(f"{sanitize_line(kind)} · ", style="dim")
+        line.append(sanitize_line(label), style="cyan")
+    if more:
+        line.append(f"  +{more}", style="dim")
+    line.no_wrap, line.overflow = True, "ellipsis"
+    return line
+
+
+class _CardTop:
+    """A card's top rule and face. When the title took the message's first line but is too
+    wide for the rule, the face draws the whole message instead, so no text is lost."""
+
+    def __init__(self, title: Text, body: RenderableType, full: RenderableType | None) -> None:
+        self.title, self.body, self.full = title, body, full
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        fits = self.title.cell_len <= max(options.max_width, 4) - 6
+        yield _Edge("╭", "╮", self.title)
+        yield _Frame(self.body if fits or self.full is None else self.full)
+
+
+def _card_face(card: cards.Card, *, you_id: str | None) -> _CardTop:
+    """A card's title (for the top rule) and what the frame holds above the thread."""
+    root = card.root
+    if root.is_deleted:
+        return _CardTop(
+            Text("Message deleted", style="dim italic"), Text(INDENT + DELETED, style="dim"), None
+        )
+    comment = cards.is_note_comment(root)
+    face = cards.note_comment_face(root) if comment else cards.face(root)
+    title = Text(sanitize_line(f"“{face.title}”" if comment else face.title), style="bold")
+    if root.is_edited and not face.body.strip():
+        title.append(" (edited)", style="dim")  # no body line to carry it
+    extras: list[RenderableType] = []
+    if line := _chip_line(root):
+        extras.append(line)
+    if root.reactions and (line := _reaction_line(root.reactions)):
+        extras.append(line)
+
+    def body(text: str) -> RenderableType:
+        return Group(
+            message_renderable(
+                replace(root, raw_body=text),
+                you_id=you_id,
+                show_name=False,
+                show_body=bool(text.strip()),
+                show_reactions=False,
+            ),
+            *extras,
+        )
+
+    whole = root.raw_body.strip()
+    full = body(whole) if not comment and face.body != whole else None
+    return _CardTop(title, body(face.body), full)
+
+
+def _card_items(
+    card: cards.Card,
+    *,
+    you_id: str | None,
+    selected: str | None,
+    expanded: bool,
+    pending: list[PendingSend],
+) -> list[tuple[str | None, RenderableType]]:
+    """A card's rows: the head (author line, top rule, face), the fold, the replies, this
+    session's replies still sending into it, and the foot."""
+    root = card.root
+    key = f"msg:{root.id}"
+    top = _card_face(card, you_id=you_id)
+    mentions_you = bool(you_id) and you_id in root.mentions
+    head_parts: list[RenderableType] = []
+    if not root.is_deleted:
+        head_parts.append(_name_line(root, mentions_you=mentions_you))
+    head_parts.append(top)
+    head: RenderableType = Group(*head_parts)
+    items: list[tuple[str | None, RenderableType]] = [
+        (key, Styled(head, SELECTED) if key == selected else head)
+    ]
+    hidden, shown = card.shown(expanded=expanded)
+    if len(card.replies) > cards.FOLD_VISIBLE:
+        fold_key = f"fold:{root.id}"
+        label = (
+            f"⋯ {hidden} earlier {'reply' if hidden == 1 else 'replies'} (Enter to show)"
+            if hidden
+            else "⋯ Show fewer replies (Enter)"
+        )
+        fold = _Frame(Text(label, style="dim italic"))
+        items.append((fold_key, Styled(fold, SELECTED) if fold_key == selected else fold))
+    for i, reply in enumerate(shown):
+        m = reply.message
+        rkey = f"msg:{m.id}"
+        show_name = reply.starts_run or i == 0 or rkey == selected
+        row = _Frame(
+            message_renderable(m, you_id=you_id, show_name=show_name, show_quote=not reply.to_card)
+        )
+        items.append((rkey, Styled(row, SELECTED) if rkey == selected else row))
+    for p in pending:
+        pkey = f"pending:{p.key}"
+        quoted = p.parent_id != root.id
+        row = _Frame(pending_renderable(p if quoted else replace(p, quote_text="")))
+        items.append((pkey, Styled(row, SELECTED) if pkey == selected else row))
+    foot_label = Text("r reply", style="dim italic")
+    if card.replies:
+        count = len(card.replies)
+        foot_label = Text(
+            f"{count} {'reply' if count == 1 else 'replies'} · r reply", style="dim italic"
+        )
+    # The foot belongs to the card's last row, so that row counts as seen only once the
+    # whole card is on screen, and the selection never stops on a rule.
+    key_last, last = items[-1]
+    items[-1] = (key_last, Group(last, _Edge("╰", "╯", foot_label)))
+    return items
+
+
+def _entry_day(entry: GroupMessage | cards.Card, stream: cards.Stream | None) -> GroupMessage:
+    """The message whose day an entry is shown under: a card takes its placement's day."""
+    if isinstance(entry, cards.Card):
+        at = stream.placement.get(entry.id, entry.id) if stream is not None else entry.id
+        if at != entry.id:
+            for reply in entry.replies:
+                if reply.message.id == at:
+                    return reply.message
+        return entry.root
+    return entry
+
+
 def thread_items(
     messages: Iterable[GroupMessage],
     *,
@@ -306,22 +502,58 @@ def thread_items(
     pending: Iterable[PendingSend] = (),
     selected: str | None = None,
     new_before: str | None = None,
+    stream: cards.Stream | None = None,
+    expanded: Collection[str] = (),
 ) -> list[tuple[str | None, RenderableType]]:
-    """A topic's rows with their selection keys (``msg:<id>``, ``pending:<key>``; ``None``
-    for a day divider), in display order: server rows, then this session's pending sends.
+    """A topic's rows with their selection keys (``msg:<id>``, ``pending:<key>``,
+    ``fold:<card id>``; ``None`` for a divider), in display order: server
+    rows, then this session's pending sends.
+
+    With ``stream`` (:func:`cards.build_stream` over the same ``messages``), top-level
+    messages are drawn as cards with their replies inside, and a pending reply into a card is
+    drawn in it; ``expanded`` holds the cards whose fold is open. Without it the topic is the
+    flat list it always was.
 
     A message with an empty ``day_key`` or ``day_label`` (the server's broken-message
     placeholder) neither opens a divider nor resets the day, as on the web. A message is
     shown with its name line when it is selected, so the selection always says whose it is.
     ``new_before`` is the id of the first message after the read cursor: a ``new messages``
-    divider (also keyless) goes right above it, below that message's day divider.
+    divider (also keyless) goes right above the row (or card) holding it, below its day.
     """
+    entries: list[GroupMessage | cards.Card] = (
+        stream.entries if stream is not None else list(messages)
+    )
+    pending = list(pending)
+    into: dict[str, list[PendingSend]] = {}
+    loose: list[PendingSend] = []
+    for p in pending:
+        card_id = cards.card_of(stream, p.parent_id) if stream is not None else None
+        if card_id is not None and stream is not None and stream.card(card_id) is not None:
+            into.setdefault(card_id, []).append(p)
+        else:
+            loose.append(p)
+    new_entry = cards.card_of(stream, new_before) if stream is not None else None
     items: list[tuple[str | None, RenderableType]] = []
     last_day: str | None = None
-    for m in messages:
-        if m.day_key and m.day_label and m.day_key != last_day:
-            items.append((None, day_divider(m.day_label)))
-            last_day = m.day_key
+    for entry in entries:
+        day = _entry_day(entry, stream)
+        if day.day_key and day.day_label and day.day_key != last_day:
+            items.append((None, day_divider(day.day_label)))
+            last_day = day.day_key
+        if isinstance(entry, cards.Card):
+            if new_before is not None and new_entry == entry.id:
+                items.append((None, new_divider()))
+            items.extend(
+                _card_items(
+                    entry,
+                    you_id=you_id,
+                    selected=selected,
+                    expanded=entry.id in expanded,
+                    pending=into.get(entry.id, []),
+                )
+            )
+            continue
+        m = entry
         key = f"msg:{m.id}"
         if m.id == new_before:
             items.append((None, new_divider()))
@@ -330,7 +562,7 @@ def thread_items(
             items.append((key, Styled(row, SELECTED)))
         else:
             items.append((key, message_renderable(m, you_id=you_id)))
-    for p in pending:
+    for p in loose:
         key = f"pending:{p.key}"
         row = pending_renderable(p)
         items.append((key, Styled(row, SELECTED) if key == selected else row))

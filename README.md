@@ -553,8 +553,13 @@ The composer at the bottom posts to whatever is open:
   not posted twice.
 - **`@` mentions**: type `@` and part of a name to pick from the room's members (Tab or Enter
   picks). A mention is sent only while its `@Display Name` is still in the text.
-- **Quote-reply**: in the thread, Up/Down select a message and `r` quotes it in the composer.
-  Esc cancels the quote; a second Esc moves focus back to the thread.
+- **Conversation cards**: in a room topic each top-level message is a card with its replies
+  nested inside, the latest three shown; Enter on the "earlier replies" line opens the rest.
+  A card moves to the bottom when someone else replies (your own reply never moves it, and a
+  card you have selected or are replying into stays put). A bridged topic stays a plain list.
+- **Reply**: in the thread, Up/Down select a message and `r` replies to it. On a card, or a
+  reply inside one, the reply goes into that conversation ("Replying in …" above the composer);
+  elsewhere it quotes the message. Esc cancels; a second Esc moves focus back to the thread.
 - **In the Pepper chat**, Enter sends a turn. What Pepper is doing (thinking, using a tool)
   shows on a dim line above the composer, and the reply lands in the thread. A second message
   waits until the current answer finishes. If the connection drops mid-answer the message is

@@ -119,7 +119,7 @@ count anywhere, following the web's dot-not-count rule; `Ctrl+N` goes to the nex
 | `Esc` (composer) | Cancel the quote. A second press moves focus to the thread | Esc |
 | `/` (thread or sidebar) | Focus the composer and type `/` | `/` |
 | `↑`/`↓`, `PgUp`/`PgDn` (thread) | Select a message and scroll. Scrolling up past the top loads older messages (P3) | Scroll |
-| `r` (thread, message selected) | Quote-reply to that message (rooms only) | Reply |
+| `r` (thread, message selected) | Reply to that message (rooms only): into its conversation card, or as a quote-reply in a bridged topic (`planning/tui-conversation-cards.md`) | Reply |
 | `e` / `d` (own message) | Edit / delete, with a confirmation (P3) | Menu |
 | `+` (message selected) | React, with a short emoji picker (P3) | Reaction bar |
 | `o` (message selected) | Open the first link, attachment or card URL in the browser | Click |
@@ -237,7 +237,7 @@ fetch (the per-topic fetch of P4 retired with read-state-sync phase 5c). §15 C.
 
 - `POST …/messages` (`post_group_message`) with an `idempotency_key` generated per send attempt and
   reused on retry. Send `mentions` resolved from the `@` menu, and `parent_message_id` for a
-  quote-reply.
+  reply (into a conversation card, or a quote-reply in a bridged topic).
 - Show the row at once as *pending* (dimmed). When the poll returns the same id, swap the pending
   row for the real one. Pending rows never badge and never move the cursor.
 - The response runs no turn. Pepper's reply arrives through the next poll, as on the web. After a
