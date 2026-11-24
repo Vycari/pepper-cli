@@ -1026,7 +1026,9 @@ class PepperApp(App[None]):
         in place (the holds are settled here, so every caller sees the same layout)."""
         messages = self._with_fetched_roots()
         takes = self._takes_cards()
-        fetched = self.fetched_roots.keys()
+        # A root read by id that has since joined the loaded rows (an older page brought it) is
+        # an ordinary row again: it is drawn from the store and placed by the usual rule.
+        fetched = {mid for mid in self.fetched_roots if mid not in self.store.rows}
         laid = cards.build_stream(
             messages, takes_cards=takes, holds=self.card_holds, fetched=fetched
         )
@@ -1073,8 +1075,20 @@ class PepperApp(App[None]):
             "roots",
             lambda: self._api.list_group_messages(room, topic, at=target, limit=1),
             lambda page, target=target: self._got_root(target, page),
-            on_error=lambda _exc: True,  # a root that can't be read leaves its replies flat
+            on_error=lambda exc, target=target: self._root_failed(target, exc),
         )
+
+    def _root_failed(self, target: str, exc: Exception) -> bool:
+        """A root read failed. A refusal (a 4xx) or an answer that would not parse is final:
+        its replies stay plain rows and the next root is read at once. A lost connection or a
+        server error is not: the root is asked again after the loop's backoff."""
+        transient = isinstance(exc, httpx.RequestError) or (
+            isinstance(exc, ApiError) and exc.status >= 500
+        )
+        if not transient:
+            return True
+        self._root_attempts.discard(target)
+        return False
 
     def _got_root(self, target: str, page: GroupMessagePage) -> None:
         found = next((m for m in page.messages if m.id == target), None)
@@ -1984,7 +1998,9 @@ class PepperApp(App[None]):
         elif key is None:
             self.notify("Select a message with ↑/↓ first.", timeout=2)
         elif key.startswith("fold:"):
-            return self.store.rows.get(key.removeprefix("fold:"))
+            # The fold line only opens and closes the earlier replies (and r replies into its
+            # card, handled before this): it is not the root, so nothing acts on the root here.
+            self.notify("Select a message with ↑/↓ first.", timeout=2)
         elif not key.startswith("msg:"):
             self.notify("That message hasn't been sent yet.", timeout=2)
         else:

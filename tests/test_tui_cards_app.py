@@ -139,3 +139,70 @@ async def test_a_bridged_topic_stays_a_plain_list() -> None:
     async with app.run_test(size=(120, 40)) as pilot:
         await _open(pilot, app, "answer")
         assert "╭" not in body_text(app)
+
+
+async def test_a_root_read_lost_to_the_connection_is_asked_again() -> None:
+    import httpx
+
+    rows = [
+        ts.message("m0", _at(0), "# Old plan\nfrom last week", title="Old plan"),
+        ts.message("x1", _at(1), "filler one"),
+        ts.message("x2", _at(2), "filler two"),
+        ts.message("r1", _at(3), "still on?", parent_message_id="m0", display_name="Bo"),
+    ]
+    server = _server(rows)
+    server.page_size = 3
+    answer = server.handler
+    lost = []
+
+    def flaky(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("at") == "m0" and not lost:
+            lost.append(request)
+            raise httpx.ConnectError("connection lost", request=request)
+        return answer(request)
+
+    server.handler = flaky  # type: ignore[method-assign]
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _open(pilot, app, "still on?")
+        await until(pilot, lambda: "Old plan" in body_text(app))
+        assert lost and "m0" in app.fetched_roots
+
+
+async def test_the_fold_line_is_not_the_root_for_edit_delete_or_react() -> None:
+    replies = [
+        ts.message(f"r{i}", _at(i + 1), f"reply number {i}", parent_message_id="m1")
+        for i in range(5)
+    ]
+    server = _server([ts.message("m1", _at(0), "Plans", is_you=True), *replies])
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _open(pilot, app, "reply number 4")
+        await _select(pilot, app, "fold:m1")
+        assert app._selected_message() is None
+        await pilot.press("d")
+        await pilot.pause(0.1)
+        assert len(app.screen_stack) == 1
+        assert not any(method == "DELETE" for method, _, _ in server.requests)
+
+
+async def test_a_root_read_by_id_stays_drawn_once_an_older_page_brings_it() -> None:
+    from pepper_cli import api_client
+
+    rows = [
+        ts.message("m0", _at(0), "the original question"),
+        ts.message("x1", _at(1), "filler one"),
+        ts.message("x2", _at(2), "filler two"),
+        ts.message("r1", _at(3), "the answer", parent_message_id="m0"),
+    ]
+    server = _server(rows)
+    server.page_size = 3
+    server.rooms[0]["topics"][0]["dedicated_conversation"] = True
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _open(pilot, app, "the answer")
+        await until(pilot, lambda: "m0" in app._root_attempts and not app._loops["roots"].busy)
+        app.store.add_older([api_client.group_message_from_dict(rows[0])], None)
+        app._render_topic(new_rows=0, reset=False)
+        await pilot.pause()
+        assert "the original question" in body_text(app)
