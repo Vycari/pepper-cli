@@ -1,6 +1,6 @@
 # Terminal UI: replies and threads as conversation cards
 
-**Status:** Draft. One question for the maintainer (§6).
+**Status:** Decided. The maintainer chose B in §6 on 2026-11-24.
 **Author:** drafted with Claude Code for the maintainer
 **Last updated:** 2026-11-24
 **Tracked by:** #365
@@ -35,7 +35,7 @@ conversation (its root, then its replies, paged with `before`). `r` already post
   the body (when `title_source` says the title took the first line, that line is not drawn twice).
   The links are one flat list of chips, each tagged with its type ("Note", "Source", …), four on
   the card and then "+N more".
-- **The fold.** A card shows its latest replies; "N earlier" opens the rest.
+- **The fold.** A card shows its latest replies (ten on the web and iOS, three here, §6); "N earlier" opens the rest.
 - **The bump.** A card with replies from other people sits where its latest such reply was posted,
   so it comes to the bottom when someone else answers. Your own reply never moves it. A card you
   are busy with (selected, or the one your reply is going into) holds its place until you leave it.
@@ -96,13 +96,13 @@ Both reuse the existing poll, so a reply arrives in its card on the next poll wi
 - Conversation cards in the Pepper DM (it is not a room).
 - A `pepper conversations` command outside the TUI.
 
-## 6. Question for the maintainer
+## 6. Decision (2026-11-24, by the maintainer): B
 
 **How much of a thread shows inline?** The web and iOS show the latest ten replies before the
 fold. A terminal is shorter: ten replies under each card can fill a screen with one conversation.
 
 - **A. Latest 10, as web and iOS.** Exact parity; busy cards are tall.
-- **B. Latest 3, then "N earlier".** Recommended. The stream stays scannable, and `Enter` on the
+- **B. Latest 3, then "N earlier".** Chosen. The stream stays scannable, and `Enter` on the
   fold or the full view shows the rest.
 - **C. No replies inline, only "N replies · latest from Ada".** The most compact, but it drops the
   "see the conversation in place" that is the point of cards.
