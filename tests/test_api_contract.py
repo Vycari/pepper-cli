@@ -80,32 +80,12 @@ NOT_CHECKABLE: dict[tuple[str, str], NotCheckable] = {
         "folds in a client-synthesised 'slow_down' state from an HTTP 429.",
         route=("POST", "/auth/device/poll"),
     ),
-    ("api_client.py", "src/pepper/api/groups.py::room_topics"): NotCheckable(
-        f"Route handler behind GroupTopicSummary. {_UNTYPED}",
-        route=("GET", "/api/v1/groups/{group_id}/topics"),
-    ),
-    ("api_client.py", "src/pepper/api/groups.py::list_groups"): NotCheckable(
-        f"Route handler behind GroupSummary and GroupList. {_UNTYPED}",
-        route=("GET", "/api/v1/groups"),
-    ),
-    ("api_client.py", "src/pepper/api/groups.py::topic_messages"): NotCheckable(
-        f"Route handler behind GroupCard, GroupMessage and GroupMessagePage. {_UNTYPED}",
-        route=("GET", "/api/v1/groups/{group_id}/topics/{topic_id}/messages"),
-    ),
-    ("api_client.py", "src/pepper/api/groups.py::room_roster"): NotCheckable(
-        f"Route handler behind GroupRosterMember. {_UNTYPED}",
-        route=("GET", "/api/v1/groups/{group_id}/roster"),
-    ),
     ("api_client.py", "src/pepper/api/groups.py::person_unread"): NotCheckable(
         "Route handler behind GroupUnreadRow and GroupsUnread (via ``get_groups_unread``) "
         "(``{topics: [{group_id, topic_id, read_through, floor, unread_count, "
         "has_unread_mention}], unread_total}``). "
         f"{_UNTYPED}",
         route=("GET", "/api/v1/groups/unread"),
-    ),
-    ("api_client.py", "src/pepper/api/groups.py::app_launcher"): NotCheckable(
-        f"Route handler behind GroupAppTile. {_UNTYPED}",
-        route=("GET", "/api/v1/groups/{group_id}/apps/launcher"),
     ),
     ("api_client.py", "src/pepper/api/groups.py::agent_events_stream"): NotCheckable(
         "Names the agent event-feed SSE route (FeedFrame). The snapshot lists the route with "
@@ -152,11 +132,6 @@ NOT_CHECKABLE: dict[tuple[str, str], NotCheckable] = {
         "``artifact`` field (an open object, the same ``read_detail`` dict as ArtifactDetail) "
         "rather than mapping a dataclass; the request body is spelled out in the method.",
     ),
-    ("api_client.py", "src/pepper/agent/artifacts/applet.py::read_detail"): NotCheckable(
-        "Names the function behind the artifact detail route (ArtifactDetail), which answers "
-        f"a bare JSONResponse. {_UNTYPED}",
-        route=("GET", "/api/v1/artifacts/{artifact_id}/detail"),
-    ),
     ("cli.py", "src/pepper/agent/artifacts/service.py::INLINE_TEXT"): NotCheckable(
         "Mirrors a string constant (the artifact kind), not a model, and annotates no dataclass."
     ),
@@ -168,6 +143,10 @@ NOT_CHECKABLE: dict[tuple[str, str], NotCheckable] = {
 # A genuine mismatch (a CLI field the server does not send) belongs here too, but its reason
 # must start with "KNOWN MISMATCH".
 FIELD_EXCEPTIONS: dict[tuple[str, str], str] = {
+    ("GroupCard", "summary_lines"): (
+        "Client-flattened: the server sends 'summary' as {'lines': [...]} (or null); the CLI "
+        "reads its 'lines' list into summary_lines."
+    ),
     ("RoomSkillDetail", "row"): (
         "Client-composed: the server returns the skill-row fields flattened beside 'skill'; "
         "the CLI groups those into a RoomSkill under 'row'. The flattened fields are checked "
