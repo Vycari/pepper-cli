@@ -36,6 +36,7 @@ import os
 import threading
 import time
 import uuid
+import warnings
 import webbrowser
 from collections import Counter
 from dataclasses import dataclass, replace
@@ -485,9 +486,18 @@ class PepperApp(App[None]):
         close between the check above and the call, which cancels the call's future: that is
         the same "app is closing" answer, not an error in the worker thread.
         """
-        if self._quitting:
+        if self._quitting or not self.is_running:
             return
-        with contextlib.suppress(RuntimeError, concurrent.futures.CancelledError):
+        loop = getattr(self, "_loop", None)
+        if loop is None or getattr(loop, "is_closed", lambda: False)():
+            return
+        if getattr(self, "_closing", False) or getattr(self, "_closed", False):
+            return
+        with (
+            contextlib.suppress(RuntimeError, concurrent.futures.CancelledError),
+            warnings.catch_warnings(),
+        ):
+            warnings.simplefilter("ignore", RuntimeWarning)
             self.call_from_thread(callback, *args)
 
     def exit(self, *args: Any, **kwargs: Any) -> None:
@@ -722,7 +732,9 @@ class PepperApp(App[None]):
             self._start(
                 kind,
                 lambda: poller.fetch_topic(self._api, conv, since=since),
-                lambda page: self._on_topic_page(page, newest=since is None),
+                lambda page: self._on_topic_page(
+                    page, newest=since is None, reconcile=since is None
+                ),
             )
 
     def _poll_now(self) -> None:
@@ -994,19 +1006,34 @@ class PepperApp(App[None]):
                 timeout=4,
             )
         setattr(self, attr, skipped)
+        partial_notices = getattr(self, "_partial_notices", None)
+        if not isinstance(partial_notices, dict):
+            partial_notices = {}
+            self._partial_notices = partial_notices
         if skipped > 0:
-            self._partial_notices[attr] = (
+            partial_notices[attr] = (
                 f"{skipped} item(s) could not be read and are not shown in {label}."
             )
         else:
-            self._partial_notices.pop(attr, None)
-        self._partial_notice = " ".join(self._partial_notices.values())
+            partial_notices.pop(attr, None)
+        self._partial_notice = " ".join(partial_notices.values())
 
-    def _on_topic_page(self, page: GroupMessagePage, *, newest: bool) -> None:
-        """A poll's page. Only a read of the newest page says where the older ones start."""
-        if newest:
+    def _on_topic_page(
+        self, page: GroupMessagePage, *, newest: bool = False, reconcile: bool = False
+    ) -> None:
+        """A poll's page.
+
+        ``newest`` keeps its existing meaning (a read of the newest page, which moves
+        ``next_before``). ``reconcile`` is the separate full-reconcile signal. In the
+        topic poll, ``reconcile`` is true exactly when ``since is None``; ``newest`` is
+        retained for compatibility and implies the same newest-page read.
+        """
+        if newest or reconcile:
             self.store.note_newest_page(page.next_before)
-        self._note_pane_skipped(page.skipped, "_topic_skipped", "this topic")
+        # An incremental poll can omit a malformed row from its window without proving the
+        # topic is complete. Keep that partial state until a full reconcile reports zero.
+        if reconcile or page.skipped > 0:
+            self._note_pane_skipped(page.skipped, "_topic_skipped", "this topic")
         self._on_topic(page.messages)
 
     def _on_topic(self, messages: list[GroupMessage]) -> None:

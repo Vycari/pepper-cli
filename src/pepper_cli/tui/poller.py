@@ -119,6 +119,10 @@ class RailPoller:
         )
         if groups is None:
             return RailUpdate(groups=None, etag=self._etag)
+        skipped = getattr(groups, "skipped", 0)
+        if skipped:
+            self.forget_etag()
+            etag = None
         if not groups.enabled or groups.degraded:
             # "Could not ask" is not "all caught up": the app holds what it has.
             return RailUpdate(groups=groups, etag=etag)
@@ -146,9 +150,6 @@ class RailPoller:
         # ETag is only kept when the request came back (or none was needed, or the server has
         # no such route).
         # A partial list (groups were skipped) must not retain an ETag: the next poll asks again.
-        skipped = getattr(groups, "skipped", 0)
-        if skipped:
-            self.forget_etag()
         return RailUpdate(
             groups=groups,
             server_marks=fetched.marks if fetched else {},

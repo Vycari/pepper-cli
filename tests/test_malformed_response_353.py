@@ -31,6 +31,7 @@ from pepper_cli.api_client import (
     TodoList,
 )
 from pepper_cli.secret import SecretStr
+from pepper_cli.tui import poller
 from pepper_cli.tui.app import PepperApp
 from pepper_cli.tui.state import Conversation
 
@@ -183,8 +184,6 @@ class TestReq1NonJsonCentralMapping:
 # ---------------------------------------------------------------------------
 # Req 2: skip_bad_rows=True skips malformed rows and counts them
 # ---------------------------------------------------------------------------
-# Req 2: skip_bad_rows=True skips malformed rows and counts them
-# ---------------------------------------------------------------------------
 
 
 class TestReq2SkipBadRows:
@@ -331,6 +330,70 @@ class TestReq4PaneSkippedNotice:
         assert app._partial_notice == ""
         assert len(app.notices) == 1
 
+    def test_topic_partial_warning_survives_clean_incremental_poll(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = PepperApp(_api({}))
+        app.current = Conversation(room_id="r1", topic_id="tp1")
+        app._on_topic = lambda messages: None
+        partial = GroupMessagePage(messages=[], skipped=1)
+        app._on_topic_page(partial, newest=False)
+        assert "this topic" in app._partial_notice
+        assert app._topic_skipped == 1
+        clean = GroupMessagePage(messages=[], skipped=0)
+        app._on_topic_page(clean, newest=False)
+        assert "this topic" in app._partial_notice
+        assert app._topic_skipped == 1
+
+        captured: dict[str, Any] = {}
+
+        def fake_start(
+            kind: str,
+            work: Any,
+            deliver: Any,
+            *,
+            on_error: Any = None,
+        ) -> None:
+            captured["deliver"] = deliver
+
+        monkeypatch.setattr(app, "_start", fake_start)
+        app.store.ticks = 4
+        app._run("topic")
+        complete = GroupMessagePage(messages=[], skipped=0, next_before="cursor")
+        captured["deliver"](complete)
+        assert app._partial_notice == ""
+        assert app._topic_skipped == 0
+
+    def test_topic_newest_page_does_not_clear_partial_warning(self) -> None:
+        app = PepperApp(_api({}))
+        app._on_topic = lambda messages: None
+        app._note_pane_skipped(1, "_topic_skipped", "this topic")
+        page = GroupMessagePage(messages=[], skipped=0, next_before="cursor")
+        app._on_topic_page(page, newest=True, reconcile=False)
+        assert "this topic" in app._partial_notice
+        assert app._topic_skipped == 1
+        assert app.store.older == "cursor"
+
+    def test_topic_reconcile_clears_partial_warning(self) -> None:
+        app = PepperApp(_api({}))
+        app._on_topic = lambda messages: None
+        app._note_pane_skipped(1, "_topic_skipped", "this topic")
+        page = GroupMessagePage(messages=[], skipped=0, next_before="cursor")
+        app._on_topic_page(page, newest=False, reconcile=True)
+        assert app._partial_notice == ""
+        assert app._topic_skipped == 0
+        assert app.store.older == "cursor"
+
+    def test_topic_reconcile_with_skipped_rows_keeps_partial_warning(self) -> None:
+        app = PepperApp(_api({}))
+        app._on_topic = lambda messages: None
+        app._note_pane_skipped(1, "_topic_skipped", "this topic")
+        page = GroupMessagePage(messages=[], skipped=2, next_before="cursor")
+        app._on_topic_page(page, newest=False, reconcile=True)
+        assert "this topic" in app._partial_notice
+        assert app._topic_skipped == 2
+        assert app.store.older == "cursor"
+
     def test_partial_marker_tracks_each_pane_independently(self) -> None:
         app: Any = _StubApp()
         PepperApp._note_pane_skipped(app, 2, "_rail_skipped", "the sidebar")
@@ -379,25 +442,22 @@ class TestReq4PaneSkippedNotice:
 
 class TestReq5NoETagOnPartialList:
     def test_etag_not_retained_when_group_rows_were_skipped(self) -> None:
-        """When skip_bad_rows drops rows, list_groups_conditional returns skipped > 0.
-        The poller must not commit that etag: a future poll must re-fetch the full list."""
+        """RailPoller.step() must not carry an ETag for a partial list."""
         good = _group(group_id="g-good")
         bad = _group(group_id=99)
         body = _groups_body(good, bad)
-        # Fake a server that returns an ETag.
 
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json=body, headers={"etag": "etag-v1"})
 
         api = _api_raw(handler)
-        groups, etag = api.list_groups_conditional(if_none_match=None, skip_bad_rows=True)
-        assert groups is not None
-        assert groups.skipped == 1
-        # The poller must pass etag=None to RailUpdate when skipped > 0.
-        # We verify the returned etag is non-None (server sent it), but that the
-        # poller logic discards it. Reproduce the poller's decision:
-        committed_etag = None if groups.skipped > 0 else etag
-        assert committed_etag is None, "ETag must not be committed when any row was skipped"
+        rail = poller.RailPoller(api)
+        rail._etag = "old-etag"
+        update = rail.step()
+        assert update.groups is not None
+        assert update.groups.skipped == 1
+        assert update.etag is None
+        assert rail._etag is None
 
     def test_etag_retained_when_no_rows_were_skipped(self) -> None:
         good = _group(group_id="g-good")
@@ -407,11 +467,37 @@ class TestReq5NoETagOnPartialList:
             return httpx.Response(200, json=body, headers={"etag": "etag-v2"})
 
         api = _api_raw(handler)
-        groups, etag = api.list_groups_conditional(if_none_match=None, skip_bad_rows=True)
-        assert groups is not None
-        assert groups.skipped == 0
-        committed_etag = None if groups.skipped > 0 else etag
-        assert committed_etag == "etag-v2"
+        rail = poller.RailPoller(api)
+        update = rail.step()
+        assert update.groups is not None
+        assert update.groups.skipped == 0
+        assert update.etag == "etag-v2"
+        rail.commit(update)
+        assert rail._etag == "etag-v2"
+
+    def test_degraded_partial_response_does_not_retain_etag(self) -> None:
+        good = _group(group_id="g-good")
+        bad = _group(group_id=99)
+        body = {
+            "enabled": True,
+            "degraded": True,
+            "total": 2,
+            "archived_total": 0,
+            "groups": [good, bad],
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=body, headers={"etag": "etag-degraded"})
+
+        api = _api_raw(handler)
+        rail = poller.RailPoller(api)
+        rail._etag = "old-etag"
+        update = rail.step()
+        assert update.groups is not None
+        assert update.groups.degraded is True
+        assert update.groups.skipped == 1
+        assert update.etag is None
+        assert rail._etag is None
 
 
 # ---------------------------------------------------------------------------

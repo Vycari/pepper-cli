@@ -799,7 +799,7 @@ def _draft_accounts(draft: dict[str, Any]) -> list[list[str]]:
     if raw is None:
         return []
     if not isinstance(raw, list):
-        raise _malformed("draft accounts is not a list", draft)
+        raise _malformed("draft accounts is not a list")
     accounts: list[list[str]] = []
     for entry in raw:
         if (
@@ -807,7 +807,7 @@ def _draft_accounts(draft: dict[str, Any]) -> list[list[str]]:
             or len(entry) < 2
             or not all(isinstance(x, str) for x in entry[:2])
         ):
-            raise _malformed("draft account entry is not an [id, label] string pair", draft)
+            raise _malformed("draft account entry is not an [id, label] string pair")
         accounts.append(entry[:2])
     return accounts
 
@@ -1940,7 +1940,7 @@ def _group_card_from_dict(row: dict[str, Any]) -> GroupCard:
     row = _wire_row(row, what)
     summary = row.get("summary")
     if summary is not None and not isinstance(summary, dict):
-        raise _malformed(f"{what} field 'summary' has the wrong type", row)
+        raise _malformed(f"{what} field 'summary' has the wrong type")
     return GroupCard(
         kind=row.get("kind", "card"),
         app_key=_wire_get(row, "app_key", what, str),
@@ -2164,9 +2164,6 @@ class ArtifactListResponse:
     skipped: int = 0
 
 
-ArtifactListPage = ArtifactListResponse
-
-
 # The note-comment routes answer untyped JSON the server has not published in the vendored
 # snapshot yet, so these carry no contract marker; add one once the snapshot refresh lands.
 # They follow the prototype contract (GET/POST /api/v1/artifacts/{id}/comments, and
@@ -2215,7 +2212,7 @@ def _note_comment_from_dict(row: dict[str, Any]) -> NoteComment:
     resolver = row.get("resolved_by")
     author = row.get("author")
     if author is not None and not isinstance(author, dict):
-        raise _malformed(f"{what} field 'author' has the wrong type", row)
+        raise _malformed(f"{what} field 'author' has the wrong type")
     return NoteComment(
         id=str(_wire_get(row, "id", what, str, int)),
         body=_wire_opt(row, "body", what, "", str),
@@ -3446,7 +3443,7 @@ class ApiClient:
         """
         rows = self._request("GET", "/api/v1/chat/history").json()
         if not isinstance(rows, list):
-            raise _malformed("chat history is not a list", rows)
+            raise _malformed("chat history is not a list")
         history = ChatHistory()
         for r in rows:
             try:
@@ -5091,7 +5088,7 @@ class ApiClient:
         ).json()
         resp = _wire_row(resp, "upload artifact response")
         if not resp.get("id"):
-            raise _malformed("upload artifact response has no 'id'", resp)
+            raise _malformed("upload artifact response has no 'id'")
         return resp
 
     def send_draft(self, draft_id: str) -> None:
@@ -5270,7 +5267,7 @@ def _trajectory_list_entry(row: dict[str, Any]) -> TrajectoryListEntry:
     row = _wire_row(row, what)
     meta = row.get("meta")
     if meta is not None and not isinstance(meta, dict):
-        raise _malformed(f"{what} field 'meta' has the wrong type", row)
+        raise _malformed(f"{what} field 'meta' has the wrong type")
     return TrajectoryListEntry(
         id=_wire_get(row, "id", what, str),
         channel=_wire_get(row, "channel", what, str),
@@ -5295,13 +5292,13 @@ def _trajectory_detail_from_dict(body: dict[str, Any]) -> TrajectoryDetail:
     traj_row = _wire_row(body.get("trajectory"), "trajectory")
     events = body.get("events") or []
     if not isinstance(events, list):
-        raise _malformed("trajectory events is not a list", body)
+        raise _malformed("trajectory events is not a list")
     parsed: list[TrajectoryEvent] = []
     for raw in events:
         ev = _wire_row(raw, "trajectory event")
         payload = ev.get("payload") or {}
         if not isinstance(payload, dict):
-            raise _malformed("trajectory event payload is not an object", ev)
+            raise _malformed("trajectory event payload is not an object")
         parsed.append(
             TrajectoryEvent(
                 id=_wire_get(ev, "id", "trajectory event", str),
@@ -5313,7 +5310,7 @@ def _trajectory_detail_from_dict(body: dict[str, Any]) -> TrajectoryDetail:
         )
     meta = traj_row.get("meta") or {}
     if not isinstance(meta, dict):
-        raise _malformed("trajectory meta is not an object", traj_row)
+        raise _malformed("trajectory meta is not an object")
     return TrajectoryDetail(
         trajectory=TrajectoryRef(
             id=_wire_get(traj_row, "id", "trajectory", str),
@@ -5546,9 +5543,9 @@ def _page_params(limit: int, before: str | None) -> dict[str, Any]:
     return params
 
 
-def _malformed(what: str, raw: object = None, *, status: int = 200) -> ApiError:
+def _malformed(what: str, *, status: int = 200) -> ApiError:
     """A malformed successful response: status 200 (or the response's status) and ``what``
-    naming the shape or field that failed. ``raw`` is never put in the error: a response body
+    naming the shape or field that failed. A response body is never put in the error: it
     can carry a credential (the device poll's token), and an ``ApiError`` is printed and logged."""
     return ApiError(status=status, body="", detail=f"malformed response: {what}")
 
@@ -5556,7 +5553,7 @@ def _malformed(what: str, raw: object = None, *, status: int = 200) -> ApiError:
 def _wire_row(raw: object, what: str) -> dict[str, Any]:
     """``raw`` as a JSON object, or a malformed-response :class:`ApiError` naming ``what``."""
     if not isinstance(raw, dict):
-        raise _malformed(f"{what} is not an object", raw)
+        raise _malformed(f"{what} is not an object")
     return raw
 
 
@@ -5604,12 +5601,12 @@ def _wire_get(
     :class:`ApiError` naming the field, so a command handler never sees a ``KeyError`` or a
     value of the wrong type."""
     if key not in row:
-        raise _malformed(f"{what} has no {key!r}", row)
+        raise _malformed(f"{what} has no {key!r}")
     value = row[key]
     if value is None and nullable:
         return None
     if types and (not isinstance(value, types) or (isinstance(value, bool) and bool not in types)):
-        raise _malformed(f"{what} field {key!r} has the wrong type", row)
+        raise _malformed(f"{what} field {key!r} has the wrong type")
     return value
 
 
@@ -5622,7 +5619,7 @@ def _wire_field(raw: object, key: str, what: str, *types: type) -> Any:
 def _wire_list(raw: object, what: str) -> list[Any]:
     """``raw`` as a JSON array, or a malformed-response :class:`ApiError` naming ``what``."""
     if not isinstance(raw, list):
-        raise _malformed(f"{what} is not a list", raw)
+        raise _malformed(f"{what} is not a list")
     return raw
 
 
@@ -5787,7 +5784,7 @@ def _research_page[T](
     rows = _wire_list(rows, "research page items")
     for i, r in enumerate(rows):
         if not isinstance(r, dict):
-            raise _malformed(f"research page item {i} is not an object", r)
+            raise _malformed(f"research page item {i} is not an object")
     cursor = body.get("next_before")
     return ResearchPage(
         items=[parse(r) for r in rows],
