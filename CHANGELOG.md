@@ -8,6 +8,7 @@ All notable changes to `pepper` (distribution `vycari-pepper`). Newest first. Th
 
 - `pepper blog list --room ROOM` lists a room's blog posts and the notes not yet published, `pepper blog withdraw --room ROOM POST [--yes]` takes a post down (it asks first), and `pepper blog publish --published-at ISO` backdates an imported post (sent as typed; the server refuses a future time or a republish).
 - `pepper blog stage --room ROOM NOTE [--slug NAME] [--summary TEXT] [--at TIME] [--yes]` shows what publishing a room note to the room's blog would do and its saved stage, or saves a slug, summary or scheduled time (`--at` goes to the server as typed); `pepper blog unschedule` and `pepper blog unstage` undo it. `pepper blog publish --room ROOM NOTE [--slug NAME] [--summary TEXT] [--yes]` shows the check, asks, and publishes exactly what it showed, using the saved stage unless a flag overrides it. Needs a person's own token and a server with the blog routes.
+- `pepper members invite` no longer retries an agent add with a profile; it sends the handle once and answers an `agent_pick` reply with an actionable error, dropping the compatibility path for servers that still returned a picker (Vycari/pepper#6886; fixes Vycari/pepper-cli#361).
 
 ## 0.10.0 — 2026-11-18
 
