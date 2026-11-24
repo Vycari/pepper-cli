@@ -377,29 +377,52 @@ def _chip_line(root: GroupMessage) -> Text | None:
     return line
 
 
-def _card_face(card: cards.Card) -> tuple[Text, RenderableType]:
+class _CardTop:
+    """A card's top rule and face. When the title took the message's first line but is too
+    wide for the rule, the face draws the whole message instead, so no text is lost."""
+
+    def __init__(self, title: Text, body: RenderableType, full: RenderableType | None) -> None:
+        self.title, self.body, self.full = title, body, full
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        fits = self.title.cell_len <= max(options.max_width, 4) - 6
+        yield _Edge("╭", "╮", self.title)
+        yield _Frame(self.body if fits or self.full is None else self.full)
+
+
+def _card_face(card: cards.Card, *, you_id: str | None) -> _CardTop:
     """A card's title (for the top rule) and what the frame holds above the thread."""
     root = card.root
     if root.is_deleted:
-        return Text("Message deleted", style="dim italic"), Text(INDENT + DELETED, style="dim")
+        return _CardTop(
+            Text("Message deleted", style="dim italic"), Text(INDENT + DELETED, style="dim"), None
+        )
     comment = cards.is_note_comment(root)
     face = cards.note_comment_face(root) if comment else cards.face(root)
     title = Text(sanitize_line(f"“{face.title}”" if comment else face.title), style="bold")
     if root.is_edited and not face.body.strip():
         title.append(" (edited)", style="dim")  # no body line to carry it
-    parts: list[RenderableType] = [
-        message_renderable(
-            replace(root, raw_body=face.body),
-            show_name=False,
-            show_body=bool(face.body.strip()),
-            show_reactions=False,
-        )
-    ]
+    extras: list[RenderableType] = []
     if line := _chip_line(root):
-        parts.append(line)
+        extras.append(line)
     if root.reactions and (line := _reaction_line(root.reactions)):
-        parts.append(line)
-    return title, Group(*parts)
+        extras.append(line)
+
+    def body(text: str) -> RenderableType:
+        return Group(
+            message_renderable(
+                replace(root, raw_body=text),
+                you_id=you_id,
+                show_name=False,
+                show_body=bool(text.strip()),
+                show_reactions=False,
+            ),
+            *extras,
+        )
+
+    whole = root.raw_body.strip()
+    full = body(whole) if not comment and face.body != whole else None
+    return _CardTop(title, body(face.body), full)
 
 
 def _card_items(
@@ -414,12 +437,12 @@ def _card_items(
     session's replies still sending into it, and the foot."""
     root = card.root
     key = f"msg:{root.id}"
-    title, body = _card_face(card)
+    top = _card_face(card, you_id=you_id)
     mentions_you = bool(you_id) and you_id in root.mentions
     head_parts: list[RenderableType] = []
     if not root.is_deleted:
         head_parts.append(_name_line(root, mentions_you=mentions_you))
-    head_parts.extend([_Edge("╭", "╮", title), _Frame(body)])
+    head_parts.append(top)
     head: RenderableType = Group(*head_parts)
     items: list[tuple[str | None, RenderableType]] = [
         (key, Styled(head, SELECTED) if key == selected else head)

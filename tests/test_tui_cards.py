@@ -214,3 +214,28 @@ def test_a_pending_reply_is_drawn_in_its_card() -> None:
     items = rows.thread_items([root, other], you_id=None, pending=[pending], stream=stream)
     keys = [k for k, _ in items]
     assert keys.index("pending:k") < keys.index("msg:z")
+
+
+def test_a_title_too_wide_for_the_rule_leaves_the_whole_line_in_the_card() -> None:
+    line = "We should decide on the dates for the cabin trip before the end of the month"
+    root = _m("a", 0, f"{line}\nthoughts?")
+    items = rows.thread_items(
+        [root], you_id=None, stream=cards.build_stream([root], takes_cards=True)
+    )
+    assert "end of the month" not in _text(items, width=120).split("╮")[1]
+    narrow = _text(items, width=40)
+    # The rule cuts the title, so the face carries the line in full (wrapped).
+    assert "cabin trip" in narrow and "month" in narrow and "thoughts?" in narrow
+
+
+def test_a_card_face_that_mentions_you_is_highlighted() -> None:
+    root = _m("a", 0, "Plans\nask @Me about it", mentions=[ts.ME_PERSON], mention_names=["Me"])
+    items = rows.thread_items(
+        [root], you_id=ts.ME_PERSON, stream=cards.build_stream([root], takes_cards=True)
+    )
+    console = Console(width=60, file=io.StringIO(), record=True, force_terminal=True)
+    console.print(Group(*(r for _, r in items)))
+    body_line = next(
+        line for line in console.export_text(styles=True).splitlines() if "ask" in line
+    )
+    assert "\x1b[1;33m" in body_line  # the viewer's accent

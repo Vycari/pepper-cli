@@ -1087,13 +1087,19 @@ def safe_http_url(url: str | None, *, base: str) -> str | None:
 
 def message_urls(message: GroupMessage, *, base: str) -> list[str]:
     """Every openable URL of a message: links (previews, then bare links in the body), then
-    attachments, then card urls, in that order, each at most once."""
+    attachments, then card urls, then the linked items a conversation card lists, in that
+    order, each at most once."""
     candidates: list[object] = [p.get("url") for p in message.link_previews]
     candidates.extend(
         url.rstrip(_URL_TRAILING) for url in _URL_IN_TEXT.findall(message.raw_body or "")
     )
     candidates.extend(a.get("url") for a in message.attachments)
     candidates.extend(c.url for c in message.cards)
+    candidates.extend(
+        link.get("href")
+        for link in message.links
+        if isinstance(link, dict) and not (link.get("removed") or link.get("is_removed"))
+    )
     found: list[str] = []
     for raw in candidates:
         url = safe_http_url(raw if isinstance(raw, str) else None, base=base)

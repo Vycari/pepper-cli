@@ -832,7 +832,7 @@ class PepperApp(App[None]):
         if kind.startswith("message.") and self.current.topic_id is not None:
             topic_id = event.get("topic_id") if isinstance(event, dict) else None
             message_id = event.get("message_id") if isinstance(event, dict) else None
-            held = isinstance(message_id, str) and message_id in self.store.rows
+            held = isinstance(message_id, str) and self._held_row(message_id) is not None
             if kind != "message.created" and topic_id == self.current.topic_id and held:
                 # A row held here, maybe from an older page no poll re-reads: read it again
                 # by itself. Paused like the topic poll while blurred; focus reads it.
@@ -903,7 +903,7 @@ class PepperApp(App[None]):
         conv = self.current
         while self._stale_rows:
             message_id = self._stale_rows.pop(0)
-            if message_id in self.store.rows and conv.room_id and conv.topic_id:
+            if self._held_row(message_id) is not None and conv.room_id and conv.topic_id:
                 break
         else:
             return
@@ -918,9 +918,10 @@ class PepperApp(App[None]):
     def _refreshed(self, message_id: str, page: GroupMessagePage) -> None:
         fresh = [m for m in page.messages if m.id == message_id]
         if fresh:
-            self.store.add(fresh)
+            self._patch_row(message_id, lambda rows: rows.add(fresh))
         elif page.permalink_target_missing:
-            self.store.apply_delete(message_id, {})  # gone for good: show its tombstone
+            # gone for good: show its tombstone
+            self._patch_row(message_id, lambda rows: rows.apply_delete(message_id, {}))
         self._render_topic(new_rows=0, reset=False)
         self._run("refresh")
 
@@ -1053,6 +1054,22 @@ class PepperApp(App[None]):
             laid = cards.build_stream(messages, takes_cards=takes, holds=holds, fetched=fetched)
         return laid
 
+    def _held_row(self, message_id: str) -> GroupMessage | None:
+        """A message drawn in the open topic: a loaded row, or a root read by id."""
+        return self.store.rows.get(message_id) or self.fetched_roots.get(message_id)
+
+    def _patch_row(self, message_id: str, change: Callable[[state.MessageStore], object]) -> None:
+        """Apply ``change`` to the row ``message_id`` wherever it is held. A root read by id is
+        changed in place, outside the loaded rows, so it never moves the poll cursor or the
+        start of older pages."""
+        if message_id in self.store.rows or message_id not in self.fetched_roots:
+            change(self.store)
+            return
+        side = state.MessageStore(rows={message_id: self.fetched_roots[message_id]})
+        change(side)
+        if (row := side.rows.get(message_id)) is not None:
+            self.fetched_roots[message_id] = row
+
     def _with_fetched_roots(self) -> list[GroupMessage]:
         """The open topic's rows with the roots read by id before them, in time order."""
         rows_held = self.store.ordered()
@@ -1069,6 +1086,11 @@ class PepperApp(App[None]):
         conv = self.current
         loop = self._loops["roots"]
         if conv.is_pepper or conv.room_id is None or conv.topic_id is None or loop.busy:
+            return
+        if not self._takes_cards():
+            # A bridged thread draws its replies as plain rows: a root read here would never
+            # be shown. (A note comment there whose root is older than the page is a plain row
+            # too, like everything else in that topic.)
             return
         missing = cards.missing_parents(
             self.store.ordered(), held=self.fetched_roots, attempted=self._root_attempts
@@ -1120,6 +1142,7 @@ class PepperApp(App[None]):
 
     def _topic_items(self) -> list[tuple[str | None, Any]]:
         laid = self._stream()
+        self._keep_selected_unfolded(laid)
         self._folded_stamps = [
             reply.message.created_at
             for entry in laid.entries
@@ -1135,6 +1158,22 @@ class PepperApp(App[None]):
             stream=laid,
             expanded=self.expanded_cards,
         )
+
+    def _keep_selected_unfolded(self, laid: cards.Stream) -> None:
+        """A newer reply never pushes the selected reply behind its card's fold: the fold
+        opens instead, so the selection stays where the reader left it."""
+        selected = (self.selected or "").removeprefix("msg:")
+        card_id = cards.card_of(laid, selected) if self.selected else None
+        if card_id is None or card_id in self.expanded_cards:
+            return
+        card = next(
+            (e for e in laid.entries if isinstance(e, cards.Card) and e.id == card_id), None
+        )
+        if card is None:
+            return
+        hidden = card.shown(expanded=False)[0]
+        if any(reply.message.id == selected for reply in card.replies[:hidden]):
+            self.expanded_cards.add(card_id)
 
     def _below_folded(self, through: str | None, cursor: datetime | None) -> str | None:
         """``through``, or the newest held row older than the first reply a fold hides that is
@@ -1929,7 +1968,7 @@ class PepperApp(App[None]):
                 self._render_topic(new_rows=0, reset=False)
                 self._run("send")
             return
-        message = self.store.rows.get(key.removeprefix("msg:"))
+        message = self._held_row(key.removeprefix("msg:"))
         if message is None or message.is_deleted or message.is_broken:
             return
         draft = self._draft()
@@ -1988,9 +2027,15 @@ class PepperApp(App[None]):
             conv = item.conversation
             on_screen = conv == self.current and not self._blurred and not self._scrolled_up()
             if conv.topic_id is not None and on_screen:
-                self.marks.merge(conv.topic_id, state.parse_ts(message.created_at))
-                self._owe(conv, message.created_at)
-                self._run("publish")
+                # Not past a reply a fold still hides, as for any other read mark.
+                through = self._below_folded(
+                    message.created_at, self.marks.marks.get(conv.topic_id)
+                )
+                stamp = state.parse_ts(through) if through is not None else None
+                if through is not None and stamp is not None:
+                    self.marks.merge(conv.topic_id, stamp)
+                    self._owe(conv, through)
+                    self._run("publish")
             if conv == self.current:
                 self.pending.confirm(conv, self.store.rows)
                 self._last_input = time.monotonic()
@@ -2062,7 +2107,7 @@ class PepperApp(App[None]):
         elif not key.startswith("msg:"):
             self.notify("That message hasn't been sent yet.", timeout=2)
         else:
-            return self.store.rows.get(key.removeprefix("msg:"))
+            return self._held_row(key.removeprefix("msg:"))
         return None
 
     def _own_message(self, verb: str) -> GroupMessage | None:
@@ -2091,7 +2136,7 @@ class PepperApp(App[None]):
 
     def _react(self, message_id: str, emoji: str | None) -> None:
         room = self.current.room_id
-        message = self.store.rows.get(message_id)
+        message = self._held_row(message_id)
         if emoji is None or room is None or message is None:
             return
         if self._loops["react"].busy:
@@ -2106,7 +2151,7 @@ class PepperApp(App[None]):
         )
 
     def _reacted(self, message_id: str, chips: list[dict[str, Any]]) -> None:
-        self.store.set_reactions(message_id, chips)
+        self._patch_row(message_id, lambda rows: rows.set_reactions(message_id, chips))
         self._render_topic(new_rows=0, reset=False)
 
     # edit and delete
@@ -2140,7 +2185,7 @@ class PepperApp(App[None]):
         if self.editing is None:
             return
         conv, message_id = self.editing
-        original = self.store.rows.get(message_id)
+        original = self._held_row(message_id)
         if not text.strip() or (original is not None and text.strip() == original.raw_body.strip()):
             self._end_edit()  # nothing changed (an empty edit is not a delete)
             return
@@ -2192,9 +2237,9 @@ class PepperApp(App[None]):
         older page no poll re-reads), leave edit mode, and re-read the newest page."""
         reply = answer if isinstance(answer, dict) else {}
         if deleted:
-            self.store.apply_delete(message_id, reply)
+            self._patch_row(message_id, lambda rows: rows.apply_delete(message_id, reply))
         else:
-            self.store.apply_edit(message_id, reply)
+            self._patch_row(message_id, lambda rows: rows.apply_edit(message_id, reply))
             if self.editing is not None and self.editing[1] == message_id:
                 self._end_edit()
         if not self.current.is_pepper:

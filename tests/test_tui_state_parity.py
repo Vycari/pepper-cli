@@ -349,3 +349,14 @@ def test_a_delete_reply_leaves_a_tombstone_a_stale_copy_cannot_revive() -> None:
     assert store.rows["m1"].is_deleted
     store.apply_delete("missing", {})
     assert "missing" not in store.rows
+
+
+def test_a_conversation_cards_linked_items_can_be_opened() -> None:
+    message = _over(
+        links=[
+            {"type": "Note", "label": "Trip plan", "href": "/apps/notes/n1"},
+            {"type": "Source", "label": "gone", "href": "https://gone.example", "removed": True},
+            {"type": "Source", "label": "bad", "href": "javascript:alert(1)"},
+        ]
+    )
+    assert state.message_urls(message, base=BASE) == [BASE + "/apps/notes/n1"]

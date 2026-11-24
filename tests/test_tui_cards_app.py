@@ -197,7 +197,6 @@ async def test_a_root_read_by_id_stays_drawn_once_an_older_page_brings_it() -> N
     ]
     server = _server(rows)
     server.page_size = 3
-    server.rooms[0]["topics"][0]["dedicated_conversation"] = True
     app = tui_app.PepperApp(server.client())
     async with app.run_test(size=(120, 40)) as pilot:
         await _open(pilot, app, "the answer")
@@ -261,3 +260,114 @@ async def test_a_root_that_keeps_failing_does_not_hold_up_the_next() -> None:
         await until(pilot, lambda: asked.count("m0") == tui_app.ROOT_RETRIES + 1)
         await pilot.pause(0.3)
         assert asked.count("m0") == tui_app.ROOT_RETRIES + 1
+
+
+def _older_root_rows() -> list[dict]:
+    return [
+        ts.message("m0", _at(0), "# Old plan\nfrom last week", title="Old plan", is_you=True),
+        ts.message("x1", _at(1), "filler one"),
+        ts.message("x2", _at(2), "filler two"),
+        ts.message("r1", _at(3), "still on?", parent_message_id="m0", display_name="Bo"),
+    ]
+
+
+async def test_a_root_read_by_id_takes_replies_and_actions() -> None:
+    server = _server(_older_root_rows())
+    server.page_size = 3
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _open(pilot, app, "still on?")
+        await until(pilot, lambda: "m0" in app.fetched_roots)
+        await _select(pilot, app, "msg:m0")
+        assert app._selected_message() is app.fetched_roots["m0"]
+        await pilot.press("r")
+        await until(pilot, lambda: "Replying in" in plain(app, "#quote"))
+        app.composer.insert("yes")
+        await pilot.press("enter")
+        await until(pilot, lambda: server.posts)
+        assert server.posts[0]["parent_message_id"] == "m0"
+        # An edit lands on the root where it is held, not in the loaded rows.
+        app._mutated("m0", {"raw_body": "# Old plan\nmoved to Friday"}, deleted=False)
+        assert "m0" not in app.store.rows
+        await until(pilot, lambda: "moved to Friday" in body_text(app))
+
+
+async def test_a_live_edit_of_a_root_read_by_id_is_read_again() -> None:
+    import threading
+
+    gate, hold = threading.Event(), threading.Event()
+    server = _server(_older_root_rows())
+    server.page_size = 3
+    server.streams = [
+        ts.StreamScript(
+            frames=[
+                ts.CURSOR_HEAD,
+                ts.feed_frame("message.edited", {"topic_id": ts.TOPIC_A1, "message_id": "m0"}, 2),
+            ],
+            gates={1: gate},
+            hold=hold,
+        )
+    ]
+    app = tui_app.PepperApp(server.client())
+    try:
+        async with app.run_test(size=(120, 40)) as pilot:
+            await until(pilot, lambda: len(app.rooms) == 2 and app._stream_healthy)
+            await _open(pilot, app, "still on?")
+            await until(pilot, lambda: "m0" in app.fetched_roots)
+            server.messages[ts.TOPIC_A1][0].update(
+                raw_body="# Old plan\nmoved to Friday", is_edited=True, edited_at=_at(9)
+            )
+            gate.set()
+            await until(pilot, lambda: "moved to Friday" in body_text(app))
+            assert "m0" not in app.store.rows
+    finally:
+        hold.set()
+
+
+async def test_a_bridged_topic_does_not_read_roots_older_than_the_page() -> None:
+    server = _server(_older_root_rows())
+    server.page_size = 3
+    server.rooms[0]["topics"][0]["dedicated_conversation"] = True
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _open(pilot, app, "still on?")
+        await pilot.pause(0.3)
+        assert not any(query.get("at") == "m0" for _, _, query in server.requests)
+
+
+async def test_a_new_reply_does_not_fold_away_the_selected_one() -> None:
+    replies = [
+        ts.message(f"r{i}", _at(i + 1), f"reply number {i}", parent_message_id="m1")
+        for i in range(3)
+    ]
+    server = _server([ts.message("m1", _at(0), "Plans"), *replies])
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _open(pilot, app, "reply number 2")
+        await _select(pilot, app, "msg:r0")
+        server.messages[ts.TOPIC_A1].append(
+            ts.message("r3", _at(4), "reply number 3", parent_message_id="m1")
+        )
+        app._run("topic")
+        await until(pilot, lambda: "reply number 3" in body_text(app))
+        assert "reply number 0" in body_text(app) and app.selected == "msg:r0"
+
+
+async def test_an_own_send_does_not_mark_replies_behind_the_fold_read() -> None:
+    replies = [
+        ts.message(f"r{i}", _at(i + 1), f"reply number {i}", parent_message_id="m1")
+        for i in range(5)
+    ]
+    server = _server([ts.message("m1", _at(0), "Plans"), *replies])
+    server.marks[ts.TOPIC_A1] = _at(0)
+    app = tui_app.PepperApp(server.client())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _open(pilot, app, "reply number 4")
+        app.composer.focus()
+        await pilot.pause()
+        app.composer.insert("hello all")
+        await pilot.press("enter")
+        await until(pilot, lambda: server.posts)
+        await pilot.pause(0.3)
+        marked = [at for topic, at in server.puts if topic == ts.TOPIC_A1]
+        assert all(at < _at(1) for at in marked), marked
