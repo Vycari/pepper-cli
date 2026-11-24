@@ -596,7 +596,7 @@ class MessageStore:
             held = self.rows.get(message.id)
             if held is None:
                 new_ids.append(message.id)
-            if held is None or not _is_stale_copy(message, held):
+            if held is None or not is_stale_copy(message, held):
                 self.rows[message.id] = message
             stamp = parse_ts(message.created_at)
             if stamp is not None and (self.cursor is None or stamp > self.cursor):
@@ -687,7 +687,7 @@ class MessageStore:
         return self.ticks % RECONCILE_EVERY == 0
 
 
-def _is_stale_copy(incoming: GroupMessage, held: GroupMessage) -> bool:
+def is_stale_copy(incoming: GroupMessage, held: GroupMessage) -> bool:
     """Whether ``incoming`` is an older version of ``held`` than the one already shown.
 
     Edits only move forward and a delete is final, so a read that started before the change

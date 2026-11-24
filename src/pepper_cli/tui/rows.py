@@ -432,9 +432,11 @@ def _card_items(
     selected: str | None,
     expanded: bool,
     pending: list[PendingSend],
+    full_view: bool = False,
 ) -> list[tuple[str | None, RenderableType]]:
     """A card's rows: the head (author line, top rule, face), the fold, the replies, this
-    session's replies still sending into it, and the foot."""
+    session's replies still sending into it, and the foot. In the full view (``full_view``)
+    every reply is shown and there is no fold."""
     root = card.root
     key = f"msg:{root.id}"
     top = _card_face(card, you_id=you_id)
@@ -447,8 +449,8 @@ def _card_items(
     items: list[tuple[str | None, RenderableType]] = [
         (key, Styled(head, SELECTED) if key == selected else head)
     ]
-    hidden, shown = card.shown(expanded=expanded)
-    if len(card.replies) > cards.FOLD_VISIBLE:
+    hidden, shown = card.shown(expanded=expanded or full_view)
+    if len(card.replies) > cards.FOLD_VISIBLE and not full_view:
         fold_key = f"fold:{root.id}"
         label = (
             f"⋯ {hidden} earlier {'reply' if hidden == 1 else 'replies'} (Enter to show)"
@@ -470,11 +472,12 @@ def _card_items(
         quoted = p.parent_id != root.id
         row = _Frame(pending_renderable(p if quoted else replace(p, quote_text="")))
         items.append((pkey, Styled(row, SELECTED) if pkey == selected else row))
-    foot_label = Text("r reply", style="dim italic")
+    hints = "r reply · Esc back" if full_view else "r reply · Enter open"
+    foot_label = Text(hints, style="dim italic")
     if card.replies:
         count = len(card.replies)
         foot_label = Text(
-            f"{count} {'reply' if count == 1 else 'replies'} · r reply", style="dim italic"
+            f"{count} {'reply' if count == 1 else 'replies'} · {hints}", style="dim italic"
         )
     # The foot belongs to the card's last row, so that row counts as seen only once the
     # whole card is on screen, and the selection never stops on a rule.
@@ -504,6 +507,7 @@ def thread_items(
     new_before: str | None = None,
     stream: cards.Stream | None = None,
     expanded: Collection[str] = (),
+    full_view: bool = False,
 ) -> list[tuple[str | None, RenderableType]]:
     """A topic's rows with their selection keys (``msg:<id>``, ``pending:<key>``,
     ``fold:<card id>``; ``None`` for a divider), in display order: server
@@ -512,7 +516,8 @@ def thread_items(
     With ``stream`` (:func:`cards.build_stream` over the same ``messages``), top-level
     messages are drawn as cards with their replies inside, and a pending reply into a card is
     drawn in it; ``expanded`` holds the cards whose fold is open. Without it the topic is the
-    flat list it always was.
+    flat list it always was. ``full_view`` draws each card with every reply and no fold, for
+    one conversation opened on its own.
 
     A message with an empty ``day_key`` or ``day_label`` (the server's broken-message
     placeholder) neither opens a divider nor resets the day, as on the web. A message is
@@ -550,6 +555,7 @@ def thread_items(
                     selected=selected,
                     expanded=entry.id in expanded,
                     pending=into.get(entry.id, []),
+                    full_view=full_view,
                 )
             )
             continue

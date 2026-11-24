@@ -4119,6 +4119,7 @@ class ApiClient:
         before: str | None = None,
         at: str | None = None,
         limit: int | None = None,
+        conversation: str | None = None,
     ) -> GroupMessagePage:
         """``GET /api/v1/groups/{gid}/topics/{tid}/messages``.
 
@@ -4126,9 +4127,20 @@ class ApiClient:
         ``next_before``) and ``at`` (the window around one message, for a
         permalink) are **mutually exclusive** — sending two is a 422, not a
         precedence rule.
+
+        ``conversation`` (a conversation's root message id) reads that
+        conversation instead: the root, however old, then its latest replies,
+        with ``before`` paging back through its replies. It is exclusive with
+        ``since`` and ``at``.
         """
         params: dict[str, Any] = {}
-        for name, value in (("since", since), ("before", before), ("at", at), ("limit", limit)):
+        for name, value in (
+            ("since", since),
+            ("before", before),
+            ("at", at),
+            ("limit", limit),
+            ("conversation", conversation),
+        ):
             if value is not None:
                 params[name] = value
         body = self._request(

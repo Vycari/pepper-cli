@@ -157,6 +157,8 @@ _ON_DEMAND = (
     "notewrite",
     # A conversation card's root older than the loaded page, read by id so its replies nest.
     "roots",
+    # The open conversation's full view: its root and replies, newest page then older ones.
+    "card",
 )
 #: Transport failures that mean a turn's request never reached the server, so it is safe to
 #: give the text back for the user to send again.
@@ -371,6 +373,13 @@ class PepperApp(App[None]):
         #: ``created_at`` of the replies the last render folded away (a card's earlier replies,
         #: behind its fold line). They were never on screen, so no read mark passes them.
         self._folded_stamps: list[str] = []
+        #: The conversation open in full view (its root's id), over the topic; ``None`` in the
+        #: topic itself. Its rows as the conversation read gave them, and the cursor for the
+        #: page of its replies older than those held (``None`` once there are none).
+        self.open_card: str | None = None
+        self.card_rows: dict[str, GroupMessage] = {}
+        self._card_failures = 0
+        self.card_older: str | None = None
         #: Pepper turns, oldest first. At most one is streaming or being checked at a time.
         self.turns: list[state.DmTurn] = []
         #: Every history id a reply frame has named this session. Each new turn's snapshot
@@ -1055,20 +1064,182 @@ class PepperApp(App[None]):
         return laid
 
     def _held_row(self, message_id: str) -> GroupMessage | None:
-        """A message drawn in the open topic: a loaded row, or a root read by id."""
-        return self.store.rows.get(message_id) or self.fetched_roots.get(message_id)
+        """A message drawn in the open topic: a loaded row, a root read by id, or a row the
+        open conversation's own read gave."""
+        return (
+            self.store.rows.get(message_id)
+            or self.fetched_roots.get(message_id)
+            or self.card_rows.get(message_id)
+        )
 
     def _patch_row(self, message_id: str, change: Callable[[state.MessageStore], object]) -> None:
         """Apply ``change`` to the row ``message_id`` wherever it is held. A root read by id is
         changed in place, outside the loaded rows, so it never moves the poll cursor or the
-        start of older pages."""
-        if message_id in self.store.rows or message_id not in self.fetched_roots:
+        start of older pages. The same holds for a row the open conversation's read gave."""
+        others = [held for held in (self.fetched_roots, self.card_rows) if message_id in held]
+        if message_id in self.store.rows or not others:
             change(self.store)
+        for held in others:
+            side = state.MessageStore(rows={message_id: held[message_id]})
+            change(side)
+            if (row := side.rows.get(message_id)) is not None:
+                held[message_id] = row
+
+    def _card_messages(self) -> list[GroupMessage]:
+        """The open conversation's rows: what its own read gave, and every row of the topic
+        whose chain of parents reaches its root (so a reply the poll brings shows at once)."""
+        root = self.open_card
+        # One copy per message, the newest version: a later edit or a delete wins whichever
+        # read brought it (a copy as new as another is taken from the loaded rows).
+        held: dict[str, GroupMessage] = {}
+        for source in (self.fetched_roots, self.card_rows, self.store.rows):
+            for mid, m in source.items():
+                if mid not in held or not state.is_stale_copy(m, held[mid]):
+                    held[mid] = m
+        out: list[GroupMessage] = []
+        for m in held.values():
+            if m.id in self.card_rows:
+                out.append(m)  # the conversation's own read: it is in it, parent loaded or not
+                continue
+            node, seen = m, set()
+            while node.parent_message_id and node.id not in seen and node.id != root:
+                seen.add(node.id)
+                parent = held.get(node.parent_message_id)
+                if parent is None:
+                    break
+                node = parent
+            if node.id == root:
+                out.append(m)
+        return sorted(
+            out,
+            key=lambda m: (state.parse_ts(m.created_at) or datetime.min.replace(tzinfo=UTC), m.id),
+        )
+
+    def _card_items(self) -> list[tuple[str | None, Any]]:
+        """The full view: the open conversation as one card with every reply shown."""
+        messages = self._card_messages()
+        if not any(m.id == self.open_card for m in messages):
+            return [(None, Text("Loading…", style="dim"))]
+        # A reply whose parent is on an older page not read yet still belongs here: it is
+        # drawn in the conversation, with its quote line saying what it answers.
+        ids = {m.id for m in messages}
+        orphans = {
+            m.id: m
+            for m in messages
+            if m.id != self.open_card and m.parent_message_id and m.parent_message_id not in ids
+        }
+        laid = cards.build_stream(
+            [
+                replace(m, parent_message_id=self.open_card) if m.id in orphans else m
+                for m in messages
+            ],
+            takes_cards=True,
+        )
+        laid.entries = [
+            replace(
+                e,
+                replies=[
+                    replace(r, message=orphans[r.message.id], to_card=False)
+                    if r.message.id in orphans
+                    else r
+                    for r in e.replies
+                ],
+            )
+            for e in laid.entries
+            if isinstance(e, cards.Card) and e.id == self.open_card
+        ]
+        older = (
+            [(None, Text("↑ earlier replies load as you scroll up", style="dim italic"))]
+            if self.card_older
+            else []
+        )
+        return older + rows.thread_items(
+            messages,
+            you_id=self.you_person_id,
+            pending=[
+                p
+                for p in self.pending.in_conversation(self.current)
+                if cards.card_of(laid, p.parent_id) is not None
+            ],
+            selected=self.selected,
+            stream=laid,
+            full_view=True,
+        )
+
+    def _open_card_title(self) -> str:
+        root = next((m for m in self._card_messages() if m.id == self.open_card), None)
+        if root is None:
+            return "Conversation"
+        return (
+            cards.note_comment_face(root) if cards.is_note_comment(root) else cards.face(root)
+        ).title
+
+    def _open_card(self, card_id: str) -> None:
+        """Open one conversation in full view, over the topic."""
+        draft = self._draft()
+        if draft.quote_id is not None and cards.card_of(self._stream(), draft.quote_id) != card_id:
+            # A quote left from another conversation would send the reply there, not into the
+            # one on screen: it is dropped.
+            draft.quote_id, draft.quote_name, draft.quote_text = None, "", ""
+        self.open_card, self.card_rows, self.card_older = card_id, {}, None
+        self._card_failures = 0
+        self.selected = f"msg:{card_id}"
+        loop = self._loops["card"]
+        loop.generation += 1
+        self._render_topic(new_rows=0, reset=True)
+        self._paint_quote()
+        self.refresh_chrome()
+        self._read_card(before=None)
+
+    def _close_card(self) -> None:
+        """Back to the topic, with the conversation's card selected and on screen."""
+        card_id = self.open_card
+        self.open_card, self.card_rows, self.card_older = None, {}, None
+        self._loops["card"].generation += 1
+        self.selected = f"msg:{card_id}" if card_id else None
+        self._render_topic(new_rows=0, reset=True)
+        self._reveal_selected()
+        self._paint_quote()
+        self.refresh_chrome()
+
+    def _read_card(self, *, before: str | None) -> None:
+        conv, root = self.current, self.open_card
+        if root is None or conv.is_pepper or self._loops["card"].busy:
             return
-        side = state.MessageStore(rows={message_id: self.fetched_roots[message_id]})
-        change(side)
-        if (row := side.rows.get(message_id)) is not None:
-            self.fetched_roots[message_id] = row
+        self._start(
+            "card",
+            lambda: poller.fetch_conversation(self._api, conv, root, before=before),
+            lambda page: self._got_card(page, older=before is not None),
+            on_error=lambda exc: self._card_failed(root, before, exc),
+        )
+
+    def _card_failed(self, root: str, before: str | None, exc: Exception) -> bool:
+        """A conversation read failed. A lost connection, a 429 or a 5xx is asked again after
+        a backoff, up to :data:`ROOT_RETRIES` times; anything else, or the last retry, says
+        so (Esc goes back, Enter on the card asks again)."""
+        transient = isinstance(exc, httpx.RequestError) or (
+            isinstance(exc, ApiError) and (exc.status >= 500 or exc.status == 429)
+        )
+        self._card_failures += 1
+        if not transient or self._card_failures > ROOT_RETRIES:
+            return self._action_failed("open this conversation", exc)
+        generation = self._loops["card"].generation
+
+        def again() -> None:
+            if self.open_card == root and self._loops["card"].generation == generation:
+                self._read_card(before=before)
+
+        self.set_timer(state.backoff_delay(self._card_failures), again)
+        return True
+
+    def _got_card(self, page: GroupMessagePage, *, older: bool) -> None:
+        self._learn_from_messages(page.messages)
+        for m in page.messages:
+            held = self.card_rows.get(m.id)
+            if held is None or not state.is_stale_copy(m, held):
+                self.card_rows[m.id] = m  # a late page never undoes a newer edit or a delete
+        self.card_older = page.next_before
+        self._render_topic(new_rows=0, reset=not older, prepended=older)
 
     def _with_fetched_roots(self) -> list[GroupMessage]:
         """The open topic's rows with the roots read by id before them, in time order."""
@@ -1141,6 +1312,8 @@ class PepperApp(App[None]):
         self._fetch_roots()
 
     def _topic_items(self) -> list[tuple[str | None, Any]]:
+        if self.open_card is not None:
+            return self._card_items()
         laid = self._stream()
         self._keep_selected_unfolded(laid)
         self._folded_stamps = [
@@ -1366,6 +1539,8 @@ class PepperApp(App[None]):
         """
         if not self.query(ThreadView) or self.thread.going or not self.loaded_topic:
             return
+        if self.open_card is not None:
+            return  # one conversation, out of the topic's order: the topic marks as it always did
         conv = self.current
         if conv.is_pepper or conv.topic_id is None or self._blurred or self.pane is not None:
             return
@@ -1415,6 +1590,8 @@ class PepperApp(App[None]):
             if self.pane is not None
             else state.header_text(self.current, shown)
         )
+        if self.open_card is not None and self.pane is None:
+            header += " › " + sanitize_line(self._open_card_title())
         if any(self._loops[kind].failures for kind in _LOOPS):
             header += "  · offline, retrying"
         base_screen = self.screen_stack[0] if self.screen_stack else self.screen
@@ -1525,6 +1702,7 @@ class PepperApp(App[None]):
         self.expanded_cards, self.card_holds = set(), {}
         self.fetched_roots, self._root_attempts = {}, set()
         self._root_failures = Counter()
+        self.open_card, self.card_rows, self.card_older = None, {}, None
         self._load_draft()
         self.store = state.MessageStore()
         self.loaded_topic = False
@@ -1547,6 +1725,7 @@ class PepperApp(App[None]):
         self._dirty.discard("topic")
         self._loops["older"].generation += 1
         self._loops["roots"].generation += 1
+        self._loops["card"].generation += 1
         # A launcher still being read was asked for where the user was: its answer would
         # open a picker or a pane for a place they have left.
         self._loops["shelf"].generation += 1
@@ -1710,6 +1889,8 @@ class PepperApp(App[None]):
         """
         if not self.query(ThreadView) or self.thread.going:
             return False  # torn down or mid-removal (#139, #177)
+        if self.open_card is not None:
+            return False  # a conversation's full view never moves the topic's read mark
         conv = self.current
         if conv.is_pepper or conv.topic_id is None or self._blurred or self.pane is not None:
             return False  # an open Todos/Notes pane hides the thread: its rows are not on screen
@@ -1812,12 +1993,15 @@ class PepperApp(App[None]):
             box.update(line)
             box.set_class(False, "empty")
             return
-        if draft.quote_id is None:
+        if draft.quote_id is None and self.open_card is None:
             box.update("")
             box.set_class(True, "empty")
             return
         laid = self._stream() if not self.current.is_pepper else None
-        card_id = cards.card_of(laid, draft.quote_id) if laid is not None else None
+        target = draft.quote_id or self.open_card
+        card_id = cards.card_of(laid, target) if laid is not None else None
+        if card_id is None and self.open_card is not None:
+            card_id = self.open_card
         card = laid.card(card_id) if laid is not None and card_id is not None else None
         if card is not None:
             title = (
@@ -1827,11 +2011,16 @@ class PepperApp(App[None]):
             ).title
             line = Text("↳ Replying in ", style="dim")
             line.append(f"“{sanitize_line(title)}”", style="bold")
-            if draft.quote_id != card.id:
+            if draft.quote_id is not None and draft.quote_id != card.id:
                 line.append(" to ", style="dim")
                 line.append(sanitize_line(draft.quote_name) or "message", style="bold")
                 line.append(": " + sanitize_line(draft.quote_text), style="dim")
-            line.append("  (Esc cancels)", style="dim italic")
+            line.append(
+                "  (Esc cancels)"
+                if draft.quote_id is not None
+                else "  (Esc in the thread goes back)",
+                style="dim italic",
+            )
             box.update(line)
             box.set_class(False, "empty")
             return
@@ -1915,9 +2104,16 @@ class PepperApp(App[None]):
         self._render_topic(new_rows=0, reset=False)
         self._reveal_selected()
         if index == 0 and event.step < 0:
-            self._load_older()  # ↑ past the first row asks for the page before it
+            if self.open_card is not None:
+                if self.card_older:
+                    self._read_card(before=self.card_older)
+            else:
+                self._load_older()  # ↑ past the first row asks for the page before it
 
     def on_thread_scroll_unselect(self, _event: ThreadScroll.Unselect) -> None:
+        if self.open_card is not None:
+            self._close_card()
+            return
         if self.selected is not None:
             self.selected = None
             self._render_topic(new_rows=0, reset=False)
@@ -1940,6 +2136,11 @@ class PepperApp(App[None]):
     def on_thread_scroll_activate(self, _event: ThreadScroll.Activate) -> None:
         """``Enter`` on a card's fold opens its earlier replies, or folds them again."""
         key = self.selected or ""
+        if key.startswith("msg:") and self.open_card is None:
+            card_id = cards.card_of(self._stream(), key.removeprefix("msg:"))
+            if card_id is not None:
+                self._open_card(card_id)
+            return
         if not key.startswith("fold:"):
             return
         card_id = key.removeprefix("fold:")
@@ -1990,7 +2191,8 @@ class PepperApp(App[None]):
                 conversation=conv,
                 body=text,
                 mentions=state.mention_ids(text, roster),
-                parent_id=draft.quote_id,
+                # In a conversation's full view a message with no quote answers its root.
+                parent_id=draft.quote_id or self.open_card,
                 quote_text=draft.quote_text,
             )
         )
@@ -2025,7 +2227,13 @@ class PepperApp(App[None]):
         if item is not None:
             item.status, item.server_id, item.created_at = "sent", message.id, message.created_at
             conv = item.conversation
-            on_screen = conv == self.current and not self._blurred and not self._scrolled_up()
+            # Not from the full view either: it shows one conversation, not the topic's rows.
+            on_screen = (
+                conv == self.current
+                and self.open_card is None
+                and not self._blurred
+                and not self._scrolled_up()
+            )
             if conv.topic_id is not None and on_screen:
                 # Not past a reply a fold still hides, as for any other read mark.
                 through = self._below_folded(
@@ -2324,6 +2532,11 @@ class PepperApp(App[None]):
     # load older
 
     def on_thread_view_at_top(self, _event: ThreadView.AtTop) -> None:
+        if self.open_card is not None:
+            # The full view pages its own conversation, never the topic behind it.
+            if self.card_older:
+                self._read_card(before=self.card_older)
+            return
         self._load_older()
 
     def on_thread_view_pin_changed(self, event: ThreadView.PinChanged) -> None:
