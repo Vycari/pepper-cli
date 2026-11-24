@@ -1587,8 +1587,7 @@ def device_poll(
 # ---------------------------------------------------------------------------
 
 
-# MIRROR: src/pepper/api/groups.py::room_topics
-# (route handler; the response is an untyped dict, so no snapshot schema)
+# MIRROR: src/pepper/api/groups/_responses.py::RoomRailTopicRow
 @dataclass(frozen=True)
 class GroupTopicSummary:
     """One topic, as the rooms list and the topic rail both send it.
@@ -1612,8 +1611,7 @@ class GroupTopicSummary:
     subject_artifact_id: str | None = None
 
 
-# MIRROR: src/pepper/api/groups.py::list_groups
-# (route handler; untyped dict response, no snapshot schema)
+# MIRROR: src/pepper/api/groups/_responses.py::RoomListRow
 @dataclass(frozen=True)
 class GroupSummary:
     """One room on ``GET /api/v1/groups``.
@@ -1686,8 +1684,7 @@ def _unread_row_from_dict(raw: dict[str, Any]) -> GroupUnreadRow | None:
     )
 
 
-# MIRROR: src/pepper/api/groups.py::list_groups
-# (route handler; untyped dict response, no snapshot schema)
+# MIRROR: src/pepper/api/groups/_responses.py::RoomsListResponse
 @dataclass(frozen=True)
 class GroupList:
     """``GET /api/v1/groups`` — and the capability signal for the surface.
@@ -1712,8 +1709,7 @@ class GroupList:
     features: tuple[str, ...] = ()
 
 
-# MIRROR: src/pepper/api/groups.py::topic_messages
-# (route handler; untyped dict response, no snapshot schema)
+# MIRROR: src/pepper/api/groups/_responses.py::RoomMessageCard
 @dataclass(frozen=True)
 class GroupCard:
     """One structured app card carried on a message (``cards[]``).
@@ -1735,8 +1731,7 @@ class GroupCard:
     summary_lines: list[str] = field(default_factory=list)
 
 
-# MIRROR: src/pepper/api/groups.py::topic_messages
-# (route handler; untyped dict response, no snapshot schema)
+# MIRROR: src/pepper/api/groups/_responses.py::RoomMessageRow
 @dataclass(frozen=True)
 class GroupMessage:
     """One message in a topic.
@@ -1820,8 +1815,7 @@ class GroupMessage:
     resolved_by_name: str | None = None
 
 
-# MIRROR: src/pepper/api/groups.py::topic_messages
-# (route handler; untyped dict response, no snapshot schema)
+# MIRROR: src/pepper/api/groups/_responses.py::RoomMessagesResponse
 @dataclass(frozen=True)
 class GroupMessagePage:
     """One page of a topic's messages, oldest-first.
@@ -1837,8 +1831,7 @@ class GroupMessagePage:
     permalink_target_missing: bool = False
 
 
-# MIRROR: src/pepper/api/groups.py::room_roster
-# (route handler; untyped dict response, no snapshot schema)
+# MIRROR: src/pepper/api/groups/_responses.py::RoomRosterMember
 @dataclass(frozen=True)
 class GroupRosterMember:
     """One addressable member. Pepper is prepended by the server and flagged
@@ -1854,8 +1847,7 @@ class GroupRosterMember:
     is_agent: bool = False
 
 
-# MIRROR: src/pepper/api/groups.py::app_launcher
-# (route handler; untyped dict response, no snapshot schema)
+# MIRROR: src/pepper/api/groups/_responses.py::RoomLauncherTile
 @dataclass(frozen=True)
 class GroupAppTile:
     """One tile of a room's launcher. ``principal`` is the room, so opening
@@ -1866,6 +1858,26 @@ class GroupAppTile:
     title: str
     principal: str
     icon: str | None = None
+
+
+#: The fields an app card carries. ``RoomMessageCard`` requires only ``kind``: a conversation,
+#: a Following feed item or an HTML card may leave any of these out or null.
+_APP_CARD_FIELDS = ("app_key", "slug", "title", "principal", "url")
+
+
+def _group_cards(raw: list[Any]) -> list[GroupCard]:
+    """The app cards on a message. Every entry must be an object with a string ``kind`` (the
+    schema's one required field), or the page is malformed. An entry without every app-card
+    field is a kind this client does not draw, so it is skipped (the message body still carries
+    its markdown link) rather than failing the whole page."""
+    what = "group card"
+    cards: list[GroupCard] = []
+    for c in raw:
+        row = _wire_row(c, what)
+        _wire_get(row, "kind", what, str)
+        if all(isinstance(row.get(k), str) for k in _APP_CARD_FIELDS):
+            cards.append(_group_card_from_dict(row))
+    return cards
 
 
 def _group_card_from_dict(row: dict[str, Any]) -> GroupCard:
@@ -1946,7 +1958,7 @@ def group_message_from_dict(row: dict[str, Any]) -> GroupMessage:
         attachments=_optional_list(row, "attachments", what),
         mention_names=_optional_list(row, "mention_names", what),
         quote=row.get("quote"),
-        cards=[_group_card_from_dict(c) for c in _optional_list(row, "cards", what)],
+        cards=_group_cards(_optional_list(row, "cards", what)),
         is_permalink_target=row.get("is_permalink_target", False),
         author_person_id=row.get("author_person_id"),
         mentions=_mention_ids(row.get("mentions")),
@@ -2226,8 +2238,7 @@ class ImageSuggestion:
     run: int | None = None
 
 
-# MIRROR: src/pepper/agent/artifacts/applet.py::read_detail
-# (the detail route answers an untyped JSONResponse, no snapshot schema)
+# MIRROR: src/pepper/api/artifacts_detail.py::ArtifactDetail
 @dataclass(frozen=True)
 class ArtifactDetail:
     """One opened artifact from ``GET /api/v1/artifacts/{id}/detail``.
@@ -2242,7 +2253,9 @@ class ArtifactDetail:
     id: str
     name: str
     kind: str
-    updated_at: str
+    #: When it last changed (ISO-8601); ``None`` when the server sends none, which the schema
+    #: allows (``ArtifactDetail.updated_at`` is optional and nullable).
+    updated_at: str | None
     etag: str
     shared: bool
     body: str | None = None
@@ -2280,7 +2293,11 @@ def _artifact_detail_from_dict(body: dict[str, Any]) -> ArtifactDetail:
         id=str(_wire_get(body, "id", what, str, int)),
         name=_wire_get(body, "name", what, str),
         kind=_wire_get(body, "kind", what, str),
-        updated_at=_wire_get(body, "updated_at", what, str),
+        updated_at=(
+            _wire_get(body, "updated_at", what, str, nullable=True)
+            if "updated_at" in body
+            else None
+        ),
         etag=_wire_get(body, "etag", what, str),
         shared=bool(body.get("shared", False)),
         body=body.get("body"),
@@ -2314,12 +2331,11 @@ class NoteWikiLink:
 class NoteLinks:
     """``GET /api/v1/artifacts/{id}/detail``, the link fields only.
 
-    ``backlinks`` is deliberately untyped: the response shape is not
-    pinned by ``contracts/api-v1.openapi.json`` (the detail route answers
-    an untyped ``JSONResponse``), so the raw entries are kept exactly as
-    the server sent them. Typing them would either discard fields we
-    cannot see or invent a schema the server has not promised; ``--json``
-    passes them through untouched.
+    ``backlinks`` is deliberately untyped: ``contracts/api-v1.openapi.json``
+    declares its entries only as open objects (``ArtifactDetail.backlinks``),
+    so the raw entries are kept exactly as the server sent them. Typing
+    them would either discard fields we cannot see or invent a schema the
+    server has not promised; ``--json`` passes them through untouched.
     """
 
     artifact_id: str
