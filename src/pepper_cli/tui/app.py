@@ -57,7 +57,7 @@ from pepper_cli import note_edit
 from pepper_cli import turn as turns
 from pepper_cli.api_client import ApiError, ArtifactConflictError, UpgradeRequiredError
 from pepper_cli.terminal_text import sanitize_line
-from pepper_cli.tui import apps_pane, poller, rows, state, stream
+from pepper_cli.tui import apps_pane, cards, poller, rows, state, stream
 from pepper_cli.tui.apps_pane import AppPane, PaneScroll
 from pepper_cli.tui.composer import PLACEHOLDER, Composer, MentionMenu
 from pepper_cli.tui.screens import (
@@ -153,6 +153,8 @@ _ON_DEMAND = (
     "todo",
     # A note write (new, edit, delete, tick): one at a time, started by a key.
     "notewrite",
+    # A conversation card's root older than the loaded page, read by id so its replies nest.
+    "roots",
 )
 #: Transport failures that mean a turn's request never reached the server, so it is safe to
 #: give the text back for the user to send again.
@@ -349,8 +351,19 @@ class PepperApp(App[None]):
         self.rosters: dict[str, list[GroupRosterMember]] = {}
         #: Draft ids sent this session, hidden at once rather than at the next history read.
         self.sent_drafts: set[str] = set()
-        #: The selected thread row (``msg:<id>`` or ``pending:<key>``), the target of ``r``.
+        #: The selected thread row (``msg:<id>``, ``pending:<key>`` or ``fold:<card id>``),
+        #: the target of ``r``.
         self.selected: str | None = None
+        #: Cards of the open topic whose fold is open (all their replies shown).
+        self.expanded_cards: set[str] = set()
+        #: Cards the reader is busy with, to the message each was placed at when the hold
+        #: began (``cards.settle_holds``): another person's reply does not move them.
+        self.card_holds: dict[str, str] = {}
+        #: Messages read by id from before the open topic's loaded page (a card's root, or a
+        #: reply on the way to it), so replies on the page can nest (``cards.missing_parents``).
+        self.fetched_roots: dict[str, GroupMessage] = {}
+        #: Ids asked for that way, found or not: each is asked once per opening of a topic.
+        self._root_attempts: set[str] = set()
         #: Pepper turns, oldest first. At most one is streaming or being checked at a time.
         self.turns: list[state.DmTurn] = []
         #: Every history id a reply frame has named this session. Each new turn's snapshot
@@ -676,6 +689,8 @@ class PepperApp(App[None]):
             self._start_turn()
         elif kind == "apps":
             self._read_pane()
+        elif kind == "roots":
+            self._fetch_roots()
         elif kind == "topic" and not self.current.is_pepper:
             conv = self.current
             reconcile = self.store.next_is_reconcile()
@@ -961,6 +976,7 @@ class PepperApp(App[None]):
         if first:
             self._begin_opening()
         self._render_topic(new_rows=len(fresh), reset=first)
+        self._fetch_roots()
         if not self._blurred:
             # Every mark waits for its guarded scroll to land (``Landed``): a pinned poll
             # the reader interrupts restores its cue, and those rows must stay unread.
@@ -993,6 +1009,80 @@ class PepperApp(App[None]):
                 out.append(("assistant", turn.reply, ""))
         return out
 
+    def _takes_cards(self) -> bool:
+        """Whether the open topic draws conversation cards: any room topic but a bridged
+        thread (``dedicated_conversation``), whose messages stay plain rows."""
+        conv = self.current
+        if conv.is_pepper or conv.topic_id is None:
+            return False
+        room = next((r for r in self.rooms if r.group_id == conv.room_id), None)
+        topic = (
+            next((t for t in room.topics if t.topic_id == conv.topic_id), None) if room else None
+        )
+        return not (topic is not None and topic.dedicated_conversation)
+
+    def _stream(self) -> cards.Stream:
+        """The open topic as cards and plain rows, with the cards the reader is busy with held
+        in place (the holds are settled here, so every caller sees the same layout)."""
+        messages = self._with_fetched_roots()
+        takes = self._takes_cards()
+        fetched = self.fetched_roots.keys()
+        laid = cards.build_stream(
+            messages, takes_cards=takes, holds=self.card_holds, fetched=fetched
+        )
+        selected = self.selected or ""
+        if selected.startswith("fold:"):
+            selected = selected.removeprefix("fold:")
+        elif selected.startswith("msg:"):
+            selected = selected.removeprefix("msg:")
+        else:
+            selected = ""
+        busy = cards.hold_ids(laid, selected=selected or None, replying_to=self._draft().quote_id)
+        holds = cards.settle_holds(self.card_holds, busy, laid.placement)
+        if holds != self.card_holds:
+            self.card_holds = holds
+            laid = cards.build_stream(messages, takes_cards=takes, holds=holds, fetched=fetched)
+        return laid
+
+    def _with_fetched_roots(self) -> list[GroupMessage]:
+        """The open topic's rows with the roots read by id before them, in time order."""
+        rows_held = self.store.ordered()
+        extra = [m for mid, m in self.fetched_roots.items() if mid not in self.store.rows]
+        if not extra:
+            return rows_held
+        return sorted(
+            [*extra, *rows_held],
+            key=lambda m: (state.parse_ts(m.created_at) or datetime.min.replace(tzinfo=UTC), m.id),
+        )
+
+    def _fetch_roots(self) -> None:
+        """Read, one at a time, the next message a reply on the page needs to reach its card."""
+        conv = self.current
+        loop = self._loops["roots"]
+        if conv.is_pepper or conv.room_id is None or conv.topic_id is None or loop.busy:
+            return
+        missing = cards.missing_parents(
+            self.store.ordered(), held=self.fetched_roots, attempted=self._root_attempts
+        )
+        if not missing:
+            return
+        target = missing[0]
+        self._root_attempts.add(target)
+        room, topic = conv.room_id, conv.topic_id
+        self._start(
+            "roots",
+            lambda: self._api.list_group_messages(room, topic, at=target, limit=1),
+            lambda page, target=target: self._got_root(target, page),
+            on_error=lambda _exc: True,  # a root that can't be read leaves its replies flat
+        )
+
+    def _got_root(self, target: str, page: GroupMessagePage) -> None:
+        found = next((m for m in page.messages if m.id == target), None)
+        if found is not None and found.id not in self.store.rows:
+            self.fetched_roots[found.id] = found
+            self._render_topic(new_rows=0, reset=False)
+        self._fetch_roots()
+
     def _topic_items(self) -> list[tuple[str | None, Any]]:
         return rows.thread_items(
             self.store.ordered(),
@@ -1000,6 +1090,8 @@ class PepperApp(App[None]):
             pending=self.pending.in_conversation(self.current),
             selected=self.selected,
             new_before=self._new_from,
+            stream=self._stream(),
+            expanded=self.expanded_cards,
         )
 
     def _begin_opening(self) -> None:
@@ -1093,9 +1185,13 @@ class PepperApp(App[None]):
     def _divider_line(self) -> int | None:
         """The body line of the ``new messages`` divider (the top of what opens in view)."""
         keys = [key for key, _ in self._rendered_items]
-        if self._new_from is None or f"msg:{self._new_from}" not in keys:
+        if self._new_from is None:
             return None
-        index = keys.index(f"msg:{self._new_from}") - 1  # the divider sits right above it
+        # Inside a card the divider sits above the card's head.
+        target = cards.card_of(self._stream(), self._new_from) or self._new_from
+        if f"msg:{target}" not in keys:
+            return None
+        index = keys.index(f"msg:{target}") - 1  # the divider sits right above it
         return sum(self._item_lines()[:index])
 
     def _message_spans(self) -> list[tuple[str, int, int]] | None:
@@ -1126,8 +1222,23 @@ class PepperApp(App[None]):
         scroller = self.thread.scroller
         top = scroller.scroll_y if top is None else top
         bottom = top + (scroller.scrollable_content_region.height if height is None else height)
-        seen = [stamp for stamp, start, end in spans if start >= top and end <= bottom]
-        return seen[-1] if seen else None
+        # Cards put rows out of time order (a reply sits in its card, a card moves to its
+        # latest reply), so the newest row seen is not simply the last one: it is the newest
+        # seen row older than every row still below the region, which is the last seen row
+        # when the rows are in time order.
+        below = [
+            parsed for stamp, _, end in spans if end > bottom and (parsed := state.parse_ts(stamp))
+        ]
+        floor = min(below) if below else None
+        best: tuple[datetime, str] | None = None
+        for stamp, start, end in spans:
+            if start < top or end > bottom or (moment := state.parse_ts(stamp)) is None:
+                continue
+            if floor is not None and moment >= floor:
+                continue
+            if best is None or moment >= best[0]:
+                best = (moment, stamp)
+        return best[1] if best else None
 
     def _note_seen(
         self,
@@ -1309,6 +1420,8 @@ class PepperApp(App[None]):
         self._draft().text = self.composer.text
         self.current = conv
         self.selected = None
+        self.expanded_cards, self.card_holds = set(), {}
+        self.fetched_roots, self._root_attempts = {}, set()
         self._load_draft()
         self.store = state.MessageStore()
         self.loaded_topic = False
@@ -1330,6 +1443,7 @@ class PepperApp(App[None]):
         refresh.generation += 1
         self._dirty.discard("topic")
         self._loops["older"].generation += 1
+        self._loops["roots"].generation += 1
         # A launcher still being read was asked for where the user was: its answer would
         # open a picker or a pane for a place they have left.
         self._loops["shelf"].generation += 1
@@ -1591,6 +1705,25 @@ class PepperApp(App[None]):
             box.update("")
             box.set_class(True, "empty")
             return
+        laid = self._stream() if not self.current.is_pepper else None
+        card_id = cards.card_of(laid, draft.quote_id) if laid is not None else None
+        card = laid.card(card_id) if laid is not None and card_id is not None else None
+        if card is not None:
+            title = (
+                cards.note_comment_face(card.root)
+                if cards.is_note_comment(card.root)
+                else cards.face(card.root)
+            ).title
+            line = Text("↳ Replying in ", style="dim")
+            line.append(f"“{sanitize_line(title)}”", style="bold")
+            if draft.quote_id != card.id:
+                line.append(" to ", style="dim")
+                line.append(sanitize_line(draft.quote_name) or "message", style="bold")
+                line.append(": " + sanitize_line(draft.quote_text), style="dim")
+            line.append("  (Esc cancels)", style="dim italic")
+            box.update(line)
+            box.set_class(False, "empty")
+            return
         line = Text("┃ Replying to ", style="dim")
         line.append(sanitize_line(draft.quote_name) or "message", style="bold")
         line.append(": " + sanitize_line(draft.quote_text), style="dim")
@@ -1693,8 +1826,22 @@ class PepperApp(App[None]):
         top = height([r for _, r in items[:index]]) if index else 0
         self.thread.reveal_lines(top, top + height([items[index][1]]))
 
+    def on_thread_scroll_activate(self, _event: ThreadScroll.Activate) -> None:
+        """``Enter`` on a card's fold opens its earlier replies, or folds them again."""
+        key = self.selected or ""
+        if not key.startswith("fold:"):
+            return
+        card_id = key.removeprefix("fold:")
+        if card_id in self.expanded_cards:
+            self.expanded_cards.discard(card_id)
+        else:
+            self.expanded_cards.add(card_id)
+        self._render_topic(new_rows=0, reset=False)
+        self._reveal_selected()
+
     def on_thread_scroll_reply(self, _event: ThreadScroll.Reply) -> None:
-        """``r``: retry a failed send, or quote the selected message in the composer."""
+        """``r``: retry a failed send, or reply to the selected message: into its card when it
+        is one or is in one, else as a quote-reply."""
         if self.current.is_pepper:
             self.notify("Quote-reply works in rooms.", timeout=2)
             return
@@ -1702,6 +1849,8 @@ class PepperApp(App[None]):
         if key is None:
             self.notify("Select a message with ↑/↓ first.", timeout=2)
             return
+        if key.startswith("fold:"):
+            key = "msg:" + key.removeprefix("fold:")  # the fold replies to its card
         if key.startswith("pending:"):
             pending_key = key.removeprefix("pending:")
             if self.pending.retry(pending_key):
@@ -1834,6 +1983,8 @@ class PepperApp(App[None]):
             self.notify("This works on room messages.", timeout=2)
         elif key is None:
             self.notify("Select a message with ↑/↓ first.", timeout=2)
+        elif key.startswith("fold:"):
+            return self.store.rows.get(key.removeprefix("fold:"))
         elif not key.startswith("msg:"):
             self.notify("That message hasn't been sent yet.", timeout=2)
         else:
@@ -2120,6 +2271,7 @@ class PepperApp(App[None]):
             self._render_topic(new_rows=0, reset=True)
             return
         self._render_topic(new_rows=0, reset=False, prepended=bool(added))
+        self._fetch_roots()
 
     # new topic and the topic rail
 

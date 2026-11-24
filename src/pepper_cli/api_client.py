@@ -1813,6 +1813,17 @@ class GroupMessage:
     anchor: dict[str, Any] | None = None
     resolved_at: str | None = None
     resolved_by_name: str | None = None
+    #: A conversation card's title (the root's heading or first line), and where it came
+    #: from: ``heading`` or ``first_line``. ``None`` on a reply, on a row that is not a
+    #: conversation card, and on rows from an older server.
+    title: str | None = None
+    title_source: str | None = None
+    #: A conversation card's links, each ``{type, label, href, …}`` ("Note", "Source", …).
+    links: list[dict[str, Any]] = field(default_factory=list)
+    #: A room activity line (someone joined, a topic was renamed), never a card.
+    is_activity: bool = False
+    #: A blocked author's message, collapsed to a stub; never a card.
+    is_blocked_collapsed: bool = False
 
 
 # MIRROR: src/pepper/api/groups/_responses.py::RoomMessagesResponse
@@ -1968,6 +1979,11 @@ def group_message_from_dict(row: dict[str, Any]) -> GroupMessage:
         anchor=row.get("anchor") if isinstance(row.get("anchor"), dict) else None,
         resolved_at=row.get("resolved_at"),
         resolved_by_name=row.get("resolved_by_name"),
+        title=row.get("title") if isinstance(row.get("title"), str) else None,
+        title_source=row.get("title_source") if isinstance(row.get("title_source"), str) else None,
+        links=[link for link in _optional_list(row, "links", what) if isinstance(link, dict)],
+        is_activity=bool(row.get("is_activity", False)),
+        is_blocked_collapsed=bool(row.get("is_blocked_collapsed", False)),
     )
 
 

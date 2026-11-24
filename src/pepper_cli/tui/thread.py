@@ -32,6 +32,7 @@ class ThreadScroll(VerticalScroll):
         Binding("up", "select(-1)", "Select", show=False),
         Binding("down", "select(1)", "Select", show=False),
         Binding("r", "reply", "Reply / retry"),
+        Binding("enter", "activate", "Open", show=False),
         Binding("plus", "react", "React"),
         Binding("e", "edit", "Edit"),
         Binding("d", "delete", "Delete"),
@@ -52,6 +53,9 @@ class ThreadScroll(VerticalScroll):
 
     class Unselect(Message):
         """Esc in the thread."""
+
+    class Activate(Message):
+        """``Enter`` on the selected row: open or fold a card's earlier replies."""
 
     class React(Message):
         """``+``: pick an emoji for the selected message."""
@@ -76,6 +80,9 @@ class ThreadScroll(VerticalScroll):
 
     def action_unselect(self) -> None:
         self.post_message(self.Unselect())
+
+    def action_activate(self) -> None:
+        self.post_message(self.Activate())
 
     def action_react(self) -> None:
         self.post_message(self.React())

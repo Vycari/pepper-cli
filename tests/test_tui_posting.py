@@ -186,8 +186,9 @@ async def test_an_esc_cancelled_quote_is_not_sent_and_a_second_esc_leaves_the_co
         await open_topic(pilot, app)
         app.thread.focus_scroller()
         await pilot.press("up", "r")
-        await until(pilot, lambda: "Replying to" in plain(app, "#quote"))
-        assert "Ada" in plain(app, "#quote") and "flight options" in plain(app, "#quote")
+        # The message is a conversation card, so the reply goes into it.
+        await until(pilot, lambda: "Replying in" in plain(app, "#quote"))
+        assert "“flight options”" in plain(app, "#quote")
         assert isinstance(app.focused, Composer)
         await pilot.press("escape")
         assert app.query_one("#quote").has_class("empty")
