@@ -557,6 +557,8 @@ The composer at the bottom posts to whatever is open:
   nested inside, the latest three shown; Enter on the "earlier replies" line opens the rest.
   A card moves to the bottom when someone else replies (your own reply never moves it, and a
   card you have selected or are replying into stays put). A bridged topic stays a plain list.
+  Enter on a card opens that conversation on its own, every reply shown (Up past the top loads
+  older replies); what you write there answers it, and Esc goes back to the topic.
 - **Reply**: in the thread, Up/Down select a message and `r` replies to it. On a card, or a
   reply inside one, the reply goes into that conversation ("Replying in …" above the composer);
   elsewhere it quotes the message. Esc cancels; a second Esc moves focus back to the thread.

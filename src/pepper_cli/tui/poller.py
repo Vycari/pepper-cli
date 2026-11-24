@@ -202,6 +202,16 @@ def fetch_older(api: ApiClient, conv: Conversation, *, before: str, limit: int) 
     return api.list_group_messages(conv.room_id, conv.topic_id, before=before, limit=limit)
 
 
+def fetch_conversation(
+    api: ApiClient, conv: Conversation, root_id: str, *, before: str | None = None
+) -> GroupMessagePage:
+    """One conversation of the open topic: its root and latest replies, or with ``before``
+    (a ``next_before`` this answered) the page of its replies older than that."""
+    if conv.room_id is None or conv.topic_id is None:
+        return GroupMessagePage()
+    return api.list_group_messages(conv.room_id, conv.topic_id, conversation=root_id, before=before)
+
+
 def fetch_dm(api: ApiClient) -> list[ChatHistoryEntry]:
     """Today's Pepper thread."""
     return api.chat_history()

@@ -411,6 +411,10 @@ its replies inside it. A card shows its latest three replies; select the
 the card moves down to the latest reply so new conversation is always at the
 bottom.
 
+Select a card and press Enter to open that conversation on its own, with every
+reply. Anything you write there goes into the conversation. Press Esc to go
+back to the topic.
+
 In the thread, Up and Down pick a message. Then `r` replies to it: on a card,
 or on a reply inside one, your message goes into that conversation. `+` reacts, `e` and `d` edit or delete one of yours, and `o` opens its first
 link or attachment in your browser. If a draft from Pepper appears under a

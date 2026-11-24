@@ -608,6 +608,21 @@ class FakeServer:
                 200,
                 json={"messages": rows, "next_before": None, "permalink_target_missing": False},
             )
+        if (root := query.get("conversation")) is not None:
+            # One conversation: its root and every reply whose chain of parents reaches it.
+            by_id = {r["id"]: r for r in rows}
+
+            def _in(row: dict[str, Any]) -> bool:
+                seen: set[str] = set()
+                while row["id"] != root and row.get("parent_message_id") and row["id"] not in seen:
+                    seen.add(row["id"])
+                    parent = by_id.get(row["parent_message_id"])
+                    if parent is None:
+                        return False
+                    row = parent
+                return row["id"] == root
+
+            rows = [r for r in rows if _in(r)]
         if (since := query.get("since")) is not None:
             from pepper_cli.tui.state import parse_ts
 
