@@ -586,7 +586,7 @@ class MessageStore:
     #: The ``next_before`` of the oldest page held: what "load older" asks for next. ``None``
     #: means nothing is older (or the first page has not landed yet).
     older: str | None = None
-    #: A "load older" page has been merged, so the newest page's cursor no longer applies.
+    #: The topic has been paged back, so a later newest page's cursor no longer applies.
     paged_back: bool = False
     #: A partial poll left rows out, so read marks stand still until a clean page returns
     #: every known ``read_hold_at`` and covers ``read_hold_from`` through
@@ -711,6 +711,12 @@ class MessageStore:
         self.read_hold_clean_pass = True
         rows = {message.id: message for message in [*self.ordered(), *incoming]}
         self.release_read_hold(rows.values(), reconcile=True, next_before=next_before)
+        if self.read_held and next_before is not None:
+            # The user may have paged back before the malformed row appeared. Restart the
+            # older-page walk at this clean page's cursor so the recovery pass covers the
+            # whole topic instead of continuing from a cursor captured before the gap.
+            self.older = next_before
+            self.paged_back = True
 
     def note_clean_older_page(
         self, incoming: Iterable[GroupMessage], *, next_before: str | None

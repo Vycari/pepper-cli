@@ -706,6 +706,11 @@ class TestTopicPartialReadMark:
         app._opening = False
         conv = app.current
 
+        already_loaded = poller.fetch_older(app._api, conv, before="4", limit=2)
+        app._got_older(already_loaded)
+        assert app.store.paged_back
+        assert app.store.older == "2"  # paging back happened before the malformed row appeared
+
         partial = poller.fetch_topic(app._api, conv, since=None)
         assert partial.skipped == 1
         assert partial.skipped_at_unknown is True
@@ -719,6 +724,7 @@ class TestTopicPartialReadMark:
         app._on_topic_page(clean, newest=True, reconcile=True)
         assert app.store.read_held  # older pages have not been read in this pass yet
         assert app.store.read_hold_clean_pass
+        assert app.store.older == "4"  # the recovery walk restarts at the clean newest page
 
         older = poller.fetch_older(app._api, conv, before=app.store.older, limit=2)
         assert older.next_before == "2"
