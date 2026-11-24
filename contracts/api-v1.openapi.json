@@ -2119,6 +2119,16 @@
           "enabled": {
             "type": "boolean"
           },
+          "flavor_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "wrapped_enabled": {
             "anyOf": [
               {
@@ -2161,6 +2171,16 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "flavor_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "max_days": {
             "type": "integer"
@@ -3358,6 +3378,60 @@
         ],
         "type": "object"
       },
+      "DecideIn": {
+        "properties": {
+          "answer": {
+            "enum": [
+              "same",
+              "different",
+              "not_sure"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "answer"
+        ],
+        "type": "object"
+      },
+      "DecideOut": {
+        "properties": {
+          "merge_log_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "suggestion_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "survivor_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "suggestion_id",
+          "status"
+        ],
+        "type": "object"
+      },
       "DevicePollRequest": {
         "properties": {
           "device_code": {
@@ -3387,6 +3461,14 @@
           "device_name": {
             "maxLength": 80,
             "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "default": "user",
+            "enum": [
+              "user",
+              "agent"
+            ],
             "type": "string"
           }
         },
@@ -10263,6 +10345,73 @@
         },
         "required": [
           "id"
+        ],
+        "type": "object"
+      },
+      "SuggestionOut": {
+        "properties": {
+          "a": {
+            "$ref": "#/components/schemas/SuggestionSideOut"
+          },
+          "b": {
+            "$ref": "#/components/schemas/SuggestionSideOut"
+          },
+          "confidence": {
+            "type": "number"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "suggestion_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "suggestion_id",
+          "kind",
+          "a",
+          "b",
+          "confidence",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "SuggestionSideOut": {
+        "properties": {
+          "entity_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_id",
+          "name",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "SuggestionsOut": {
+        "properties": {
+          "suggestions": {
+            "items": {
+              "$ref": "#/components/schemas/SuggestionOut"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "suggestions"
         ],
         "type": "object"
       },
@@ -22257,6 +22406,133 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EntityPageResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-graph"
+        ]
+      }
+    },
+    "/api/v1/graph/suggestions": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "entity_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuggestionsOut"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-graph"
+        ]
+      }
+    },
+    "/api/v1/graph/suggestions/{suggestion_id}/decide": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "suggestion_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecideIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecideOut"
                 }
               }
             },
