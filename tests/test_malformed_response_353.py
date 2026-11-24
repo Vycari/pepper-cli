@@ -33,7 +33,7 @@ from pepper_cli.api_client import (
 from pepper_cli.secret import SecretStr
 from pepper_cli.tui import poller
 from pepper_cli.tui.app import PepperApp
-from pepper_cli.tui.state import Conversation
+from pepper_cli.tui.state import AppPaneState, Conversation
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -393,6 +393,33 @@ class TestReq4PaneSkippedNotice:
         assert "this topic" in app._partial_notice
         assert app._topic_skipped == 2
         assert app.store.older == "cursor"
+
+    def test_older_page_is_strict_about_malformed_rows(self) -> None:
+        conv = Conversation(room_id="r1", topic_id="tp1")
+        api = _api(_messages_body(_message(id="m-good"), _message(id=99)))
+        with pytest.raises(ApiError) as exc:
+            poller.fetch_older(api, conv, before="before", limit=50)
+        assert exc.value.status == 200
+
+    def test_topic_warning_hidden_after_switching_conversation(self) -> None:
+        app = PepperApp(_api({}))
+        app.current = Conversation(room_id="r1", topic_id="tp1")
+        app._on_topic = lambda messages: None
+        page = GroupMessagePage(messages=[], skipped=1)
+        app._on_topic_page(page, newest=False)
+        assert "this topic" in app._partial_notice
+        app.current = Conversation(room_id="r2", topic_id="tp2")
+        app._refresh_partial_notice()
+        assert app._partial_notice == ""
+
+    def test_pane_warning_hidden_when_pane_closes(self) -> None:
+        app = PepperApp(_api({}))
+        app.pane = AppPaneState(owner="g1", slug="todo")
+        app._note_pane_skipped(1, "_todos_skipped", "todos")
+        assert "todos" in app._partial_notice
+        app.pane = None
+        app._refresh_partial_notice()
+        assert app._partial_notice == ""
 
     def test_partial_marker_tracks_each_pane_independently(self) -> None:
         app: Any = _StubApp()

@@ -206,9 +206,7 @@ def fetch_older(api: ApiClient, conv: Conversation, *, before: str, limit: int) 
     """The page older than ``before`` (an opaque ``next_before`` the server handed out)."""
     if conv.room_id is None or conv.topic_id is None:
         return GroupMessagePage()
-    return api.list_group_messages(
-        conv.room_id, conv.topic_id, before=before, limit=limit, skip_bad_rows=True
-    )
+    return api.list_group_messages(conv.room_id, conv.topic_id, before=before, limit=limit)
 
 
 def fetch_conversation(

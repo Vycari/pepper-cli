@@ -299,6 +299,7 @@ class PepperApp(App[None]):
         self._todos_skipped = 0
         self._notes_skipped = 0
         self._partial_notices: dict[str, str] = {}
+        self._partial_counts: dict[str, int] = {}
         self._partial_notice = ""
         self.manual: dict[str, bool] = {}
         self.show_all: set[str] = set()
@@ -994,11 +995,58 @@ class PepperApp(App[None]):
             )
         self._dm_unreadable = unreadable
 
+    def _skip_scope(self, attr: str) -> str:
+        """The pane or conversation a skipped-row notice belongs to."""
+        if attr == "_rail_skipped":
+            return "rail"
+        current = getattr(self, "current", None)
+        pane = getattr(self, "pane", None)
+        if attr == "_topic_skipped" and current is not None:
+            return f"topic:{state.sidebar_key(current)}"
+        if pane is not None:
+            return f"pane:{pane.key}"
+        return attr
+
+    def _refresh_partial_notice(self) -> None:
+        """Show only the partial notices that apply to what the user is looking at."""
+        notices = getattr(self, "_partial_notices", None)
+        if not isinstance(notices, dict):
+            self._partial_notice = ""
+            return
+        if not hasattr(self, "current") or not hasattr(self, "pane"):
+            self._partial_notice = " ".join(notices.values())
+            return
+        parts = []
+        rail = notices.get("rail")
+        if rail:
+            parts.append(rail)
+        pane = getattr(self, "pane", None)
+        if pane is not None:
+            pane_notice = notices.get(f"pane:{pane.key}")
+            if pane_notice:
+                parts.append(pane_notice)
+        else:
+            current = getattr(self, "current", None)
+            if current is not None:
+                topic_notice = notices.get(f"topic:{state.sidebar_key(current)}")
+                if topic_notice:
+                    parts.append(topic_notice)
+        self._partial_notice = " ".join(parts)
+
     def _note_pane_skipped(self, skipped: int, attr: str, label: str) -> None:
         """Say, once per count change, that a TUI-polled list left out malformed rows.
-        ``attr`` is the instance variable that tracks the last-noticed count. Partial
-        results are never presented as complete: the notice fires whenever the count rises."""
-        last = getattr(self, attr)
+
+        The count and the persistent notice are scoped to the conversation or pane they
+        describe, so a warning never follows the user to another conversation or pane.
+        """
+        skip_scope = getattr(self, "_skip_scope", None)
+        scope = skip_scope(attr) if callable(skip_scope) else attr
+        counts = getattr(self, "_partial_counts", None)
+        had_counts = isinstance(counts, dict)
+        if not had_counts:
+            counts = {}
+            self._partial_counts = counts
+        last = counts.get(scope, 0 if had_counts else getattr(self, attr, 0))
         if skipped > last:
             self.notify(
                 f"{skipped} item(s) could not be read and are not shown in {label}.",
@@ -1006,17 +1054,20 @@ class PepperApp(App[None]):
                 timeout=4,
             )
         setattr(self, attr, skipped)
-        partial_notices = getattr(self, "_partial_notices", None)
-        if not isinstance(partial_notices, dict):
-            partial_notices = {}
-            self._partial_notices = partial_notices
+        counts[scope] = skipped
+        notices = getattr(self, "_partial_notices", None)
+        if not isinstance(notices, dict):
+            notices = {}
+            self._partial_notices = notices
         if skipped > 0:
-            partial_notices[attr] = (
-                f"{skipped} item(s) could not be read and are not shown in {label}."
-            )
+            notices[scope] = f"{skipped} item(s) could not be read and are not shown in {label}."
         else:
-            partial_notices.pop(attr, None)
-        self._partial_notice = " ".join(partial_notices.values())
+            notices.pop(scope, None)
+        refresh_partial = getattr(self, "_refresh_partial_notice", None)
+        if callable(refresh_partial):
+            refresh_partial()
+        else:
+            self._partial_notice = " ".join(notices.values())
 
     def _on_topic_page(
         self, page: GroupMessagePage, *, newest: bool = False, reconcile: bool = False
@@ -1623,6 +1674,7 @@ class PepperApp(App[None]):
 
     def refresh_chrome(self) -> None:
         """Sidebar, header, notice, subline and terminal title from the current state."""
+        self._refresh_partial_notice()
         shown = self.rooms if self.groups_enabled else []
         self.marks.settle(shown)
         current_key = state.sidebar_key(self.current)
@@ -2863,6 +2915,7 @@ class PepperApp(App[None]):
             self._hide_pane()
         self.pane = pane
         self._pane_layout()
+        self._refresh_partial_notice()
         for kind in ("apps", "note"):
             loop = self._loops[kind]
             loop.stop_timer()
@@ -2885,6 +2938,7 @@ class PepperApp(App[None]):
     def _hide_pane(self) -> None:
         """Drop the pane and put the thread back. Its reads are dropped as stale."""
         self.pane = None
+        self._refresh_partial_notice()
         for kind in ("apps", "note"):
             loop = self._loops[kind]
             loop.stop_timer()
