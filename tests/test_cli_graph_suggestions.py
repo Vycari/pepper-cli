@@ -160,3 +160,10 @@ def test_an_entity_page_without_questions_prints_no_heading(server, capsys) -> N
     server.reply("GET", f"{_BASE}/entities/{_A}", page)
     assert cli.main(["graph", "entity", _A]) == 0
     assert "Open questions" not in capsys.readouterr().out
+
+
+def test_an_unknown_question_names_the_question_not_the_entity(server, capsys) -> None:
+    server.reply("POST", f"{_BASE}/suggestions/{_S}/decide", {"detail": "Not Found"}, status=404)
+    assert cli.main(["graph", "decide", _S, "same"]) == 1
+    err = capsys.readouterr().err
+    assert "there is no such question for you" in err and "catalog entry" not in err

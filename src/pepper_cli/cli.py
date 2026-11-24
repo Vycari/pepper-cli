@@ -11162,7 +11162,6 @@ _GRAPH_REASONS = {
     "no_target": "there is no person to give the address back to; pass --into",
     "member_of_household": "the address sits on a member of a household, so it cannot become one",
     "merge_undoable": "the address came in a merge that can still be undone; undo that first",
-    "not_found": "there is no such question",
     "decided": "that question is already answered",
     "gone": "an entity in that question no longer exists",
 }
@@ -11286,7 +11285,23 @@ def cmd_graph_decide(args: argparse.Namespace) -> int:
         _emit(body, args, lambda: graph_view.decided(body))
         return 0
 
-    return _run_personal(args, run, _report_graph_write_error)
+    return _run_personal(args, run, _report_decide_error)
+
+
+def _report_decide_error(args: argparse.Namespace, exc: api_client.ApiError) -> int:
+    """The server answers a question that is unknown or not yours with a bare 404, the same as
+    an account the graph is off for, so name the question first. A 409 is a refusal with a
+    reason, as for every other graph write."""
+    if exc.status == 404:
+        _emit_error(
+            args,
+            "not_found",
+            "Not found: there is no such question for you (see 'pepper graph suggestions'), or "
+            "the entity graph is not available for your account (or this server is too old).",
+            status=404,
+        )
+        return 1
+    return _report_graph_write_error(args, exc)
 
 
 def cmd_graph_households(args: argparse.Namespace) -> int:
