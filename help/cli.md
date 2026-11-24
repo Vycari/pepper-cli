@@ -376,6 +376,13 @@ ever want to look back at a specific conversation in detail.
   comments resolve --room <room> --note <note> <thread>` and `comments reopen`
   close or reopen one. Personal notes can't be commented on. Same comments as
   the room's own Notes board — see [Notes](#artifacts).
+<!-- rollout: achievements -->
+- **Your stickers:** `pepper stickers` lists the stickers your Sunday Wrapped
+  has given you, with each one's tier (bronze, silver or gold), how many weeks
+  you earned it and a line about the latest one. `pepper stickers --all` adds
+  the ones you haven't earned yet and how to earn them. It is the same sticker
+  book as the Stickers page in the app.
+<!-- /rollout -->
 - **Scripting:** add `--json` to a command (or set `PEPPER_JSON=1`) for JSON
   on stdout instead of the formatted view. A list comes back as an object with
   an `items` array and, when there is more, a `next_before` cursor to pass to

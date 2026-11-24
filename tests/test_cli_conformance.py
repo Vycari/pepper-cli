@@ -78,6 +78,8 @@ NOUNS = frozenset(
         # `graph` is a view of the entity graph (your own people and meetings), with the
         # merge and household commands that fix its identities.
         "graph",
+        # `stickers` is the product's own word: the sticker book the weekly Wrapped fills.
+        "stickers",
         "chat",
         # `run` sends a prompt file as one chat turn (a shebang interpreter).
         "run",
@@ -249,6 +251,7 @@ ROOM_NA = {
         )
     },
     "brief": "your own morning brief; the server exposes no room's brief to a PAT here",
+    "stickers": "your own sticker book; stickers are a person's, never a room's",
     "artifacts show": "reads any artifact the viewer can see; the id carries the room",
     "artifacts download": "reads any artifact the viewer can see; the id carries the room",
     "drafts send": "a draft's id says whose it is",
@@ -788,6 +791,7 @@ ROUTES: dict[str, object] = {
     },
     "/api/v1/calendars/environment": {},
     "/api/v1/graph/people": {"status": "ok", "people": []},
+    "/api/v1/achievements": {"earned": 0, "total": 0, "stickers": []},
     "/api/v1/graph/meetings/brief": {
         "status": "ok",
         "found": False,
@@ -1271,6 +1275,7 @@ JSON_CASES: dict[str, list[str]] = {
     "trajectories show": ["trajectories", "show", _TRAJ],
     "trajectories list": ["trajectories", "list"],
     "brief": ["brief"],
+    "stickers": ["stickers"],
     "agents guide": ["agents", "guide"],
     "scheduled-tasks renew": ["scheduled-tasks", "renew", _TASK],
     "calendar": ["calendar"],
