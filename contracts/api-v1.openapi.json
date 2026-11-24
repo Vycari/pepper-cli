@@ -3462,6 +3462,14 @@
             "maxLength": 80,
             "minLength": 1,
             "type": "string"
+          },
+          "kind": {
+            "default": "user",
+            "enum": [
+              "user",
+              "agent"
+            ],
+            "type": "string"
           }
         },
         "required": [
