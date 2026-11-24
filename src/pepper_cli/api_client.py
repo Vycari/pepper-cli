@@ -2908,6 +2908,18 @@ class ApiClient:
         """``POST /api/v1/graph/not-same``: mark two entities as different people."""
         return self._post_object("/api/v1/graph/not-same", {"a_id": a_id, "b_id": b_id})
 
+    def graph_suggestions(self, entity_id: str | None = None) -> dict[str, Any]:
+        """``GET /api/v1/graph/suggestions``: the caller's open "same thing?" questions, newest
+        first, narrowed to one entity's with ``entity_id``."""
+        q = f"?{urlencode({'entity_id': entity_id})}" if entity_id else ""
+        return self._get_object(f"/api/v1/graph/suggestions{q}")
+
+    def graph_decide(self, suggestion_id: str, answer: str) -> dict[str, Any]:
+        """``POST /api/v1/graph/suggestions/{id}/decide``: answer one question (``same``,
+        ``different`` or ``not_sure``)."""
+        path = f"/api/v1/graph/suggestions/{quote(suggestion_id, safe='')}/decide"
+        return self._post_object(path, {"answer": answer})
+
     def graph_households(self) -> dict[str, Any]:
         """``GET /api/v1/graph/households``: the caller's households."""
         return self._get_object("/api/v1/graph/households")
