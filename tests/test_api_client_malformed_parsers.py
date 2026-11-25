@@ -268,8 +268,12 @@ def test_a_malformed_todo_fails_the_list_and_the_pane_read() -> None:
     rows = [_todo(), _todo(id="t2", title=None)]
     with _api(rows) as api, pytest.raises(ApiError):
         api.list_todos()
-    with _api(rows) as api, pytest.raises(ApiError):
-        poller.fetch_todos(api, None, mine=True)
+    # The TUI poller uses skip_bad_rows=True: a malformed row is skipped and
+    # counted, not raised. The good row is still returned.
+    with _api(rows) as api:
+        result = poller.fetch_todos(api, None, mine=True)
+    assert getattr(result, "skipped", 0) == 1
+    assert len(result) == 1
     with _api({"todos": []}) as api, pytest.raises(ApiError):
         api.list_todos()
 
@@ -304,14 +308,19 @@ def test_the_rail_keeps_its_etag_when_a_room_is_malformed() -> None:
         first = rail.step()
         assert first.groups is not None
         rail.commit(first)
-        kept = first.etag
         assert len(first.groups.groups) == 2
         good_topic = dict(server.rooms[1]["topics"][0])
         server.rooms[1]["topics"][0] = {"topic_id": "x"}  # no name
         server.bump()
-        with pytest.raises(ApiError):
-            rail.step()
-        assert rail._etag == kept  # nothing committed: the partial list is never adopted
+        # The TUI poller uses skip_bad_rows=True: the malformed room is skipped, the
+        # step succeeds, but the ETag is dropped so the next poll re-fetches the full
+        # list (a partial list is never adopted as authoritative).
+        second = rail.step()
+        assert second.groups is not None
+        assert second.groups.skipped == 1
+        assert second.etag is None, "ETag must be dropped when any group row was skipped"
+        # The _rail_etag is also cleared by the step itself via forget_etag().
+        assert rail._etag is None
         server.rooms[1]["topics"][0] = good_topic
         server.bump()
         again = rail.step()

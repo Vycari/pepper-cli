@@ -114,9 +114,15 @@ class RailPoller:
         retry_at = self._unread_retry_at
         missing = retry_at is not None and time.monotonic() < retry_at
         full = asked > self._full_done or (retry_at is not None and not missing)
-        groups, etag = self._api.list_groups_conditional(if_none_match=None if full else self._etag)
+        groups, etag = self._api.list_groups_conditional(
+            if_none_match=None if full else self._etag, skip_bad_rows=True
+        )
         if groups is None:
             return RailUpdate(groups=None, etag=self._etag)
+        skipped = getattr(groups, "skipped", 0)
+        if skipped:
+            self.forget_etag()
+            etag = None
         if not groups.enabled or groups.degraded:
             # "Could not ask" is not "all caught up": the app holds what it has.
             return RailUpdate(groups=groups, etag=etag)
@@ -143,6 +149,7 @@ class RailPoller:
         # A failed unread request is asked again on the next poll. That needs a 200, so the
         # ETag is only kept when the request came back (or none was needed, or the server has
         # no such route).
+        # A partial list (groups were skipped) must not retain an ETag: the next poll asks again.
         return RailUpdate(
             groups=groups,
             server_marks=fetched.marks if fetched else {},
@@ -150,7 +157,7 @@ class RailPoller:
             unread_total=fetched.unread_total if fetched else None,
             unread_answered=fetched is not None,
             unread_missing=answered_404,
-            etag=etag if complete else None,
+            etag=etag if (complete and not skipped) else None,
             seen=seen,
             full=asked if full and complete else 0,
         )
@@ -192,7 +199,7 @@ def fetch_topic(api: ApiClient, conv: Conversation, *, since: str | None) -> Gro
     """
     if conv.room_id is None or conv.topic_id is None:
         return GroupMessagePage()
-    return api.list_group_messages(conv.room_id, conv.topic_id, since=since)
+    return api.list_group_messages(conv.room_id, conv.topic_id, since=since, skip_bad_rows=True)
 
 
 def fetch_older(api: ApiClient, conv: Conversation, *, before: str, limit: int) -> GroupMessagePage:
@@ -294,7 +301,7 @@ def fetch_room_shelf(api: ApiClient, room_id: str) -> tuple[list[GroupAppTile], 
 def fetch_todos(api: ApiClient, owner: str | None, *, mine: bool) -> list[TodoEntry]:
     """Every todo of one owner, open and closed, in one call: a room's (``owner`` is its id) or
     your own (``None``). ``mine`` keeps what someone asked of you."""
-    return api.list_todos(status="all", group_id=owner, mine=mine)
+    return api.list_todos(status="all", group_id=owner, mine=mine, skip_bad_rows=True)
 
 
 @dataclass(frozen=True)
@@ -313,7 +320,7 @@ def fetch_own_todos(api: ApiClient, *, mine: bool) -> OwnTodos:
     A failure of your own list raises, as any pane read does; a 401 on either one too, so
     the app takes its login path (an upgrade-required answer is not caught here either).
     """
-    todos = api.list_todos(status="all", mine=mine)
+    todos = api.list_todos(status="all", mine=mine, skip_bad_rows=True)
     try:
         listed = api.list_room_todos(mine=mine)
     except ApiError as exc:
@@ -356,7 +363,7 @@ def add_todo(
 
 def fetch_notes(api: ApiClient, owner: str | None) -> ArtifactListResponse:
     """The owner's notes (``inline_text`` artifacts), up to the route's cap of 200."""
-    return api.list_artifacts(kind="inline_text", limit=200, principal=owner)
+    return api.list_artifacts(kind="inline_text", limit=200, principal=owner, skip_bad_rows=True)
 
 
 def fetch_note(api: ApiClient, note_id: str) -> ArtifactDetail:

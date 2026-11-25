@@ -156,6 +156,30 @@ FIELD_EXCEPTIONS: dict[tuple[str, str], str] = {
         "Client-computed: how many of the row's 'drafts' parse_draft_cards left out as "
         "malformed. 'drafts' itself is checked."
     ),
+    ("GroupList", "skipped"): (
+        "Client-computed: how many malformed group rows were skipped when skip_bad_rows=True."
+    ),
+    ("GroupMessagePage", "skipped"): (
+        "Client-computed: how many malformed message rows were skipped when skip_bad_rows=True."
+    ),
+    ("GroupMessagePage", "skipped_at"): (
+        "Client-computed: timestamps recovered from rows skipped when skip_bad_rows=True."
+    ),
+    ("GroupMessagePage", "skipped_at_unknown"): (
+        "Client-computed: a skipped row had no created_at string when skip_bad_rows=True."
+    ),
+    ("GroupMessagePage", "skipped_before_last"): (
+        "Client-computed: last readable row before any row skipped when skip_bad_rows=True."
+    ),
+    ("GroupMessagePage", "skipped_after_first"): (
+        "Client-computed: first readable row after any row skipped when skip_bad_rows=True."
+    ),
+    ("GroupMessagePage", "skipped_after_last"): (
+        "Client-computed: last readable row after any row skipped when skip_bad_rows=True."
+    ),
+    ("ArtifactListResponse", "skipped"): (
+        "Client-computed: how many malformed artifact rows were skipped when skip_bad_rows=True."
+    ),
 }
 
 
