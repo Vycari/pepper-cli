@@ -1759,6 +1759,69 @@
         ],
         "type": "object"
       },
+      "ArtifactShare": {
+        "properties": {
+          "level": {
+            "type": "string"
+          },
+          "room_id": {
+            "type": "string"
+          },
+          "room_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "room_name",
+          "level"
+        ],
+        "type": "object"
+      },
+      "ArtifactShareRoom": {
+        "properties": {
+          "room_id": {
+            "type": "string"
+          },
+          "room_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "room_name"
+        ],
+        "type": "object"
+      },
+      "ArtifactSharesResponse": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "rooms": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactShareRoom"
+            },
+            "type": "array"
+          },
+          "shares": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactShare"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "name",
+          "shares",
+          "rooms"
+        ],
+        "type": "object"
+      },
       "ArtifactToggleRequest": {
         "properties": {
           "checked": {
@@ -9957,6 +10020,18 @@
         ],
         "type": "object"
       },
+      "ShareBody": {
+        "properties": {
+          "room_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id"
+        ],
+        "type": "object"
+      },
       "SharingCalendarChoices": {
         "properties": {
           "calendars": {
@@ -17017,6 +17092,188 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-artifacts"
+        ]
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/shares": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactSharesResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-artifacts"
+        ]
+      },
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShareBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactSharesResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "client-api-artifacts"
+        ]
+      }
+    },
+    "/api/v1/artifacts/{artifact_id}/shares/{room_id}": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactSharesResponse"
+                }
               }
             },
             "description": ""
