@@ -586,19 +586,8 @@ class MessageStore:
     #: The ``next_before`` of the oldest page held: what "load older" asks for next. ``None``
     #: means nothing is older (or the first page has not landed yet).
     older: str | None = None
-    #: The topic has been paged back, so a later newest page's cursor no longer applies.
+    #: A "load older" page has been merged, so the newest page's cursor no longer applies.
     paged_back: bool = False
-    #: A partial poll left rows out, so read marks stand still until a clean page returns
-    #: every known ``read_hold_at`` and covers ``read_hold_from`` through
-    #: ``read_hold_through``. One unreadable gap makes the whole hold need a full read.
-    read_held: bool = False
-    read_hold_at: set[datetime] = field(default_factory=set)
-    read_hold_from: str | None = None
-    read_hold_through: str | None = None
-    read_hold_needs_full: bool = False
-    #: A clean newest reconcile started a full-history read and every older page since has
-    #: also been clean. Only the last older page can release a hold that needs full history.
-    read_hold_clean_pass: bool = False
 
     def add(self, incoming: Iterable[GroupMessage]) -> list[str]:
         """Merge server rows. Returns the ids that are new (an edit replaces, it is not new)."""
@@ -619,114 +608,6 @@ class MessageStore:
         paged back, a later reconcile read of the newest page must not move that cursor."""
         if not self.paged_back:
             self.older = next_before
-
-    def hold_reads(
-        self,
-        *,
-        skipped_at: Iterable[str],
-        skipped_at_unknown: bool,
-        before_last: str | None,
-        after_first: str | None,
-        after_last: str | None,
-    ) -> None:
-        """Hold read marks while a partial poll leaves rows unseen.
-
-        Each readable skipped timestamp must be returned again before the hold clears. A
-        gap without one, in this page or an earlier one, requires a whole-topic read because
-        the readable rows beside it only bracket where the missing message was.
-        """
-        self.read_held = True
-        self.read_hold_clean_pass = False
-        known: set[datetime] = set()
-        readable: list[str] = []
-        for at in skipped_at:
-            stamp = parse_ts(at)
-            if stamp is None:
-                self.read_hold_needs_full = True
-            else:
-                known.add(stamp)
-                readable.append(at)
-        if skipped_at_unknown:
-            self.read_hold_needs_full = True
-        self.read_hold_at.update(known)
-        bounds = (
-            [*readable, after_first, after_last]
-            if readable
-            else [before_last, after_first, after_last]
-        )
-        from_at, through = parse_ts(self.read_hold_from), parse_ts(self.read_hold_through)
-        for at in [*bounds, self.read_hold_from, self.read_hold_through]:
-            stamp = parse_ts(at)
-            if stamp is None:
-                continue
-            if from_at is None or stamp < from_at:
-                self.read_hold_from, from_at = at, stamp
-            if through is None or stamp > through:
-                self.read_hold_through, through = at, stamp
-
-    def release_read_hold(
-        self,
-        incoming: Iterable[GroupMessage],
-        *,
-        reconcile: bool,
-        next_before: str | None,
-    ) -> None:
-        """Let read marks move again once a clean read returns the missing rows."""
-        if not self.read_held:
-            return
-        first = parse_ts(self.read_hold_from)
-        last = parse_ts(self.read_hold_through)
-        stamps = [stamp for message in incoming if (stamp := parse_ts(message.created_at))]
-        returned = set(stamps)
-        known_returned = not self.read_hold_at or self.read_hold_at <= returned
-        covered = (
-            not self.read_hold_needs_full
-            and bool(self.read_hold_at)
-            and known_returned
-            and first is not None
-            and last is not None
-            and bool(stamps)
-            and min(stamps) <= first
-            and max(stamps) >= last
-        )
-        whole_topic = reconcile and next_before is None and known_returned
-        if covered or whole_topic:
-            self.read_held = False
-            self.read_hold_at.clear()
-            self.read_hold_from = None
-            self.read_hold_through = None
-            self.read_hold_needs_full = False
-            self.read_hold_clean_pass = False
-
-    def note_clean_topic_page(
-        self,
-        incoming: Iterable[GroupMessage],
-        *,
-        reconcile: bool,
-        next_before: str | None,
-    ) -> None:
-        """Start a clean whole-topic read with the newest page of a reconcile poll."""
-        if not self.read_held or not reconcile:
-            return
-        starting_pass = not self.read_hold_clean_pass
-        self.read_hold_clean_pass = True
-        rows = {message.id: message for message in [*self.ordered(), *incoming]}
-        self.release_read_hold(rows.values(), reconcile=True, next_before=next_before)
-        if starting_pass and self.read_held and next_before is not None:
-            # The user may have paged back before the malformed row appeared. A new pass
-            # restarts the older-page walk at this clean page's cursor; later reconciles in
-            # the same pass must not reset the pages already loaded.
-            self.older = next_before
-            self.paged_back = True
-
-    def note_clean_older_page(
-        self, incoming: Iterable[GroupMessage], *, next_before: str | None
-    ) -> None:
-        """Continue a clean whole-topic read; release only when no older page remains."""
-        if not self.read_held or not self.read_hold_clean_pass:
-            return
-        rows = {message.id: message for message in [*self.ordered(), *incoming]}
-        self.release_read_hold(rows.values(), reconcile=True, next_before=next_before)
 
     def add_older(self, incoming: Iterable[GroupMessage], next_before: str | None) -> list[str]:
         """Merge a "load older" page. Rows are deduped by id; the poll cursor is untouched
