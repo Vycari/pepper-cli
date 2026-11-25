@@ -5717,27 +5717,6 @@
         ],
         "type": "object"
       },
-      "MatrixIn": {
-        "properties": {
-          "event_id": {
-            "type": "string"
-          },
-          "window_end": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "window_start": {
-            "format": "date-time",
-            "type": "string"
-          }
-        },
-        "required": [
-          "event_id",
-          "window_start",
-          "window_end"
-        ],
-        "type": "object"
-      },
       "McpConnectRequest": {
         "properties": {
           "additional": {
@@ -19484,63 +19463,6 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/CandidatesIn"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "type": "object"
-                }
-              }
-            },
-            "description": ""
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": ""
-          }
-        },
-        "tags": [
-          "client-api-calendars"
-        ]
-      }
-    },
-    "/api/v1/calendars/reschedule/matrix": {
-      "post": {
-        "parameters": [
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MatrixIn"
               }
             }
           },
