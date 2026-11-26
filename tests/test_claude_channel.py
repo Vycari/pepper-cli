@@ -453,6 +453,18 @@ class _Session:
         time.sleep(settle)
         return self.stdout.notifications()
 
+    def wait_for_cursor(self, path: Path, cursor: int) -> None:
+        """Wait for the worker's cursor write, which follows the notification push."""
+
+        def written() -> bool:
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return False
+            return isinstance(value, dict) and value.get("cursor") == cursor
+
+        self.wait_for(written, f"cursor {cursor} in {path.name}")
+
     def wait_exhausted(self) -> None:
         self.wait_for(self.fake.exhausted.is_set, "the stream script to run out")
         # Let the worker finish handling the last frames before the session ends.
@@ -3118,7 +3130,11 @@ def test_repeated_room_follows_each_room_and_tags_events_with_their_own_room(mon
     out: dict = {}
 
     def script(s: _Session) -> None:
-        s.wait_notifications(2, settle=0.2)
+        s.wait_notifications(2)
+        # The notification is pushed before the cursor file is written. A slow runner can lose
+        # that race, so wait for both room files rather than for a fixed pause.
+        s.wait_for_cursor(Path(f"{cursor}.{_ROOM}"), 7)
+        s.wait_for_cursor(Path(f"{cursor}.{_OTHER_ROOM}"), 3)
         out["in"] = s.call("messages_list", {"room_id": _OTHER_ROOM, "topic_id": _OTHER_TOPIC})
         out["out"] = s.call("messages_list", {"room_id": _SURVIVOR, "topic_id": _TOPIC})
 
