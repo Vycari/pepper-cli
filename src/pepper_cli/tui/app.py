@@ -167,6 +167,9 @@ _NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout)
 #: Client errors a read-mark PUT will keep getting however often it is retried (no access to
 #: the topic any more, the topic is gone, the request is refused). The mark is dropped.
 _PUBLISH_PERMANENT = frozenset({400, 403, 404, 409, 410, 422})
+#: A skipped refresh target keeps its old body on screen, so the notice must say that rather
+#: than claim the row was left out entirely.
+_UNREADABLE_REFRESH = "The edited message could not be read and still shows its previous text."
 
 
 def utcnow() -> datetime:
@@ -296,6 +299,7 @@ class PepperApp(App[None]):
         #: once per count change, not on every poll tick.
         self._rail_skipped = 0
         self._topic_skipped = 0
+        self._refresh_skipped = 0
         self._todos_skipped = 0
         self._notes_skipped = 0
         self._partial_notices: dict[str, str] = {}
@@ -958,12 +962,26 @@ class PepperApp(App[None]):
         )
 
     def _refreshed(self, message_id: str, page: GroupMessagePage) -> None:
+        """Apply a refresh, and say so when the target itself could not be read."""
+        scope = self._refresh_notice_scope(message_id)
         fresh = [m for m in page.messages if m.id == message_id]
         if fresh:
+            self._note_pane_skipped(
+                0, "_refresh_skipped", "this message", scope=scope, text=_UNREADABLE_REFRESH
+            )
             self._patch_row(message_id, lambda rows: rows.add(fresh))
         elif page.permalink_target_missing:
             # gone for good: show its tombstone
+            self._note_pane_skipped(
+                0, "_refresh_skipped", "this message", scope=scope, text=_UNREADABLE_REFRESH
+            )
             self._patch_row(message_id, lambda rows: rows.apply_delete(message_id, {}))
+        elif page.skipped:
+            # A skipped neighbour is harmless once the target is patched, but a skipped target
+            # leaves the old body on screen. Keep the queue moving, and do not call that success.
+            self._note_pane_skipped(
+                1, "_refresh_skipped", "this message", scope=scope, text=_UNREADABLE_REFRESH
+            )
         self._render_topic(new_rows=0, reset=False)
         self._run("refresh")
 
@@ -1018,6 +1036,27 @@ class PepperApp(App[None]):
             return f"pane:{pane.key}"
         return attr
 
+    def _refresh_notice_scope(self, message_id: str) -> str:
+        """The notice key for one stale row's unreadable refresh."""
+        current = getattr(self, "current", None)
+        if current is None:
+            return "_refresh_skipped"
+        return f"refresh:{state.sidebar_key(current)}:{message_id}"
+
+    def _clear_refresh_notices(self) -> None:
+        """Clear unreadable-refresh notices for the open conversation."""
+        current = getattr(self, "current", None)
+        if current is None:
+            return
+        prefix = f"refresh:{state.sidebar_key(current)}:"
+        notices = getattr(self, "_partial_notices", None)
+        if not isinstance(notices, dict):
+            return
+        for scope in [key for key in notices if key.startswith(prefix)]:
+            self._note_pane_skipped(
+                0, "_refresh_skipped", "this message", scope=scope, text=_UNREADABLE_REFRESH
+            )
+
     def _refresh_partial_notice(self) -> None:
         """Show only the partial notices that apply to what the user is looking at."""
         notices = getattr(self, "_partial_notices", None)
@@ -1039,41 +1078,53 @@ class PepperApp(App[None]):
         else:
             current = getattr(self, "current", None)
             if current is not None:
-                topic_notice = notices.get(f"topic:{state.sidebar_key(current)}")
+                key = state.sidebar_key(current)
+                topic_notice = notices.get(f"topic:{key}")
                 if topic_notice:
                     parts.append(topic_notice)
+                prefix = f"refresh:{key}:"
+                for scope, refresh_notice in notices.items():
+                    if scope.startswith(prefix):
+                        parts.append(refresh_notice)
         self._partial_notice = " ".join(parts)
 
-    def _note_pane_skipped(self, skipped: int, attr: str, label: str) -> None:
-        """Say, once per count change, that a TUI-polled list left out malformed rows.
+    def _note_pane_skipped(
+        self,
+        skipped: int,
+        attr: str,
+        label: str,
+        *,
+        text: str | None = None,
+        scope: str | None = None,
+    ) -> None:
+        """Say, once per count change, that a TUI read left out malformed rows.
 
-        The count and the persistent notice are scoped to the conversation or pane they
-        describe, so a warning never follows the user to another conversation or pane.
+        The count and the persistent notice are scoped to the conversation, pane, or row they
+        describe, so a warning never follows the user somewhere unrelated. ``text`` replaces the
+        default wording when the old row is still on screen rather than omitted. ``scope`` names
+        one row's warning instead of the surrounding pane.
         """
         skip_scope = getattr(self, "_skip_scope", None)
-        scope = skip_scope(attr) if callable(skip_scope) else attr
+        target_scope = scope or (skip_scope(attr) if callable(skip_scope) else attr)
         counts = getattr(self, "_partial_counts", None)
         had_counts = isinstance(counts, dict)
         if not had_counts:
             counts = {}
             self._partial_counts = counts
-        last = counts.get(scope, 0 if had_counts else getattr(self, attr, 0))
+        last = counts.get(target_scope, 0 if had_counts else getattr(self, attr, 0))
+        message = text or f"{skipped} item(s) could not be read and are not shown in {label}."
         if skipped > last:
-            self.notify(
-                f"{skipped} item(s) could not be read and are not shown in {label}.",
-                severity="warning",
-                timeout=4,
-            )
+            self.notify(message, severity="warning", timeout=4)
         setattr(self, attr, skipped)
-        counts[scope] = skipped
+        counts[target_scope] = skipped
         notices = getattr(self, "_partial_notices", None)
         if not isinstance(notices, dict):
             notices = {}
             self._partial_notices = notices
         if skipped > 0:
-            notices[scope] = f"{skipped} item(s) could not be read and are not shown in {label}."
+            notices[target_scope] = message
         else:
-            notices.pop(scope, None)
+            notices.pop(target_scope, None)
         refresh_partial = getattr(self, "_refresh_partial_notice", None)
         if callable(refresh_partial):
             refresh_partial()
@@ -1096,6 +1147,9 @@ class PepperApp(App[None]):
         # topic is complete. Keep that partial state until a full reconcile reports zero.
         if reconcile or page.skipped > 0:
             self._note_pane_skipped(page.skipped, "_topic_skipped", "this topic")
+        if reconcile and page.skipped == 0:
+            # A clean full read proves the held row is current again, if a refresh skipped it.
+            self._clear_refresh_notices()
         self._on_topic(page.messages)
 
     def _on_topic(self, messages: list[GroupMessage]) -> None:

@@ -626,3 +626,90 @@ class TestReq6RefreshWindow:
         assert on_error is not None
         assert on_error(httpx.ConnectError("down")) is False
         assert app._stale_rows == ["m-stale"]
+
+    def test_refresh_warns_when_the_target_row_is_unreadable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        api = _api(_messages_body(_message(id="bad", display_name=123)))
+        app = PepperApp(api)
+        app.current = Conversation(room_id="r1", topic_id="tp1")
+        app.store.rows["m-stale"] = GroupMessage(**_message(id="m-stale", raw_body="old"))
+        app._stale_rows = ["m-stale"]
+        said: list[dict[str, Any]] = []
+        app.notify = lambda message, **kwargs: said.append({"message": message, **kwargs})
+        monkeypatch.setattr(app, "_render_topic", lambda **_kw: None)
+        monkeypatch.setattr(app, "_run", lambda _kind: None)
+
+        captured: dict[str, Any] = {}
+
+        def fake_start(
+            kind: str,
+            work: Any,
+            deliver: Any,
+            *,
+            on_error: Any = None,
+        ) -> None:
+            captured["work"] = work
+            captured["deliver"] = deliver
+
+        monkeypatch.setattr(app, "_start", fake_start)
+        app._refresh_next()
+        captured["deliver"](captured["work"]())
+
+        assert app.store.rows["m-stale"].raw_body == "old"
+        assert app._stale_rows == []
+        assert len(said) == 1
+        assert said[0]["severity"] == "warning"
+        assert "still shows its previous text" in said[0]["message"]
+        assert "still shows its previous text" in app._partial_notice
+
+        captured["deliver"](GroupMessagePage(messages=[app.store.rows["m-stale"]]))
+        assert app._partial_notice == ""
+        assert len(said) == 1
+
+    def test_another_rows_success_does_not_clear_the_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = PepperApp(_api(_messages_body()))
+        app.current = Conversation(room_id="r1", topic_id="tp1")
+        app.store.rows["m1"] = GroupMessage(**_message(id="m1", raw_body="old m1"))
+        app.store.rows["m2"] = GroupMessage(**_message(id="m2", raw_body="old m2"))
+        app._stale_rows = ["m1", "m2"]
+        said: list[dict[str, Any]] = []
+        app.notify = lambda message, **kwargs: said.append({"message": message, **kwargs})
+        monkeypatch.setattr(app, "_render_topic", lambda **_kw: None)
+        monkeypatch.setattr(app, "_run", lambda _kind: None)
+        deliveries: list[Any] = []
+
+        def fake_start(
+            kind: str,
+            work: Any,
+            deliver: Any,
+            *,
+            on_error: Any = None,
+        ) -> None:
+            deliveries.append(deliver)
+
+        monkeypatch.setattr(app, "_start", fake_start)
+        app._refresh_next()
+        app._refresh_next()
+        assert len(deliveries) == 2
+
+        deliveries[0](GroupMessagePage(skipped=1))
+        assert app.store.rows["m1"].raw_body == "old m1"
+        assert "still shows its previous text" in app._partial_notice
+        assert len(said) == 1
+
+        deliveries[1](
+            GroupMessagePage(messages=[GroupMessage(**_message(id="m2", raw_body="new m2"))])
+        )
+        assert app.store.rows["m2"].raw_body == "new m2"
+        assert "still shows its previous text" in app._partial_notice
+        assert len(said) == 1
+
+        deliveries[0](
+            GroupMessagePage(messages=[GroupMessage(**_message(id="m1", raw_body="new m1"))])
+        )
+        assert app.store.rows["m1"].raw_body == "new m1"
+        assert app._partial_notice == ""
+        assert len(said) == 1
