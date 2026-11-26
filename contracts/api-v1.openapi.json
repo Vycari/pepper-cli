@@ -8684,6 +8684,26 @@
           "created_at": {
             "type": "string"
           },
+          "created_at_dated_display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at_dated_year_display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "created_at_display": {
             "type": "string"
           },
@@ -8824,6 +8844,16 @@
             "anyOf": [
               {
                 "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "own_day_key": {
+            "anyOf": [
+              {
+                "type": "string"
               },
               {
                 "type": "null"
