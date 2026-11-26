@@ -452,6 +452,22 @@ def test_artifacts_share_sends_the_room_and_only_a_level_that_was_asked_for(serv
     assert json.loads(req.content) == {"room_id": ROOM, "level": "write"}
 
 
+def test_artifacts_share_reads_the_level_back_whatever_case_the_room_id_was_typed_in(
+    server, capsys
+) -> None:
+    argv = ["artifacts", "share", NOTE, "--room", ROOM.upper(), "--level", "write"]
+    assert cli.main(argv) == 0
+    assert "with Trip planning: can read, comment and edit." in capsys.readouterr().err
+
+
+def test_artifacts_share_states_no_level_the_answer_did_not_give(server, capsys) -> None:
+    server.shared = False
+    assert cli.main(["artifacts", "share", NOTE, "--room", "trip"]) == 0
+    err = capsys.readouterr().err
+    assert "Shared 'Trip plan' with trip." in err
+    assert "can read" not in err
+
+
 def test_artifacts_share_refuses_a_level_the_server_does_not_offer(server, capsys) -> None:
     server.levels = ["read"]
     argv = ["artifacts", "share", NOTE, "--room", "trip", "--level", "comment", "--json"]

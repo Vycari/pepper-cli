@@ -10815,10 +10815,15 @@ def cmd_artifacts_share(args: argparse.Namespace) -> int:
                 )
                 return 1
         shares = api.share_artifact(ref[0], room_id, level=args.level)
-        now = next((s for s in shares.shares if s.room_id == room_id), None)
-        words = _SHARE_LEVEL_WORDS.get(now.level, now.level) if now else "can read"
-        room = sanitize_line(now.room_name if now else args.room)
-        _emit(shares, args, lambda: render.info(f"Shared {shares.name!r} with {room}: {words}."))
+        # A room id typed in capitals still names the room the server answers in lower case.
+        now = next((s for s in shares.shares if s.room_id.lower() == room_id.lower()), None)
+        if now is None:
+            # Never guess a level the answer did not state.
+            line = f"Shared {shares.name!r} with {sanitize_line(args.room)}."
+        else:
+            words = sanitize_line(_SHARE_LEVEL_WORDS.get(now.level, now.level))
+            line = f"Shared {shares.name!r} with {sanitize_line(now.room_name)}: {words}."
+        _emit(shares, args, lambda: render.info(line))
         return 0
 
     return _with_api(run, _report_share_error, args)
