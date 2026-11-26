@@ -143,6 +143,7 @@ from pepper_cli import (
     following_search,
     following_view,
     graph_view,
+    hubs_view,
     next_view,
     note_edit,
     note_images,
@@ -1073,6 +1074,151 @@ def _build_parser() -> tuple[argparse.ArgumentParser, frozenset[str]]:
         "--all", action="store_true", help="Also list the stickers you have not earned yet."
     )
     p.set_defaults(handler=cmd_stickers)
+
+    p_hubs = sub.add_parser(
+        "hubs",
+        help="Your hubs: several rooms and your own notes and files gathered in one view.",
+        description=(
+            "A hub gathers rooms you are in and your own notes and files in one place, so you can "
+            "ask Pepper about all of it at once. A hub moves nothing and shows nobody anything "
+            "new: each person sees only the rooms they are in and their own items. Only "
+            "available once hubs are turned on for your account."
+        ),
+    )
+    sub_hubs = p_hubs.add_subparsers(dest="hubs_action", required=True)
+    _hub_help = "Hub: its name, or its id (from ``hubs list``)."
+
+    p = sub_hubs.add_parser(
+        "list",
+        help="List your hubs, the ones you took and the ones offered to you.",
+        parents=[_json_parent],
+    )
+    p.set_defaults(handler=cmd_hubs_list)
+
+    p = sub_hubs.add_parser(
+        "show", help="Show one hub: its rooms and your items.", parents=[_json_parent]
+    )
+    p.add_argument("hub", help=_hub_help)
+    p.set_defaults(handler=cmd_hubs_show)
+
+    p = sub_hubs.add_parser("create", help="Make a new, empty hub.", parents=[_json_parent])
+    p.add_argument("name", help="The hub's name.")
+    p.set_defaults(handler=cmd_hubs_create)
+
+    p = sub_hubs.add_parser("edit", help="Rename a hub.", parents=[_json_parent])
+    p.add_argument("hub", help=_hub_help)
+    p.add_argument("--name", required=True, help="The new name.")
+    p.set_defaults(handler=cmd_hubs_edit)
+
+    p = sub_hubs.add_parser(
+        "delete",
+        help="Delete one of your hubs. Its rooms, notes and files are not touched.",
+        parents=[_json_parent, _yes_parent],
+    )
+    p.add_argument("hub", help=_hub_help)
+    p.set_defaults(handler=cmd_hubs_delete)
+
+    for verb, handler, text in (
+        (
+            "add",
+            cmd_hubs_add,
+            "Add a room you are in, or one of your own notes or files, to a hub.",
+        ),
+        ("remove", cmd_hubs_remove, "Take a room or one of your items out of a hub."),
+    ):
+        p = sub_hubs.add_parser(
+            verb,
+            help=text,
+            parents=[_json_parent, *([_yes_parent] if verb == "remove" else [])],
+        )
+        p.add_argument("hub", help=_hub_help)
+        what = p.add_mutually_exclusive_group(required=True)
+        what.add_argument(
+            "--room",
+            metavar="ROOM",
+            help="Room: its UUID, or a case-insensitive unique name prefix.",
+        )
+        what.add_argument(
+            "--item",
+            metavar="ARTIFACT",
+            help="One of your notes or files: its number from 'artifacts list', or its id.",
+        )
+        p.set_defaults(handler=handler)
+
+    p = sub_hubs.add_parser(
+        "pin",
+        help="Focus your chat with Pepper on one of your hubs.",
+        parents=[_json_parent],
+    )
+    p.add_argument("hub", help=_hub_help)
+    p.set_defaults(handler=cmd_hubs_pin)
+
+    p = sub_hubs.add_parser("unpin", help="Take the chat focus off a hub.", parents=[_json_parent])
+    p.add_argument("hub", help=_hub_help)
+    p.set_defaults(handler=cmd_hubs_unpin)
+
+    p = sub_hubs.add_parser(
+        "share",
+        help="Offer one of your hubs to the people who are in at least two of its rooms.",
+        description=(
+            "Offer the hub to the people in its rooms. A person sees the offer only while they "
+            "are in at least two of the hub's rooms, and then only the rooms they are in. "
+            "Sharing again changes the level."
+        ),
+        parents=[_json_parent],
+    )
+    p.add_argument("hub", help=_hub_help)
+    p.add_argument(
+        "--level",
+        choices=("view", "edit"),
+        help="What they may do. Choices: view, edit (rename it, add and remove rooms they are "
+        "in). Omit to keep the level it is already shared at, or view.",
+    )
+    p.set_defaults(handler=cmd_hubs_share)
+
+    p = sub_hubs.add_parser(
+        "revoke",
+        help="Stop sharing one of your hubs. Everyone who took it loses it.",
+        parents=[_json_parent, _yes_parent],
+    )
+    p.add_argument("hub", help=_hub_help)
+    p.set_defaults(handler=cmd_hubs_revoke)
+
+    p = sub_hubs.add_parser("take", help="Take a hub someone offered you.", parents=[_json_parent])
+    p.add_argument("hub", help=_hub_help)
+    p.set_defaults(handler=cmd_hubs_take)
+
+    p = sub_hubs.add_parser(
+        "leave",
+        help="Leave a hub you took, or turn down one you were offered.",
+        parents=[_json_parent, _yes_parent],
+    )
+    p.add_argument("hub", help=_hub_help)
+    p.set_defaults(handler=cmd_hubs_leave)
+
+    p = sub_hubs.add_parser(
+        "notify",
+        help="Set your own notifications for the rooms of a hub, once.",
+        description=(
+            "Set your own notification level on every room of the hub you are in, or on one of "
+            "them with --room. It is applied once: a room added later keeps its own setting."
+        ),
+        parents=[_json_parent],
+    )
+    p.add_argument("hub", help=_hub_help)
+    p.add_argument(
+        "--level",
+        required=True,
+        choices=("all", "mentions", "muted"),
+        help="Choices: all (every message), mentions (@mentions only), muted.",
+    )
+    p.add_argument(
+        "--room",
+        metavar="ROOM",
+        help="Only this room of the hub: its UUID, or a case-insensitive unique name prefix. "
+        "Omit for every room of the hub you are in.",
+    )
+    p.set_defaults(handler=cmd_hubs_notify)
 
     p_graph = sub.add_parser(
         "graph",
@@ -10944,6 +11090,300 @@ def _feed_error_body(exc: api_client.ApiError) -> dict[str, Any]:
     except (ValueError, AttributeError):
         return {}
     return detail if isinstance(detail, dict) else {}
+
+
+def _report_hub_error(exc: api_client.ApiError, args: argparse.Namespace | None = None) -> int:
+    """One line for the statuses the hub routes answer.
+
+    A 404 is a hub that does not exist, one the caller may not see, or hubs not being on for
+    their account: the server does not tell those apart, so neither does this.
+    """
+    said = sanitize_line(exc.detail) if exc.detail else ""
+    if exc.status == 404:
+        _emit_error(
+            args,
+            "not_found",
+            "No such hub, or hubs are not turned on for your account (or this server is too old).",
+            status=404,
+        )
+        return 2
+    if exc.status == 403:
+        _emit_error(args, "forbidden", said or "That isn't a room you are in.", status=403)
+        return 1
+    if exc.status == 409:
+        _emit_error(args, "conflict", said or "The hub could not take that.", status=409)
+        return 1
+    if exc.status == 503:
+        _emit_error(
+            args,
+            "server",
+            said or "Pepper couldn't check your rooms just now. Try again in a minute.",
+            status=503,
+        )
+        return 1
+    return _report_api_error(exc, args)
+
+
+def _need_hub(api: api_client.ApiClient, value: str, args: argparse.Namespace) -> str:
+    """The id of the hub ``value`` names: an id as it is, else an exact name (any case) among
+    the caller's own hubs, the ones they took and the ones on offer."""
+    if _valid_uuid(value.lower()):
+        return value.lower()
+    wanted = value.strip().casefold()
+    found = [row for row in hubs_view.rows(api.list_hubs()) if row["name"].casefold() == wanted]
+    if len(found) == 1:
+        return str(found[0]["id"])
+    if not found:
+        _emit_error(args, "not_found", f"no hub named {value!r}; see 'pepper hubs list'")
+    else:
+        ids = ", ".join(sanitize_line(str(row["id"])) for row in found)
+        _emit_error(args, "ambiguous", f"more than one hub is named {value!r}; use an id: {ids}")
+    raise _BadInputError
+
+
+def _hub_item_id(value: str, args: argparse.Namespace) -> str:
+    """The artifact ``--item`` names: a number from the last ``artifacts list``, or an id."""
+    try:
+        found = artifacts_view.VIEW.resolve(value)
+    except numbered_view.RefError as exc:
+        _emit_error(args, exc.code, str(exc))
+        raise _BadInputError from exc
+    if found[1] is None and not _valid_uuid(found[0]):
+        _emit_error(
+            args,
+            "not_found",
+            f"no artifact {value!r} in the last 'pepper artifacts list'; "
+            "use its number or its full id",
+        )
+        raise _BadInputError
+    return found[0]
+
+
+def _hub_act(
+    args: argparse.Namespace,
+    call: Callable[[api_client.ApiClient, str], api_client.HubDetail | None],
+    done: Callable[[api_client.HubDetail | None], str],
+    *,
+    confirm: str | None = None,
+) -> int:
+    """Confirm if asked, resolve ``args.hub``, run ``call`` and say what happened.
+
+    Human mode prints one line on stderr; JSON mode prints the hub the server answered, or
+    ``{"ok": true, "id": ...}`` for a route that answers nothing.
+    """
+    if confirm is not None:
+        refusal = "pass --yes to run it without a prompt"
+        code = _confirm_destructive(args, confirm, yes=args.yes, refusal=refusal)
+        if code is not None:
+            return code
+
+    def run(api: api_client.ApiClient) -> int:
+        hub_id = _need_hub(api, args.hub, args)
+        hub = call(api, hub_id)
+        body = _to_plain(hub) if hub is not None else {"ok": True, "id": hub_id}
+        _emit(body, args, lambda: render.info(done(hub)))
+        return 0
+
+    return _with_api(run, _report_hub_error, args)
+
+
+def cmd_hubs_list(args: argparse.Namespace) -> int:
+    """``pepper hubs list [--json]``: ``GET /api/v1/hubs``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        result = api.list_hubs()
+        _emit_list(
+            hubs_view.rows(result),
+            args,
+            lambda: hubs_view.listing(result),
+            rooms_complete=result.rooms_complete,
+        )
+        return 0
+
+    return _with_api(run, _report_hub_error, args)
+
+
+def cmd_hubs_show(args: argparse.Namespace) -> int:
+    """``pepper hubs show HUB [--json]``."""
+
+    def run(api: api_client.ApiClient) -> int:
+        hub = api.get_hub(_need_hub(api, args.hub, args))
+        _emit(hub, args, lambda: hubs_view.detail(hub))
+        return 0
+
+    return _with_api(run, _report_hub_error, args)
+
+
+def cmd_hubs_create(args: argparse.Namespace) -> int:
+    """``pepper hubs create NAME [--json]``; prints the new hub's id."""
+    if not args.name.strip():
+        _emit_error(args, "usage", "a hub needs a name")
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        hub = api.create_hub(args.name.strip())
+
+        def human() -> None:
+            render.info(f"Made the hub {hub.name!r}.")
+            print(sanitize_line(hub.id))
+
+        _emit(hub, args, human)
+        return 0
+
+    return _with_api(run, _report_hub_error, args)
+
+
+def cmd_hubs_edit(args: argparse.Namespace) -> int:
+    """``pepper hubs edit HUB --name NAME``."""
+    if not args.name.strip():
+        _emit_error(args, "usage", "a hub needs a name")
+        return 2
+    return _hub_act(
+        args,
+        lambda api, hub_id: api.rename_hub(hub_id, args.name.strip()),
+        lambda hub: f"Renamed to {_hub_name(hub)}.",
+    )
+
+
+def _hub_name(hub: api_client.HubDetail | None) -> str:
+    return repr(sanitize_line(hub.name)) if hub is not None else "the hub"
+
+
+def cmd_hubs_delete(args: argparse.Namespace) -> int:
+    """``pepper hubs delete HUB [--yes]`` (your own hubs only)."""
+
+    def call(api: api_client.ApiClient, hub_id: str) -> None:
+        api.delete_hub(hub_id)
+
+    return _hub_act(
+        args,
+        call,
+        lambda _hub: "Deleted the hub. Its rooms, notes and files are untouched.",
+        confirm=f"Delete the hub {args.hub!r}? Its rooms, notes and files stay as they are.",
+    )
+
+
+def _hub_change(args: argparse.Namespace, *, present: bool) -> int:
+    """``hubs add``/``hubs remove``: one room (``--room``) or one of your items (``--item``)."""
+    item = _hub_item_id(args.item, args) if args.item else None
+
+    def call(api: api_client.ApiClient, hub_id: str) -> api_client.HubDetail:
+        if item is not None:
+            return api.set_hub_item(hub_id, item, present=present)
+        return api.set_hub_room(hub_id, _need_group(api, args.room, args=args), present=present)
+
+    what = "the item" if args.item else "the room"
+
+    def done(hub: api_client.HubDetail | None) -> str:
+        if present:
+            return f"Added {what} to {_hub_name(hub)}."
+        return f"Took {what} out of {_hub_name(hub)}."
+
+    confirm = None if present else f"Take {what} out of the hub {args.hub!r}?"
+    return _hub_act(args, call, done, confirm=confirm)
+
+
+def cmd_hubs_add(args: argparse.Namespace) -> int:
+    """``pepper hubs add HUB (--room ROOM | --item ARTIFACT)``."""
+    try:
+        return _hub_change(args, present=True)
+    except _BadInputError:
+        return 2
+
+
+def cmd_hubs_remove(args: argparse.Namespace) -> int:
+    """``pepper hubs remove HUB (--room ROOM | --item ARTIFACT) [--yes]``. Nothing is deleted:
+    the room or the item only leaves the hub."""
+    try:
+        return _hub_change(args, present=False)
+    except _BadInputError:
+        return 2
+
+
+def cmd_hubs_pin(args: argparse.Namespace) -> int:
+    """``pepper hubs pin HUB``: focus your chat with Pepper on the hub."""
+    return _hub_act(
+        args,
+        lambda api, hub_id: api.set_hub_pinned(hub_id, pinned=True),
+        lambda hub: f"Pinned: your chat with Pepper is focused on {_hub_name(hub)}.",
+    )
+
+
+def cmd_hubs_unpin(args: argparse.Namespace) -> int:
+    """``pepper hubs unpin HUB``."""
+    return _hub_act(
+        args,
+        lambda api, hub_id: api.set_hub_pinned(hub_id, pinned=False),
+        lambda hub: f"Unpinned {_hub_name(hub)}.",
+    )
+
+
+def cmd_hubs_share(args: argparse.Namespace) -> int:
+    """``pepper hubs share HUB [--level view|edit]``; no level keeps the one already given."""
+
+    def done(hub: api_client.HubDetail | None) -> str:
+        level = (hub.shared_level if hub is not None else None) or args.level or "view"
+        words = sanitize_line(hubs_view.SHARE_WORDS.get(level, level))
+        return f"Shared {_hub_name(hub)}: the people in at least two of its rooms {words}."
+
+    def call(api: api_client.ApiClient, hub_id: str) -> api_client.HubDetail:
+        # Sharing again with no level must not lower one already given.
+        level = args.level or api.get_hub(hub_id).shared_level or "view"
+        return api.share_hub(hub_id, level)
+
+    return _hub_act(args, call, done)
+
+
+def cmd_hubs_revoke(args: argparse.Namespace) -> int:
+    """``pepper hubs revoke HUB [--yes]``: stop sharing. Works whatever is turned on."""
+
+    def call(api: api_client.ApiClient, hub_id: str) -> None:
+        api.unshare_hub(hub_id)
+
+    return _hub_act(
+        args,
+        call,
+        lambda _hub: "Stopped sharing the hub.",
+        confirm=f"Stop sharing the hub {args.hub!r}? Everyone who took it loses it.",
+    )
+
+
+def cmd_hubs_take(args: argparse.Namespace) -> int:
+    """``pepper hubs take HUB``: take a hub you were offered."""
+    return _hub_act(
+        args,
+        lambda api, hub_id: api.take_hub(hub_id),
+        lambda hub: f"Took {_hub_name(hub)}. It is in 'pepper hubs list' now.",
+    )
+
+
+def cmd_hubs_leave(args: argparse.Namespace) -> int:
+    """``pepper hubs leave HUB [--yes]``: leave a hub you took, or turn down an offer."""
+
+    def call(api: api_client.ApiClient, hub_id: str) -> None:
+        api.leave_hub(hub_id)
+
+    return _hub_act(
+        args,
+        call,
+        lambda _hub: "Left the hub.",
+        confirm=f"Leave the hub {args.hub!r}? You keep your rooms, notes and files.",
+    )
+
+
+def cmd_hubs_notify(args: argparse.Namespace) -> int:
+    """``pepper hubs notify HUB --level all|mentions|muted [--room ROOM]``."""
+    words = hubs_view.NOTIFY_WORDS[args.level]
+
+    def call(api: api_client.ApiClient, hub_id: str) -> api_client.HubDetail:
+        room_id = _opt_group(api, args.room, args=args)
+        return api.set_hub_notifications(hub_id, args.level, room_id=room_id)
+
+    def done(hub: api_client.HubDetail | None) -> str:
+        where = "that room" if args.room else f"your rooms in {_hub_name(hub)}"
+        return f"Set {where} to {words}."
+
+    return _hub_act(args, call, done)
 
 
 def _report_stickers_error(args: argparse.Namespace, exc: api_client.ApiError) -> int:

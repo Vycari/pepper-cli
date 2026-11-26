@@ -80,6 +80,8 @@ NOUNS = frozenset(
         "graph",
         # `stickers` is the product's own word: the sticker book the weekly Wrapped fills.
         "stickers",
+        # `hubs` is the product's own word: several rooms and your own items in one view.
+        "hubs",
         "chat",
         # `run` sends a prompt file as one chat turn (a shebang interpreter).
         "run",
@@ -190,6 +192,13 @@ VERBS = frozenset(
         "steer",
         "take",
         "reconsider",
+        # Hubs: `add` is `remove`'s pair (a room or an item joins a hub; nothing is created),
+        # `pin`/`unpin` set and clear the chat focus, `take` accepts an offered hub, and
+        # `notify` sets a notification level, which `mute`/`unmute` cannot say (three levels).
+        "add",
+        "pin",
+        "unpin",
+        "notify",
     }
 )
 
@@ -258,6 +267,17 @@ ROOM_NA = {
     },
     "brief": "your own morning brief; the server exposes no room's brief to a PAT here",
     "stickers": "your own sticker book; stickers are a person's, never a room's",
+    "hubs list": "your own hubs; a hub is a person's view over rooms, never inside one",
+    "hubs show": "a hub's id or name says which; it spans rooms",
+    "hubs create": "a hub is made empty and is a person's own",
+    "hubs edit": "renames a hub; it spans rooms",
+    "hubs delete": "deletes a hub; it spans rooms",
+    "hubs pin": "the chat focus is on the whole hub",
+    "hubs unpin": "the chat focus is on the whole hub",
+    "hubs share": "a hub is offered across all of its rooms at once",
+    "hubs revoke": "a hub stops being offered across all of its rooms at once",
+    "hubs take": "an offered hub is taken whole",
+    "hubs leave": "a taken hub is left whole",
     "artifacts show": "reads any artifact the viewer can see; the id carries the room",
     "artifacts download": "reads any artifact the viewer can see; the id carries the room",
     "drafts send": "a draft's id says whose it is",
@@ -777,7 +797,40 @@ _COMMENT_THREAD = {
     "replies": [],
 }
 
+_HUB = "00000000-0000-0000-0000-0000000000b7"
+_HUB_DETAIL = {
+    "id": _HUB,
+    "name": "Trip",
+    "role": "owner",
+    "owner_name": None,
+    "pinned": False,
+    "shared_level": None,
+    "can_share": True,
+    "rooms": [{"id": _G, "name": "Trip planning", "notification_level": "all"}],
+    "items": [{"id": _NOTE, "name": "Plan", "kind": "note"}],
+    "rooms_complete": True,
+}
+_HUB_ACTS = {
+    f"/api/v1/hubs/{_HUB}{tail}": _HUB_DETAIL
+    for tail in (
+        "",
+        f"/rooms/{_G}",
+        f"/items/{_NOTE}",
+        "/pin",
+        "/sharing",
+        "/membership",
+        "/notifications",
+    )
+}
+
 ROUTES: dict[str, object] = {
+    "/api/v1/hubs": {
+        "hubs": [{"id": _HUB, "name": "Trip", "pinned": False, "shared_level": None}],
+        "shared": [],
+        "offers": [],
+        "rooms_complete": True,
+    },
+    f"/api/v1/hubs/{_HUB}": _HUB_DETAIL,
     "/api/v1/whoami": {"user_id": "u", "display_name": "U", "timezone": "UTC"},
     # `rooms poll`: an empty page, so JSON mode is a single cursor line like `rooms watch`'s.
     "/api/v1/groups/events": {"events": [], "next_after_id": 7},
@@ -1043,6 +1096,8 @@ ROUTES: dict[str, object] = {
 
 #: Non-GET routes (POST, DELETE): the room post answers ``{"message": {...}}``.
 POST_ROUTES: dict[str, object] = {
+    "/api/v1/hubs": _HUB_DETAIL,
+    **_HUB_ACTS,
     f"/api/v1/groups/{_G}/blog/notes/{_NOTE}/stage": {
         k: v for k, v in _BLOG_STAGE.items() if k != "check"
     },
@@ -1284,6 +1339,20 @@ JSON_CASES: dict[str, list[str]] = {
     "trajectories list": ["trajectories", "list"],
     "brief": ["brief"],
     "stickers": ["stickers"],
+    "hubs list": ["hubs", "list"],
+    "hubs show": ["hubs", "show", _HUB],
+    "hubs create": ["hubs", "create", "Trip"],
+    "hubs edit": ["hubs", "edit", _HUB, "--name", "Trip"],
+    "hubs delete": ["hubs", "delete", _HUB, "--yes"],
+    "hubs add": ["hubs", "add", _HUB, "--room", _G],
+    "hubs remove": ["hubs", "remove", _HUB, "--item", _NOTE, "--yes"],
+    "hubs pin": ["hubs", "pin", _HUB],
+    "hubs unpin": ["hubs", "unpin", _HUB],
+    "hubs share": ["hubs", "share", _HUB, "--level", "edit"],
+    "hubs revoke": ["hubs", "revoke", _HUB, "--yes"],
+    "hubs take": ["hubs", "take", _HUB],
+    "hubs leave": ["hubs", "leave", _HUB, "--yes"],
+    "hubs notify": ["hubs", "notify", _HUB, "--level", "mentions"],
     "agents guide": ["agents", "guide"],
     "scheduled-tasks renew": ["scheduled-tasks", "renew", _TASK],
     "calendar": ["calendar"],

@@ -2312,6 +2312,144 @@ def _image_details_from_dict(body: dict[str, Any]) -> ImageDetails:
     )
 
 
+# MIRROR: src/pepper/api/hubs.py::HubSummary
+@dataclass(frozen=True)
+class HubSummary:
+    """One of the caller's own hubs. ``shared_level`` is ``view`` or ``edit`` while the hub is
+    offered to the people in its rooms, else ``None``."""
+
+    id: str
+    name: str
+    pinned: bool = False
+    shared_level: str | None = None
+
+
+# MIRROR: src/pepper/api/hubs.py::SharedHubSummary
+@dataclass(frozen=True)
+class SharedHub:
+    """Someone else's hub the caller was offered, or took."""
+
+    id: str
+    name: str
+    owner_name: str
+
+
+# MIRROR: src/pepper/api/hubs.py::HubsResponse
+@dataclass(frozen=True)
+class Hubs:
+    """``GET /api/v1/hubs``: the caller's hubs, the ones they took and the ones on offer.
+
+    ``rooms_complete`` is ``False`` when the server could not read all of the caller's rooms,
+    so ``shared`` and ``offers`` may be short.
+    """
+
+    hubs: list[HubSummary] = field(default_factory=list)
+    shared: list[SharedHub] = field(default_factory=list)
+    offers: list[SharedHub] = field(default_factory=list)
+    rooms_complete: bool = True
+
+
+# MIRROR: src/pepper/api/hubs.py::HubRoom
+@dataclass(frozen=True)
+class HubRoom:
+    """A room of a hub the caller is in. ``notification_level`` is the caller's own level for
+    the room (``all``, ``mentions`` or ``muted``), or ``None`` when the server does not say."""
+
+    id: str
+    name: str
+    notification_level: str | None = None
+
+
+# MIRROR: src/pepper/api/hubs.py::HubItem
+@dataclass(frozen=True)
+class HubItem:
+    """One of the caller's own notes or files in a hub."""
+
+    id: str
+    name: str
+    kind: str
+
+
+# MIRROR: src/pepper/api/hubs.py::HubDetail
+@dataclass(frozen=True)
+class HubDetail:
+    """One hub as the caller sees it: only the rooms they are in and only their own items.
+
+    ``role`` is ``owner``, or the level a hub the caller took was shared at (``view`` or
+    ``edit``); a role this client does not know is treated as ``view``.
+    """
+
+    id: str
+    name: str
+    role: str
+    owner_name: str | None = None
+    pinned: bool = False
+    shared_level: str | None = None
+    can_share: bool = False
+    rooms: list[HubRoom] = field(default_factory=list)
+    items: list[HubItem] = field(default_factory=list)
+    rooms_complete: bool = True
+
+
+def _hubs_from_dict(raw: object) -> Hubs:
+    what = "hubs response"
+    body = _wire_row(raw, what)
+
+    def own(row: dict[str, Any]) -> HubSummary:
+        return HubSummary(
+            id=str(_wire_get(row, "id", what, str)),
+            name=str(_wire_get(row, "name", what, str)),
+            pinned=bool(_wire_opt(row, "pinned", what, False, bool)),
+            shared_level=_wire_opt(row, "shared_level", what, None, str),
+        )
+
+    def other(row: dict[str, Any]) -> SharedHub:
+        return SharedHub(
+            id=str(_wire_get(row, "id", what, str)),
+            name=str(_wire_get(row, "name", what, str)),
+            owner_name=str(_wire_opt(row, "owner_name", what, "", str)),
+        )
+
+    return Hubs(
+        hubs=_wire_rows(_wire_get(body, "hubs", what, list), what, own),
+        shared=_wire_rows(_wire_opt(body, "shared", what, [], list), what, other),
+        offers=_wire_rows(_wire_opt(body, "offers", what, [], list), what, other),
+        rooms_complete=bool(_wire_opt(body, "rooms_complete", what, True, bool)),
+    )
+
+
+def _hub_detail_from_dict(raw: object) -> HubDetail:
+    what = "hub response"
+    body = _wire_row(raw, what)
+
+    def room(row: dict[str, Any]) -> HubRoom:
+        return HubRoom(
+            id=str(_wire_get(row, "id", what, str)),
+            name=str(_wire_get(row, "name", what, str)),
+            notification_level=_wire_opt(row, "notification_level", what, None, str),
+        )
+
+    def item(row: dict[str, Any]) -> HubItem:
+        return HubItem(
+            id=str(_wire_get(row, "id", what, str)),
+            name=str(_wire_get(row, "name", what, str)),
+            kind=str(_wire_opt(row, "kind", what, "", str)),
+        )
+
+    return HubDetail(
+        id=str(_wire_get(body, "id", what, str)),
+        name=str(_wire_get(body, "name", what, str)),
+        role=str(_wire_get(body, "role", what, str)),
+        owner_name=_wire_opt(body, "owner_name", what, None, str),
+        pinned=bool(_wire_opt(body, "pinned", what, False, bool)),
+        shared_level=_wire_opt(body, "shared_level", what, None, str),
+        can_share=bool(_wire_opt(body, "can_share", what, False, bool)),
+        rooms=_wire_rows(_wire_opt(body, "rooms", what, [], list), what, room),
+        items=_wire_rows(_wire_opt(body, "items", what, [], list), what, item),
+        rooms_complete=bool(_wire_opt(body, "rooms_complete", what, True, bool)),
+    )
+
+
 # MIRROR: src/pepper/api/artifacts.py::ImageSuggestResponse
 @dataclass(frozen=True)
 class ImageSuggestion:
@@ -5024,6 +5162,78 @@ class ApiClient:
             "POST", f"/api/v1/groups/{group_id}/blog/posts/{post_id}/withdraw"
         ).json()
         return _wire_row(body, "blog response")
+
+    # Hubs (MIRROR: src/pepper/api/hubs.py). Every route but the last answers 404 unless the
+    # ``hubs`` rollout reaches the caller; a hub they may not see is the same 404.
+
+    def list_hubs(self) -> Hubs:
+        """``GET /api/v1/hubs``."""
+        return _hubs_from_dict(self._request("GET", "/api/v1/hubs").json())
+
+    def _hub(self, method: str, hub_id: str, tail: str = "", **kw: Any) -> HubDetail:
+        return _hub_detail_from_dict(
+            self._request(method, f"/api/v1/hubs/{hub_id}{tail}", **kw).json()
+        )
+
+    def create_hub(self, name: str) -> HubDetail:
+        """``POST /api/v1/hubs``. 409 for a name the caller already uses, 422 for a bad one."""
+        return _hub_detail_from_dict(
+            self._request("POST", "/api/v1/hubs", json={"name": name}).json()
+        )
+
+    def get_hub(self, hub_id: str) -> HubDetail:
+        """``GET /api/v1/hubs/{id}``."""
+        return self._hub("GET", hub_id)
+
+    def rename_hub(self, hub_id: str, name: str) -> HubDetail:
+        """``PATCH /api/v1/hubs/{id}``."""
+        return self._hub("PATCH", hub_id, json={"name": name})
+
+    def delete_hub(self, hub_id: str) -> None:
+        """``DELETE /api/v1/hubs/{id}`` (the owner only). Its rooms and items are untouched."""
+        self._request("DELETE", f"/api/v1/hubs/{hub_id}")
+
+    def set_hub_room(self, hub_id: str, room_id: str, *, present: bool) -> HubDetail:
+        """``PUT``/``DELETE /api/v1/hubs/{id}/rooms/{room_id}``. 403 for a room the caller is
+        not in."""
+        return self._hub("PUT" if present else "DELETE", hub_id, f"/rooms/{room_id}")
+
+    def set_hub_item(self, hub_id: str, artifact_id: str, *, present: bool) -> HubDetail:
+        """``PUT``/``DELETE /api/v1/hubs/{id}/items/{artifact_id}``: one of the caller's own
+        notes or files. 404 for one that is not theirs."""
+        return self._hub("PUT" if present else "DELETE", hub_id, f"/items/{artifact_id}")
+
+    def set_hub_pinned(self, hub_id: str, *, pinned: bool) -> HubDetail:
+        """``PUT``/``DELETE /api/v1/hubs/{id}/pin``: the owner's chat focus."""
+        return self._hub("PUT" if pinned else "DELETE", hub_id, "/pin")
+
+    def share_hub(self, hub_id: str, level: str) -> HubDetail:
+        """``PUT /api/v1/hubs/{id}/sharing``: offer the hub to the people in its rooms, at
+        ``view`` or ``edit``."""
+        return self._hub("PUT", hub_id, "/sharing", json={"level": level})
+
+    def unshare_hub(self, hub_id: str) -> None:
+        """``DELETE /api/v1/hubs/{id}/sharing``: stop offering it. Everyone who took it loses
+        it."""
+        self._request("DELETE", f"/api/v1/hubs/{hub_id}/sharing")
+
+    def take_hub(self, hub_id: str) -> HubDetail:
+        """``PUT /api/v1/hubs/{id}/membership``: take a hub the caller was offered."""
+        return self._hub("PUT", hub_id, "/membership")
+
+    def leave_hub(self, hub_id: str) -> None:
+        """``DELETE /api/v1/hubs/{id}/membership``: dismiss an offer, or leave a hub taken."""
+        self._request("DELETE", f"/api/v1/hubs/{hub_id}/membership")
+
+    def set_hub_notifications(
+        self, hub_id: str, level: str, *, room_id: str | None = None
+    ) -> HubDetail:
+        """``PUT /api/v1/hubs/{id}/notifications``: set the caller's own level (``all``,
+        ``mentions`` or ``muted``) on the hub's rooms once, or on one of them."""
+        body: dict[str, Any] = {"level": level}
+        if room_id is not None:
+            body["room_id"] = room_id
+        return self._hub("PUT", hub_id, "/notifications", json=body)
 
     def get_artifact_detail_raw(self, artifact_id: str) -> dict[str, Any]:
         """``GET /api/v1/artifacts/{id}/detail`` as the server's own dict (``kind_label``,

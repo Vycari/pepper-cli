@@ -387,6 +387,31 @@ ever want to look back at a specific conversation in detail.
   comments resolve --room <room> --note <note> <thread>` and `comments reopen`
   close or reopen one. Personal notes can't be commented on. Same comments as
   the room's own Notes board — see [Notes](#artifacts).
+<!-- rollout: hubs -->
+- **Your hubs:** a hub gathers rooms you are in and your own notes and files in
+  one view, so you can ask Pepper about all of it at once. `pepper hubs list`
+  shows your hubs, and `pepper hubs show HUB` shows one with its rooms and your
+  items. Make one with `pepper hubs create NAME`, then fill it with
+  `pepper hubs add HUB --room ROOM` or `pepper hubs add HUB --item ARTIFACT`
+  (`remove` takes one out again; nothing is deleted). `pepper hubs pin HUB`
+  focuses your chat with Pepper on that hub, and `unpin` takes the focus off.
+  `edit HUB --name NAME` renames a hub and `delete` removes it; its rooms,
+  notes and files stay as they are. You can name a hub by its name or its id.
+<!-- /rollout -->
+<!-- rollout: hub-sharing -->
+- **Sharing a hub:** `pepper hubs share HUB` offers a hub to the people who are
+  in at least two of its rooms. Each of them sees only the rooms they are
+  already in, and never your notes or files. Add `--level edit` to let them
+  rename the hub and add or remove rooms they are in. `pepper hubs revoke HUB`
+  stops sharing. A hub someone offered you appears in `pepper hubs list`: take
+  it with `pepper hubs take HUB`, and `pepper hubs leave HUB` gives it up.
+<!-- /rollout -->
+<!-- rollout: hub-notifications -->
+- **Notifications for a hub's rooms:**
+  `pepper hubs notify HUB --level all|mentions|muted` sets your own
+  notifications on every room of the hub you are in, once. Add `--room ROOM` to
+  set just one. A room you add later keeps its own setting.
+<!-- /rollout -->
 <!-- rollout: achievements -->
 - **Your stickers:** `pepper stickers` lists the stickers your Sunday Wrapped
   has given you, with each one's tier (bronze, silver or gold), how many weeks
