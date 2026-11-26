@@ -1100,9 +1100,19 @@ class PepperApp(App[None]):
                 if topic_notice:
                     parts.append(topic_notice)
                 prefix = f"refresh:{key}:"
-                for scope, refresh_notice in notices.items():
-                    if scope.startswith(prefix):
-                        parts.append(refresh_notice)
+                refresh_notices = [
+                    notice for scope, notice in notices.items() if scope.startswith(prefix)
+                ]
+                if refresh_notices:
+                    # The records stay per message so each one can clear on its own. The banner
+                    # shows one sentence, with a count when more than one row is unreadable.
+                    if len(refresh_notices) == 1:
+                        parts.append(refresh_notices[0])
+                    else:
+                        parts.append(
+                            f"{len(refresh_notices)} edited messages could not be read and "
+                            "still show their previous text."
+                        )
         self._partial_notice = " ".join(parts)
 
     def _note_pane_skipped(
@@ -2791,6 +2801,9 @@ class PepperApp(App[None]):
         return self._action_failed("load older messages", exc)
 
     def _got_older(self, page: GroupMessagePage) -> None:
+        # An older page can be the first readable copy of a message whose refresh target was
+        # unreadable. Clear before the merge, against the copy the warning was raised for.
+        self._clear_refresh_notices_from_rows(page.messages)
         self._learn_from_messages(page.messages)
         added = self.store.add_older(page.messages, page.next_before)
         if self._opening:
