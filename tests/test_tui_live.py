@@ -867,6 +867,52 @@ async def test_a_stream_edit_during_a_refresh_backoff_does_not_skip_the_retry(
         hold.set()
 
 
+async def test_a_malformed_row_in_one_refresh_window_does_not_starve_the_queue() -> None:
+    """A bad neighbour of the first stale row must not hold the row behind it (#372)."""
+    server = ts.standard_server()
+    bad = ts.message("bad", "2026-09-16T17:30:30+00:00", "unreadable")
+    del bad["display_name"]
+    rows = server.messages[ts.TOPIC_A1]
+    rows.insert(1, bad)
+    rows.append(ts.message("m2", "2026-09-16T17:31:00+00:00", "second flight"))
+    gate, hold = threading.Event(), threading.Event()
+    server.streams = [
+        ts.StreamScript(
+            frames=[
+                ts.CURSOR_HEAD,
+                ts.feed_frame("message.edited", {"topic_id": ts.TOPIC_A1, "message_id": "m1"}, 2),
+                ts.feed_frame("message.edited", {"topic_id": ts.TOPIC_A1, "message_id": "m2"}, 3),
+            ],
+            gates={1: gate},
+            hold=hold,
+        )
+    ]
+    app = tui_app.PepperApp(server.client())
+
+    def ats() -> list[str]:
+        return [q["at"] for m, _p, q in server.requests if m == "GET" and "at" in q]
+
+    try:
+        async with app.run_test(size=(120, 40)) as pilot:
+            await until(pilot, lambda: len(app.rooms) == 2 and app._stream_healthy)
+            app.open_conversation(state.Conversation(ts.ROOM_A, ts.TOPIC_A1))
+            await until(pilot, lambda: "second flight" in body_text(app))
+            await _settled(pilot, server)
+            next(r for r in rows if r["id"] == "m1").update(
+                raw_body="edited", is_edited=True, edited_at="2026-09-16T18:00:00+00:00"
+            )
+            next(r for r in rows if r["id"] == "m2").update(
+                raw_body="second edited", is_edited=True, edited_at="2026-09-16T18:01:00+00:00"
+            )
+            gate.set()
+            await until(pilot, lambda: len(ats()) >= 2)
+            await until(pilot, lambda: app.store.rows["m1"].raw_body == "edited")
+            await until(pilot, lambda: app.store.rows["m2"].raw_body == "second edited")
+            assert ats()[:2] == ["m1", "m2"]
+    finally:
+        hold.set()
+
+
 async def test_a_refresh_failure_does_not_survive_a_conversation_switch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

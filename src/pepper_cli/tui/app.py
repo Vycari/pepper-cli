@@ -934,8 +934,10 @@ class PepperApp(App[None]):
 
     def _refresh_next(self) -> None:
         """Read the next changed row again: the window around it (``at``), from which only
-        that row is kept. One in flight; each delivery asks for the next. Paused like the
-        topic poll while blurred (a retry's timer included): focus starts it again."""
+        that row is kept. A malformed neighbour is skipped instead of failing the refresh, so
+        one bad row cannot hold the queue; a transport or server failure still retries the row
+        with backoff. One in flight; each delivery asks for the next. Paused like the topic poll
+        while blurred (a retry's timer included): focus starts it again."""
         if self._blurred:
             return
         conv = self.current
@@ -948,7 +950,9 @@ class PepperApp(App[None]):
         room_id, topic_id = conv.room_id, conv.topic_id
         self._start(
             "refresh",
-            lambda: self._api.list_group_messages(room_id, topic_id, at=message_id),
+            lambda: self._api.list_group_messages(
+                room_id, topic_id, at=message_id, skip_bad_rows=True
+            ),
             lambda page: self._refreshed(message_id, page),
             on_error=lambda exc: self._refresh_failed(message_id, exc),
         )

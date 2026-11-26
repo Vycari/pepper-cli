@@ -10,8 +10,9 @@ Six requirements are tested here:
   4. PepperApp._note_pane_skipped fires once per count rise and uses
      severity=warning; partial results are never presented as complete.
   5. RailPoller does not retain the ETag when any group row was skipped.
-  6. Stale-message refresh re-queues via _refresh_failed on ApiError
-     (strict at= path), so the retry requirement is met.
+  6. The API's strict default stays unchanged, but the TUI stale-message refresh opts into
+     skip_bad_rows so one malformed row cannot starve the queue; transient failures still
+     re-queue via _refresh_failed.
 """
 
 from __future__ import annotations
@@ -552,34 +553,31 @@ class TestReq5NoETagOnPartialList:
 
 
 # ---------------------------------------------------------------------------
-# Req 6: Stale-message refresh re-queues on ApiError (strict at= path)
+# Req 6: The API default stays strict; the TUI refresh opts into row skipping
 # ---------------------------------------------------------------------------
 
 
-class TestReq6StaleMessageRetryOnError:
-    def test_refresh_strict_path_raises_api_error_on_bad_message(self) -> None:
-        """The at= refresh path uses the strict (no skip_bad_rows) call.
-        A malformed row in the refresh response raises ApiError, allowing
-        the caller (_refresh_failed) to re-queue the message id."""
+class TestReq6RefreshWindow:
+    def test_api_default_strict_path_raises_api_error_on_bad_message(self) -> None:
+        """Callers that do not opt in still get strict parsing. #371 did not change the API
+        default; the TUI refresh asks for row skipping separately."""
         bad = _message(id=99)
         api = _api(_messages_body(bad))
         with pytest.raises(ApiError) as exc:
             api.list_group_messages("r1", "tp1", at="m-stale")
         assert exc.value.status == 200
 
-    def test_refresh_strict_path_does_not_skip_bad_rows(self) -> None:
-        """The strict at= path must NOT silently skip: raising is correct so the
-        retry loop can re-queue the message."""
+    def test_api_default_does_not_skip_bad_rows(self) -> None:
+        """``skip_bad_rows`` remains opt-in for every API caller, including an ``at=`` read."""
         bad = _message(id=99)
         api = _api(_messages_body(bad))
-        # skip_bad_rows not set (default False) = strict = raises
         with pytest.raises(ApiError):
             api.list_group_messages("r1", "tp1", at="m-stale")
 
-    def test_refresh_failed_re_queues_after_malformed_response(
+    def test_refresh_work_skips_bad_rows_in_its_window(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        api = _api(_messages_body(_message(id=99)))
+        api = _api(_messages_body(_message(id="m-stale"), _message(id="bad", display_name=123)))
         app = PepperApp(api)
         app.current = Conversation(room_id="r1", topic_id="tp1")
         app.store.rows["m-stale"] = GroupMessage(**_message(id="m-stale"))
@@ -595,14 +593,36 @@ class TestReq6StaleMessageRetryOnError:
             on_error: Any = None,
         ) -> None:
             captured["work"] = work
+
+        monkeypatch.setattr(app, "_start", fake_start)
+        app._refresh_next()
+        page = captured["work"]()
+        assert [m.id for m in page.messages] == ["m-stale"]
+        assert page.skipped == 1
+
+    def test_refresh_failed_still_re_queues_a_transient_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        api = _api(_messages_body(_message(id="m-stale")))
+        app = PepperApp(api)
+        app.current = Conversation(room_id="r1", topic_id="tp1")
+        app.store.rows["m-stale"] = GroupMessage(**_message(id="m-stale"))
+        app._stale_rows = ["m-stale"]
+
+        captured: dict[str, Any] = {}
+
+        def fake_start(
+            kind: str,
+            work: Any,
+            deliver: Any,
+            *,
+            on_error: Any = None,
+        ) -> None:
             captured["on_error"] = on_error
 
         monkeypatch.setattr(app, "_start", fake_start)
         app._refresh_next()
         on_error = captured["on_error"]
         assert on_error is not None
-        with pytest.raises(ApiError) as exc:
-            captured["work"]()
-        assert exc.value.status == 200
-        assert on_error(exc.value) is False
+        assert on_error(httpx.ConnectError("down")) is False
         assert app._stale_rows == ["m-stale"]
