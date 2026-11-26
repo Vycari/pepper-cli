@@ -302,3 +302,18 @@ def test_a_role_this_client_does_not_know_reads_as_view(server, capsys) -> None:
     server.reply("GET", f"/api/v1/hubs/{HUB}", _detail(role="admin", owner_name="Chris"))
     assert cli.main(["hubs", "show", HUB]) == 0
     assert "Chris's. You can view." in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["hubs", "notify", HUB, "--level", "muted", "--room", ""],
+        ["hubs", "add", HUB, "--item", ""],
+        ["hubs", "add", HUB, "--room", " "],
+        ["hubs", "remove", HUB, "--item", "", "--yes"],
+    ],
+)
+def test_an_empty_room_or_item_is_refused_with_no_request(server, capsys, argv) -> None:
+    assert cli.main(argv) == 2
+    assert capsys.readouterr().err.strip()
+    assert server.calls() == []

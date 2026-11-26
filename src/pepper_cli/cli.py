@@ -11432,14 +11432,17 @@ def cmd_hubs_delete(args: argparse.Namespace) -> int:
 
 def _hub_change(args: argparse.Namespace, *, present: bool) -> int:
     """``hubs add``/``hubs remove``: one room (``--room``) or one of your items (``--item``)."""
-    item = _hub_item_id(args.item, args) if args.item else None
+    item = _hub_item_id(args.item, args) if args.item is not None else None
+    if item is None and not (args.room or "").strip():
+        _emit_error(args, "usage", "--room needs a room's name or id")
+        raise _BadInputError
 
     def call(api: api_client.ApiClient, hub_id: str) -> api_client.HubDetail:
         if item is not None:
             return api.set_hub_item(hub_id, item, present=present)
         return api.set_hub_room(hub_id, _need_group(api, args.room, args=args), present=present)
 
-    what = "the item" if args.item else "the room"
+    what = "the item" if item is not None else "the room"
 
     def done(hub: api_client.HubDetail | None) -> str:
         if present:
@@ -11544,13 +11547,18 @@ def cmd_hubs_leave(args: argparse.Namespace) -> int:
 def cmd_hubs_notify(args: argparse.Namespace) -> int:
     """``pepper hubs notify HUB --level all|mentions|muted [--room ROOM]``."""
     words = hubs_view.NOTIFY_WORDS[args.level]
+    one_room = args.room is not None
+    if one_room and not args.room.strip():
+        # An empty --room (an unset shell variable) must never widen to every room.
+        _emit_error(args, "usage", "--room needs a room's name or id")
+        return 2
 
     def call(api: api_client.ApiClient, hub_id: str) -> api_client.HubDetail:
-        room_id = _opt_group(api, args.room, args=args)
+        room_id = _need_group(api, args.room, args=args) if one_room else None
         return api.set_hub_notifications(hub_id, args.level, room_id=room_id)
 
     def done(hub: api_client.HubDetail | None) -> str:
-        where = "that room" if args.room else f"your rooms in {_hub_name(hub)}"
+        where = "that room" if one_room else f"your rooms in {_hub_name(hub)}"
         return f"Set {where} to {words}."
 
     return _hub_act(args, call, done)
