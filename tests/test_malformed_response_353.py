@@ -12,7 +12,7 @@ Six requirements are tested here:
   5. RailPoller does not retain the ETag when any group row was skipped.
   6. The API's strict default stays unchanged, but the TUI stale-message refresh opts into
      skip_bad_rows so one malformed row cannot starve the queue; transient failures still
-     re-queue via _refresh_failed.
+     re-queue via _refresh_failed, and an unreadable target warns until that row is read again.
 """
 
 from __future__ import annotations
@@ -711,5 +711,48 @@ class TestReq6RefreshWindow:
             GroupMessagePage(messages=[GroupMessage(**_message(id="m1", raw_body="new m1"))])
         )
         assert app.store.rows["m1"].raw_body == "new m1"
+        assert app._partial_notice == ""
+        assert len(said) == 1
+
+    def test_a_newest_page_reconcile_does_not_clear_an_older_rows_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = PepperApp(_api(_messages_body()))
+        app.current = Conversation(room_id="r1", topic_id="tp1")
+        app.store.rows["m1"] = GroupMessage(**_message(id="m1", raw_body="old"))
+        app._stale_rows = ["m1"]
+        app.loaded_topic = True
+        said: list[dict[str, Any]] = []
+        app.notify = lambda message, **kwargs: said.append({"message": message, **kwargs})
+        monkeypatch.setattr(app, "_learn_from_messages", lambda _messages: None)
+        monkeypatch.setattr(app, "_render_topic", lambda **_kw: None)
+        monkeypatch.setattr(app, "_fetch_roots", lambda: None)
+        monkeypatch.setattr(app, "_run", lambda _kind: None)
+        captured: dict[str, Any] = {}
+
+        def fake_start(
+            kind: str,
+            work: Any,
+            deliver: Any,
+            *,
+            on_error: Any = None,
+        ) -> None:
+            captured["deliver"] = deliver
+
+        monkeypatch.setattr(app, "_start", fake_start)
+        app._refresh_next()
+        captured["deliver"](GroupMessagePage(skipped=1))
+        assert "still shows its previous text" in app._partial_notice
+        assert len(said) == 1
+
+        newest = GroupMessage(**_message(id="m2", raw_body="newest"))
+        app._on_topic_page(GroupMessagePage(messages=[newest], skipped=0), reconcile=True)
+        assert app.store.rows["m1"].raw_body == "old"
+        assert "still shows its previous text" in app._partial_notice
+        assert len(said) == 1
+
+        fresh = GroupMessage(**_message(id="m1", raw_body="fresh"))
+        app._on_topic_page(GroupMessagePage(messages=[fresh], skipped=0), reconcile=True)
+        assert app.store.rows["m1"].raw_body == "fresh"
         assert app._partial_notice == ""
         assert len(said) == 1

@@ -966,15 +966,11 @@ class PepperApp(App[None]):
         scope = self._refresh_notice_scope(message_id)
         fresh = [m for m in page.messages if m.id == message_id]
         if fresh:
-            self._note_pane_skipped(
-                0, "_refresh_skipped", "this message", scope=scope, text=_UNREADABLE_REFRESH
-            )
+            self._clear_refresh_notice(message_id)
             self._patch_row(message_id, lambda rows: rows.add(fresh))
         elif page.permalink_target_missing:
             # gone for good: show its tombstone
-            self._note_pane_skipped(
-                0, "_refresh_skipped", "this message", scope=scope, text=_UNREADABLE_REFRESH
-            )
+            self._clear_refresh_notice(message_id)
             self._patch_row(message_id, lambda rows: rows.apply_delete(message_id, {}))
         elif page.skipped:
             # A skipped neighbour is harmless once the target is patched, but a skipped target
@@ -1043,19 +1039,15 @@ class PepperApp(App[None]):
             return "_refresh_skipped"
         return f"refresh:{state.sidebar_key(current)}:{message_id}"
 
-    def _clear_refresh_notices(self) -> None:
-        """Clear unreadable-refresh notices for the open conversation."""
-        current = getattr(self, "current", None)
-        if current is None:
-            return
-        prefix = f"refresh:{state.sidebar_key(current)}:"
-        notices = getattr(self, "_partial_notices", None)
-        if not isinstance(notices, dict):
-            return
-        for scope in [key for key in notices if key.startswith(prefix)]:
-            self._note_pane_skipped(
-                0, "_refresh_skipped", "this message", scope=scope, text=_UNREADABLE_REFRESH
-            )
+    def _clear_refresh_notice(self, message_id: str) -> None:
+        """Clear one message's unreadable-refresh notice after its row was read."""
+        self._note_pane_skipped(
+            0,
+            "_refresh_skipped",
+            "this message",
+            scope=self._refresh_notice_scope(message_id),
+            text=_UNREADABLE_REFRESH,
+        )
 
     def _refresh_partial_notice(self) -> None:
         """Show only the partial notices that apply to what the user is looking at."""
@@ -1147,9 +1139,11 @@ class PepperApp(App[None]):
         # topic is complete. Keep that partial state until a full reconcile reports zero.
         if reconcile or page.skipped > 0:
             self._note_pane_skipped(page.skipped, "_topic_skipped", "this topic")
-        if reconcile and page.skipped == 0:
-            # A clean full read proves the held row is current again, if a refresh skipped it.
-            self._clear_refresh_notices()
+        if reconcile:
+            # A newest-page reconcile proves only the rows it returned. Clear just those;
+            # an older unreadable row keeps its warning until it is read again.
+            for message in page.messages:
+                self._clear_refresh_notice(message.id)
         self._on_topic(page.messages)
 
     def _on_topic(self, messages: list[GroupMessage]) -> None:
