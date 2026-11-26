@@ -1798,6 +1798,15 @@
           "artifact_id": {
             "type": "string"
           },
+          "levels": {
+            "default": [
+              "read"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "name": {
             "type": "string"
           },
@@ -10022,6 +10031,16 @@
       },
       "ShareBody": {
         "properties": {
+          "level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "room_id": {
             "format": "uuid",
             "type": "string"
