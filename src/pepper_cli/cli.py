@@ -11254,10 +11254,13 @@ def _report_hub_error(exc: api_client.ApiError, args: argparse.Namespace | None 
     """
     said = sanitize_line(exc.detail) if exc.detail else ""
     if exc.status == 404:
+        # ``hubs add/remove --item``: the same 404 is also an item that is not the caller's own.
+        hub = "No such hub, or no such item of your own," if getattr(args, "item", None) else ""
         _emit_error(
             args,
             "not_found",
-            "No such hub, or hubs are not turned on for your account (or this server is too old).",
+            f"{hub or 'No such hub,'} or hubs are not turned on for your account "
+            "(or this server is too old).",
             status=404,
         )
         return 2

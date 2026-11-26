@@ -290,3 +290,15 @@ def test_server_text_cannot_write_to_the_terminal(server, capsys) -> None:
     assert cli.main(["hubs", "show", HUB]) == 0
     out = capsys.readouterr().out
     assert "\x1b[2J" not in out and "[bold]x[/bold]" in out
+
+
+def test_a_404_on_an_item_names_the_item_too(server, capsys) -> None:
+    server.reply("PUT", f"/api/v1/hubs/{HUB}/items/{NOTE}", {"detail": "Not found."}, status=404)
+    assert cli.main(["hubs", "add", HUB, "--item", NOTE]) == 2
+    assert "no such item of your own" in capsys.readouterr().err
+
+
+def test_a_role_this_client_does_not_know_reads_as_view(server, capsys) -> None:
+    server.reply("GET", f"/api/v1/hubs/{HUB}", _detail(role="admin", owner_name="Chris"))
+    assert cli.main(["hubs", "show", HUB]) == 0
+    assert "Chris's. You can view." in capsys.readouterr().out

@@ -96,7 +96,8 @@ def detail(hub: HubDetail) -> None:
             _line("Pinned: your chat with Pepper is focused on this hub.")
     else:
         whose = f"{_s(hub.owner_name)}'s" if hub.owner_name else "Someone else's"
-        _line(f"{whose}. You {_share(hub.role)}.")
+        # A role this client does not know is shown as the least it could mean.
+        _line(f"{whose}. You {_share(hub.role if hub.role in SHARE_WORDS else 'view')}.")
     _line("")
     _line("Rooms")
     if not hub.rooms:
