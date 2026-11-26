@@ -124,6 +124,8 @@ VERBS = frozenset(
         "invite",
         "remove",
         "share",
+        # `artifacts shares OBJECT` is the rooms an object is shared with, like `runs OBJECT`.
+        "shares",
         "revoke",
         "install",
         "uninstall",
@@ -260,6 +262,7 @@ ROOM_NA = {
     "stickers": "your own sticker book; stickers are a person's, never a room's",
     "artifacts show": "reads any artifact the viewer can see; the id carries the room",
     "artifacts download": "reads any artifact the viewer can see; the id carries the room",
+    "artifacts shares": "lists every room one artifact is shared with; the id says which",
     "drafts send": "a draft's id says whose it is",
     "preferences show": "your own account's Calendar preferences",
     "preferences edit": "your own account's Calendar preferences",
@@ -777,7 +780,16 @@ _COMMENT_THREAD = {
     "replies": [],
 }
 
+_SHARES = {
+    "artifact_id": _NOTE,
+    "name": "Plan",
+    "shares": [{"room_id": _G, "room_name": "Trip", "level": "comment"}],
+    "rooms": [{"room_id": _G, "room_name": "Trip"}],
+    "levels": ["read", "comment", "write"],
+}
+
 ROUTES: dict[str, object] = {
+    f"/api/v1/artifacts/{_NOTE}/shares": _SHARES,
     "/api/v1/whoami": {"user_id": "u", "display_name": "U", "timezone": "UTC"},
     # `rooms poll`: an empty page, so JSON mode is a single cursor line like `rooms watch`'s.
     "/api/v1/groups/events": {"events": [], "next_after_id": 7},
@@ -1043,6 +1055,8 @@ ROUTES: dict[str, object] = {
 
 #: Non-GET routes (POST, DELETE): the room post answers ``{"message": {...}}``.
 POST_ROUTES: dict[str, object] = {
+    f"/api/v1/artifacts/{_NOTE}/shares": _SHARES,
+    f"/api/v1/artifacts/{_NOTE}/shares/{_G}": {**_SHARES, "shares": []},
     f"/api/v1/groups/{_G}/blog/notes/{_NOTE}/stage": {
         k: v for k, v in _BLOG_STAGE.items() if k != "check"
     },
@@ -1374,6 +1388,9 @@ JSON_CASES: dict[str, list[str]] = {
     "artifacts download": ["artifacts", "download", _BLOB, "--out", "got.png", "--force"],
     "artifacts create": ["artifacts", "create", "--file", "pic.png"],
     "artifacts delete": ["artifacts", "delete", _BLOB, "--yes"],
+    "artifacts shares": ["artifacts", "shares", _NOTE],
+    "artifacts share": ["artifacts", "share", _NOTE, "--room", _G, "--level", "comment"],
+    "artifacts revoke": ["artifacts", "revoke", _NOTE, "--room", _G, "--yes"],
     "drafts send": ["drafts", "send", "d1"],
     "preferences show": ["preferences", "show"],
     "preferences edit": ["preferences", "edit", "--timezone", "America/Chicago"],
