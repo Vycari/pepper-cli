@@ -6,12 +6,16 @@
 #     {"metric": "lines", "percent": <float>}
 #
 # Canonical source: maintainerd, plugins/core/scripts/coverage-adapt.sh
+# maintainerd-core: 0.6.41
 # A consuming repo carries a copy at .claude/maintainerd/coverage-adapt.sh so CI can run
-# it without the plugin installed. Re-copy it when maintainerd-core updates.
+# it without the plugin installed. The `maintainerd-core:` line above is the version this
+# copy was taken from; the release tooling rewrites it, and `doctor` compares it with the
+# loaded plugin (scripts/vendored-stamp-check.sh). Re-copy when it reports a difference.
 #
 #   coverage-adapt.sh                                  # auto-detect the one input and its format
 #   coverage-adapt.sh --tool pytest-cov                # force the pytest-cov (coverage.py) shape
 #   coverage-adapt.sh --tool istanbul --input coverage/coverage-summary.json
+#   coverage-adapt.sh --tool llvm-cov --input coverage.json   # llvm-cov export JSON (Swift)
 #   coverage-adapt.sh --output build/coverage-summary.json
 #
 # Line coverage only. Branch coverage is deliberately not gated: it is noisier, moves for
@@ -29,11 +33,12 @@ export LC_ALL=C
 
 usage() {
   cat >&2 <<'USAGE'
-usage: coverage-adapt.sh [--tool auto|pytest-cov|istanbul] [--input FILE] [--output FILE]
+usage: coverage-adapt.sh [--tool auto|pytest-cov|istanbul|llvm-cov] [--input FILE] [--output FILE]
 
   --tool    input format. Default "auto": detect from the JSON's shape.
               pytest-cov  coverage.py / pytest-cov `--cov-report=json`  (.totals.percent_covered)
               istanbul    vitest / jest / nyc `json-summary`            (.total.lines.pct)
+              llvm-cov    `llvm-cov export` JSON (SwiftPM codecov)      (.data[0].totals.lines.percent)
   --input   the tool's native JSON. Default: whichever ONE of coverage-summary.json,
             coverage.json, coverage/coverage-summary.json holds a measurement. Two or more
             is an error, not a ranking: one of them is a previous run's number. This
@@ -57,8 +62,8 @@ while [ $# -gt 0 ]; do
 done
 
 case "$tool" in
-  auto|pytest-cov|istanbul) ;;
-  *) echo "coverage-adapt: unknown --tool '$tool' (auto|pytest-cov|istanbul)" >&2; exit 2 ;;
+  auto|pytest-cov|istanbul|llvm-cov) ;;
+  *) echo "coverage-adapt: unknown --tool '$tool' (auto|pytest-cov|istanbul|llvm-cov)" >&2; exit 2 ;;
 esac
 
 command -v jq >/dev/null 2>&1 || {
@@ -119,6 +124,11 @@ jq -e 'type == "object"' "$input" >/dev/null 2>&1 || {
 # error: CI steps get re-run, and a step that only works once is a step that breaks.
 percent=""
 detected=""
+# llvm-cov export wraps its totals in a one-element `data` array. A `count` of 0 means it
+# measured no lines at all and reports 0 percent for it; like istanbul's "Unknown", that is
+# "nothing was measured", not "0% covered", so it matches no shape and fails closed.
+LLVM_COV_FILTER='select((.data | type == "array") and (.data[0].totals.lines.percent | type == "number")
+                        and ((.data[0].totals.lines.count // 1) > 0)) | .data[0].totals.lines.percent'
 try_shape() {
   local name="$1" filter="$2" value
   value="$(jq -r "$filter // empty" "$input" 2>/dev/null || true)"
@@ -129,18 +139,21 @@ try_shape() {
 case "$tool" in
   pytest-cov) try_shape pytest-cov 'select(.totals.percent_covered | type == "number") | .totals.percent_covered' || true ;;
   istanbul)   try_shape istanbul   'select(.total.lines.pct     | type == "number") | .total.lines.pct'             || true ;;
+  llvm-cov)   try_shape llvm-cov   "$LLVM_COV_FILTER" || true ;;
   auto)
     try_shape normalized 'select(.metric == "lines" and (.percent | type == "number")) | .percent' \
       || try_shape pytest-cov 'select(.totals.percent_covered | type == "number") | .totals.percent_covered' \
       || try_shape istanbul   'select(.total.lines.pct | type == "number") | .total.lines.pct' \
+      || try_shape llvm-cov   "$LLVM_COV_FILTER" \
       || true
     ;;
 esac
 
 if [ -z "$percent" ]; then
   echo "coverage-adapt: $input has no line-coverage percentage in the ${tool} shape." >&2
-  echo "  Expected .totals.percent_covered (pytest-cov) or .total.lines.pct (istanbul)," >&2
-  echo "  as a number. istanbul writes \"Unknown\" when it measured no lines at all." >&2
+  echo "  Expected .totals.percent_covered (pytest-cov), .total.lines.pct (istanbul) or" >&2
+  echo "  .data[0].totals.lines.percent (llvm-cov), as a number. istanbul writes \"Unknown\"," >&2
+  echo "  and llvm-cov a lines.count of 0, when they measured no lines at all." >&2
   exit 1
 fi
 
