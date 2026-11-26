@@ -1424,6 +1424,10 @@ class PepperApp(App[None]):
         return True
 
     def _got_card(self, page: GroupMessagePage, *, older: bool) -> None:
+        # A card can hold the only copy of a message. Apply the same freshness rule as a topic
+        # poll before card_rows takes the new copy, so the warning is compared with the row it
+        # was raised for rather than with what this read is about to install.
+        self._clear_refresh_notices_from_rows(page.messages)
         self._learn_from_messages(page.messages)
         for m in page.messages:
             held = self.card_rows.get(m.id)
