@@ -2450,6 +2450,69 @@ def _hub_detail_from_dict(raw: object) -> HubDetail:
     )
 
 
+# MIRROR: src/pepper/api/artifacts.py::ArtifactShare
+@dataclass(frozen=True)
+class ArtifactShare:
+    """One room an artifact is shared with. ``level`` is ``read``, ``comment`` or ``write``;
+    a level this client does not know is shown as sent and treated as read-only."""
+
+    room_id: str
+    room_name: str
+    level: str
+
+
+# MIRROR: src/pepper/api/artifacts.py::ArtifactShareRoom
+@dataclass(frozen=True)
+class ArtifactShareRoom:
+    """A room the caller could share the artifact with."""
+
+    room_id: str
+    room_name: str
+
+
+# MIRROR: src/pepper/api/artifacts.py::ArtifactSharesResponse
+@dataclass(frozen=True)
+class ArtifactShares:
+    """Who an artifact is shared with, from ``/api/v1/artifacts/{id}/shares``.
+
+    ``rooms`` is where else its owner could share it, and ``levels`` the levels the caller may
+    share at, weakest first (``["read"]`` from a server that sends none).
+    """
+
+    artifact_id: str
+    name: str
+    shares: list[ArtifactShare] = field(default_factory=list)
+    rooms: list[ArtifactShareRoom] = field(default_factory=list)
+    levels: list[str] = field(default_factory=lambda: ["read"])
+
+
+def _artifact_shares_from_dict(raw: object) -> ArtifactShares:
+    what = "artifact shares response"
+    body = _wire_row(raw, what)
+
+    def share(row: dict[str, Any]) -> ArtifactShare:
+        return ArtifactShare(
+            room_id=str(_wire_get(row, "room_id", what, str)),
+            room_name=str(_wire_get(row, "room_name", what, str)),
+            level=str(_wire_get(row, "level", what, str)),
+        )
+
+    def room(row: dict[str, Any]) -> ArtifactShareRoom:
+        return ArtifactShareRoom(
+            room_id=str(_wire_get(row, "room_id", what, str)),
+            room_name=str(_wire_get(row, "room_name", what, str)),
+        )
+
+    levels = [x for x in _wire_opt(body, "levels", what, [], list) if isinstance(x, str)]
+    return ArtifactShares(
+        artifact_id=str(_wire_get(body, "artifact_id", what, str)),
+        name=str(_wire_get(body, "name", what, str)),
+        shares=_wire_rows(_wire_get(body, "shares", what, list), what, share),
+        rooms=_wire_rows(_wire_get(body, "rooms", what, list), what, room),
+        levels=levels or ["read"],
+    )
+
+
 # MIRROR: src/pepper/api/artifacts.py::ImageSuggestResponse
 @dataclass(frozen=True)
 class ImageSuggestion:
@@ -5234,6 +5297,37 @@ class ApiClient:
         if room_id is not None:
             body["room_id"] = room_id
         return self._hub("PUT", hub_id, "/notifications", json=body)
+
+    def list_artifact_shares(self, artifact_id: str) -> ArtifactShares:
+        """``GET /api/v1/artifacts/{id}/shares``: the rooms an artifact is shared with.
+
+        404 unless the caller may share it (its owner, or the owner of the room it lives in)
+        and sharing is on for their account.
+        """
+        return _artifact_shares_from_dict(
+            self._request("GET", f"/api/v1/artifacts/{artifact_id}/shares").json()
+        )
+
+    def share_artifact(
+        self, artifact_id: str, room_id: str, *, level: str | None = None
+    ) -> ArtifactShares:
+        """``POST /api/v1/artifacts/{id}/shares``: share with a room the caller is in.
+
+        Idempotent. ``level`` omitted keeps the level the room already holds, or shares to
+        read. 403 for a room the caller is not in, 409 when the room already owns it.
+        """
+        body: dict[str, Any] = {"room_id": room_id}
+        if level is not None:
+            body["level"] = level
+        return _artifact_shares_from_dict(
+            self._request("POST", f"/api/v1/artifacts/{artifact_id}/shares", json=body).json()
+        )
+
+    def unshare_artifact(self, artifact_id: str, room_id: str) -> ArtifactShares:
+        """``DELETE /api/v1/artifacts/{id}/shares/{room_id}``: stop sharing with a room."""
+        return _artifact_shares_from_dict(
+            self._request("DELETE", f"/api/v1/artifacts/{artifact_id}/shares/{room_id}").json()
+        )
 
     def get_artifact_detail_raw(self, artifact_id: str) -> dict[str, Any]:
         """``GET /api/v1/artifacts/{id}/detail`` as the server's own dict (``kind_label``,
