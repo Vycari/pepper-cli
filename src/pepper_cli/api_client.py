@@ -5163,8 +5163,8 @@ class ApiClient:
         ).json()
         return _wire_row(body, "blog response")
 
-    # Hubs (MIRROR: src/pepper/api/hubs.py). Every route but the last answers 404 unless the
-    # ``hubs`` rollout reaches the caller; a hub they may not see is the same 404.
+    # Hubs. Every route but ``unshare_hub``'s answers 404 unless the ``hubs`` rollout reaches
+    # the caller; a hub they may not see is the same 404.
 
     def list_hubs(self) -> Hubs:
         """``GET /api/v1/hubs``."""
