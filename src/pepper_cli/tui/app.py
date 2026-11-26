@@ -300,6 +300,9 @@ class PepperApp(App[None]):
         self._rail_skipped = 0
         self._topic_skipped = 0
         self._refresh_skipped = 0
+        #: The held copy each unreadable-refresh warning was raised for. Only a newer readable
+        #: copy of that row may clear the warning.
+        self._refresh_warned_rows: dict[str, GroupMessage] = {}
         self._todos_skipped = 0
         self._notes_skipped = 0
         self._partial_notices: dict[str, str] = {}
@@ -963,7 +966,6 @@ class PepperApp(App[None]):
 
     def _refreshed(self, message_id: str, page: GroupMessagePage) -> None:
         """Apply a refresh, and say so when the target itself could not be read."""
-        scope = self._refresh_notice_scope(message_id)
         fresh = [m for m in page.messages if m.id == message_id]
         if fresh:
             self._clear_refresh_notice(message_id)
@@ -975,9 +977,7 @@ class PepperApp(App[None]):
         elif page.skipped:
             # A skipped neighbour is harmless once the target is patched, but a skipped target
             # leaves the old body on screen. Keep the queue moving, and do not call that success.
-            self._note_pane_skipped(
-                1, "_refresh_skipped", "this message", scope=scope, text=_UNREADABLE_REFRESH
-            )
+            self._warn_unreadable_refresh(message_id)
         self._render_topic(new_rows=0, reset=False)
         self._run("refresh")
 
@@ -1039,15 +1039,40 @@ class PepperApp(App[None]):
             return "_refresh_skipped"
         return f"refresh:{state.sidebar_key(current)}:{message_id}"
 
+    def _warn_unreadable_refresh(self, message_id: str) -> None:
+        """Warn, remembering the held copy that a later read must replace."""
+        scope = self._refresh_notice_scope(message_id)
+        held = self._held_row(message_id)
+        if held is not None:
+            self._refresh_warned_rows[scope] = held
+        self._note_pane_skipped(
+            1, "_refresh_skipped", "this message", scope=scope, text=_UNREADABLE_REFRESH
+        )
+
     def _clear_refresh_notice(self, message_id: str) -> None:
         """Clear one message's unreadable-refresh notice after its row was read."""
+        scope = self._refresh_notice_scope(message_id)
+        self._refresh_warned_rows.pop(scope, None)
         self._note_pane_skipped(
             0,
             "_refresh_skipped",
             "this message",
-            scope=self._refresh_notice_scope(message_id),
+            scope=scope,
             text=_UNREADABLE_REFRESH,
         )
+
+    def _clear_refresh_notices_from_rows(self, messages: list[GroupMessage]) -> None:
+        """Clear warnings only where a parsed row proves the old text is gone."""
+        for message in messages:
+            scope = self._refresh_notice_scope(message.id)
+            warned = self._refresh_warned_rows.get(scope)
+            if warned is None or state.is_stale_copy(message, warned):
+                continue
+            # An unrelated field, such as a reaction, does not replace the text the warning
+            # describes. The body or the deleted state has to change.
+            if message.raw_body == warned.raw_body and message.is_deleted == warned.is_deleted:
+                continue
+            self._clear_refresh_notice(message.id)
 
     def _refresh_partial_notice(self) -> None:
         """Show only the partial notices that apply to what the user is looking at."""
@@ -1139,11 +1164,10 @@ class PepperApp(App[None]):
         # topic is complete. Keep that partial state until a full reconcile reports zero.
         if reconcile or page.skipped > 0:
             self._note_pane_skipped(page.skipped, "_topic_skipped", "this topic")
-        if reconcile:
-            # A newest-page reconcile proves only the rows it returned. Clear just those;
-            # an older unreadable row keeps its warning until it is read again.
-            for message in page.messages:
-                self._clear_refresh_notice(message.id)
+        # Any poll can clear a warning, but only when the parsed row differs from the old copy
+        # the warning was raised for and is not an older version of it. A late pre-edit read
+        # brings back the same old copy, so it cannot clear the warning it predates.
+        self._clear_refresh_notices_from_rows(page.messages)
         self._on_topic(page.messages)
 
     def _on_topic(self, messages: list[GroupMessage]) -> None:
