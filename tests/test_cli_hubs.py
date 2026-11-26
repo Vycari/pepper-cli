@@ -229,12 +229,26 @@ def test_share_sends_the_level_asked_for(server, capsys) -> None:
     assert server.calls() == [("PUT", f"/api/v1/hubs/{HUB}/sharing")]
 
 
-@pytest.mark.parametrize(("held", "sent"), [("edit", "edit"), (None, "view")])
-def test_share_with_no_level_keeps_the_one_already_given(server, held, sent) -> None:
-    server.reply("GET", f"/api/v1/hubs/{HUB}", _detail(shared_level=held))
-    server.reply("PUT", f"/api/v1/hubs/{HUB}/sharing", _detail(shared_level=sent))
+def test_share_with_no_level_writes_nothing_to_a_hub_already_shared(server, capsys) -> None:
+    server.reply("GET", f"/api/v1/hubs/{HUB}", _detail(shared_level="edit"))
     assert cli.main(["hubs", "share", HUB]) == 0
-    assert json.loads(server.seen[-1].content) == {"level": sent}
+    assert "can edit." in capsys.readouterr().err
+    assert server.calls() == [("GET", f"/api/v1/hubs/{HUB}")]
+
+
+def test_share_with_no_level_shares_an_unshared_hub_to_view(server) -> None:
+    server.reply("GET", f"/api/v1/hubs/{HUB}", _detail())
+    server.reply("PUT", f"/api/v1/hubs/{HUB}/sharing", _detail(shared_level="view"))
+    assert cli.main(["hubs", "share", HUB]) == 0
+    assert json.loads(server.seen[-1].content) == {"level": "view"}
+
+
+def test_a_name_is_not_trusted_when_the_list_may_be_short(server, capsys) -> None:
+    server.reply("GET", "/api/v1/hubs", {**_LIST, "rooms_complete": False})
+    assert cli.main(["hubs", "take", "Garden", "--json"]) == 2
+    error = json.loads(capsys.readouterr().err)["error"]
+    assert error["code"] == "ambiguous" and "use its id" in error["message"]
+    assert server.calls() == [("GET", "/api/v1/hubs")]
 
 
 def test_notify_sets_every_room_or_one(server, capsys) -> None:

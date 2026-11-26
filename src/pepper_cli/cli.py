@@ -11284,7 +11284,17 @@ def _need_hub(api: api_client.ApiClient, value: str, args: argparse.Namespace) -
     if _valid_uuid(value.lower()):
         return value.lower()
     wanted = value.strip().casefold()
-    found = [row for row in hubs_view.rows(api.list_hubs()) if row["name"].casefold() == wanted]
+    listed = api.list_hubs()
+    found = [row for row in hubs_view.rows(listed) if row["name"].casefold() == wanted]
+    if not listed.rooms_complete:
+        # A short list may be missing another hub of the same name, so one match proves nothing.
+        _emit_error(
+            args,
+            "ambiguous",
+            "Pepper couldn't check all of your rooms just now, so a hub's name may not be "
+            "enough to tell it apart; use its id (pepper hubs list --json) or try again",
+        )
+        raise _BadInputError
     if len(found) == 1:
         return str(found[0]["id"])
     if not found:
@@ -11481,9 +11491,12 @@ def cmd_hubs_share(args: argparse.Namespace) -> int:
         return f"Shared {_hub_name(hub)}: the people in at least two of its rooms {words}."
 
     def call(api: api_client.ApiClient, hub_id: str) -> api_client.HubDetail:
-        # Sharing again with no level must not lower one already given.
-        level = args.level or api.get_hub(hub_id).shared_level or "view"
-        return api.share_hub(hub_id, level)
+        if args.level:
+            return api.share_hub(hub_id, args.level)
+        # Sharing again with no level must not lower one already given, so a hub that is
+        # already shared is left as it is: nothing is written that could undo a newer level.
+        hub = api.get_hub(hub_id)
+        return hub if hub.shared_level else api.share_hub(hub_id, "view")
 
     return _hub_act(args, call, done)
 
