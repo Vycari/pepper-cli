@@ -601,6 +601,41 @@ def _register_account_commands(sub: Any) -> None:
     p.add_argument("artifact", help=_ARTIFACT_REF_HELP)
     p.set_defaults(handler=cmd_artifacts_delete)
 
+    p = sub_art.add_parser(
+        "shares",
+        help="The rooms one of your notes or files is shared with, and at what level.",
+        parents=[_json_parent],
+    )
+    p.add_argument("artifact", help=_ARTIFACT_REF_HELP)
+    p.set_defaults(handler=cmd_artifacts_shares)
+
+    p = sub_art.add_parser(
+        "share",
+        help=(
+            "Share a note or file with a room you're in. It stays yours: the room reads the "
+            "same one (and comments on or edits a note, with --level)."
+        ),
+        parents=[_json_parent, _room_parent(required=True)],
+    )
+    p.add_argument("artifact", help=_ARTIFACT_REF_HELP)
+    p.add_argument(
+        "--level",
+        choices=_SHARE_LEVELS,
+        help=(
+            "What the room may do: read, comment (read and comment) or write (read, comment "
+            "and edit a note's text). Omit to keep the room's level, or read for a new share."
+        ),
+    )
+    p.set_defaults(handler=cmd_artifacts_share)
+
+    p = sub_art.add_parser(
+        "revoke",
+        help="Stop sharing a note or file with a room. Nothing is deleted.",
+        parents=[_json_parent, _yes_parent, _room_parent(required=True)],
+    )
+    p.add_argument("artifact", help=_ARTIFACT_REF_HELP)
+    p.set_defaults(handler=cmd_artifacts_revoke)
+
     # -- drafts -------------------------------------------------------------
     p_drafts = sub.add_parser(
         "drafts",
@@ -10704,6 +10739,120 @@ def cmd_artifacts_delete(args: argparse.Namespace) -> int:
         return 0
 
     return _with_api(run, _report_artifacts_error, args)
+
+
+_SHARE_LEVELS = ("read", "comment", "write")
+_SHARE_LEVEL_WORDS = {
+    "read": "can read",
+    "comment": "can read and comment",
+    "write": "can read, comment and edit",
+}
+
+
+def _report_share_error(exc: api_client.ApiError, args: argparse.Namespace | None = None) -> int:
+    """The share routes' own statuses in plain words; the rest is the artifacts handler.
+
+    A 404 covers an artifact that is missing or not the caller's to share, and an account
+    sharing is not turned on for (or an older server): the server does not tell them apart.
+    """
+    said = {
+        404: (
+            "not_found",
+            "no such note or file you can share, or sharing is not turned on for your account",
+        ),
+        403: ("forbidden", "you are not in that room"),
+        409: ("conflict", "that room already owns it"),
+    }
+    if exc.status in said:
+        code, message = said[exc.status]
+        _emit_error(args, code, message, status=exc.status)
+        return 2 if exc.status == 404 else 1
+    return _report_artifacts_error(exc, args)
+
+
+def _render_shares(shares: api_client.ArtifactShares) -> None:
+    if not shares.shares:
+        print(f"{sanitize_line(shares.name)} is not shared with any room.")
+        return
+    for share in shares.shares:
+        words = _SHARE_LEVEL_WORDS.get(share.level, sanitize_line(share.level))
+        print(f"{sanitize_line(share.room_name)} ({words})")
+
+
+def cmd_artifacts_shares(args: argparse.Namespace) -> int:
+    """``pepper artifacts shares ARTIFACT [--json]``: the rooms it is shared with."""
+    ref = _artifact_ref(args)
+    if ref is None:
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        shares = api.list_artifact_shares(ref[0])
+        _emit(shares, args, lambda: _render_shares(shares))
+        return 0
+
+    return _with_api(run, _report_share_error, args)
+
+
+def cmd_artifacts_share(args: argparse.Namespace) -> int:
+    """``pepper artifacts share ARTIFACT --room R [--level L] [--json]``.
+
+    The server decides which levels the caller may share at; a level it does not offer is
+    refused here with the ones it does, before anything is changed.
+    """
+    ref = _artifact_ref(args)
+    if ref is None:
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        room_id = _need_group(api, args.room, args=args)
+        if args.level is not None:
+            offered = api.list_artifact_shares(ref[0]).levels
+            if args.level not in offered:
+                _emit_error(
+                    args,
+                    "validation",
+                    f"you can't share at {args.level!r} yet; available: {', '.join(offered)}",
+                )
+                return 1
+        shares = api.share_artifact(ref[0], room_id, level=args.level)
+        now = next((s for s in shares.shares if s.room_id == room_id), None)
+        words = _SHARE_LEVEL_WORDS.get(now.level, now.level) if now else "can read"
+        room = sanitize_line(now.room_name if now else args.room)
+        _emit(shares, args, lambda: render.info(f"Shared {shares.name!r} with {room}: {words}."))
+        return 0
+
+    return _with_api(run, _report_share_error, args)
+
+
+def cmd_artifacts_revoke(args: argparse.Namespace) -> int:
+    """``pepper artifacts revoke ARTIFACT --room R [--yes] [--json]``: stop sharing with a room.
+
+    Nothing is deleted, but the room loses the note or file (and its members their way to
+    read it), so it asks like the other verbs that take something away.
+    """
+    ref = _artifact_ref(args)
+    if ref is None:
+        return 2
+
+    def run(api: api_client.ApiClient) -> int:
+        room_id = _need_group(api, args.room, args=args)
+        gate = _confirm_destructive(
+            args,
+            "Stop sharing it with that room?",
+            yes=args.yes,
+            refusal="this takes it away from the room; pass --yes to run it without a prompt",
+        )
+        if gate is not None:
+            return gate
+        shares = api.unshare_artifact(ref[0], room_id)
+        _emit(
+            shares,
+            args,
+            lambda: render.info(f"Stopped sharing {shares.name!r} with that room."),
+        )
+        return 0
+
+    return _with_api(run, _report_share_error, args)
 
 
 def _report_account_error(args: argparse.Namespace, exc: api_client.ApiError) -> int:

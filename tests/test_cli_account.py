@@ -141,6 +141,27 @@ def server(monkeypatch, tmp_path):
                     "byte_size": 4,
                 },
             )
+        if key[1] in (
+            f"/api/v1/artifacts/{NOTE}/shares",
+            f"/api/v1/artifacts/{NOTE}/shares/{ROOM}",
+        ):
+            level = "read"
+            if key[0] == "POST":
+                level = json.loads(request.content).get("level") or "read"
+            shared = key[0] != "DELETE" and getattr(calls, "shared", True)
+            return httpx.Response(
+                200,
+                json={
+                    "artifact_id": NOTE,
+                    "name": "Trip plan",
+                    "shares": [{"room_id": ROOM, "room_name": "Trip planning", "level": level}]
+                    if shared
+                    else [],
+                    "rooms": [{"room_id": ROOM, "room_name": "Trip planning"}],
+                    "levels": getattr(calls, "levels", ["read", "comment", "write"]),
+                    "a_field_from_the_future": 1,
+                },
+            )
         if key == ("POST", "/api/v1/apps/artifacts/actions/delete"):
             return httpx.Response(200, json={"result": {"name": "Receipt"}})
         if key == ("GET", "/api/v1/groups"):
@@ -403,6 +424,61 @@ def test_artifacts_delete_a_422_is_not_found(server, capsys) -> None:
     server.fail[("POST", "/api/v1/apps/artifacts/actions/delete")] = (422, "gone")
     assert cli.main(["artifacts", "delete", FILE, "--yes", "--json"]) == 2
     assert _err(capsys)["code"] == "not_found"
+
+
+def test_artifacts_shares_lists_rooms_and_levels(server, capsys) -> None:
+    assert cli.main(["artifacts", "shares", NOTE]) == 0
+    out = capsys.readouterr().out
+    assert out == "Trip planning (can read)\n"
+    assert cli.main(["artifacts", "shares", NOTE, "--json"]) == 0
+    body = _json(capsys)
+    assert body["shares"] == [{"room_id": ROOM, "room_name": "Trip planning", "level": "read"}]
+    assert body["levels"] == ["read", "comment", "write"]
+    server.shared = False
+    assert cli.main(["artifacts", "shares", NOTE]) == 0
+    assert "not shared with any room" in capsys.readouterr().out
+
+
+def test_artifacts_share_sends_the_room_and_only_a_level_that_was_asked_for(server, capsys) -> None:
+    assert cli.main(["artifacts", "share", NOTE, "--room", "trip"]) == 0
+    assert "Shared 'Trip plan' with Trip planning: can read." in capsys.readouterr().err
+    req = server.to("POST", f"/api/v1/artifacts/{NOTE}/shares")[0]
+    assert json.loads(req.content) == {"room_id": ROOM}
+    assert not server.to("GET", f"/api/v1/artifacts/{NOTE}/shares")
+
+    assert cli.main(["artifacts", "share", NOTE, "--room", "trip", "--level", "write"]) == 0
+    assert "can read, comment and edit" in capsys.readouterr().err
+    req = server.to("POST", f"/api/v1/artifacts/{NOTE}/shares")[1]
+    assert json.loads(req.content) == {"room_id": ROOM, "level": "write"}
+
+
+def test_artifacts_share_refuses_a_level_the_server_does_not_offer(server, capsys) -> None:
+    server.levels = ["read"]
+    argv = ["artifacts", "share", NOTE, "--room", "trip", "--level", "comment", "--json"]
+    assert cli.main(argv) == 1
+    err = _err(capsys)
+    assert err["code"] == "validation"
+    assert "available: read" in err["message"]
+    assert not server.to("POST", f"/api/v1/artifacts/{NOTE}/shares")
+
+
+def test_artifacts_revoke_needs_yes_and_names_the_room_in_the_path(server, capsys) -> None:
+    assert cli.main(["artifacts", "revoke", NOTE, "--room", "trip", "--json"]) == 2
+    assert not server.to("DELETE", f"/api/v1/artifacts/{NOTE}/shares/{ROOM}")
+    capsys.readouterr()
+    assert cli.main(["artifacts", "revoke", NOTE, "--room", "trip", "--yes", "--json"]) == 0
+    assert _json(capsys)["shares"] == []
+    assert server.to("DELETE", f"/api/v1/artifacts/{NOTE}/shares/{ROOM}")
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "exit_code"),
+    [(404, "not_found", 2), (403, "forbidden", 1), (409, "conflict", 1)],
+)
+def test_artifacts_share_errors_are_said_plainly(server, capsys, status, code, exit_code) -> None:
+    server.fail[("POST", f"/api/v1/artifacts/{NOTE}/shares")] = (status, "x")
+    assert cli.main(["artifacts", "share", NOTE, "--room", "trip", "--json"]) == exit_code
+    assert _err(capsys)["code"] == code
 
 
 def test_artifact_helpers() -> None:

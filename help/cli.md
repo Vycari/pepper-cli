@@ -231,6 +231,19 @@ ever want to look back at a specific conversation in detail.
   file's contents, `pepper artifacts create --file PATH` uploads a picture,
   PDF, text file, audio clip or video, and `pepper artifacts delete <number>`
   removes one. See [Notes](#artifacts).
+<!-- rollout: artifact-grants -->
+- **Sharing a note or file with a room:** `pepper artifacts share <number>
+  --room <room>` lets a room you're in read one of your notes or files. It
+  stays yours, and there is still only one of it. `pepper artifacts shares
+  <number>` shows which rooms have it, and `pepper artifacts revoke <number>
+  --room <room>` stops sharing. Nothing is deleted.
+<!-- /rollout -->
+<!-- rollout: artifact-grant-levels -->
+- **Letting a room comment on or edit a shared note:** add `--level comment`
+  or `--level write` to `pepper artifacts share`. With `write` the room can
+  change the note's text; the title, labels and deleting it stay with you.
+  Leave `--level` off to keep what the room already has.
+<!-- /rollout -->
 - **Your calendar preferences:** `pepper preferences show` prints your home
   and work addresses, timezone, working days and hours, meal and workout times,
   and how your calendar is drawn. `pepper preferences edit` changes only the
