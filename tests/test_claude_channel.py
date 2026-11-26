@@ -453,6 +453,14 @@ class _Session:
         time.sleep(settle)
         return self.stdout.notifications()
 
+    def wait_for_cursor_file(self, path: Path) -> None:
+        """Wait for the worker's atomic cursor replace without opening the file.
+
+        Windows opens do not share deletes, so a reader can make the worker's
+        ``tmp.replace(target)`` fail with PermissionError. ``exists`` uses stat only.
+        """
+        self.wait_for(path.exists, f"cursor file {path.name}")
+
     def wait_exhausted(self) -> None:
         self.wait_for(self.fake.exhausted.is_set, "the stream script to run out")
         # Let the worker finish handling the last frames before the session ends.
@@ -3118,7 +3126,12 @@ def test_repeated_room_follows_each_room_and_tags_events_with_their_own_room(mon
     out: dict = {}
 
     def script(s: _Session) -> None:
-        s.wait_notifications(2, settle=0.2)
+        s.wait_notifications(2)
+        # The notification is pushed before the cursor file is written. Wait for both atomic
+        # replaces without reading the files: on Windows a concurrent reader can block the
+        # worker's os.replace. The final assertions check the values once the worker has stopped.
+        s.wait_for_cursor_file(Path(f"{cursor}.{_ROOM}"))
+        s.wait_for_cursor_file(Path(f"{cursor}.{_OTHER_ROOM}"))
         out["in"] = s.call("messages_list", {"room_id": _OTHER_ROOM, "topic_id": _OTHER_TOPIC})
         out["out"] = s.call("messages_list", {"room_id": _SURVIVOR, "topic_id": _TOPIC})
 
