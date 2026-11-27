@@ -8,10 +8,13 @@ Six requirements are tested here:
      the list is returned.
   3. CLI-path callers (no skip_bad_rows flag) are strict: a bad row raises.
   4. PepperApp._note_pane_skipped fires once per count rise and uses
-     severity=warning; partial results are never presented as complete.
+     severity=warning; partial results are never presented as complete, and repeated
+     unreadable-row warnings render as one counted sentence.
   5. RailPoller does not retain the ETag when any group row was skipped.
-  6. Stale-message refresh re-queues via _refresh_failed on ApiError
-     (strict at= path), so the retry requirement is met.
+  6. The API's strict default stays unchanged, but the TUI stale-message refresh opts into
+     skip_bad_rows so one malformed row cannot starve the queue; transient failures still
+     re-queue via _refresh_failed, and an unreadable target warns until a parsed poll, card,
+     or older page row replaces the old text the warning was raised for.
 """
 
 from __future__ import annotations
@@ -457,6 +460,26 @@ class TestReq4PaneSkippedNotice:
         PepperApp._note_pane_skipped(app, 0, "_todos_skipped", "todos")
         assert app._partial_notice == ""
 
+    def test_repeated_unreadable_warnings_show_one_counted_notice(self) -> None:
+        app = PepperApp(_api({}))
+        app.current = Conversation(room_id="r1", topic_id="tp1")
+        text = "The edited message could not be read and still shows its previous text."
+        for message_id in ("m1", "m2"):
+            app._note_pane_skipped(
+                1,
+                "_refresh_skipped",
+                "this message",
+                scope=app._refresh_notice_scope(message_id),
+                text=text,
+            )
+        assert app._partial_notice == (
+            "2 edited messages could not be read and still show their previous text."
+        )
+        assert len(app._partial_notices) == 2  # per-message records stay available for clearing
+        app._clear_refresh_notice("m1")
+        assert app._partial_notice == text
+        assert len(app._partial_notices) == 1
+
     def test_notice_not_repeated_at_same_count(self) -> None:
         app: Any = _StubApp()
         PepperApp._note_pane_skipped(app, 1, "_rail_skipped", "the sidebar")
@@ -552,34 +575,31 @@ class TestReq5NoETagOnPartialList:
 
 
 # ---------------------------------------------------------------------------
-# Req 6: Stale-message refresh re-queues on ApiError (strict at= path)
+# Req 6: The API default stays strict; the TUI refresh opts into row skipping
 # ---------------------------------------------------------------------------
 
 
-class TestReq6StaleMessageRetryOnError:
-    def test_refresh_strict_path_raises_api_error_on_bad_message(self) -> None:
-        """The at= refresh path uses the strict (no skip_bad_rows) call.
-        A malformed row in the refresh response raises ApiError, allowing
-        the caller (_refresh_failed) to re-queue the message id."""
+class TestReq6RefreshWindow:
+    def test_api_default_strict_path_raises_api_error_on_bad_message(self) -> None:
+        """Callers that do not opt in still get strict parsing. #371 did not change the API
+        default; the TUI refresh asks for row skipping separately."""
         bad = _message(id=99)
         api = _api(_messages_body(bad))
         with pytest.raises(ApiError) as exc:
             api.list_group_messages("r1", "tp1", at="m-stale")
         assert exc.value.status == 200
 
-    def test_refresh_strict_path_does_not_skip_bad_rows(self) -> None:
-        """The strict at= path must NOT silently skip: raising is correct so the
-        retry loop can re-queue the message."""
+    def test_api_default_does_not_skip_bad_rows(self) -> None:
+        """``skip_bad_rows`` remains opt-in for every API caller, including an ``at=`` read."""
         bad = _message(id=99)
         api = _api(_messages_body(bad))
-        # skip_bad_rows not set (default False) = strict = raises
         with pytest.raises(ApiError):
             api.list_group_messages("r1", "tp1", at="m-stale")
 
-    def test_refresh_failed_re_queues_after_malformed_response(
+    def test_refresh_work_skips_bad_rows_in_its_window(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        api = _api(_messages_body(_message(id=99)))
+        api = _api(_messages_body(_message(id="m-stale"), _message(id="bad", display_name=123)))
         app = PepperApp(api)
         app.current = Conversation(room_id="r1", topic_id="tp1")
         app.store.rows["m-stale"] = GroupMessage(**_message(id="m-stale"))
@@ -595,14 +615,530 @@ class TestReq6StaleMessageRetryOnError:
             on_error: Any = None,
         ) -> None:
             captured["work"] = work
+
+        monkeypatch.setattr(app, "_start", fake_start)
+        app._refresh_next()
+        page = captured["work"]()
+        assert [m.id for m in page.messages] == ["m-stale"]
+        assert page.skipped == 1
+
+    def test_refresh_failed_still_re_queues_a_transient_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        api = _api(_messages_body(_message(id="m-stale")))
+        app = PepperApp(api)
+        app.current = Conversation(room_id="r1", topic_id="tp1")
+        app.store.rows["m-stale"] = GroupMessage(**_message(id="m-stale"))
+        app._stale_rows = ["m-stale"]
+
+        captured: dict[str, Any] = {}
+
+        def fake_start(
+            kind: str,
+            work: Any,
+            deliver: Any,
+            *,
+            on_error: Any = None,
+        ) -> None:
             captured["on_error"] = on_error
 
         monkeypatch.setattr(app, "_start", fake_start)
         app._refresh_next()
         on_error = captured["on_error"]
         assert on_error is not None
-        with pytest.raises(ApiError) as exc:
-            captured["work"]()
-        assert exc.value.status == 200
-        assert on_error(exc.value) is False
+        assert on_error(httpx.ConnectError("down")) is False
         assert app._stale_rows == ["m-stale"]
+
+    def test_refresh_warns_when_the_target_row_is_unreadable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        api = _api(_messages_body(_message(id="bad", display_name=123)))
+        app = PepperApp(api)
+        app.current = Conversation(room_id="r1", topic_id="tp1")
+        app.store.rows["m-stale"] = GroupMessage(**_message(id="m-stale", raw_body="old"))
+        app._stale_rows = ["m-stale"]
+        said: list[dict[str, Any]] = []
+        app.notify = lambda message, **kwargs: said.append({"message": message, **kwargs})
+        monkeypatch.setattr(app, "_render_topic", lambda **_kw: None)
+        monkeypatch.setattr(app, "_run", lambda _kind: None)
+
+        captured: dict[str, Any] = {}
+
+        def fake_start(
+            kind: str,
+            work: Any,
+            deliver: Any,
+            *,
+            on_error: Any = None,
+        ) -> None:
+            captured["work"] = work
+            captured["deliver"] = deliver
+
+        monkeypatch.setattr(app, "_start", fake_start)
+        app._refresh_next()
+        captured["deliver"](captured["work"]())
+
+        assert app.store.rows["m-stale"].raw_body == "old"
+        assert app._stale_rows == []
+        assert len(said) == 1
+        assert said[0]["severity"] == "warning"
+        assert "still shows its previous text" in said[0]["message"]
+        assert "still shows its previous text" in app._partial_notice
+
+        captured["deliver"](GroupMessagePage(messages=[app.store.rows["m-stale"]]))
+        assert app._partial_notice == ""
+        assert len(said) == 1
+
+    def test_another_rows_success_does_not_clear_the_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = PepperApp(_api(_messages_body()))
+        app.current = Conversation(room_id="r1", topic_id="tp1")
+        app.store.rows["m1"] = GroupMessage(**_message(id="m1", raw_body="old m1"))
+        app.store.rows["m2"] = GroupMessage(**_message(id="m2", raw_body="old m2"))
+        app._stale_rows = ["m1", "m2"]
+        said: list[dict[str, Any]] = []
+        app.notify = lambda message, **kwargs: said.append({"message": message, **kwargs})
+        monkeypatch.setattr(app, "_render_topic", lambda **_kw: None)
+        monkeypatch.setattr(app, "_run", lambda _kind: None)
+        deliveries: list[Any] = []
+
+        def fake_start(
+            kind: str,
+            work: Any,
+            deliver: Any,
+            *,
+            on_error: Any = None,
+        ) -> None:
+            deliveries.append(deliver)
+
+        monkeypatch.setattr(app, "_start", fake_start)
+        app._refresh_next()
+        app._refresh_next()
+        assert len(deliveries) == 2
+
+        deliveries[0](GroupMessagePage(skipped=1))
+        assert app.store.rows["m1"].raw_body == "old m1"
+        assert "still shows its previous text" in app._partial_notice
+        assert len(said) == 1
+
+        deliveries[1](
+            GroupMessagePage(messages=[GroupMessage(**_message(id="m2", raw_body="new m2"))])
+        )
+        assert app.store.rows["m2"].raw_body == "new m2"
+        assert "still shows its previous text" in app._partial_notice
+        assert len(said) == 1
+
+        deliveries[0](
+            GroupMessagePage(messages=[GroupMessage(**_message(id="m1", raw_body="new m1"))])
+        )
+        assert app.store.rows["m1"].raw_body == "new m1"
+        assert app._partial_notice == ""
+        assert len(said) == 1
+
+    def test_a_newest_page_reconcile_does_not_clear_an_older_rows_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = PepperApp(_api(_messages_body()))
+        app.current = Conversation(room_id="r1", topic_id="tp1")
+        app.store.rows["m1"] = GroupMessage(**_message(id="m1", raw_body="old"))
+        app._stale_rows = ["m1"]
+        app.loaded_topic = True
+        said: list[dict[str, Any]] = []
+        app.notify = lambda message, **kwargs: said.append({"message": message, **kwargs})
+        monkeypatch.setattr(app, "_learn_from_messages", lambda _messages: None)
+        monkeypatch.setattr(app, "_render_topic", lambda **_kw: None)
+        monkeypatch.setattr(app, "_fetch_roots", lambda: None)
+        monkeypatch.setattr(app, "_run", lambda _kind: None)
+        captured: dict[str, Any] = {}
+
+        def fake_start(
+            kind: str,
+            work: Any,
+            deliver: Any,
+            *,
+            on_error: Any = None,
+        ) -> None:
+            captured["deliver"] = deliver
+
+        monkeypatch.setattr(app, "_start", fake_start)
+        app._refresh_next()
+        captured["deliver"](GroupMessagePage(skipped=1))
+        assert "still shows its previous text" in app._partial_notice
+        assert len(said) == 1
+
+        newest = GroupMessage(**_message(id="m2", raw_body="newest"))
+        app._on_topic_page(GroupMessagePage(messages=[newest], skipped=0), reconcile=True)
+        assert app.store.rows["m1"].raw_body == "old"
+        assert "still shows its previous text" in app._partial_notice
+        assert len(said) == 1
+
+        fresh = GroupMessage(**_message(id="m1", raw_body="fresh"))
+        app._on_topic_page(GroupMessagePage(messages=[fresh], skipped=0), reconcile=True)
+        assert app.store.rows["m1"].raw_body == "fresh"
+        assert app._partial_notice == ""
+        assert len(said) == 1
+
+    def test_a_late_pre_edit_copy_does_not_clear_the_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = PepperApp(_api(_messages_body()))
+        app.current = Conversation(room_id="r1", topic_id="tp1")
+        old = GroupMessage(**_message(id="m1", raw_body="old"))
+        app.store.rows["m1"] = old
+        app._stale_rows = ["m1"]
+        app.loaded_topic = True
+        said: list[dict[str, Any]] = []
+        app.notify = lambda message, **kwargs: said.append({"message": message, **kwargs})
+        monkeypatch.setattr(app, "_learn_from_messages", lambda _messages: None)
+        monkeypatch.setattr(app, "_render_topic", lambda **_kw: None)
+        monkeypatch.setattr(app, "_fetch_roots", lambda: None)
+        monkeypatch.setattr(app, "_run", lambda _kind: None)
+        captured: dict[str, Any] = {}
+
+        def fake_start(
+            kind: str,
+            work: Any,
+            deliver: Any,
+            *,
+            on_error: Any = None,
+        ) -> None:
+            captured["deliver"] = deliver
+
+        monkeypatch.setattr(app, "_start", fake_start)
+        app._refresh_next()
+        captured["deliver"](GroupMessagePage(skipped=1))
+        assert "still shows its previous text" in app._partial_notice
+
+        app._on_topic_page(GroupMessagePage(messages=[old], skipped=0), reconcile=True)
+        assert app.store.rows["m1"].raw_body == "old"
+        assert "still shows its previous text" in app._partial_notice
+        assert len(said) == 1
+
+    def test_an_older_row_with_a_different_body_keeps_the_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = PepperApp(_api(_messages_body()))
+        app.current = Conversation(room_id="r1", topic_id="tp1")
+        held = GroupMessage(
+            **_message(
+                id="m1",
+                raw_body="newer",
+                is_edited=True,
+                edited_at="2026-11-26T12:00:00+00:00",
+            )
+        )
+        app.store.rows["m1"] = held
+        app._stale_rows = ["m1"]
+        app.loaded_topic = True
+        said: list[dict[str, Any]] = []
+        app.notify = lambda message, **kwargs: said.append({"message": message, **kwargs})
+        monkeypatch.setattr(app, "_learn_from_messages", lambda _messages: None)
+        monkeypatch.setattr(app, "_render_topic", lambda **_kw: None)
+        monkeypatch.setattr(app, "_fetch_roots", lambda: None)
+        monkeypatch.setattr(app, "_run", lambda _kind: None)
+        captured: dict[str, Any] = {}
+
+        def fake_start(
+            kind: str,
+            work: Any,
+            deliver: Any,
+            *,
+            on_error: Any = None,
+        ) -> None:
+            captured["deliver"] = deliver
+
+        monkeypatch.setattr(app, "_start", fake_start)
+        app._refresh_next()
+        captured["deliver"](GroupMessagePage(skipped=1))
+        assert "still shows its previous text" in app._partial_notice
+
+        older = GroupMessage(
+            **_message(
+                id="m1",
+                raw_body="older",
+                is_edited=True,
+                edited_at="2026-11-26T11:00:00+00:00",
+            )
+        )
+        app._on_topic_page(GroupMessagePage(messages=[older], skipped=0), reconcile=True)
+        assert app.store.rows["m1"].raw_body == "newer"
+        assert "still shows its previous text" in app._partial_notice
+        assert len(said) == 1
+
+    def test_an_incremental_poll_clears_the_warning_with_a_fresh_copy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = PepperApp(_api(_messages_body()))
+        app.current = Conversation(room_id="r1", topic_id="tp1")
+        app.store.rows["m1"] = GroupMessage(**_message(id="m1", raw_body="old"))
+        app._stale_rows = ["m1"]
+        app.loaded_topic = True
+        said: list[dict[str, Any]] = []
+        app.notify = lambda message, **kwargs: said.append({"message": message, **kwargs})
+        monkeypatch.setattr(app, "_learn_from_messages", lambda _messages: None)
+        monkeypatch.setattr(app, "_render_topic", lambda **_kw: None)
+        monkeypatch.setattr(app, "_fetch_roots", lambda: None)
+        monkeypatch.setattr(app, "_run", lambda _kind: None)
+        captured: dict[str, Any] = {}
+
+        def fake_start(
+            kind: str,
+            work: Any,
+            deliver: Any,
+            *,
+            on_error: Any = None,
+        ) -> None:
+            captured["deliver"] = deliver
+
+        monkeypatch.setattr(app, "_start", fake_start)
+        app._refresh_next()
+        captured["deliver"](GroupMessagePage(skipped=1))
+        assert "still shows its previous text" in app._partial_notice
+
+        fresh = GroupMessage(**_message(id="m1", raw_body="fresh"))
+        app._on_topic_page(GroupMessagePage(messages=[fresh], skipped=0), reconcile=False)
+        assert app.store.rows["m1"].raw_body == "fresh"
+        assert app._partial_notice == ""
+        assert len(said) == 1
+
+    def test_a_poll_without_a_new_body_keeps_the_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = PepperApp(_api(_messages_body()))
+        app.current = Conversation(room_id="r1", topic_id="tp1")
+        app.store.rows["m1"] = GroupMessage(**_message(id="m1", raw_body="old"))
+        app._stale_rows = ["m1"]
+        app.loaded_topic = True
+        said: list[dict[str, Any]] = []
+        app.notify = lambda message, **kwargs: said.append({"message": message, **kwargs})
+        monkeypatch.setattr(app, "_learn_from_messages", lambda _messages: None)
+        monkeypatch.setattr(app, "_render_topic", lambda **_kw: None)
+        monkeypatch.setattr(app, "_fetch_roots", lambda: None)
+        monkeypatch.setattr(app, "_run", lambda _kind: None)
+        captured: dict[str, Any] = {}
+
+        def fake_start(
+            kind: str,
+            work: Any,
+            deliver: Any,
+            *,
+            on_error: Any = None,
+        ) -> None:
+            captured["deliver"] = deliver
+
+        monkeypatch.setattr(app, "_start", fake_start)
+        app._refresh_next()
+        captured["deliver"](GroupMessagePage(skipped=1))
+        assert "still shows its previous text" in app._partial_notice
+
+        reacted = GroupMessage(**_message(id="m1", raw_body="old", reactions=[{"key": "ok"}]))
+        app._on_topic_page(GroupMessagePage(messages=[reacted], skipped=0), reconcile=False)
+        assert app.store.rows["m1"].raw_body == "old"
+        assert "still shows its previous text" in app._partial_notice
+        assert len(said) == 1
+
+    def test_a_card_read_clears_the_warning_with_a_fresh_copy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = PepperApp(_api(_messages_body()))
+        app.current = Conversation(room_id="r1", topic_id="tp1")
+        held = GroupMessage(
+            **_message(
+                id="m1",
+                raw_body="old",
+                is_edited=True,
+                edited_at="2026-11-26T11:00:00+00:00",
+            )
+        )
+        app.card_rows["m1"] = held
+        assert "m1" not in app.store.rows  # the card holds the only copy
+        app._stale_rows = ["m1"]
+        app.loaded_topic = True
+        said: list[dict[str, Any]] = []
+        app.notify = lambda message, **kwargs: said.append({"message": message, **kwargs})
+        monkeypatch.setattr(app, "_learn_from_messages", lambda _messages: None)
+        monkeypatch.setattr(app, "_render_topic", lambda **_kw: None)
+        monkeypatch.setattr(app, "_fetch_roots", lambda: None)
+        monkeypatch.setattr(app, "_run", lambda _kind: None)
+        captured: dict[str, Any] = {}
+
+        def fake_start(
+            kind: str,
+            work: Any,
+            deliver: Any,
+            *,
+            on_error: Any = None,
+        ) -> None:
+            captured["deliver"] = deliver
+
+        monkeypatch.setattr(app, "_start", fake_start)
+        app._refresh_next()
+        captured["deliver"](GroupMessagePage(skipped=1))
+        assert "still shows its previous text" in app._partial_notice
+
+        fresh = GroupMessage(
+            **_message(
+                id="m1",
+                raw_body="fresh",
+                is_edited=True,
+                edited_at="2026-11-26T12:00:00+00:00",
+            )
+        )
+        app._got_card(GroupMessagePage(messages=[fresh], next_before=None), older=False)
+        assert app.card_rows["m1"].raw_body == "fresh"
+        assert app._partial_notice == ""
+        assert len(said) == 1
+
+    def test_an_older_card_page_keeps_the_warning(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        app = PepperApp(_api(_messages_body()))
+        app.current = Conversation(room_id="r1", topic_id="tp1")
+        held = GroupMessage(
+            **_message(
+                id="m1",
+                raw_body="newer",
+                is_edited=True,
+                edited_at="2026-11-26T12:00:00+00:00",
+            )
+        )
+        app.card_rows["m1"] = held
+        assert "m1" not in app.store.rows
+        app._stale_rows = ["m1"]
+        app.loaded_topic = True
+        said: list[dict[str, Any]] = []
+        app.notify = lambda message, **kwargs: said.append({"message": message, **kwargs})
+        monkeypatch.setattr(app, "_learn_from_messages", lambda _messages: None)
+        monkeypatch.setattr(app, "_render_topic", lambda **_kw: None)
+        monkeypatch.setattr(app, "_fetch_roots", lambda: None)
+        monkeypatch.setattr(app, "_run", lambda _kind: None)
+        captured: dict[str, Any] = {}
+
+        def fake_start(
+            kind: str,
+            work: Any,
+            deliver: Any,
+            *,
+            on_error: Any = None,
+        ) -> None:
+            captured["deliver"] = deliver
+
+        monkeypatch.setattr(app, "_start", fake_start)
+        app._refresh_next()
+        captured["deliver"](GroupMessagePage(skipped=1))
+        assert "still shows its previous text" in app._partial_notice
+
+        older = GroupMessage(
+            **_message(
+                id="m1",
+                raw_body="older",
+                is_edited=True,
+                edited_at="2026-11-26T11:00:00+00:00",
+            )
+        )
+        app._got_card(GroupMessagePage(messages=[older], next_before=None), older=False)
+        assert app.card_rows["m1"].raw_body == "newer"
+        assert "still shows its previous text" in app._partial_notice
+        assert len(said) == 1
+
+    def test_an_older_page_clears_the_warning_with_a_fresh_copy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = PepperApp(_api(_messages_body()))
+        app.current = Conversation(room_id="r1", topic_id="tp1")
+        held = GroupMessage(
+            **_message(
+                id="m1",
+                raw_body="old",
+                is_edited=True,
+                edited_at="2026-11-26T11:00:00+00:00",
+            )
+        )
+        app.store.rows["m1"] = held
+        app._stale_rows = ["m1"]
+        app.loaded_topic = True
+        said: list[dict[str, Any]] = []
+        app.notify = lambda message, **kwargs: said.append({"message": message, **kwargs})
+        monkeypatch.setattr(app, "_learn_from_messages", lambda _messages: None)
+        monkeypatch.setattr(app, "_render_topic", lambda **_kw: None)
+        monkeypatch.setattr(app, "_fetch_roots", lambda: None)
+        monkeypatch.setattr(app, "_run", lambda _kind: None)
+        captured: dict[str, Any] = {}
+
+        def fake_start(
+            kind: str,
+            work: Any,
+            deliver: Any,
+            *,
+            on_error: Any = None,
+        ) -> None:
+            captured["deliver"] = deliver
+
+        monkeypatch.setattr(app, "_start", fake_start)
+        app._refresh_next()
+        captured["deliver"](GroupMessagePage(skipped=1))
+        assert "still shows its previous text" in app._partial_notice
+
+        fresh = GroupMessage(
+            **_message(
+                id="m1",
+                raw_body="fresh",
+                is_edited=True,
+                edited_at="2026-11-26T12:00:00+00:00",
+            )
+        )
+        app._got_older(GroupMessagePage(messages=[fresh], next_before="before"))
+        assert app.store.rows["m1"].raw_body == "fresh"
+        assert app.store.paged_back
+        assert app._partial_notice == ""
+        assert len(said) == 1
+
+    def test_an_older_page_with_a_stale_copy_keeps_the_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = PepperApp(_api(_messages_body()))
+        app.current = Conversation(room_id="r1", topic_id="tp1")
+        held = GroupMessage(
+            **_message(
+                id="m1",
+                raw_body="newer",
+                is_edited=True,
+                edited_at="2026-11-26T12:00:00+00:00",
+            )
+        )
+        app.store.rows["m1"] = held
+        app._stale_rows = ["m1"]
+        app.loaded_topic = True
+        said: list[dict[str, Any]] = []
+        app.notify = lambda message, **kwargs: said.append({"message": message, **kwargs})
+        monkeypatch.setattr(app, "_learn_from_messages", lambda _messages: None)
+        monkeypatch.setattr(app, "_render_topic", lambda **_kw: None)
+        monkeypatch.setattr(app, "_fetch_roots", lambda: None)
+        monkeypatch.setattr(app, "_run", lambda _kind: None)
+        captured: dict[str, Any] = {}
+
+        def fake_start(
+            kind: str,
+            work: Any,
+            deliver: Any,
+            *,
+            on_error: Any = None,
+        ) -> None:
+            captured["deliver"] = deliver
+
+        monkeypatch.setattr(app, "_start", fake_start)
+        app._refresh_next()
+        captured["deliver"](GroupMessagePage(skipped=1))
+        assert "still shows its previous text" in app._partial_notice
+
+        older = GroupMessage(
+            **_message(
+                id="m1",
+                raw_body="older",
+                is_edited=True,
+                edited_at="2026-11-26T11:00:00+00:00",
+            )
+        )
+        app._got_older(GroupMessagePage(messages=[older], next_before="before"))
+        assert app.store.rows["m1"].raw_body == "newer"
+        assert "still shows its previous text" in app._partial_notice
+        assert len(said) == 1

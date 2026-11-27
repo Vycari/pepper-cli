@@ -881,26 +881,28 @@ async def test_a_landed_event_from_a_replaced_render_is_ignored(monkeypatch) -> 
 
 async def test_a_reset_clamped_to_a_shorter_end_is_marked_read(monkeypatch) -> None:
     """Codex P2 on #279: a shorter page clamps the old scroll position to the new end
-    without a reader move. That reset landed, so the topic must be marked read."""
+    without a reader move. That reset landed, so the topic must be marked read once."""
     for interval in ("ACTIVE_INTERVAL", "COOLING_INTERVAL", "IDLE_INTERVAL"):
         monkeypatch.setattr(state, interval, 60.0)
-    app = tui_app.PepperApp(_older_thread_server().client())
+    server = _older_thread_server()
+    app = tui_app.PepperApp(server.client())
     async with app.run_test(size=(100, 14)) as pilot:
         await _open_a1(app, pilot, "body 13")
         thread = app.thread
         scroller = thread.scroller
         await until(pilot, lambda: scroller.max_scroll_y > 0 and thread.pinned)
-        calls: list[str | None] = []
-        monkeypatch.setattr(app, "_note_viewed", lambda **kw: calls.append(kw.get("through")))
         old = scroller.scroll_y
-        thread.show("short page", reset=True, through="2026-09-16T10:13:00+00:00")
-        # The landing comes two refreshes and a message after the show, so wait for the
-        # mark itself: a fixed pause ran out first on a loaded runner, with the clamp done
-        # and the mark still queued (main run 45212800550).
-        await until(pilot, lambda: bool(calls))
+        through = "2026-09-16T18:00:00+00:00"
+        server.puts.clear()
+        thread.show("short page", reset=True, through=through)
+        # A clamp can raise both PinChanged and Landed; they are idempotent at the publish
+        # queue. Wait for the one PUT rather than counting raw _note_viewed calls, which a
+        # runner can deliver in either order (Windows run 45832023191, main 45212800550).
+        await until(pilot, lambda: (ts.TOPIC_A1, through) in server.puts)
+        await pilot.pause()  # let any sibling landing drain before counting
         assert scroller.scroll_y != old  # clamped, not a reader scroll
         assert thread.pinned
-        assert calls == ["2026-09-16T10:13:00+00:00"]  # the reset landed at the new end
+        assert server.puts.count((ts.TOPIC_A1, through)) == 1
 
 
 async def test_o_opens_the_first_link_and_never_a_non_web_url() -> None:
